@@ -1,0 +1,23 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
+
+apply plugin: 'opensearch.internal-cluster-test'
+
+opensearchplugin {
+  description = 'Plugin for polling cluster state from etcd'
+  classname = 'org.opensearch.cluster.etcd.ClusterETCDPlugin'
+}
+
+versions << [
+  'jetcd': '0.8.5'
+]
+
+dependencies {
+  api "io.etcd:jetcd-core:${versions.jetcd}"
+}
+
