@@ -25,6 +25,7 @@ import org.opensearch.core.index.shard.ShardId;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 public class DataNodeState extends NodeState {
     private final Map<String, IndexMetadata> indices;
@@ -52,6 +53,7 @@ public class DataNodeState extends NodeState {
 
             IndexRoutingTable previousIndexRoutingTable = previousState.routingTable().index(index);
             IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(index);
+            IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata);
             for (Map.Entry<Integer, NodeShardAssignment.ShardRole> shardRoleEntry :
                     localShardAssignment.getAssignedShards().get(index.getName()).entrySet()) {
                 int shardNum = shardRoleEntry.getKey();
@@ -64,7 +66,7 @@ public class DataNodeState extends NodeState {
                     role == NodeShardAssignment.ShardRole.SEARCH_REPLICA,
                     RecoverySource.EmptyStoreRecoverySource.INSTANCE, // TODO: Support other recovery sources
                     unassignedInfo);
-                shardRouting.initialize(localNode.getId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
+                shardRouting = shardRouting.initialize(localNode.getId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
                 IndexShardRoutingTable previousShardRoutingTable = previousIndexRoutingTable == null ? null : previousIndexRoutingTable.shard(shardNum);
                 Optional<ShardRouting> previouslyStartedShard = previousShardRoutingTable == null ? Optional.empty() : previousShardRoutingTable
                     .shards()
@@ -77,9 +79,10 @@ public class DataNodeState extends NodeState {
                     shardRouting = shardRouting.moveToStarted();
                 }
                 indexRoutingTableBuilder.addShard(shardRouting);
+                indexMetadataBuilder.putInSyncAllocationIds(shardNum, Set.of(shardRouting.allocationId().getId()));
             }
-
-            metadataBuilder.put(indexMetadata, false);
+            routingTableBuilder.add(indexRoutingTableBuilder);
+            metadataBuilder.put(indexMetadataBuilder);
         }
         clusterStateBuilder.routingTable(routingTableBuilder.build());
         clusterStateBuilder.metadata(metadataBuilder);

@@ -12,6 +12,7 @@ import io.etcd.jetcd.ByteSequence;
 import io.etcd.jetcd.Client;
 import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.Watch;
+import io.etcd.jetcd.options.WatchOption;
 import io.etcd.jetcd.watch.WatchEvent;
 import io.etcd.jetcd.watch.WatchResponse;
 import org.apache.logging.log4j.LogManager;
@@ -22,6 +23,10 @@ import org.opensearch.cluster.node.DiscoveryNode;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class ETCDWatcher implements Closeable{
     private final Logger logger = LogManager.getLogger(ETCDWatcher.class);
@@ -29,16 +34,16 @@ public class ETCDWatcher implements Closeable{
     private final DiscoveryNode localNode;
     private final Watch.Watcher nodeWatcher;
     private final ChangeApplierService changeApplierService;
+    private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
+    private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
 
     public ETCDWatcher(DiscoveryNode localNode, ByteSequence nodeKey, ChangeApplierService changeApplierService) {
         this.localNode = localNode;
         this.changeApplierService = changeApplierService;
-        // Initialize the etcd client
-        this.etcdClient = Client.builder().endpoints("http://localhost:2379").build();
-        nodeWatcher = etcdClient.getWatchClient().watch(nodeKey, new NodeListener());
-        etcdClient.getWatchClient().requestProgress();
+        // Initialize the etcd client. TODO: Read config from cluster settings
+        this.etcdClient = Client.builder().endpoints("http://127.0.0.1:2379").build();
+        nodeWatcher = etcdClient.getWatchClient().watch(nodeKey, WatchOption.builder().withRevision(0).build(), new NodeListener());
     }
-
 
     @Override
     public void close() {
@@ -58,18 +63,33 @@ public class ETCDWatcher implements Closeable{
                         } else {
                             logger.debug("Node added");
                         }
-                        handleNodeChange(event.getKeyValue());
+                        scheduleRefresh(() -> handleNodeChange(event.getKeyValue()));
                         break;
                     case DELETE:
                         // Handle node removal
                         logger.debug("Node removed");
-                        removeNode(event.getPrevKV());
+                        scheduleRefresh(() -> removeNode(event.getKeyValue()));
                         break;
                     default:
                         break;
                 }
             }
 
+        }
+
+        private void scheduleRefresh(Runnable nextAction) {
+            pendingAction.set(nextAction);
+            scheduledExecutorService.schedule(() -> {
+                Runnable action = pendingAction.get();
+                if (action != null) {
+                    try {
+                        action.run();
+                    } catch (Exception e) {
+                        logger.error("Error while processing pending action", e);
+                    }
+                }
+                pendingAction.compareAndSet(action, null);
+            }, 100, TimeUnit.MILLISECONDS);
         }
 
         @Override

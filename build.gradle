@@ -14,10 +14,49 @@ opensearchplugin {
 }
 
 versions << [
-  'jetcd': '0.8.5'
+  'failsafe': '3.3.2',
+  'jetcd': '0.8.5',
+  'vertx': '4.5.14'
 ]
 
 dependencies {
-  api "io.etcd:jetcd-core:${versions.jetcd}"
+  api "com.fasterxml.jackson.core:jackson-core:${versions.jackson}"
+  runtimeOnly "com.google.api.grpc:proto-google-common-protos:2.54.1"
+  runtimeOnly "com.google.guava:failureaccess:1.0.3"
+  runtimeOnly "com.google.guava:guava:${versions.guava}"
+  runtimeOnly "com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava"
+  runtimeOnly "com.google.protobuf:protobuf-java:${versions.protobuf}"
+  runtimeOnly "com.google.protobuf:protobuf-java-util:${versions.protobuf}"
+  runtimeOnly "dev.failsafe:failsafe:${versions.failsafe}"
+  implementation "io.etcd:jetcd-api:${versions.jetcd}"
+  implementation "io.etcd:jetcd-common:${versions.jetcd}"
+  implementation "io.etcd:jetcd-core:${versions.jetcd}"
+  implementation "io.etcd:jetcd-grpc:${versions.jetcd}"
+  implementation "io.grpc:grpc-api:${versions.grpc}"
+  implementation "io.grpc:grpc-context:${versions.grpc}"
+  runtimeOnly "io.grpc:grpc-core:${versions.grpc}"
+  implementation "io.grpc:grpc-grpclb:${versions.grpc}"
+  implementation "io.grpc:grpc-netty:${versions.grpc}"
+  implementation "io.grpc:grpc-protobuf:${versions.grpc}"
+  implementation "io.grpc:grpc-protobuf-lite:${versions.grpc}"
+  implementation "io.grpc:grpc-stub:${versions.grpc}"
+  implementation "io.grpc:grpc-util:${versions.grpc}"
+  implementation "io.netty:netty-buffer:${versions.netty}"
+  implementation "io.netty:netty-codec:${versions.netty}"
+  implementation "io.netty:netty-codec-dns:${versions.netty}"
+  implementation "io.netty:netty-codec-http:${versions.netty}"
+  implementation "io.netty:netty-codec-http2:${versions.netty}"
+  implementation "io.netty:netty-codec-socks:${versions.netty}"
+  implementation "io.netty:netty-common:${versions.netty}"
+  implementation "io.netty:netty-handler:${versions.netty}"
+  implementation "io.netty:netty-handler-proxy:${versions.netty}"
+  implementation "io.netty:netty-resolver:${versions.netty}"
+  implementation "io.netty:netty-resolver-dns:${versions.netty}"
+  implementation "io.netty:netty-transport:${versions.netty}"
+  implementation "io.netty:netty-transport-native-unix-common:${versions.netty}"
+  implementation 'io.perfmark:perfmark-api:0.27.0'
+  implementation "io.vertx:vertx-core:${versions.vertx}"
+  implementation "io.vertx:vertx-grpc:${versions.vertx}"
+  implementation "org.slf4j:slf4j-api:${versions.slf4j}"
 }
 

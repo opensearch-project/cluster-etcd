@@ -13,6 +13,8 @@ import io.etcd.jetcd.Client;
 import io.etcd.jetcd.KV;
 import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.kv.GetResponse;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.etcd.changeapplier.CoordinatorNodeState;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeState;
 import org.opensearch.cluster.etcd.changeapplier.NodeShardAssignment;
@@ -32,6 +34,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Sample JSON:
@@ -64,6 +67,7 @@ import java.util.concurrent.CompletableFuture;
  * </pre>
  */
 public class ETCDStateDeserializer {
+    private static final Logger LOGGER = LogManager.getLogger(ETCDStateDeserializer.class);
     /**
      * Deserializes the node configuration stored in ETCD. Will also read the k/v pairs for each index
      * referenced from a data node.
@@ -87,7 +91,7 @@ public class ETCDStateDeserializer {
             }
             Map<String, Map<String, String>> localShards = (Map<String, Map<String, String>>) map.get("local_shards");
             NodeShardAssignment localShardAssignment = new NodeShardAssignment();
-            Map<String, IndexMetadata> indexMetadataMapa = new HashMap<>();
+            Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
             try (KV kvClient = etcdClient.getKVClient()) {
                 List<CompletableFuture<GetResponse>> futures = new ArrayList<>();
                 for (Map.Entry<String, Map<String, String>> entry : localShards.entrySet()) {
@@ -100,17 +104,22 @@ public class ETCDStateDeserializer {
                         localShardAssignment.assignShard(indexName, Integer.parseInt(shardId), NodeShardAssignment.ShardRole.valueOf(shardType));
                     }
                     for (var future : futures) {
-                        GetResponse getResponse = future.join();
+                        GetResponse getResponse = null;
+                        try {
+                            getResponse = future.get();
+                        } catch (InterruptedException | ExecutionException e) {
+                            throw new RuntimeException(e);
+                        }
                         for (KeyValue kv : getResponse.getKvs()) {
                             try(XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, kv.getValue().getBytes())) {
                                 IndexMetadata indexMetadata = IndexMetadata.fromXContent(parser);
-                                indexMetadataMapa.put(kv.getKey().toString(), indexMetadata);
+                                indexMetadataMap.put(kv.getKey().toString(), indexMetadata);
                             }
                         }
                     }
                 }
             }
-            return new DataNodeState(localNode, indexMetadataMapa, localShardAssignment);
+            return new DataNodeState(localNode, indexMetadataMap, localShardAssignment);
         } else if (map.containsKey("remote_shards")) {
             Map<String, List<List<Map<String, Object>>>> remoteShards = (Map<String, List<List<Map<String, Object>>>>) map.get("remote_shards");
             Map<String, List<List<RemoteNode>>> remoteShardAssignment = new HashMap<>();

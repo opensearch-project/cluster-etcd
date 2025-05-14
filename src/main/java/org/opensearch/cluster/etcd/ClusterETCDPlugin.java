@@ -49,6 +49,8 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
 
     @Override
     public void close() throws IOException {
-        etcdWatcher.close();
+        if (etcdWatcher != null) {
+            etcdWatcher.close();
+        }
     }
 }

@@ -76,6 +76,7 @@ public class CoordinatorNodeState extends NodeState {
                 indexRoutingTableBuilder.addIndexShard(shardRoutingTableBuilder.build());
                 shardNum++;
             }
+            routingTableBuilder.add(indexRoutingTableBuilder);
         }
         for (RemoteNode remoteNode : uniqueNodes) {
             DiscoveryNode node = new DiscoveryNode(
