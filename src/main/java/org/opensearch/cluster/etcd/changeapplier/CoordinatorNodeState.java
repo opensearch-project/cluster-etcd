@@ -26,7 +26,6 @@ import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.core.index.shard.ShardId;
 
 import java.net.InetSocketAddress;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -119,9 +118,4 @@ public class CoordinatorNodeState extends NodeState {
             .build();
     }
 
-    @Override
-    public Collection<String> getIndices() {
-        // We don't need to watch index metadata on coordinators
-        return Collections.emptySet();
-    }
 }

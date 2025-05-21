@@ -22,7 +22,6 @@ import org.opensearch.cluster.routing.UnassignedInfo;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
 
-import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -90,8 +89,4 @@ public class DataNodeState extends NodeState {
         return clusterStateBuilder.build();
     }
 
-    @Override
-    public Collection<String> getIndices() {
-        return indices.keySet();
-    }
 }

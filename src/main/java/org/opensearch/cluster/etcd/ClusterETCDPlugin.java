@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 
 public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
@@ -43,8 +44,12 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
 
     @Override
     public void onNodeStarted(DiscoveryNode localNode) {
-        etcdWatcher = new ETCDWatcher(localNode, ByteSequence.from(localNode.getHostAddress(), StandardCharsets.UTF_8),
-                new ChangeApplierService(clusterService.getClusterApplierService()));
+        try {
+            etcdWatcher = new ETCDWatcher(localNode, ByteSequence.from(localNode.getHostAddress(), StandardCharsets.UTF_8),
+                    new ChangeApplierService(clusterService.getClusterApplierService()));
+        } catch (IOException | ExecutionException | InterruptedException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override

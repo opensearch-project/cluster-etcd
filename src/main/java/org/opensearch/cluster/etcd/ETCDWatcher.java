@@ -10,6 +10,7 @@ package org.opensearch.cluster.etcd;
 
 import io.etcd.jetcd.ByteSequence;
 import io.etcd.jetcd.Client;
+import io.etcd.jetcd.KV;
 import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.Watch;
 import io.etcd.jetcd.options.WatchOption;
@@ -23,6 +24,7 @@ import org.opensearch.cluster.node.DiscoveryNode;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -37,11 +39,12 @@ public class ETCDWatcher implements Closeable{
     private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
     private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
 
-    public ETCDWatcher(DiscoveryNode localNode, ByteSequence nodeKey, ChangeApplierService changeApplierService) {
+    public ETCDWatcher(DiscoveryNode localNode, ByteSequence nodeKey, ChangeApplierService changeApplierService) throws IOException, ExecutionException, InterruptedException {
         this.localNode = localNode;
         this.changeApplierService = changeApplierService;
         // Initialize the etcd client. TODO: Read config from cluster settings
         this.etcdClient = Client.builder().endpoints("http://127.0.0.1:2379").build();
+        loadInitialState(nodeKey);
         nodeWatcher = etcdClient.getWatchClient().watch(nodeKey, WatchOption.builder().withRevision(0).build(), new NodeListener());
     }
 
@@ -49,6 +52,16 @@ public class ETCDWatcher implements Closeable{
     public void close() {
         nodeWatcher.close();
         etcdClient.close();
+    }
+
+    private void loadInitialState(ByteSequence nodeKey) throws IOException, ExecutionException, InterruptedException {
+        // Load the initial state of the node from etcd
+        try (KV kvClient = etcdClient.getKVClient()) {
+            KeyValue keyValue = kvClient.get(nodeKey).get().getKvs().getFirst();
+            if (keyValue != null) {
+                handleNodeChange(keyValue);
+            }
+        }
     }
 
     private class NodeListener implements Watch.Listener {

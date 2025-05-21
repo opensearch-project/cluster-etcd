@@ -11,8 +11,6 @@ package org.opensearch.cluster.etcd.changeapplier;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.node.DiscoveryNode;
 
-import java.util.Collection;
-
 public abstract class NodeState {
     protected final DiscoveryNode localNode;
     // TODO: Both coordinator and data nodes might need general metadata (not index metadata)
@@ -23,5 +21,4 @@ public abstract class NodeState {
 
     public abstract ClusterState buildClusterState(ClusterState previous);
 
-    public abstract Collection<String> getIndices();
 }
