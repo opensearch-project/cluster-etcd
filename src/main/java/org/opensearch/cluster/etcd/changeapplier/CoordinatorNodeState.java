@@ -17,9 +17,11 @@ import org.opensearch.cluster.node.DiscoveryNodeRole;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.routing.IndexRoutingTable;
 import org.opensearch.cluster.routing.IndexShardRoutingTable;
+import org.opensearch.cluster.routing.RecoverySource;
 import org.opensearch.cluster.routing.RoutingTable;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.UnassignedInfo;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.core.index.shard.ShardId;
 
@@ -49,11 +51,23 @@ public class CoordinatorNodeState extends NodeState {
         Set<RemoteNode> uniqueNodes = new HashSet<>();
 
         for (Map.Entry<String, List<List<RemoteNode>>> indexEntry : routingTable.entrySet()) {
-            IndexMetadata indexMetadata = IndexMetadata.builder(indexEntry.getKey()).numberOfShards(indexEntry.getValue().size()).build();
-            metadataBuilder.put(indexMetadata, false);
-            IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(indexMetadata.getIndex());
             int shardNum = 0;
+            int replicaCount = 0;
             for (List<RemoteNode> shardRouting : indexEntry.getValue()) {
+                int shardReplicaCount = shardRouting.size() - 1;
+                replicaCount = Math.min(replicaCount, shardReplicaCount);
+            }
+            IndexMetadata indexMetadata = IndexMetadata.builder(indexEntry.getKey())
+                .settings(Settings.builder()
+                    .put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true)
+                    .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
+                    .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, indexEntry.getValue().size())
+                    .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, replicaCount)
+                )
+                .build();
+            IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(indexMetadata.getIndex());
+            for (List<RemoteNode> shardRouting : indexEntry.getValue()) {
+
                 ShardId shardId = new ShardId(indexMetadata.getIndex(), shardNum++);
                 IndexShardRoutingTable.Builder shardRoutingTableBuilder = new IndexShardRoutingTable.Builder(shardId);
                 for (RemoteNode remoteNode : shardRouting) {
@@ -66,7 +80,7 @@ public class CoordinatorNodeState extends NodeState {
                         shardId,
                         false,
                         true,
-                        null,
+                        RecoverySource.EmptyStoreRecoverySource.INSTANCE,
                         new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "initializing")
                     );
                     nodeEntry = nodeEntry.initialize(remoteNode.nodeId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
@@ -77,6 +91,7 @@ public class CoordinatorNodeState extends NodeState {
                 shardNum++;
             }
             routingTableBuilder.add(indexRoutingTableBuilder);
+            metadataBuilder.put(indexMetadata, false);
         }
         for (RemoteNode remoteNode : uniqueNodes) {
             DiscoveryNode node = new DiscoveryNode(

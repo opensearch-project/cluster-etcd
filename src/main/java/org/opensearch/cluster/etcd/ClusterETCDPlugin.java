@@ -43,7 +43,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
 
     @Override
     public void onNodeStarted(DiscoveryNode localNode) {
-        etcdWatcher = new ETCDWatcher(localNode, ByteSequence.from(localNode.getId(), StandardCharsets.UTF_8),
+        etcdWatcher = new ETCDWatcher(localNode, ByteSequence.from(localNode.getHostAddress(), StandardCharsets.UTF_8),
                 new ChangeApplierService(clusterService.getClusterApplierService()));
     }
 

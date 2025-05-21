@@ -103,18 +103,19 @@ public class ETCDStateDeserializer {
                         String shardType = shardEntry.getValue();
                         localShardAssignment.assignShard(indexName, Integer.parseInt(shardId), NodeShardAssignment.ShardRole.valueOf(shardType));
                     }
-                    for (var future : futures) {
-                        GetResponse getResponse = null;
-                        try {
-                            getResponse = future.get();
-                        } catch (InterruptedException | ExecutionException e) {
-                            throw new RuntimeException(e);
-                        }
-                        for (KeyValue kv : getResponse.getKvs()) {
-                            try(XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, kv.getValue().getBytes())) {
-                                IndexMetadata indexMetadata = IndexMetadata.fromXContent(parser);
-                                indexMetadataMap.put(kv.getKey().toString(), indexMetadata);
-                            }
+
+                }
+                for (var future : futures) {
+                    GetResponse getResponse = null;
+                    try {
+                        getResponse = future.get();
+                    } catch (InterruptedException | ExecutionException e) {
+                        throw new RuntimeException(e);
+                    }
+                    for (KeyValue kv : getResponse.getKvs()) {
+                        try(XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, kv.getValue().getBytes())) {
+                            IndexMetadata indexMetadata = IndexMetadata.fromXContent(parser);
+                            indexMetadataMap.put(kv.getKey().toString(), indexMetadata);
                         }
                     }
                 }
