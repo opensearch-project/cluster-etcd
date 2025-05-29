@@ -24,6 +24,7 @@ import org.opensearch.cluster.node.DiscoveryNode;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -57,9 +58,9 @@ public class ETCDWatcher implements Closeable{
     private void loadInitialState(ByteSequence nodeKey) throws IOException, ExecutionException, InterruptedException {
         // Load the initial state of the node from etcd
         try (KV kvClient = etcdClient.getKVClient()) {
-            KeyValue keyValue = kvClient.get(nodeKey).get().getKvs().getFirst();
-            if (keyValue != null) {
-                handleNodeChange(keyValue);
+            List<KeyValue> kvs = kvClient.get(nodeKey).get().getKvs();
+            if (kvs != null && kvs.isEmpty() == false && kvs.getFirst() != null) {
+                handleNodeChange(kvs.getFirst());
             }
         }
     }
