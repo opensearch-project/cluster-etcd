@@ -21,11 +21,15 @@ import org.opensearch.cluster.routing.RecoverySource;
 import org.opensearch.cluster.routing.RoutingTable;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.UnassignedInfo;
+import org.opensearch.common.network.InetAddresses;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.transport.TransportAddress;
+import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -34,9 +38,9 @@ import java.util.Set;
 
 public class CoordinatorNodeState extends NodeState {
 
-    private final Map<String, List<List<RemoteNode>>> routingTable;
+    private final Map<Index, List<List<RemoteNode>>> routingTable;
 
-    public CoordinatorNodeState(DiscoveryNode localNode, Map<String, List<List<RemoteNode>>> routingTable) {
+    public CoordinatorNodeState(DiscoveryNode localNode, Map<Index, List<List<RemoteNode>>> routingTable) {
         super(localNode);
         this.routingTable = routingTable;
     }
@@ -49,15 +53,16 @@ public class CoordinatorNodeState extends NodeState {
         RoutingTable.Builder routingTableBuilder = RoutingTable.builder();
         Set<RemoteNode> uniqueNodes = new HashSet<>();
 
-        for (Map.Entry<String, List<List<RemoteNode>>> indexEntry : routingTable.entrySet()) {
+        for (Map.Entry<Index, List<List<RemoteNode>>> indexEntry : routingTable.entrySet()) {
             int shardNum = 0;
             int replicaCount = 0;
             for (List<RemoteNode> shardRouting : indexEntry.getValue()) {
                 int shardReplicaCount = shardRouting.size() - 1;
                 replicaCount = Math.min(replicaCount, shardReplicaCount);
             }
-            IndexMetadata indexMetadata = IndexMetadata.builder(indexEntry.getKey())
+            IndexMetadata indexMetadata = IndexMetadata.builder(indexEntry.getKey().getName())
                 .settings(Settings.builder()
+                    .put(IndexMetadata.SETTING_INDEX_UUID, indexEntry.getKey().getUUID())
                     .put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true)
                     .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
                     .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, indexEntry.getValue().size())
@@ -93,21 +98,26 @@ public class CoordinatorNodeState extends NodeState {
             metadataBuilder.put(indexMetadata, false);
         }
         for (RemoteNode remoteNode : uniqueNodes) {
-            DiscoveryNode node = new DiscoveryNode(
-                remoteNode.nodeId(),
-                remoteNode.nodeId(),
-                remoteNode.nodeId(),
-                remoteNode.address(),
-                remoteNode.address(),
-                new TransportAddress(
-                    new InetSocketAddress(
-                        remoteNode.address(),
-                        remoteNode.port()
-                    )
-                ),
-                Collections.emptyMap(),
-                Set.of(DiscoveryNodeRole.DATA_ROLE),
-                Version.CURRENT);
+            DiscoveryNode node = null;
+            try {
+                node = new DiscoveryNode(
+                    remoteNode.nodeId(),
+                    remoteNode.nodeId(),
+                    remoteNode.ephemeralId(),
+                    remoteNode.address(),
+                    remoteNode.address(),
+                    new TransportAddress(
+                        new InetSocketAddress(
+                            InetAddress.getByAddress(InetAddresses.ipStringToBytes(remoteNode.address())),
+                            remoteNode.port()
+                        )
+                    ),
+                    Collections.emptyMap(),
+                    Set.of(DiscoveryNodeRole.DATA_ROLE),
+                    Version.CURRENT);
+            } catch (UnknownHostException e) {
+                throw new RuntimeException(e);
+            }
             nodesBuilder.add(node);
         }
 

@@ -23,6 +23,7 @@ import org.opensearch.cluster.etcd.changeapplier.RemoteNode;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.xcontent.json.JsonXContent;
+import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.DeprecationHandler;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentParser;
@@ -50,18 +51,21 @@ import java.util.concurrent.ExecutionException;
  *       }
  *   },
  *   "remote_shards": { // Coordinator node content
- *       "idx1": [ // Must have every shard for the index.
- *         [
- *           {"node_id":"node1", "address":"192.168.2.1", "port": 9300 },
- *           {"node_id":"node2", "address":"192.168.2.2", "port": 9300 }
- *         ],
- *         [ // We don't assume an equal number of replicas for each shard.
- *           {"node_id":"node1", "address":"192.168.2.1", "port": 9300 },
- *           {"node_id":"node2", "address":"192.168.2.2", "port": 9300 },
- *           {"node_id":"node3", "address":"192.168.2.3", "port": 9300 }
+ *       "idx1": {
+ *         "uuid": "index-uuid",
+ *         "shard_routing": [ // Must have every shard for the index.
+ *           [
+ *             {"node_id":"node1", "address":"192.168.2.1", "port": 9300 },
+ *             {"node_id":"node2", "address":"192.168.2.2", "port": 9300 }
+ *           ],
+ *           [ // We don't assume an equal number of replicas for each shard.
+ *             {"node_id":"node1", "address":"192.168.2.1", "port": 9300 },
+ *             {"node_id":"node2", "address":"192.168.2.2", "port": 9300 },
+ *             {"node_id":"node3", "address":"192.168.2.3", "port": 9300 }
+ *           ]
  *         ]
- *       ],
- *       "idx2": [ ... ]
+ *       },
+ *       "idx2": { ... }
  *   }
  * }
  * </pre>
@@ -122,21 +126,26 @@ public class ETCDStateDeserializer {
             }
             return new DataNodeState(localNode, indexMetadataMap, localShardAssignment);
         } else if (map.containsKey("remote_shards")) {
-            Map<String, List<List<Map<String, Object>>>> remoteShards = (Map<String, List<List<Map<String, Object>>>>) map.get("remote_shards");
-            Map<String, List<List<RemoteNode>>> remoteShardAssignment = new HashMap<>();
-            for (Map.Entry<String, List<List<Map<String, Object>>>> indexEntry : remoteShards.entrySet()) {
-                List<List<RemoteNode>> shardAssignments = new ArrayList<>(indexEntry.getValue().size());
-                for (List<Map<String, Object>> shardEntry : indexEntry.getValue()) {
+            Map<String, Object> remoteShards = (Map<String, Object>) map.get("remote_shards");
+            Map<Index, List<List<RemoteNode>>> remoteShardAssignment = new HashMap<>();
+            for (Map.Entry<String, Object> indexEntry : remoteShards.entrySet()) {
+                Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
+                String uuid = (String) indexConfig.get("uuid");
+
+                List<List<Map<String, Object>>> shardRouting = (List<List<Map<String, Object>>>) indexConfig.get("shard_routing");
+                List<List<RemoteNode>> shardAssignments = new ArrayList<>(shardRouting.size());
+                for (List<Map<String, Object>> shardEntry : shardRouting) {
                     List<RemoteNode> remoteNodes = new ArrayList<>(shardEntry.size());
                     for (Map<String, Object> nodeEntry : shardEntry) {
                         String nodeId = (String) nodeEntry.get("node_id");
+                        String ephemeralId = (String) nodeEntry.get("ephemeral_id");
                         String address = (String) nodeEntry.get("address");
                         int port = ((Number) nodeEntry.get("port")).intValue();
-                        remoteNodes.add(new RemoteNode(nodeId, address, port));
+                        remoteNodes.add(new RemoteNode(nodeId, ephemeralId, address, port));
                     }
                     shardAssignments.add(remoteNodes);
                 }
-                remoteShardAssignment.put(indexEntry.getKey(), shardAssignments);
+                remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
             }
             return new CoordinatorNodeState(localNode, remoteShardAssignment);
 

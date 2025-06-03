@@ -45,11 +45,15 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
     @Override
     public void onNodeStarted(DiscoveryNode localNode) {
         try {
-            etcdWatcher = new ETCDWatcher(localNode, ByteSequence.from(localNode.getHostAddress(), StandardCharsets.UTF_8),
-                    new ChangeApplierService(clusterService.getClusterApplierService()));
+            etcdWatcher = new ETCDWatcher(localNode, getNodeKey(localNode),
+                new ChangeApplierService(clusterService.getClusterApplierService()));
         } catch (IOException | ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private ByteSequence getNodeKey(DiscoveryNode localNode) {
+        return ByteSequence.from(localNode.getAddress().toString(), StandardCharsets.UTF_8);
     }
 
     @Override

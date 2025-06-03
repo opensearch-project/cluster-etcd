@@ -19,5 +19,5 @@ package org.opensearch.cluster.etcd.changeapplier;
  * @param address the IP address (IPv4 or IPv6) of the remote node
  * @param port    the port to connect to on the remote node (usually 9300)
  */
-public record RemoteNode(String nodeId, String address, int port) {
+public record RemoteNode(String nodeId, String ephemeralId, String address, int port) {
 }
