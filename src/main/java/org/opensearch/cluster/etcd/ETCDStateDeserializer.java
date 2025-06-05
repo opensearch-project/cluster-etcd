@@ -20,6 +20,7 @@ import org.opensearch.cluster.etcd.changeapplier.DataNodeState;
 import org.opensearch.cluster.etcd.changeapplier.NodeShardAssignment;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
 import org.opensearch.cluster.etcd.changeapplier.RemoteNode;
+import org.opensearch.cluster.etcd.changeapplier.ShardRole;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.xcontent.json.JsonXContent;
@@ -51,21 +52,43 @@ import java.util.concurrent.ExecutionException;
  *       }
  *   },
  *   "remote_shards": { // Coordinator node content
- *       "idx1": {
- *         "uuid": "index-uuid",
- *         "shard_routing": [ // Must have every shard for the index.
- *           [
- *             {"node_id":"node1", "address":"192.168.2.1", "port": 9300 },
- *             {"node_id":"node2", "address":"192.168.2.2", "port": 9300 }
- *           ],
- *           [ // We don't assume an equal number of replicas for each shard.
- *             {"node_id":"node1", "address":"192.168.2.1", "port": 9300 },
- *             {"node_id":"node2", "address":"192.168.2.2", "port": 9300 },
- *             {"node_id":"node3", "address":"192.168.2.3", "port": 9300 }
- *           ]
- *         ]
- *       },
- *       "idx2": { ... }
+ *       "remote_nodes": [ // List of remote nodes that this coordinator node is aware of.
+ *         {
+ *             "node_id": "node1",
+ *             "ephemeral_id": "ephemeral-id-1",
+ *             "address": "192.168.2.1",
+ *             "port": 9300
+ *         },
+ *         {
+ *             "node_id": "node2",
+ *             "ephemeral_id": "ephemeral-id-2",
+ *             "address": "192.168.2.2",
+ *             "port": 9300
+ *         },
+ *         {
+ *             "node_id": "node3",
+ *             "ephemeral_id": "ephemeral-id-3",
+ *             "address": "192.168.2.3",
+ *             "port": 9300
+ *         }
+ *       ],
+ *       "indices": { // Map of indices that this coordinator node is aware of.
+ *          "idx1": {
+ *              "uuid": "index-uuid",
+ *              "shard_routing": [ // Must have every shard for the index.
+ *                  [
+ *                    {"node_id":"node1"}
+ *                    {"node_id":"node2", "primary": true } // If we have a primary for one shard, we must have a primary for all shards
+ *                  ],
+ *                  [ // We don't assume an equal number of replicas for each shard.
+ *                    {"node_id":"node1", "primary": true},
+ *                    {"node_id":"node2"}, // Any non-primary is assumed to be a search replica.
+ *                    {"node_id":"node3"}
+ *                  ]
+ *              ]
+ *          },
+ *          "idx2": { ... }
+ *       }
  *   }
  * }
  * </pre>
@@ -82,6 +105,7 @@ public class ETCDStateDeserializer {
      * @param etcdClient   the ETCD client that we'll use to retrieve index metadata for local shards
      * @return the relevant node state
      */
+    @SuppressWarnings("unchecked")
     public static NodeState deserializeNodeState(DiscoveryNode localNode, ByteSequence byteSequence, Client etcdClient) throws IOException {
         Map<String, Object> map;
         try (XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, byteSequence.getBytes())) {
@@ -92,45 +116,50 @@ public class ETCDStateDeserializer {
                 // TODO: For now, assume a node is either a data node or a coordinator node.
                 throw new IllegalStateException("Both local and remote shards are present in the node state. This is not yet supported.");
             }
-            return readDataNodeState(localNode, etcdClient, map);
+            return readDataNodeState(localNode, etcdClient, (Map<String, Map<String, String>>) map.get("local_shards"));
         } else if (map.containsKey("remote_shards")) {
-            return readCoordinatorNodeState(localNode, map);
-
+            return readCoordinatorNodeState(localNode, (Map<String, Object>) map.get("remote_shards"));
         }
         throw new IllegalStateException("Neither local nor remote shards are present in the node state. Node state should have been removed.");
 
     }
 
     @SuppressWarnings("unchecked")
-    private static CoordinatorNodeState readCoordinatorNodeState(DiscoveryNode localNode, Map<String, Object> map) {
-        Map<String, Object> remoteShards = (Map<String, Object>) map.get("remote_shards");
-        Map<Index, List<List<RemoteNode>>> remoteShardAssignment = new HashMap<>();
-        for (Map.Entry<String, Object> indexEntry : remoteShards.entrySet()) {
+    private static CoordinatorNodeState readCoordinatorNodeState(DiscoveryNode localNode, Map<String, Object> remoteShards) {
+        List<Map<String, Object>> remoteNodeSpecs = (List<Map<String, Object>>) remoteShards.get("remote_nodes");
+        List<RemoteNode> remoteNodes = new ArrayList<>(remoteNodeSpecs.size());
+        for (Map<String, Object> remoteNodeSpec : remoteNodeSpecs) {
+            String nodeId = (String) remoteNodeSpec.get("node_id");
+            String ephemeralId = (String) remoteNodeSpec.get("ephemeral_id");
+            String address = (String) remoteNodeSpec.get("address");
+            int port = ((Number) remoteNodeSpec.get("port")).intValue();
+            remoteNodes.add(new RemoteNode(nodeId, ephemeralId, address, port));
+        }
+
+        Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignment = new HashMap<>();
+        Map<String, Object> indices = (Map<String, Object>) remoteShards.get("indices");
+        for (Map.Entry<String, Object> indexEntry : indices.entrySet()) {
             Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
             String uuid = (String) indexConfig.get("uuid");
 
             List<List<Map<String, Object>>> shardRouting = (List<List<Map<String, Object>>>) indexConfig.get("shard_routing");
-            List<List<RemoteNode>> shardAssignments = new ArrayList<>(shardRouting.size());
+            List<List<NodeShardAssignment>> shardAssignments = new ArrayList<>(shardRouting.size());
             for (List<Map<String, Object>> shardEntry : shardRouting) {
-                List<RemoteNode> remoteNodes = new ArrayList<>(shardEntry.size());
+                List<NodeShardAssignment> nodeShardAssignments = new ArrayList<>();
                 for (Map<String, Object> nodeEntry : shardEntry) {
                     String nodeId = (String) nodeEntry.get("node_id");
-                    String ephemeralId = (String) nodeEntry.get("ephemeral_id");
-                    String address = (String) nodeEntry.get("address");
-                    int port = ((Number) nodeEntry.get("port")).intValue();
-                    remoteNodes.add(new RemoteNode(nodeId, ephemeralId, address, port));
+                    boolean isPrimary = nodeEntry.containsKey("primary") && (Boolean) nodeEntry.get("primary");
+                    nodeShardAssignments.add(new NodeShardAssignment(nodeId, isPrimary ? ShardRole.PRIMARY : ShardRole.SEARCH_REPLICA));
                 }
-                shardAssignments.add(remoteNodes);
+                shardAssignments.add(nodeShardAssignments);
             }
             remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
         }
-        return new CoordinatorNodeState(localNode, remoteShardAssignment);
+        return new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment);
     }
 
-    @SuppressWarnings("unchecked")
-    private static DataNodeState readDataNodeState(DiscoveryNode localNode, Client etcdClient, Map<String, Object> map) throws IOException {
-        Map<String, Map<String, String>> localShards = (Map<String, Map<String, String>>) map.get("local_shards");
-        NodeShardAssignment localShardAssignment = new NodeShardAssignment();
+    private static DataNodeState readDataNodeState(DiscoveryNode localNode, Client etcdClient, Map<String, Map<String, String>> localShards) throws IOException {
+        Map<String, Map<Integer, ShardRole>> localShardAssignment = new HashMap<>();
         Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
         try (KV kvClient = etcdClient.getKVClient()) {
             List<CompletableFuture<GetResponse>> futures = new ArrayList<>();
@@ -141,12 +170,12 @@ public class ETCDStateDeserializer {
                 for (Map.Entry<String, String> shardEntry : shards.entrySet()) {
                     String shardId = shardEntry.getKey();
                     String shardType = shardEntry.getValue();
-                    localShardAssignment.assignShard(indexName, Integer.parseInt(shardId), NodeShardAssignment.ShardRole.valueOf(shardType));
+                    localShardAssignment.computeIfAbsent(indexName, k -> new HashMap<>()).put(Integer.parseInt(shardId), ShardRole.valueOf(shardType));
                 }
 
             }
             for (var future : futures) {
-                GetResponse getResponse = null;
+                GetResponse getResponse;
                 try {
                     getResponse = future.get();
                 } catch (InterruptedException | ExecutionException e) {

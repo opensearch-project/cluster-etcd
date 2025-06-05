@@ -28,14 +28,14 @@ import java.util.Set;
 
 public class DataNodeState extends NodeState {
     private final Map<String, IndexMetadata> indices;
-    private final NodeShardAssignment localShardAssignment;
+    private final Map<String, Map<Integer, ShardRole>> assignedShards;
 
-    public DataNodeState(DiscoveryNode localNode, Map<String, IndexMetadata> indices, NodeShardAssignment localShardAssignment) {
+    public DataNodeState(DiscoveryNode localNode, Map<String, IndexMetadata> indices, Map<String, Map<Integer, ShardRole>> assignedShards) {
         super(localNode);
         // The index metadata and shard assignment should be identical
-        assert indices.keySet().equals(localShardAssignment.getAssignedShards().keySet());
+        assert indices.keySet().equals(assignedShards.keySet());
         this.indices = indices;
-        this.localShardAssignment = localShardAssignment;
+        this.assignedShards = assignedShards;
     }
 
     @Override
@@ -53,16 +53,16 @@ public class DataNodeState extends NodeState {
             IndexRoutingTable previousIndexRoutingTable = previousState.routingTable().index(index);
             IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(index);
             IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata);
-            for (Map.Entry<Integer, NodeShardAssignment.ShardRole> shardRoleEntry :
-                    localShardAssignment.getAssignedShards().get(index.getName()).entrySet()) {
+            for (Map.Entry<Integer, ShardRole> shardRoleEntry :
+                    assignedShards.get(index.getName()).entrySet()) {
                 int shardNum = shardRoleEntry.getKey();
-                NodeShardAssignment.ShardRole role = shardRoleEntry.getValue();
+                ShardRole role = shardRoleEntry.getValue();
                 ShardId shardId = new ShardId(indexMetadata.getIndex(), shardNum);
                 UnassignedInfo unassignedInfo = new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "created");
                 ShardRouting shardRouting = ShardRouting.newUnassigned(
                     shardId,
-                    role == NodeShardAssignment.ShardRole.PRIMARY,
-                    role == NodeShardAssignment.ShardRole.SEARCH_REPLICA,
+                    role == ShardRole.PRIMARY,
+                    role == ShardRole.SEARCH_REPLICA,
                     RecoverySource.EmptyStoreRecoverySource.INSTANCE, // TODO: Support other recovery sources
                     unassignedInfo);
                 shardRouting = shardRouting.initialize(localNode.getId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);

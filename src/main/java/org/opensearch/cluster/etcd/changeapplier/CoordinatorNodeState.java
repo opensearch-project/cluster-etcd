@@ -31,18 +31,19 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 public class CoordinatorNodeState extends NodeState {
 
-    private final Map<Index, List<List<RemoteNode>>> routingTable;
+    private final List<RemoteNode> remoteNodes;
+    private final Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments;
 
-    public CoordinatorNodeState(DiscoveryNode localNode, Map<Index, List<List<RemoteNode>>> routingTable) {
+    public CoordinatorNodeState(DiscoveryNode localNode, List<RemoteNode> remoteNodes, Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments) {
         super(localNode);
-        this.routingTable = routingTable;
+        this.remoteNodes = remoteNodes;
+        this.remoteShardAssignments = remoteShardAssignments;
     }
 
     @Override
@@ -51,54 +52,59 @@ public class CoordinatorNodeState extends NodeState {
 
         Metadata.Builder metadataBuilder = Metadata.builder();
         RoutingTable.Builder routingTableBuilder = RoutingTable.builder();
-        Set<RemoteNode> uniqueNodes = new HashSet<>();
 
-        for (Map.Entry<Index, List<List<RemoteNode>>> indexEntry : routingTable.entrySet()) {
+        for (Map.Entry<Index, List<List<NodeShardAssignment>>> indexEntry : remoteShardAssignments.entrySet()) {
             int shardNum = 0;
-            int replicaCount = 0;
-            for (List<RemoteNode> shardRouting : indexEntry.getValue()) {
-                int shardReplicaCount = shardRouting.size() - 1;
-                replicaCount = Math.min(replicaCount, shardReplicaCount);
-            }
-            IndexMetadata indexMetadata = IndexMetadata.builder(indexEntry.getKey().getName())
-                .settings(Settings.builder()
-                    .put(IndexMetadata.SETTING_INDEX_UUID, indexEntry.getKey().getUUID())
-                    .put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true)
-                    .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
-                    .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, indexEntry.getValue().size())
-                    .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, replicaCount)
-                )
-                .build();
-            IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(indexMetadata.getIndex());
-            for (List<RemoteNode> shardRouting : indexEntry.getValue()) {
 
-                ShardId shardId = new ShardId(indexMetadata.getIndex(), shardNum++);
+            boolean indexHasPrimary = false;
+            IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(indexEntry.getKey());
+            for (List<NodeShardAssignment> shardRouting : indexEntry.getValue()) {
+                ShardId shardId = new ShardId(indexEntry.getKey(), shardNum);
                 IndexShardRoutingTable.Builder shardRoutingTableBuilder = new IndexShardRoutingTable.Builder(shardId);
-                for (RemoteNode remoteNode : shardRouting) {
-                    uniqueNodes.add(remoteNode);
-                    // TODO: I'm enforcing that coordinators will only ever point to search replicas.
-                    // If we want to support push-based indexing, we will need coordinators to point to
-                    // primary shards as well. This will require a change to the routingTable definition (or possibly
-                    // to RemoteNode, since it's only used here) to incorporate the shard role.
+                boolean shardHasPrimary = false;
+                for (NodeShardAssignment shardAssignment : shardRouting) {
+                    ShardRole shardRole = shardAssignment.shardRole();
+                    if (shardRole == ShardRole.PRIMARY) {
+                        if (indexHasPrimary == false && shardNum > 0) {
+                            // If the index has primary shards, we need to figure it out from the first shard.
+                            throw new IllegalStateException("Index " + indexEntry.getKey().getName() + " has at least one primary shard, but the first shard has no primary assigned.");
+                        }
+                        indexHasPrimary = true;
+                        shardHasPrimary = true;
+                    }
                     ShardRouting nodeEntry = ShardRouting.newUnassigned(
                         shardId,
-                        false,
-                        true,
+                        shardRole == ShardRole.PRIMARY,
+                        shardRole == ShardRole.SEARCH_REPLICA,
                         RecoverySource.EmptyStoreRecoverySource.INSTANCE,
                         new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "initializing")
                     );
-                    nodeEntry = nodeEntry.initialize(remoteNode.nodeId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
+                    nodeEntry = nodeEntry.initialize(shardAssignment.nodeId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
                     nodeEntry = nodeEntry.moveToStarted();
                     shardRoutingTableBuilder.addShard(nodeEntry);
+                }
+                if (indexHasPrimary == true && shardHasPrimary == false) {
+                    throw new IllegalStateException("Index " + indexEntry.getKey().getName() + " has a primary shard, but shard " + shardNum + " has no primary assigned.");
                 }
                 indexRoutingTableBuilder.addIndexShard(shardRoutingTableBuilder.build());
                 shardNum++;
             }
+            Settings.Builder indexSettings = Settings.builder()
+                .put(IndexMetadata.SETTING_INDEX_UUID, indexEntry.getKey().getUUID())
+                .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
+                .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, indexEntry.getValue().size())
+                .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0);
+            if (indexHasPrimary == false) {
+                indexSettings.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
+            }
+            IndexMetadata indexMetadata = IndexMetadata.builder(indexEntry.getKey().getName())
+                .settings(indexSettings)
+                .build();
             routingTableBuilder.add(indexRoutingTableBuilder);
             metadataBuilder.put(indexMetadata, false);
         }
-        for (RemoteNode remoteNode : uniqueNodes) {
-            DiscoveryNode node = null;
+        for (RemoteNode remoteNode : remoteNodes) {
+            DiscoveryNode node;
             try {
                 node = new DiscoveryNode(
                     remoteNode.nodeId(),
