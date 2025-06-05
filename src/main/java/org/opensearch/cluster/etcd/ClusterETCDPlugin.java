@@ -53,7 +53,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
     }
 
     private ByteSequence getNodeKey(DiscoveryNode localNode) {
-        return ByteSequence.from(localNode.getAddress().toString(), StandardCharsets.UTF_8);
+        return ByteSequence.from(localNode.getName(), StandardCharsets.UTF_8);
     }
 
     @Override
