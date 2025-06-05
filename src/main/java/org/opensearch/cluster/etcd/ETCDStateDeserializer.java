@@ -82,7 +82,6 @@ public class ETCDStateDeserializer {
      * @param etcdClient   the ETCD client that we'll use to retrieve index metadata for local shards
      * @return the relevant node state
      */
-    @SuppressWarnings("unchecked")
     public static NodeState deserializeNodeState(DiscoveryNode localNode, ByteSequence byteSequence, Client etcdClient) throws IOException {
         Map<String, Object> map;
         try (XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, byteSequence.getBytes())) {
@@ -93,64 +92,74 @@ public class ETCDStateDeserializer {
                 // TODO: For now, assume a node is either a data node or a coordinator node.
                 throw new IllegalStateException("Both local and remote shards are present in the node state. This is not yet supported.");
             }
-            Map<String, Map<String, String>> localShards = (Map<String, Map<String, String>>) map.get("local_shards");
-            NodeShardAssignment localShardAssignment = new NodeShardAssignment();
-            Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
-            try (KV kvClient = etcdClient.getKVClient()) {
-                List<CompletableFuture<GetResponse>> futures = new ArrayList<>();
-                for (Map.Entry<String, Map<String, String>> entry : localShards.entrySet()) {
-                    String indexName = entry.getKey();
-                    futures.add(kvClient.get(ByteSequence.from(indexName, StandardCharsets.UTF_8)));
-                    Map<String, String> shards = entry.getValue();
-                    for (Map.Entry<String, String> shardEntry : shards.entrySet()) {
-                        String shardId = shardEntry.getKey();
-                        String shardType = shardEntry.getValue();
-                        localShardAssignment.assignShard(indexName, Integer.parseInt(shardId), NodeShardAssignment.ShardRole.valueOf(shardType));
-                    }
-
-                }
-                for (var future : futures) {
-                    GetResponse getResponse = null;
-                    try {
-                        getResponse = future.get();
-                    } catch (InterruptedException | ExecutionException e) {
-                        throw new RuntimeException(e);
-                    }
-                    for (KeyValue kv : getResponse.getKvs()) {
-                        try(XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, kv.getValue().getBytes())) {
-                            IndexMetadata indexMetadata = IndexMetadata.fromXContent(parser);
-                            indexMetadataMap.put(kv.getKey().toString(), indexMetadata);
-                        }
-                    }
-                }
-            }
-            return new DataNodeState(localNode, indexMetadataMap, localShardAssignment);
+            return readDataNodeState(localNode, etcdClient, map);
         } else if (map.containsKey("remote_shards")) {
-            Map<String, Object> remoteShards = (Map<String, Object>) map.get("remote_shards");
-            Map<Index, List<List<RemoteNode>>> remoteShardAssignment = new HashMap<>();
-            for (Map.Entry<String, Object> indexEntry : remoteShards.entrySet()) {
-                Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
-                String uuid = (String) indexConfig.get("uuid");
-
-                List<List<Map<String, Object>>> shardRouting = (List<List<Map<String, Object>>>) indexConfig.get("shard_routing");
-                List<List<RemoteNode>> shardAssignments = new ArrayList<>(shardRouting.size());
-                for (List<Map<String, Object>> shardEntry : shardRouting) {
-                    List<RemoteNode> remoteNodes = new ArrayList<>(shardEntry.size());
-                    for (Map<String, Object> nodeEntry : shardEntry) {
-                        String nodeId = (String) nodeEntry.get("node_id");
-                        String ephemeralId = (String) nodeEntry.get("ephemeral_id");
-                        String address = (String) nodeEntry.get("address");
-                        int port = ((Number) nodeEntry.get("port")).intValue();
-                        remoteNodes.add(new RemoteNode(nodeId, ephemeralId, address, port));
-                    }
-                    shardAssignments.add(remoteNodes);
-                }
-                remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
-            }
-            return new CoordinatorNodeState(localNode, remoteShardAssignment);
+            return readCoordinatorNodeState(localNode, map);
 
         }
         throw new IllegalStateException("Neither local nor remote shards are present in the node state. Node state should have been removed.");
 
+    }
+
+    @SuppressWarnings("unchecked")
+    private static CoordinatorNodeState readCoordinatorNodeState(DiscoveryNode localNode, Map<String, Object> map) {
+        Map<String, Object> remoteShards = (Map<String, Object>) map.get("remote_shards");
+        Map<Index, List<List<RemoteNode>>> remoteShardAssignment = new HashMap<>();
+        for (Map.Entry<String, Object> indexEntry : remoteShards.entrySet()) {
+            Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
+            String uuid = (String) indexConfig.get("uuid");
+
+            List<List<Map<String, Object>>> shardRouting = (List<List<Map<String, Object>>>) indexConfig.get("shard_routing");
+            List<List<RemoteNode>> shardAssignments = new ArrayList<>(shardRouting.size());
+            for (List<Map<String, Object>> shardEntry : shardRouting) {
+                List<RemoteNode> remoteNodes = new ArrayList<>(shardEntry.size());
+                for (Map<String, Object> nodeEntry : shardEntry) {
+                    String nodeId = (String) nodeEntry.get("node_id");
+                    String ephemeralId = (String) nodeEntry.get("ephemeral_id");
+                    String address = (String) nodeEntry.get("address");
+                    int port = ((Number) nodeEntry.get("port")).intValue();
+                    remoteNodes.add(new RemoteNode(nodeId, ephemeralId, address, port));
+                }
+                shardAssignments.add(remoteNodes);
+            }
+            remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
+        }
+        return new CoordinatorNodeState(localNode, remoteShardAssignment);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static DataNodeState readDataNodeState(DiscoveryNode localNode, Client etcdClient, Map<String, Object> map) throws IOException {
+        Map<String, Map<String, String>> localShards = (Map<String, Map<String, String>>) map.get("local_shards");
+        NodeShardAssignment localShardAssignment = new NodeShardAssignment();
+        Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
+        try (KV kvClient = etcdClient.getKVClient()) {
+            List<CompletableFuture<GetResponse>> futures = new ArrayList<>();
+            for (Map.Entry<String, Map<String, String>> entry : localShards.entrySet()) {
+                String indexName = entry.getKey();
+                futures.add(kvClient.get(ByteSequence.from(indexName, StandardCharsets.UTF_8)));
+                Map<String, String> shards = entry.getValue();
+                for (Map.Entry<String, String> shardEntry : shards.entrySet()) {
+                    String shardId = shardEntry.getKey();
+                    String shardType = shardEntry.getValue();
+                    localShardAssignment.assignShard(indexName, Integer.parseInt(shardId), NodeShardAssignment.ShardRole.valueOf(shardType));
+                }
+
+            }
+            for (var future : futures) {
+                GetResponse getResponse = null;
+                try {
+                    getResponse = future.get();
+                } catch (InterruptedException | ExecutionException e) {
+                    throw new RuntimeException(e);
+                }
+                for (KeyValue kv : getResponse.getKvs()) {
+                    try(XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, kv.getValue().getBytes())) {
+                        IndexMetadata indexMetadata = IndexMetadata.fromXContent(parser);
+                        indexMetadataMap.put(kv.getKey().toString(), indexMetadata);
+                    }
+                }
+            }
+        }
+        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment);
     }
 }
