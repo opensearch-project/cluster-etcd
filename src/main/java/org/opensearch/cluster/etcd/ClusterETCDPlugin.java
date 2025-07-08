@@ -9,6 +9,8 @@
 package org.opensearch.cluster.etcd;
 
 import io.etcd.jetcd.ByteSequence;
+import io.etcd.jetcd.Client;
+
 import org.opensearch.cluster.etcd.changeapplier.ChangeApplierService;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -22,7 +24,6 @@ import org.opensearch.plugins.Plugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ThreadPool;
-import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
 
 import java.io.IOException;
@@ -35,18 +36,28 @@ import java.util.function.Supplier;
 public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
     private ClusterService clusterService;
     private ETCDWatcher etcdWatcher;
+    private ETCDHeartbeat etcdHeartbeat;
+    private Client etcdClient;
+    private NodeEnvironment nodeEnvironment;
 
     @Override
-    public Collection<Object> createComponents(Client client, ClusterService clusterService, ThreadPool threadPool, ResourceWatcherService resourceWatcherService, ScriptService scriptService, NamedXContentRegistry xContentRegistry, Environment environment, NodeEnvironment nodeEnvironment, NamedWriteableRegistry namedWriteableRegistry, IndexNameExpressionResolver indexNameExpressionResolver, Supplier<RepositoriesService> repositoriesServiceSupplier) {
+    public Collection<Object> createComponents(org.opensearch.transport.client.Client client, ClusterService clusterService, ThreadPool threadPool, ResourceWatcherService resourceWatcherService, ScriptService scriptService, NamedXContentRegistry xContentRegistry, Environment environment, NodeEnvironment nodeEnvironment, NamedWriteableRegistry namedWriteableRegistry, IndexNameExpressionResolver indexNameExpressionResolver, Supplier<RepositoriesService> repositoriesServiceSupplier) {
         this.clusterService = clusterService;
+        this.nodeEnvironment = nodeEnvironment;
         return Collections.emptySet();
     }
 
     @Override
     public void onNodeStarted(DiscoveryNode localNode) {
+        
         try {
+             // Initialize the etcd client. TODO: Read config from cluster settings
+            etcdClient = Client.builder().endpoints("http://127.0.0.1:2379").build();
             etcdWatcher = new ETCDWatcher(localNode, getNodeKey(localNode),
-                new ChangeApplierService(clusterService.getClusterApplierService()));
+                new ChangeApplierService(clusterService.getClusterApplierService()), etcdClient);
+            
+            etcdHeartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
+            etcdHeartbeat.start();
         } catch (IOException | ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
         }
@@ -60,6 +71,9 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
     public void close() throws IOException {
         if (etcdWatcher != null) {
             etcdWatcher.close();
+        }
+        if (etcdHeartbeat != null) {
+            etcdHeartbeat.stop();
         }
     }
 }

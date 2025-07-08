@@ -40,11 +40,10 @@ public class ETCDWatcher implements Closeable{
     private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
     private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
 
-    public ETCDWatcher(DiscoveryNode localNode, ByteSequence nodeKey, ChangeApplierService changeApplierService) throws IOException, ExecutionException, InterruptedException {
+    public ETCDWatcher(DiscoveryNode localNode, ByteSequence nodeKey, ChangeApplierService changeApplierService, Client etcdClient) throws IOException, ExecutionException, InterruptedException {
         this.localNode = localNode;
+        this.etcdClient = etcdClient;
         this.changeApplierService = changeApplierService;
-        // Initialize the etcd client. TODO: Read config from cluster settings
-        this.etcdClient = Client.builder().endpoints("http://127.0.0.1:2379").build();
         loadInitialState(nodeKey);
         nodeWatcher = etcdClient.getWatchClient().watch(nodeKey, WatchOption.builder().withRevision(0).build(), new NodeListener());
     }
