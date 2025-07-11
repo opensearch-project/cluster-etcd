@@ -53,8 +53,11 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
         try {
              // Initialize the etcd client. TODO: Read config from cluster settings
             etcdClient = Client.builder().endpoints("http://127.0.0.1:2379").build();
+            
+            String clusterName = clusterService.getClusterName().value();
+            
             etcdWatcher = new ETCDWatcher(localNode, getNodeKey(localNode),
-                new ChangeApplierService(clusterService.getClusterApplierService()), etcdClient);
+                new ChangeApplierService(clusterService.getClusterApplierService()), etcdClient, clusterName);
             
             etcdHeartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
             etcdHeartbeat.start();
@@ -69,11 +72,14 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
 
     @Override
     public void close() throws IOException {
+        if (etcdHeartbeat != null) {
+            etcdHeartbeat.stop();
+        }
         if (etcdWatcher != null) {
             etcdWatcher.close();
         }
-        if (etcdHeartbeat != null) {
-            etcdHeartbeat.stop();
+        if (etcdClient != null) {
+            etcdClient.close();
         }
     }
 }

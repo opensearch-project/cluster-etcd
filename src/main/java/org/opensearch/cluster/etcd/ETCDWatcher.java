@@ -39,11 +39,13 @@ public class ETCDWatcher implements Closeable{
     private final ChangeApplierService changeApplierService;
     private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
     private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
+    private final String clusterName;
 
-    public ETCDWatcher(DiscoveryNode localNode, ByteSequence nodeKey, ChangeApplierService changeApplierService, Client etcdClient) throws IOException, ExecutionException, InterruptedException {
+    public ETCDWatcher(DiscoveryNode localNode, ByteSequence nodeKey, ChangeApplierService changeApplierService, Client etcdClient, String clusterName) throws IOException, ExecutionException, InterruptedException {
         this.localNode = localNode;
         this.etcdClient = etcdClient;
         this.changeApplierService = changeApplierService;
+        this.clusterName = clusterName;
         loadInitialState(nodeKey);
         nodeWatcher = etcdClient.getWatchClient().watch(nodeKey, WatchOption.builder().withRevision(0).build(), new NodeListener());
     }
@@ -118,7 +120,7 @@ public class ETCDWatcher implements Closeable{
 
     private void handleNodeChange(KeyValue keyValue) {
         try {
-            NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(localNode, keyValue.getValue(), etcdClient);
+            NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(localNode, keyValue.getValue(), etcdClient, clusterName);
             changeApplierService.applyNodeState("update-node " + keyValue.getKey().toString(), nodeState);
         } catch (IOException e) {
             logger.error("Error while reading node state", e);

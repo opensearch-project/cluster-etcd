@@ -52,38 +52,18 @@ import java.util.concurrent.ExecutionException;
  *       }
  *   },
  *   "remote_shards": { // Coordinator node content
- *       "remote_nodes": [ // List of remote nodes that this coordinator node is aware of.
- *         {
- *             "node_id": "node1",
- *             "ephemeral_id": "ephemeral-id-1",
- *             "address": "192.168.2.1",
- *             "port": 9300
- *         },
- *         {
- *             "node_id": "node2",
- *             "ephemeral_id": "ephemeral-id-2",
- *             "address": "192.168.2.2",
- *             "port": 9300
- *         },
- *         {
- *             "node_id": "node3",
- *             "ephemeral_id": "ephemeral-id-3",
- *             "address": "192.168.2.3",
- *             "port": 9300
- *         }
- *       ],
  *       "indices": { // Map of indices that this coordinator node is aware of.
  *          "idx1": {
  *              "uuid": "index-uuid",
  *              "shard_routing": [ // Must have every shard for the index.
  *                  [
- *                    {"node_id":"node1"}
- *                    {"node_id":"node2", "primary": true } // If we have a primary for one shard, we must have a primary for all shards
+ *                    {"node_name":"node1"},
+ *                    {"node_name":"node2", "primary": true } // If we have a primary for one shard, we must have a primary for all shards
  *                  ],
  *                  [ // We don't assume an equal number of replicas for each shard.
- *                    {"node_id":"node1", "primary": true},
- *                    {"node_id":"node2"}, // Any non-primary is assumed to be a search replica.
- *                    {"node_id":"node3"}
+ *                    {"node_name":"node1", "primary": true},
+ *                    {"node_name":"node2"}, // Any non-primary is assumed to be a search replica.
+ *                    {"node_name":"node3"}
  *                  ]
  *              ]
  *          },
@@ -92,21 +72,36 @@ import java.util.concurrent.ExecutionException;
  *   }
  * }
  * </pre>
+ * 
+ * Health check format (stored at {cluster_name}/search-unit/{node_name}/actual-state):
+ * <pre>
+ * {
+ *   "nodeId": "unique-node-id",
+ *   "ephemeralId": "ephemeral-id-123",
+ *   "address": "xxx.xxx.x.xxx",
+ *   "port": xxxx,
+ *   "timestamp": 1750099493841,
+ *   "heartbeatIntervalSeconds": 5
+ * }
+ * </pre>
  */
 public class ETCDStateDeserializer {
     private static final Logger LOGGER = LogManager.getLogger(ETCDStateDeserializer.class);
+
     /**
      * Deserializes the node configuration stored in ETCD. Will also read the k/v pairs for each index
      * referenced from a data node.
      * <p>
      * For now, let's assume that we store JSON bytes in ETCD.
      *
+     * @param localNode the local discovery node
      * @param byteSequence the serialized node state
-     * @param etcdClient   the ETCD client that we'll use to retrieve index metadata for local shards
+     * @param etcdClient the ETCD client that we'll use to retrieve index metadata for local shards
+     * @param clusterName the cluster name used to build paths for health lookups
      * @return the relevant node state
      */
     @SuppressWarnings("unchecked")
-    public static NodeState deserializeNodeState(DiscoveryNode localNode, ByteSequence byteSequence, Client etcdClient) throws IOException {
+    public static NodeState deserializeNodeState(DiscoveryNode localNode, ByteSequence byteSequence, Client etcdClient, String clusterName) throws IOException {
         Map<String, Object> map;
         try (XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, byteSequence.getBytes())) {
             map = parser.map();
@@ -118,43 +113,68 @@ public class ETCDStateDeserializer {
             }
             return readDataNodeState(localNode, etcdClient, (Map<String, Map<String, String>>) map.get("local_shards"));
         } else if (map.containsKey("remote_shards")) {
-            return readCoordinatorNodeState(localNode, (Map<String, Object>) map.get("remote_shards"));
+            return readCoordinatorNodeState(localNode, etcdClient, (Map<String, Object>) map.get("remote_shards"), clusterName);
         }
         throw new IllegalStateException("Neither local nor remote shards are present in the node state. Node state should have been removed.");
-
     }
 
     @SuppressWarnings("unchecked")
-    private static CoordinatorNodeState readCoordinatorNodeState(DiscoveryNode localNode, Map<String, Object> remoteShards) {
-        List<Map<String, Object>> remoteNodeSpecs = (List<Map<String, Object>>) remoteShards.get("remote_nodes");
-        List<RemoteNode> remoteNodes = new ArrayList<>(remoteNodeSpecs.size());
-        for (Map<String, Object> remoteNodeSpec : remoteNodeSpecs) {
-            String nodeId = (String) remoteNodeSpec.get("node_id");
-            String ephemeralId = (String) remoteNodeSpec.get("ephemeral_id");
-            String address = (String) remoteNodeSpec.get("address");
-            int port = ((Number) remoteNodeSpec.get("port")).intValue();
-            remoteNodes.add(new RemoteNode(nodeId, ephemeralId, address, port));
+    private static CoordinatorNodeState readCoordinatorNodeState(DiscoveryNode localNode, Client etcdClient, Map<String, Object> remoteShards, String clusterName) throws IOException {
+        Map<String, Object> indices = (Map<String, Object>) remoteShards.get("indices");
+        Map<String, NodeHealthInfo> nodeHealthMap = new HashMap<>();
+        
+        for (Map.Entry<String, Object> indexEntry : indices.entrySet()) {
+            Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
+            List<List<Map<String, Object>>> shardRouting = (List<List<Map<String, Object>>>) indexConfig.get("shard_routing");
+            
+            for (List<Map<String, Object>> shardEntry : shardRouting) {
+                for (Map<String, Object> nodeEntry : shardEntry) {
+                    String nodeName = (String) nodeEntry.get("node_name");
+                    if (nodeName != null && !nodeHealthMap.containsKey(nodeName)) {
+                        nodeHealthMap.put(nodeName, null); 
+                    }
+                }
+            }
+        }
+        
+        lookupNodeHealthInfo(etcdClient, nodeHealthMap, clusterName);
+        
+        List<RemoteNode> remoteNodes = new ArrayList<>();
+        for (Map.Entry<String, NodeHealthInfo> entry : nodeHealthMap.entrySet()) {
+            NodeHealthInfo healthInfo = entry.getValue();
+            if (healthInfo != null) {
+                remoteNodes.add(new RemoteNode(healthInfo.nodeId, healthInfo.ephemeralId, healthInfo.address, healthInfo.port));
+            } else {
+                LOGGER.warn("Health information not found for node: {}", entry.getKey());
+            }
         }
 
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignment = new HashMap<>();
-        Map<String, Object> indices = (Map<String, Object>) remoteShards.get("indices");
         for (Map.Entry<String, Object> indexEntry : indices.entrySet()) {
             Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
             String uuid = (String) indexConfig.get("uuid");
-
             List<List<Map<String, Object>>> shardRouting = (List<List<Map<String, Object>>>) indexConfig.get("shard_routing");
             List<List<NodeShardAssignment>> shardAssignments = new ArrayList<>(shardRouting.size());
+            
             for (List<Map<String, Object>> shardEntry : shardRouting) {
                 List<NodeShardAssignment> nodeShardAssignments = new ArrayList<>();
                 for (Map<String, Object> nodeEntry : shardEntry) {
-                    String nodeId = (String) nodeEntry.get("node_id");
+                    String nodeName = (String) nodeEntry.get("node_name");
                     boolean isPrimary = nodeEntry.containsKey("primary") && (Boolean) nodeEntry.get("primary");
-                    nodeShardAssignments.add(new NodeShardAssignment(nodeId, isPrimary ? ShardRole.PRIMARY : ShardRole.SEARCH_REPLICA));
+                    
+                    NodeHealthInfo healthInfo = nodeHealthMap.get(nodeName);
+                    if (healthInfo != null) {
+                        nodeShardAssignments.add(new NodeShardAssignment(healthInfo.nodeId, isPrimary ? ShardRole.PRIMARY : ShardRole.SEARCH_REPLICA));
+                    } else {
+                        LOGGER.error("Cannot resolve node name '{}' to node ID - health info not available", nodeName);
+                        throw new IllegalStateException("Cannot resolve node name '" + nodeName + "' to node ID");
+                    }
                 }
                 shardAssignments.add(nodeShardAssignments);
             }
             remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
         }
+        
         return new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment);
     }
 
@@ -191,4 +211,69 @@ public class ETCDStateDeserializer {
         }
         return new DataNodeState(localNode, indexMetadataMap, localShardAssignment);
     }
+
+
+    private static void lookupNodeHealthInfo(Client etcdClient, Map<String, NodeHealthInfo> nodeHealthMap, String clusterName) throws IOException {
+        try (KV kvClient = etcdClient.getKVClient()) {
+            List<CompletableFuture<GetResponse>> futures = new ArrayList<>();
+            List<String> nodeNames = new ArrayList<>();
+            
+            for (String nodeName : nodeHealthMap.keySet()) {
+                String healthKey = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
+                futures.add(kvClient.get(ByteSequence.from(healthKey, StandardCharsets.UTF_8)));
+                nodeNames.add(nodeName);
+            }
+            
+            for (int i = 0; i < futures.size(); i++) {
+                String nodeName = nodeNames.get(i);
+                try {
+                    GetResponse response = futures.get(i).get();
+                    if (!response.getKvs().isEmpty()) {
+                        KeyValue kv = response.getKvs().get(0);
+                        NodeHealthInfo healthInfo = parseHealthInfo(kv);
+                        nodeHealthMap.put(nodeName, healthInfo);
+                        LOGGER.debug("Resolved node '{}' to ID '{}' with ephemeral ID '{}'", nodeName, healthInfo.nodeId, healthInfo.ephemeralId);
+                    } else {
+                        LOGGER.warn("No health information found for node: {}", nodeName);
+                    }
+                } catch (InterruptedException | ExecutionException e) {
+                    LOGGER.error("Failed to lookup health info for node: {}", nodeName, e);
+                    throw new IOException("Failed to lookup health info for node: " + nodeName, e);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Parses health information from ETCD key-value pair.
+     */
+    @SuppressWarnings("unchecked")
+    private static NodeHealthInfo parseHealthInfo(KeyValue kv) throws IOException {
+        try (XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, kv.getValue().getBytes())) {
+            Map<String, Object> healthMap = parser.map();
+            
+            String nodeId = (String) healthMap.get("nodeId");
+            String ephemeralId = (String) healthMap.get("ephemeralId");
+            String address = (String) healthMap.get("address");
+            int port = ((Number) healthMap.get("port")).intValue();
+            
+            return new NodeHealthInfo(nodeId, ephemeralId, address, port);
+        }
+    }
+    
+
+    private static class NodeHealthInfo {
+        final String nodeId;
+        final String ephemeralId;
+        final String address;
+        final int port;
+        
+        NodeHealthInfo(String nodeId, String ephemeralId, String address, int port) {
+            this.nodeId = nodeId;
+            this.ephemeralId = ephemeralId;
+            this.address = address;
+            this.port = port;
+        }
+    }
 }
+

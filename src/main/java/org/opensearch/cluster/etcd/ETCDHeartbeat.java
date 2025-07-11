@@ -38,6 +38,8 @@ public class ETCDHeartbeat {
     private final String nodeName;
     private final String nodeId;
     private final String ephemeralId;
+    private final String address;
+    private final int port;
     private final Client etcdClient;
     private final ScheduledExecutorService scheduler;
     private final ByteSequence nodeStateKey;
@@ -48,11 +50,13 @@ public class ETCDHeartbeat {
         this.nodeName = localNode.getName();
         this.nodeId = localNode.getId();
         this.ephemeralId = localNode.getEphemeralId();
+        this.address = localNode.getAddress().getAddress();
+        this.port = localNode.getAddress().getPort();
         this.etcdClient = etcdClient;
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
-        // <cluster-name>/search-unit/<search-name>/actual-state
         String clusterName = clusterService.getClusterName().value();
-        this.nodeStateKey = ByteSequence.from(clusterName + "/search-unit/" + nodeName + "/actual-state", StandardCharsets.UTF_8);
+        String statePath = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
+        this.nodeStateKey = ByteSequence.from(statePath, StandardCharsets.UTF_8);
         this.nodeEnvironment = nodeEnvironment;
         this.clusterService = clusterService;
     }
@@ -111,6 +115,8 @@ public class ETCDHeartbeat {
         heartbeatData.put("nodeName", nodeName);
         heartbeatData.put("nodeId", nodeId);
         heartbeatData.put("ephemeralId", ephemeralId);
+        heartbeatData.put("address", address);
+        heartbeatData.put("port", port);
         heartbeatData.put("heartbeatIntervalSeconds", HEARTBEAT_INTERVAL_SECONDS);
         heartbeatData.put("cpuUsedPercent", cpuPercent);
         heartbeatData.put("memoryUsedPercent", memoryPercent);
