@@ -10,18 +10,38 @@ package org.opensearch.cluster.etcd;
 
 /**
  * Utility class for constructing ETCD paths used by the cluster-etcd plugin.
+ * These paths align with the standardized control plane and data plane path structure.
  */
 public class ETCDPathUtils {
     
-    /**
-     * Builds the path for a node's actual state in ETCD.
-     * The path pattern is: {cluster_name}/search-unit/{node_name}/actual-state
-     * 
-     * @param clusterName the cluster name
-     * @param nodeName the node name
-     * @return the constructed path as a string
-     */
-    public static String buildNodeActualStatePath(String clusterName, String nodeName) {
-        return clusterName + "/search-unit/" + nodeName + "/actual-state";
+    public static String buildSearchUnitConfigPath(String clusterName, String searchName) {
+        return clusterName + "/search-unit/" + searchName + "/conf";
     }
+    
+   
+    public static String buildSearchUnitGoalStatePath(String clusterName, String searchName) {
+        return clusterName + "/search-unit/" + searchName + "/goal-state";
+    }
+    
+    public static String buildSearchUnitActualStatePath(String clusterName, String searchName) {
+        return clusterName + "/search-unit/" + searchName + "/actual-state";
+    }
+    
+    public static String buildNodeActualStatePath(String clusterName, String nodeName) {
+        return buildSearchUnitActualStatePath(clusterName, nodeName);
+    }
+    
+    public static String buildIndexConfigPath(String clusterName, String indexName) {
+        return clusterName + "/indices/" + indexName + "/conf";
+    }
+    
+    public static String buildShardPlannedAllocationPath(String clusterName, String indexName, int shardId) {
+        return clusterName + "/indices/" + indexName + "/shard/" + shardId + "/planned-allocation";
+    }
+    
+   
+    public static String buildShardActualAllocationPath(String clusterName, String indexName, int shardId) {
+        return clusterName + "/indices/" + indexName + "/shard/" + shardId + "/actual-allocation";
+    }
+    
 } 

@@ -56,7 +56,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
             
             String clusterName = clusterService.getClusterName().value();
             
-            etcdWatcher = new ETCDWatcher(localNode, getNodeKey(localNode),
+            etcdWatcher = new ETCDWatcher(localNode, getNodeKey(localNode, clusterName),
                 new ChangeApplierService(clusterService.getClusterApplierService()), etcdClient, clusterName);
             
             etcdHeartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
@@ -66,8 +66,9 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
         }
     }
 
-    private ByteSequence getNodeKey(DiscoveryNode localNode) {
-        return ByteSequence.from(localNode.getName(), StandardCharsets.UTF_8);
+    private ByteSequence getNodeKey(DiscoveryNode localNode, String clusterName) {
+        String goalStatePath = ETCDPathUtils.buildSearchUnitGoalStatePath(clusterName, localNode.getName());
+        return ByteSequence.from(goalStatePath, StandardCharsets.UTF_8);
     }
 
     @Override

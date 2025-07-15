@@ -111,7 +111,7 @@ public class ETCDStateDeserializer {
                 // TODO: For now, assume a node is either a data node or a coordinator node.
                 throw new IllegalStateException("Both local and remote shards are present in the node state. This is not yet supported.");
             }
-            return readDataNodeState(localNode, etcdClient, (Map<String, Map<String, String>>) map.get("local_shards"));
+            return readDataNodeState(localNode, etcdClient, (Map<String, Map<String, String>>) map.get("local_shards"), clusterName);
         } else if (map.containsKey("remote_shards")) {
             return readCoordinatorNodeState(localNode, etcdClient, (Map<String, Object>) map.get("remote_shards"), clusterName);
         }
@@ -178,33 +178,41 @@ public class ETCDStateDeserializer {
         return new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment);
     }
 
-    private static DataNodeState readDataNodeState(DiscoveryNode localNode, Client etcdClient, Map<String, Map<String, String>> localShards) throws IOException {
+    private static DataNodeState readDataNodeState(DiscoveryNode localNode, Client etcdClient, Map<String, Map<String, String>> localShards, String clusterName) throws IOException {
         Map<String, Map<Integer, ShardRole>> localShardAssignment = new HashMap<>();
         Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
         try (KV kvClient = etcdClient.getKVClient()) {
             List<CompletableFuture<GetResponse>> futures = new ArrayList<>();
+            List<String> indexNames = new ArrayList<>();
+            
             for (Map.Entry<String, Map<String, String>> entry : localShards.entrySet()) {
                 String indexName = entry.getKey();
-                futures.add(kvClient.get(ByteSequence.from(indexName, StandardCharsets.UTF_8)));
+                indexNames.add(indexName);
+                
+                // Use the standardized path for index configuration
+                String indexConfigPath = ETCDPathUtils.buildIndexConfigPath(clusterName, indexName);
+                futures.add(kvClient.get(ByteSequence.from(indexConfigPath, StandardCharsets.UTF_8)));
+                
                 Map<String, String> shards = entry.getValue();
                 for (Map.Entry<String, String> shardEntry : shards.entrySet()) {
                     String shardId = shardEntry.getKey();
                     String shardType = shardEntry.getValue();
                     localShardAssignment.computeIfAbsent(indexName, k -> new HashMap<>()).put(Integer.parseInt(shardId), ShardRole.valueOf(shardType));
                 }
-
             }
-            for (var future : futures) {
+            
+            for (int i = 0; i < futures.size(); i++) {
+                String indexName = indexNames.get(i);
                 GetResponse getResponse;
                 try {
-                    getResponse = future.get();
+                    getResponse = futures.get(i).get();
                 } catch (InterruptedException | ExecutionException e) {
                     throw new RuntimeException(e);
                 }
                 for (KeyValue kv : getResponse.getKvs()) {
                     try(XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, kv.getValue().getBytes())) {
                         IndexMetadata indexMetadata = IndexMetadata.fromXContent(parser);
-                        indexMetadataMap.put(kv.getKey().toString(), indexMetadata);
+                        indexMetadataMap.put(indexName, indexMetadata);
                     }
                 }
             }
