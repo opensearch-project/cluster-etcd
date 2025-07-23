@@ -22,6 +22,7 @@ import org.opensearch.cluster.etcd.changeapplier.NodeState;
 import org.opensearch.cluster.etcd.changeapplier.RemoteNode;
 import org.opensearch.cluster.etcd.changeapplier.ShardRole;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.xcontent.json.JsonXContent;
 import org.opensearch.core.index.Index;
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import org.opensearch.common.settings.Settings;
 
 /**
  * Sample JSON:
@@ -182,17 +184,23 @@ public class ETCDStateDeserializer {
         Map<String, Map<Integer, ShardRole>> localShardAssignment = new HashMap<>();
         Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
         try (KV kvClient = etcdClient.getKVClient()) {
-            List<CompletableFuture<GetResponse>> futures = new ArrayList<>();
+            // Prepare futures for fetching settings and mappings separately
+            List<CompletableFuture<GetResponse>> settingsFutures = new ArrayList<>();
+            List<CompletableFuture<GetResponse>> mappingsFutures = new ArrayList<>();
             List<String> indexNames = new ArrayList<>();
             
             for (Map.Entry<String, Map<String, String>> entry : localShards.entrySet()) {
                 String indexName = entry.getKey();
                 indexNames.add(indexName);
                 
-                // Use the standardized path for index configuration
-                String indexConfigPath = ETCDPathUtils.buildIndexConfigPath(clusterName, indexName);
-                futures.add(kvClient.get(ByteSequence.from(indexConfigPath, StandardCharsets.UTF_8)));
+                // Fetch settings and mappings from separate etcd paths
+                String indexSettingsPath = ETCDPathUtils.buildIndexSettingsPath(clusterName, indexName);
+                String indexMappingsPath = ETCDPathUtils.buildIndexMappingsPath(clusterName, indexName);
                 
+                settingsFutures.add(kvClient.get(ByteSequence.from(indexSettingsPath, StandardCharsets.UTF_8)));
+                mappingsFutures.add(kvClient.get(ByteSequence.from(indexMappingsPath, StandardCharsets.UTF_8)));
+                
+                // Process shard assignments
                 Map<String, String> shards = entry.getValue();
                 for (Map.Entry<String, String> shardEntry : shards.entrySet()) {
                     String shardId = shardEntry.getKey();
@@ -201,23 +209,109 @@ public class ETCDStateDeserializer {
                 }
             }
             
-            for (int i = 0; i < futures.size(); i++) {
+            // Process the results
+            for (int i = 0; i < indexNames.size(); i++) {
                 String indexName = indexNames.get(i);
-                GetResponse getResponse;
-                try {
-                    getResponse = futures.get(i).get();
-                } catch (InterruptedException | ExecutionException e) {
-                    throw new RuntimeException(e);
-                }
-                for (KeyValue kv : getResponse.getKvs()) {
-                    try(XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, DeprecationHandler.THROW_UNSUPPORTED_OPERATION, kv.getValue().getBytes())) {
-                        IndexMetadata indexMetadata = IndexMetadata.fromXContent(parser);
-                        indexMetadataMap.put(indexName, indexMetadata);
-                    }
-                }
+                IndexMetadata indexMetadata = buildIndexMetadataFromSeparateParts(
+                    indexName, 
+                    settingsFutures.get(i), 
+                    mappingsFutures.get(i)
+                );
+                indexMetadataMap.put(indexName, indexMetadata);
             }
         }
         return new DataNodeState(localNode, indexMetadataMap, localShardAssignment);
+    }
+    
+    /**
+     * Builds IndexMetadata from separate settings and mappings etcd responses.
+     * Also populates constant values that don't need to be stored in etcd.
+     */
+    private static IndexMetadata buildIndexMetadataFromSeparateParts(
+        String indexName, 
+        CompletableFuture<GetResponse> settingsFuture, 
+        CompletableFuture<GetResponse> mappingsFuture
+    ) throws IOException {
+        Settings indexSettings = null;
+        MappingMetadata mappingMetadata = null;
+        
+        try {
+            // Fetch and parse settings
+            GetResponse settingsResponse = settingsFuture.get();
+            if (settingsResponse.getKvs().isEmpty()) {
+                throw new IllegalStateException("Settings response is empty");
+            }
+            KeyValue settingsKv = settingsResponse.getKvs().get(0);
+            try (XContentParser parser = JsonXContent.jsonXContent.createParser(
+                NamedXContentRegistry.EMPTY, 
+                DeprecationHandler.THROW_UNSUPPORTED_OPERATION, 
+                settingsKv.getValue().getBytes()
+            )) {
+                indexSettings = Settings.fromXContent(parser);
+            }
+        
+            
+            // Fetch and parse mappings
+            GetResponse mappingsResponse = mappingsFuture.get();
+            if (mappingsResponse.getKvs().isEmpty()) {
+                throw new IllegalStateException("Mappings response is empty");
+            }
+            KeyValue mappingsKv = mappingsResponse.getKvs().get(0);
+            try (XContentParser parser = JsonXContent.jsonXContent.createParser(
+                NamedXContentRegistry.EMPTY, 
+                DeprecationHandler.THROW_UNSUPPORTED_OPERATION, 
+                mappingsKv.getValue().getBytes()
+            )) {
+                // Parse the mapping JSON and create MappingMetadata
+                Map<String, Object> mappingMap = parser.map();
+                if (!mappingMap.isEmpty()) {
+                    // Assume single mapping type for simplicity 
+                    mappingMetadata = new MappingMetadata("_doc", mappingMap);
+                }
+            }
+            
+        } catch (InterruptedException | ExecutionException e) {
+            throw new RuntimeException("Failed to fetch index metadata parts from etcd", e);
+        }
+        
+        // Build IndexMetadata with both etcd-sourced and constant values
+        return buildIndexMetadataWithConstants(indexName, indexSettings, mappingMetadata);
+    }
+    
+    /**
+     * Builds IndexMetadata with settings and mappings from etcd, plus constant values 
+     * that are populated in the plugin rather than stored in etcd.
+     */
+    private static IndexMetadata buildIndexMetadataWithConstants(
+        String indexName, 
+        Settings indexSettings, 
+        MappingMetadata mappingMetadata
+    ) {
+        // Start with etcd-sourced settings
+        Settings.Builder settingsBuilder = indexSettings != null ? 
+            Settings.builder().put(indexSettings) : 
+            Settings.builder();
+      
+
+        // This is just an example of how constants could be populated in the plugin.
+        // Build IndexMetadata
+        Settings finalSettings = settingsBuilder.build();
+        IndexMetadata.Builder metadataBuilder = IndexMetadata.builder(indexName)
+            .settings(finalSettings);
+            
+        // Add mapping if present
+        if (mappingMetadata != null) {
+            metadataBuilder.putMapping(mappingMetadata);
+        }
+        
+        // Set primary terms for each shard (these are constants that don't need to be in etcd)
+        // Get number of shards from settings
+        int numberOfShards = finalSettings.getAsInt(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1);
+        for (int i = 0; i < numberOfShards; i++) {
+            metadataBuilder.primaryTerm(i, 1); 
+        }
+        
+        return metadataBuilder.build();
     }
 
 
