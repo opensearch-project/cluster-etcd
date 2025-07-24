@@ -1,3 +1,10 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
 package org.opensearch.cluster.etcd;
 
 import io.etcd.jetcd.Client;
@@ -53,12 +60,16 @@ public class ETCDHeartbeat {
         this.address = localNode.getAddress().getAddress();
         this.port = localNode.getAddress().getPort();
         this.etcdClient = etcdClient;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor();
+        this.scheduler = createScheduler();
         String clusterName = clusterService.getClusterName().value();
         String statePath = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
         this.nodeStateKey = ByteSequence.from(statePath, StandardCharsets.UTF_8);
         this.nodeEnvironment = nodeEnvironment;
         this.clusterService = clusterService;
+    }
+
+    private static ScheduledExecutorService createScheduler() {
+        return Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "etcd-heartbeat-scheduler"));
     }
 
     public void start() {

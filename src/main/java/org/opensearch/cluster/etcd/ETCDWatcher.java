@@ -37,7 +37,8 @@ public class ETCDWatcher implements Closeable{
     private final DiscoveryNode localNode;
     private final Watch.Watcher nodeWatcher;
     private final ChangeApplierService changeApplierService;
-    private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor();
+    private final ScheduledExecutorService scheduledExecutorService =
+            Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "etcd-watcher-scheduler"));
     private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
     private final String clusterName;
 
