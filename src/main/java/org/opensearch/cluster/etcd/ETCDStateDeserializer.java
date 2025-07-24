@@ -87,7 +87,8 @@ import org.opensearch.common.settings.Settings;
  * }
  * </pre>
  */
-public class ETCDStateDeserializer {
+public final class ETCDStateDeserializer {
+    private ETCDStateDeserializer() {}
     private static final Logger LOGGER = LogManager.getLogger(ETCDStateDeserializer.class);
 
     /**

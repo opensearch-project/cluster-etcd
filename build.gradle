@@ -6,11 +6,46 @@
  * compatible open source license.
  */
 
-apply plugin: 'opensearch.internal-cluster-test'
+buildscript {
+    ext {
+        opensearch_group = "org.opensearch"
+        isSnapshot = "true" == System.getProperty("build.snapshot", "true")
+        opensearch_version = System.getProperty("opensearch.version", "3.2.0-SNAPSHOT")
+        buildVersionQualifier = System.getProperty("build.version_qualifier", "")
+    }
+    repositories {
+        mavenLocal()
+        maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+        mavenCentral()
+        maven { url "https://plugins.gradle.org/m2/" }
+    }
+    dependencies {
+        classpath "${opensearch_group}.gradle:build-tools:${opensearch_version}"
+    }
+}
+
+repositories {
+    mavenLocal()
+    maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+    mavenCentral()
+    maven { url "https://plugins.gradle.org/m2/" }
+}
+
+apply plugin: 'opensearch.opensearchplugin'
+apply plugin: 'opensearch.java-agent'
 
 opensearchplugin {
   description = 'Plugin for polling cluster state from etcd'
   classname = 'org.opensearch.cluster.etcd.ClusterETCDPlugin'
+  licenseFile rootProject.file('LICENSE.txt')
+  noticeFile rootProject.file('NOTICE.txt')
+}
+
+// This requires an additional Jar not published as part of build-tools
+loggerUsageCheck.enabled = false
+
+afterEvaluate {
+  project.validateNebulaPom.enabled = false
 }
 
 versions << [
@@ -60,3 +95,183 @@ dependencies {
   implementation "org.slf4j:slf4j-api:${versions.slf4j}"
 }
 
+tasks.named("dependencyLicenses").configure {
+  mapping from: /grpc-.*/, to: 'grpc'
+  mapping from: /netty-.*/, to: 'netty'
+  mapping from: /vertx-.*/, to: 'vertx'
+}
+
+thirdPartyAudit {
+  ignoreMissingClasses(
+    // from io.netty.logging.CommonsLoggerFactory (netty)
+    'org.apache.commons.logging.Log',
+    'org.apache.commons.logging.LogFactory',
+
+    // from Log4j (deliberate, Netty will fallback to Log4j 2)
+    'org.apache.log4j.Level',
+    'org.apache.log4j.Logger',
+
+    // from io.netty.handler.ssl.util.BouncyCastleSelfSignedCertGenerator (netty)
+    'org.bouncycastle.cert.X509v3CertificateBuilder',
+    'org.bouncycastle.cert.jcajce.JcaX509CertificateConverter',
+    'org.bouncycastle.operator.jcajce.JcaContentSignerBuilder',
+    'org.bouncycastle.openssl.PEMEncryptedKeyPair',
+    'org.bouncycastle.openssl.PEMParser',
+    'org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter',
+    'org.bouncycastle.openssl.jcajce.JceOpenSSLPKCS8DecryptorProviderBuilder',
+    'org.bouncycastle.openssl.jcajce.JcePEMDecryptorProviderBuilder',
+    'org.bouncycastle.pkcs.PKCS8EncryptedPrivateKeyInfo',
+
+    // from io.netty.handler.ssl.JettyNpnSslEngine (netty)
+    'org.eclipse.jetty.npn.NextProtoNego$ClientProvider',
+    'org.eclipse.jetty.npn.NextProtoNego$ServerProvider',
+    'org.eclipse.jetty.npn.NextProtoNego',
+
+    // from io.netty.handler.codec.marshalling.ChannelBufferByteInput (netty)
+    'org.jboss.marshalling.ByteInput',
+
+    // from io.netty.handler.codec.marshalling.ChannelBufferByteOutput (netty)
+    'org.jboss.marshalling.ByteOutput',
+
+    // from io.netty.handler.codec.marshalling.CompatibleMarshallingEncoder (netty)
+    'org.jboss.marshalling.Marshaller',
+
+    // from io.netty.handler.codec.marshalling.ContextBoundUnmarshallerProvider (netty)
+    'org.jboss.marshalling.MarshallerFactory',
+    'org.jboss.marshalling.MarshallingConfiguration',
+    'org.jboss.marshalling.Unmarshaller',
+
+    'com.google.gson.stream.JsonReader',
+    'com.google.gson.stream.JsonToken',
+    'com.google.protobuf.nano.CodedOutputByteBufferNano',
+    'com.google.protobuf.nano.MessageNano',
+    'com.ning.compress.BufferRecycler',
+    'com.ning.compress.lzf.ChunkDecoder',
+    'com.ning.compress.lzf.ChunkEncoder',
+    'com.ning.compress.lzf.LZFChunk',
+    'com.ning.compress.lzf.LZFEncoder',
+    'com.ning.compress.lzf.util.ChunkDecoderFactory',
+    'com.ning.compress.lzf.util.ChunkEncoderFactory',
+    'lzma.sdk.lzma.Encoder',
+    'net.jpountz.lz4.LZ4Compressor',
+    'net.jpountz.lz4.LZ4Factory',
+    'net.jpountz.lz4.LZ4FastDecompressor',
+    'net.jpountz.xxhash.XXHash32',
+    'net.jpountz.xxhash.XXHashFactory',
+    'org.eclipse.jetty.alpn.ALPN$ClientProvider',
+    'org.eclipse.jetty.alpn.ALPN$ServerProvider',
+    'org.eclipse.jetty.alpn.ALPN',
+
+    'org.conscrypt.AllocatedBuffer',
+    'org.conscrypt.BufferAllocator',
+    'org.conscrypt.Conscrypt',
+    'org.conscrypt.HandshakeListener',
+
+    'reactor.blockhound.BlockHound$Builder',
+    'reactor.blockhound.integration.BlockHoundIntegration',
+
+     'com.aayushatharva.brotli4j.Brotli4jLoader',
+     'com.aayushatharva.brotli4j.decoder.DecoderJNI$Status',
+     'com.aayushatharva.brotli4j.decoder.DecoderJNI$Wrapper',
+     'com.aayushatharva.brotli4j.encoder.BrotliEncoderChannel',
+     'com.aayushatharva.brotli4j.encoder.Encoder$Mode',
+     'com.aayushatharva.brotli4j.encoder.Encoder$Parameters',
+     'com.fasterxml.jackson.databind.DeserializationContext',
+     'com.fasterxml.jackson.databind.JsonDeserializer',
+     'com.fasterxml.jackson.databind.JsonSerializer',
+     'com.fasterxml.jackson.databind.ObjectMapper',
+     'com.fasterxml.jackson.databind.ObjectWriter',
+     'com.fasterxml.jackson.databind.SerializationFeature',
+     'com.fasterxml.jackson.databind.SerializerProvider',
+     'com.fasterxml.jackson.databind.module.SimpleModule',
+     'com.google.gson.Gson',
+     'com.google.gson.GsonBuilder',
+     'com.google.gson.JsonArray',
+     'com.google.gson.JsonElement',
+     'com.google.gson.JsonIOException',
+     'com.google.gson.JsonObject',
+     'com.google.gson.JsonParser',
+     'com.google.gson.JsonPrimitive',
+     'io.grpc.stub.BlockingClientCall',
+     'io.netty.channel.epoll.Epoll',
+     'io.netty.channel.epoll.EpollChannelOption',
+     'io.netty.channel.epoll.EpollEventLoopGroup',
+     'io.netty.channel.kqueue.KQueue',
+     'io.netty.channel.kqueue.KQueueChannelOption',
+     'io.netty.channel.kqueue.KQueueEventLoopGroup',
+     'io.netty.handler.codec.haproxy.HAProxyMessage',
+     'io.netty.handler.codec.haproxy.HAProxyProxiedProtocol',
+     'io.netty.handler.codec.haproxy.HAProxyProxiedProtocol$TransportProtocol',
+     'io.netty.internal.tcnative.AsyncSSLPrivateKeyMethod',
+     'io.netty.internal.tcnative.AsyncTask',
+     'io.netty.internal.tcnative.Buffer',
+     'io.netty.internal.tcnative.CertificateCallback',
+     'io.netty.internal.tcnative.CertificateCompressionAlgo',
+     'io.netty.internal.tcnative.CertificateVerifier',
+     'io.netty.internal.tcnative.Library',
+     'io.netty.internal.tcnative.ResultCallback',
+     'io.netty.internal.tcnative.SSL',
+     'io.netty.internal.tcnative.SSLContext',
+     'io.netty.internal.tcnative.SSLPrivateKeyMethod',
+     'io.netty.internal.tcnative.SSLSession',
+     'io.netty.internal.tcnative.SSLSessionCache',
+     'io.netty.internal.tcnative.SessionTicketKey',
+     'io.netty.internal.tcnative.SniHostNameMatcher',
+     'org.slf4j.impl.StaticLoggerBinder',
+     'org.slf4j.impl.StaticMDCBinder',
+     'org.slf4j.impl.StaticMarkerBinder'
+  )
+
+  ignoreViolations(
+    // uses internal java api: sun.misc.Unsafe
+    'com.google.common.cache.Striped64',
+    'com.google.common.cache.Striped64$1',
+    'com.google.common.cache.Striped64$Cell',
+    'com.google.common.hash.Striped64',
+    'com.google.common.hash.Striped64$1',
+    'com.google.common.hash.Striped64$Cell',
+    'com.google.common.hash.LittleEndianByteArray$UnsafeByteArray',
+    'com.google.common.hash.LittleEndianByteArray$UnsafeByteArray$1',
+    'com.google.common.hash.LittleEndianByteArray$UnsafeByteArray$2',
+    'com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper',
+    'com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper$1',
+    'com.google.common.primitives.UnsignedBytes$LexicographicalComparatorHolder$UnsafeComparator',
+    'com.google.common.primitives.UnsignedBytes$LexicographicalComparatorHolder$UnsafeComparator$1',
+     'com.google.protobuf.MessageSchema',
+     'com.google.protobuf.UnsafeUtil',
+     'com.google.protobuf.UnsafeUtil$1',
+     'com.google.protobuf.UnsafeUtil$Android32MemoryAccessor',
+     'com.google.protobuf.UnsafeUtil$Android64MemoryAccessor',
+     'com.google.protobuf.UnsafeUtil$JvmMemoryAccessor',
+     'com.google.protobuf.UnsafeUtil$MemoryAccessor',
+     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator',
+     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$1',
+     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$2',
+     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$3',
+     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$4',
+     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$5',
+     'io.netty.util.internal.PlatformDependent0',
+     'io.netty.util.internal.PlatformDependent0$1',
+     'io.netty.util.internal.PlatformDependent0$2',
+     'io.netty.util.internal.PlatformDependent0$3',
+     'io.netty.util.internal.PlatformDependent0$4',
+     'io.netty.util.internal.PlatformDependent0$6',
+     'io.netty.util.internal.shaded.org.jctools.queues.BaseLinkedQueueConsumerNodeRef',
+     'io.netty.util.internal.shaded.org.jctools.queues.BaseLinkedQueueProducerNodeRef',
+     'io.netty.util.internal.shaded.org.jctools.queues.BaseMpscLinkedArrayQueueColdProducerFields',
+     'io.netty.util.internal.shaded.org.jctools.queues.BaseMpscLinkedArrayQueueConsumerFields',
+     'io.netty.util.internal.shaded.org.jctools.queues.BaseMpscLinkedArrayQueueProducerFields',
+     'io.netty.util.internal.shaded.org.jctools.queues.LinkedQueueNode',
+     'io.netty.util.internal.shaded.org.jctools.queues.MpmcArrayQueueConsumerIndexField',
+     'io.netty.util.internal.shaded.org.jctools.queues.MpmcArrayQueueProducerIndexField',
+     'io.netty.util.internal.shaded.org.jctools.queues.MpscArrayQueueConsumerIndexField',
+     'io.netty.util.internal.shaded.org.jctools.queues.MpscArrayQueueProducerIndexField',
+     'io.netty.util.internal.shaded.org.jctools.queues.MpscArrayQueueProducerLimitField',
+     'io.netty.util.internal.shaded.org.jctools.queues.unpadded.MpscUnpaddedArrayQueueConsumerIndexField',
+     'io.netty.util.internal.shaded.org.jctools.queues.unpadded.MpscUnpaddedArrayQueueProducerIndexField',
+     'io.netty.util.internal.shaded.org.jctools.queues.unpadded.MpscUnpaddedArrayQueueProducerLimitField',
+     'io.netty.util.internal.shaded.org.jctools.util.UnsafeAccess',
+     'io.netty.util.internal.shaded.org.jctools.util.UnsafeLongArrayAccess',
+     'io.netty.util.internal.shaded.org.jctools.util.UnsafeRefArrayAccess',
+    )
+}
