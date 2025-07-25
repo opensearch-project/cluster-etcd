@@ -148,7 +148,8 @@ public class ETCDIndexMetadataPublisher {
 
     /**
      * Extracts relevant settings from the full index settings, filtering out fields that should 
-     * be populated by the plugin rather than stored in etcd.
+     * be populated by the plugin rather than stored in etcd. This enables stateless node operation
+     * by generating constants like UUID and version programmatically instead of storing them.
      */
     private Settings extractRelevantSettings(Settings originalSettings) {
         Settings.Builder filteredSettings = Settings.builder();
@@ -167,14 +168,21 @@ public class ETCDIndexMetadataPublisher {
     
     /**
      * Determines if a setting should be filtered out (not stored in etcd) because
-     * it's populated as a constant in the plugin.
+     * it's populated as a constant in the plugin. This is critical for preventing
+     * hashcode mismatches that cause cluster coordination failures.
      */
     private boolean shouldFilterOutSetting(String settingKey) {
-        // Filter out settings that might be constants in the future
-        if (settingKey.startsWith("constant")) { // This is a placeholder for future constants
-            return true;
+        // Filter out settings that are generated programmatically in the plugin
+        // to enable stateless node operation. All filtered settings MUST be generated
+        // deterministically to ensure identical IndexMetadata across all nodes.
+        switch (settingKey) {
+            case "index.uuid":  // IndexMetadata.SETTING_INDEX_UUID - deterministic based on index name
+            case "index.version.created":  // IndexMetadata.SETTING_VERSION_CREATED - always Version.CURRENT
+            case "index.creation_date":  // IndexMetadata.SETTING_CREATION_DATE - deterministic based on index name
+                return true;
+            default:
+                return false;
         }
-        return false;
     }
 
     /**
