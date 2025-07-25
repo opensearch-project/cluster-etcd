@@ -71,6 +71,16 @@ The cluster-etcd plugin now uses a split metadata approach that separates index 
 
 This approach reduces etcd storage requirements and simplifies control plane logic by filtering out data plane implementation details.
 
+#### Automatic UUID and Version Generation
+
+The plugin now automatically generates index metadata constants programmatically rather than storing them in etcd:
+
+- **UUID**: Generated deterministically from the index name using UUID.nameUUIDFromBytes(), ensuring all nodes produce identical UUIDs for the same index
+- **Version**: Set to the current OpenSearch version (Version.CURRENT)
+- **Creation Date**: Generated deterministically from the index name to ensure consistency across nodes
+
+This eliminates the need to manually specify these values in etcd and ensures all nodes maintain identical metadata, preventing cluster coordination failures due to hashcode mismatches.
+
 ```bash
 # Write index settings and mappings separately (new split metadata approach)
 # Settings are needed by both data nodes and coordinators
@@ -78,11 +88,7 @@ This approach reduces etcd storage requirements and simplifies control plane log
 {
   "index": {
     "number_of_shards": "1",
-    "number_of_replicas": "0",
-    "uuid": "E8F2-ebqQ1-U4SL6NoPEyw",
-    "version": {
-      "created": "137227827"
-    }
+    "number_of_replicas": "0"
   }
 }
 EOF
@@ -140,12 +146,12 @@ The coordinator automatically resolves node names to node IDs by reading health 
 
 ```bash
 # Tell the coordinator about the data nodes using their node names (not IDs).
+# Note: Index UUIDs are now generated automatically from the index name, so no need to specify them
 % cat << EOF | etcdctl put runTask/search-unit/runTask-0/goal-state
 {
   "remote_shards": {
     "indices": {
       "myindex": {
-        "uuid" : "E8F2-ebqQ1-U4SL6NoPEyw",
         "shard_routing" : [
           [
             {"node_name": "runTask-1", "primary": true }
