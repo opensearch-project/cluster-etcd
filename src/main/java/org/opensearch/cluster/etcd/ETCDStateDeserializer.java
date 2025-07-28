@@ -266,40 +266,18 @@ public class ETCDStateDeserializer {
                 indexSettings = Settings.fromXContent(parser);
             }
         
-            
-            // Fetch and parse mappings
             GetResponse mappingsResponse = mappingsFuture.get();
             if (mappingsResponse.getKvs().isEmpty()) {
                 throw new IllegalStateException("Mappings response is empty");
             }
             KeyValue mappingsKv = mappingsResponse.getKvs().get(0);
             
-            // Create MappingMetadata from the compressed source to ensure consistent format
             // This approach ensures that the source is exactly the same across all nodes
             byte[] mappingBytes = mappingsKv.getValue().getBytes();
             
-            // Wrap the raw properties in the proper mapping structure that OpenSearch expects
-            try (XContentParser parser = JsonXContent.jsonXContent.createParser(
-                NamedXContentRegistry.EMPTY, 
-                DeprecationHandler.THROW_UNSUPPORTED_OPERATION, 
-                mappingBytes
-            )) {
-                Map<String, Object> rawProperties = parser.map();
-                if (!rawProperties.isEmpty()) {
-                    // Create the properly structured mapping with type wrapper
-                    Map<String, Object> wrappedMapping = new HashMap<>();
-                    wrappedMapping.put("_doc", rawProperties);
-                    
-                    // Serialize to JSON and create CompressedXContent for consistent source
-                    ByteArrayOutputStream jsonStream = new ByteArrayOutputStream();
-                    try (XContentBuilder jsonBuilder = XContentType.JSON.contentBuilder(jsonStream)) {
-                        jsonBuilder.map(wrappedMapping);
-                    }
-                    
-                    // Create MappingMetadata from CompressedXContent to ensure consistent format
-                    CompressedXContent compressedSource = new CompressedXContent(jsonStream.toByteArray());
-                    mappingMetadata = new MappingMetadata(compressedSource);
-                }
+            if (mappingBytes.length > 0) {
+                CompressedXContent compressedSource = new CompressedXContent(mappingBytes);
+                mappingMetadata = new MappingMetadata(compressedSource);
             }
             
         } catch (InterruptedException | ExecutionException e) {
@@ -375,7 +353,7 @@ public class ETCDStateDeserializer {
         long baseEpoch = 1704067200000L; // Example: 2024-01-01 00:00:00 UTC
         
         // Generate a deterministic offset based on index name hash
-        int hashOffset = Math.abs(indexName.hashCode()) % (24 * 60 * 60 * 1000); // Within 24 hours
+        int hashOffset = (indexName.hashCode() & Integer.MAX_VALUE) % (24 * 60 * 60 * 1000);
         
         return baseEpoch + hashOffset;
     }

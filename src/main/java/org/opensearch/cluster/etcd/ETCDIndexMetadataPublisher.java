@@ -15,6 +15,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.MappingMetadata;
+import org.opensearch.common.compress.CompressedXContent;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.core.xcontent.XContentBuilder;
@@ -110,12 +111,17 @@ public class ETCDIndexMetadataPublisher {
     public void publishIndexMappings(String indexName, MappingMetadata mappingMetadata) throws IOException {
         String mappingsPath = ETCDPathUtils.buildIndexMappingsPath(clusterName, indexName);
         
-        // Serialize mappings to JSON
-        ByteArrayOutputStream jsonStream = new ByteArrayOutputStream();
-        try (XContentBuilder jsonBuilder = XContentType.JSON.contentBuilder(jsonStream)) {
-            jsonBuilder.map(mappingMetadata.sourceAsMap());
+        // This ensures that all nodes will reconstruct identical mapping metadata
+        CompressedXContent source = mappingMetadata.source();
+        byte[] mappingsJson;
+        
+        if (source != null) {
+            // Extract the source as bytes, preserving the original JSON structure
+            mappingsJson = source.uncompressed().toBytesRef().bytes;
+        } else {
+            // Fallback to empty mapping if no source is available
+            mappingsJson = "{}".getBytes(StandardCharsets.UTF_8);
         }
-        byte[] mappingsJson = jsonStream.toByteArray();
         
         // Write to etcd
         publishToEtcd(mappingsPath, mappingsJson, "mappings for index " + indexName);
