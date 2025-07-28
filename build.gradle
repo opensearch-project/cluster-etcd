@@ -16,7 +16,7 @@ buildscript {
     }
     repositories {
         mavenLocal()
-        maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+        maven { url "https://central.sonatype.com/repository/maven-snapshots/" }
         mavenCentral()
         maven { url "https://plugins.gradle.org/m2/" }
     }
@@ -27,7 +27,7 @@ buildscript {
 
 repositories {
     mavenLocal()
-    maven { url "https://aws.oss.sonatype.org/content/repositories/snapshots" }
+    maven { url "https://central.sonatype.com/repository/maven-snapshots/" }
     mavenCentral()
     maven { url "https://plugins.gradle.org/m2/" }
 }
