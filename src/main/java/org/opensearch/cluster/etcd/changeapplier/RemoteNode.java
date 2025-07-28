@@ -15,9 +15,10 @@ package org.opensearch.cluster.etcd.changeapplier;
  * TODO: We'll assume that remote node names, IDs, and ephemeral IDs are all the same.
  * Hopefully that won't cause any problems.
  *
- * @param nodeId  the name, ID, and ephemeral ID for the remote node
- * @param address the IP address (IPv4 or IPv6) of the remote node
- * @param port    the port to connect to on the remote node (usually 9300)
+ * @param nodeId     the unique identifier for the remote node
+ * @param ephemeralId the ephemeral ID for the remote node
+ * @param address    the IP address (IPv4 or IPv6) of the remote node
+ * @param port       the port to connect to on the remote node (usually 9300)
  */
 public record RemoteNode(String nodeId, String ephemeralId, String address, int port) {
 }

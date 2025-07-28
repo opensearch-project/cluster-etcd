@@ -71,12 +71,6 @@ The cluster-etcd plugin now uses a split metadata approach that separates index 
 
 This approach reduces etcd storage requirements and simplifies control plane logic by filtering out data plane implementation details.
 
-#### Automatic UUID and Version Generation
-
-The plugin now automatically generates index metadata constants programmatically rather than storing them in etcd
-
-This eliminates the need to manually specify these values in etcd and ensures all nodes maintain identical metadata, preventing cluster coordination failures due to hashcode mismatches.
-
 ```bash
 # Write index settings and mappings separately (new split metadata approach)
 # Settings are needed by both data nodes and coordinators

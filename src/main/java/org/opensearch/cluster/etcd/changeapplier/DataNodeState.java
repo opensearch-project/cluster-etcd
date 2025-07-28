@@ -26,10 +26,21 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+/**
+ * Represents the state of a data node in the etcd-coordinated cluster.
+ * Data nodes are responsible for hosting shards and handling indexing/search operations.
+ */
 public class DataNodeState extends NodeState {
     private final Map<String, IndexMetadata> indices;
     private final Map<String, Map<Integer, ShardRole>> assignedShards;
 
+    /**
+     * Creates a new DataNodeState.
+     *
+     * @param localNode      the local data node
+     * @param indices        map of index names to their metadata
+     * @param assignedShards map of index names to shard assignments (shard ID -> role)
+     */
     public DataNodeState(DiscoveryNode localNode, Map<String, IndexMetadata> indices, Map<String, Map<Integer, ShardRole>> assignedShards) {
         super(localNode);
         // The index metadata and shard assignment should be identical

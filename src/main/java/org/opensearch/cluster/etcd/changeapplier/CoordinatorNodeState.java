@@ -35,11 +35,23 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * Represents the state of a coordinator node in the etcd-coordinated cluster.
+ * Coordinator nodes are responsible for routing requests to data nodes and
+ * coordinating distributed operations across the cluster.
+ */
 public class CoordinatorNodeState extends NodeState {
 
     private final List<RemoteNode> remoteNodes;
     private final Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments;
 
+    /**
+     * Creates a new CoordinatorNodeState.
+     *
+     * @param localNode              the local coordinator node
+     * @param remoteNodes            list of remote data nodes that this coordinator manages
+     * @param remoteShardAssignments map of indices to their shard assignments across remote nodes
+     */
     public CoordinatorNodeState(DiscoveryNode localNode, List<RemoteNode> remoteNodes, Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments) {
         super(localNode);
         this.remoteNodes = remoteNodes;

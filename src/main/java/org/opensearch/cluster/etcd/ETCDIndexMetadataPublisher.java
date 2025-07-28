@@ -38,6 +38,12 @@ public class ETCDIndexMetadataPublisher {
     private final Client etcdClient;
     private final String clusterName;
 
+    /**
+     * Creates a new ETCDIndexMetadataPublisher.
+     *
+     * @param etcdClient  the etcd client for publishing metadata
+     * @param clusterName the cluster name for building etcd paths
+     */
     public ETCDIndexMetadataPublisher(Client etcdClient, String clusterName) {
         this.etcdClient = etcdClient;
         this.clusterName = clusterName;
