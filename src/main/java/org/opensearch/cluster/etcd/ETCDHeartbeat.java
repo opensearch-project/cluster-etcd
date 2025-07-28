@@ -39,6 +39,11 @@ import org.opensearch.cluster.routing.ShardRouting;
 import java.util.List;
 import java.util.ArrayList;
 
+/**
+ * Service responsible for publishing heartbeat and health information to etcd.
+ * Each node periodically publishes its status, health metrics, and shard information
+ * to allow other nodes and external systems to monitor cluster health.
+ */
 public class ETCDHeartbeat {
     private static final long HEARTBEAT_INTERVAL_SECONDS = 5;
     private final Logger logger = LogManager.getLogger(getClass());
@@ -53,6 +58,14 @@ public class ETCDHeartbeat {
     private final NodeEnvironment nodeEnvironment;
     private final ClusterService clusterService;
 
+    /**
+     * Creates a new ETCDHeartbeat service.
+     *
+     * @param localNode       the local discovery node
+     * @param etcdClient      the etcd client for publishing heartbeat data
+     * @param nodeEnvironment the node environment for accessing local node information
+     * @param clusterService  the cluster service for accessing cluster state
+     */
     public ETCDHeartbeat(DiscoveryNode localNode, Client etcdClient, NodeEnvironment nodeEnvironment, ClusterService clusterService) {
         this.nodeName = localNode.getName();
         this.nodeId = localNode.getId();
@@ -72,10 +85,16 @@ public class ETCDHeartbeat {
         return Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "etcd-heartbeat-scheduler"));
     }
 
+    /**
+     * Starts the heartbeat service, beginning periodic publication of node health data to etcd.
+     */
     public void start() {
         scheduler.scheduleAtFixedRate(this::publishHeartbeat, 0, HEARTBEAT_INTERVAL_SECONDS, TimeUnit.SECONDS);
     }
 
+    /**
+     * Stops the heartbeat service and shuts down the scheduler.
+     */
     public void stop() {
         scheduler.shutdown();
         try {

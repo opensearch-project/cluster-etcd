@@ -15,6 +15,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.MappingMetadata;
+import org.opensearch.common.compress.CompressedXContent;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.XContentType;
 import org.opensearch.core.xcontent.XContentBuilder;
@@ -38,6 +39,12 @@ public class ETCDIndexMetadataPublisher {
     private final Client etcdClient;
     private final String clusterName;
 
+    /**
+     * Creates a new ETCDIndexMetadataPublisher.
+     *
+     * @param etcdClient  the etcd client for publishing metadata
+     * @param clusterName the cluster name for building etcd paths
+     */
     public ETCDIndexMetadataPublisher(Client etcdClient, String clusterName) {
         this.etcdClient = etcdClient;
         this.clusterName = clusterName;
@@ -104,12 +111,17 @@ public class ETCDIndexMetadataPublisher {
     public void publishIndexMappings(String indexName, MappingMetadata mappingMetadata) throws IOException {
         String mappingsPath = ETCDPathUtils.buildIndexMappingsPath(clusterName, indexName);
         
-        // Serialize mappings to JSON
-        ByteArrayOutputStream jsonStream = new ByteArrayOutputStream();
-        try (XContentBuilder jsonBuilder = XContentType.JSON.contentBuilder(jsonStream)) {
-            jsonBuilder.map(mappingMetadata.sourceAsMap());
+        // This ensures that all nodes will reconstruct identical mapping metadata
+        CompressedXContent source = mappingMetadata.source();
+        byte[] mappingsJson;
+        
+        if (source != null) {
+            // Extract the source as bytes, preserving the original JSON structure
+            mappingsJson = source.uncompressed().toBytesRef().bytes;
+        } else {
+            // Fallback to empty mapping if no source is available
+            mappingsJson = "{}".getBytes(StandardCharsets.UTF_8);
         }
-        byte[] mappingsJson = jsonStream.toByteArray();
         
         // Write to etcd
         publishToEtcd(mappingsPath, mappingsJson, "mappings for index " + indexName);
@@ -148,7 +160,8 @@ public class ETCDIndexMetadataPublisher {
 
     /**
      * Extracts relevant settings from the full index settings, filtering out fields that should 
-     * be populated by the plugin rather than stored in etcd.
+     * be populated by the plugin rather than stored in etcd. This enables stateless node operation
+     * by generating constants like UUID and version programmatically instead of storing them.
      */
     private Settings extractRelevantSettings(Settings originalSettings) {
         Settings.Builder filteredSettings = Settings.builder();
@@ -167,14 +180,20 @@ public class ETCDIndexMetadataPublisher {
     
     /**
      * Determines if a setting should be filtered out (not stored in etcd) because
-     * it's populated as a constant in the plugin.
+     * it's populated as a constant in the plugin. 
      */
     private boolean shouldFilterOutSetting(String settingKey) {
-        // Filter out settings that might be constants in the future
-        if (settingKey.startsWith("constant")) { // This is a placeholder for future constants
-            return true;
+        // Filter out settings that are generated programmatically in the plugin
+        // to enable stateless node operation. All filtered settings MUST be generated
+        // deterministically to ensure identical IndexMetadata across all nodes.
+        switch (settingKey) {
+            case "index.uuid":  
+            case "index.version.created":  
+            case "index.creation_date":  
+                return true;
+            default:
+                return false;
         }
-        return false;
     }
 
     /**

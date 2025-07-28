@@ -78,11 +78,7 @@ This approach reduces etcd storage requirements and simplifies control plane log
 {
   "index": {
     "number_of_shards": "1",
-    "number_of_replicas": "0",
-    "uuid": "E8F2-ebqQ1-U4SL6NoPEyw",
-    "version": {
-      "created": "137227827"
-    }
+    "number_of_replicas": "0"
   }
 }
 EOF
@@ -140,12 +136,12 @@ The coordinator automatically resolves node names to node IDs by reading health 
 
 ```bash
 # Tell the coordinator about the data nodes using their node names (not IDs).
+# Note: Index UUIDs are now generated automatically from the index name, so no need to specify them
 % cat << EOF | etcdctl put runTask/search-unit/runTask-0/goal-state
 {
   "remote_shards": {
     "indices": {
       "myindex": {
-        "uuid" : "E8F2-ebqQ1-U4SL6NoPEyw",
         "shard_routing" : [
           [
             {"node_name": "runTask-1", "primary": true }

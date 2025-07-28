@@ -29,9 +29,16 @@ import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.DeprecationHandler;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentParser;
+import org.opensearch.common.UUIDs;
+import org.opensearch.Version;
+import org.opensearch.common.compress.CompressedXContent;
+import org.opensearch.common.xcontent.XContentType;
+import org.opensearch.core.xcontent.XContentBuilder;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -41,6 +48,14 @@ import java.util.concurrent.ExecutionException;
 import org.opensearch.common.settings.Settings;
 
 /**
+ * Deserializes node state from ETCD with stateless node support. This class generates
+ * UUID and version information programmatically instead of storing them in ETCD,
+ * enabling nodes to operate without dependency on centralized state coordination.
+ * 
+ * CRITICAL: All generated values (UUID, version, creation date) MUST be deterministic
+ * based on index name to ensure identical IndexMetadata across all nodes. Non-deterministic
+ * generation would cause hashcode mismatches and cluster coordination failures.
+ * 
  * Sample JSON:
  * <pre>
  * {
@@ -56,7 +71,7 @@ import org.opensearch.common.settings.Settings;
  *   "remote_shards": { // Coordinator node content
  *       "indices": { // Map of indices that this coordinator node is aware of.
  *          "idx1": {
- *              "uuid": "index-uuid",
+ *              // Note: UUID is no longer stored in etcd, it's generated programmatically
  *              "shard_routing": [ // Must have every shard for the index.
  *                  [
  *                    {"node_name":"node1"},
@@ -87,8 +102,7 @@ import org.opensearch.common.settings.Settings;
  * }
  * </pre>
  */
-public final class ETCDStateDeserializer {
-    private ETCDStateDeserializer() {}
+public class ETCDStateDeserializer {
     private static final Logger LOGGER = LogManager.getLogger(ETCDStateDeserializer.class);
 
     /**
@@ -155,7 +169,8 @@ public final class ETCDStateDeserializer {
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignment = new HashMap<>();
         for (Map.Entry<String, Object> indexEntry : indices.entrySet()) {
             Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
-            String uuid = (String) indexConfig.get("uuid");
+            // Generate UUID programmatically instead of reading from etcd
+            String uuid = generateDeterministicUUID(indexEntry.getKey());
             List<List<Map<String, Object>>> shardRouting = (List<List<Map<String, Object>>>) indexConfig.get("shard_routing");
             List<List<NodeShardAssignment>> shardAssignments = new ArrayList<>(shardRouting.size());
             
@@ -251,24 +266,18 @@ public final class ETCDStateDeserializer {
                 indexSettings = Settings.fromXContent(parser);
             }
         
-            
-            // Fetch and parse mappings
             GetResponse mappingsResponse = mappingsFuture.get();
             if (mappingsResponse.getKvs().isEmpty()) {
                 throw new IllegalStateException("Mappings response is empty");
             }
             KeyValue mappingsKv = mappingsResponse.getKvs().get(0);
-            try (XContentParser parser = JsonXContent.jsonXContent.createParser(
-                NamedXContentRegistry.EMPTY, 
-                DeprecationHandler.THROW_UNSUPPORTED_OPERATION, 
-                mappingsKv.getValue().getBytes()
-            )) {
-                // Parse the mapping JSON and create MappingMetadata
-                Map<String, Object> mappingMap = parser.map();
-                if (!mappingMap.isEmpty()) {
-                    // Assume single mapping type for simplicity 
-                    mappingMetadata = new MappingMetadata("_doc", mappingMap);
-                }
+            
+            // This approach ensures that the source is exactly the same across all nodes
+            byte[] mappingBytes = mappingsKv.getValue().getBytes();
+            
+            if (mappingBytes.length > 0) {
+                CompressedXContent compressedSource = new CompressedXContent(mappingBytes);
+                mappingMetadata = new MappingMetadata(compressedSource);
             }
             
         } catch (InterruptedException | ExecutionException e) {
@@ -293,8 +302,19 @@ public final class ETCDStateDeserializer {
             Settings.builder().put(indexSettings) : 
             Settings.builder();
       
+        // Generate stateless constants programmatically instead of storing in etcd
+        String indexUuid = generateDeterministicUUID(indexName);
+        settingsBuilder.put(IndexMetadata.SETTING_INDEX_UUID, indexUuid);
+        
+        // Set version to current OpenSearch version
+        settingsBuilder.put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT);
+        
+        // Set creation date deterministically if not already present (for stateless operation)
+        if (!settingsBuilder.keys().contains(IndexMetadata.SETTING_CREATION_DATE)) {
+            // Use a deterministic timestamp based on index name to ensure all nodes generate the same value
+            settingsBuilder.put(IndexMetadata.SETTING_CREATION_DATE, generateDeterministicCreationDate(indexName));
+        }
 
-        // This is just an example of how constants could be populated in the plugin.
         // Build IndexMetadata
         Settings finalSettings = settingsBuilder.build();
         IndexMetadata.Builder metadataBuilder = IndexMetadata.builder(indexName)
@@ -313,6 +333,29 @@ public final class ETCDStateDeserializer {
         }
         
         return metadataBuilder.build();
+    }
+    
+    /**
+     * Generates a deterministic UUID based on the index name to ensure all nodes 
+     * generate the same UUID for the same index. This replaces storing UUIDs in etcd.
+     */
+    private static String generateDeterministicUUID(String indexName) {
+
+        UUID uuid = UUID.nameUUIDFromBytes(indexName.getBytes(StandardCharsets.UTF_8));
+        return uuid.toString();
+    }
+    
+
+    private static long generateDeterministicCreationDate(String indexName) {
+        // Generate a deterministic timestamp based on index name
+        // This ensures all nodes generate the same creation date for the same index
+        // Use a fixed epoch time (e.g., 2024-01-01) plus a hash of the index name
+        long baseEpoch = 1704067200000L; // Example: 2024-01-01 00:00:00 UTC
+        
+        // Generate a deterministic offset based on index name hash
+        int hashOffset = (indexName.hashCode() & Integer.MAX_VALUE) % (24 * 60 * 60 * 1000);
+        
+        return baseEpoch + hashOffset;
     }
 
 
