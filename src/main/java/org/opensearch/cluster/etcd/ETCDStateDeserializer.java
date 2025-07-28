@@ -313,10 +313,6 @@ public class ETCDStateDeserializer {
     /**
      * Builds IndexMetadata with settings and mappings from etcd, plus constant values 
      * that are populated in the plugin rather than stored in etcd.
-     * 
-     * Basically, all generated constants must be deterministic to prevent hashcode mismatches
-     * between nodes that would cause cluster coordination failures. Each node must generate
-     * identical values for the same index name.
      */
     private static IndexMetadata buildIndexMetadataWithConstants(
         String indexName, 
@@ -329,7 +325,6 @@ public class ETCDStateDeserializer {
             Settings.builder();
       
         // Generate stateless constants programmatically instead of storing in etcd
-        // Generate a deterministic UUID based on index name to ensure consistency across nodes
         String indexUuid = generateDeterministicUUID(indexName);
         settingsBuilder.put(IndexMetadata.SETTING_INDEX_UUID, indexUuid);
         
@@ -367,19 +362,12 @@ public class ETCDStateDeserializer {
      * generate the same UUID for the same index. This replaces storing UUIDs in etcd.
      */
     private static String generateDeterministicUUID(String indexName) {
-        // Generate a deterministic UUID based on index name hash
-        // This ensures all nodes generate the same UUID for the same index
+
         UUID uuid = UUID.nameUUIDFromBytes(indexName.getBytes(StandardCharsets.UTF_8));
-        
-        // Convert to string format that OpenSearch expects
         return uuid.toString();
     }
     
-    /**
-     * Generates a deterministic creation date based on the index name to ensure all nodes
-     * generate the same creation date for the same index. This prevents hashcode mismatches
-     * that would cause cluster coordination failures.
-     */
+
     private static long generateDeterministicCreationDate(String indexName) {
         // Generate a deterministic timestamp based on index name
         // This ensures all nodes generate the same creation date for the same index

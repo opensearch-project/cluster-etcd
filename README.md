@@ -73,11 +73,7 @@ This approach reduces etcd storage requirements and simplifies control plane log
 
 #### Automatic UUID and Version Generation
 
-The plugin now automatically generates index metadata constants programmatically rather than storing them in etcd:
-
-- **UUID**: Generated deterministically from the index name using UUID.nameUUIDFromBytes(), ensuring all nodes produce identical UUIDs for the same index
-- **Version**: Set to the current OpenSearch version (Version.CURRENT)
-- **Creation Date**: Generated deterministically from the index name to ensure consistency across nodes
+The plugin now automatically generates index metadata constants programmatically rather than storing them in etcd
 
 This eliminates the need to manually specify these values in etcd and ensures all nodes maintain identical metadata, preventing cluster coordination failures due to hashcode mismatches.
 

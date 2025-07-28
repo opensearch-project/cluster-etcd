@@ -168,17 +168,16 @@ public class ETCDIndexMetadataPublisher {
     
     /**
      * Determines if a setting should be filtered out (not stored in etcd) because
-     * it's populated as a constant in the plugin. This is critical for preventing
-     * hashcode mismatches that cause cluster coordination failures.
+     * it's populated as a constant in the plugin. 
      */
     private boolean shouldFilterOutSetting(String settingKey) {
         // Filter out settings that are generated programmatically in the plugin
         // to enable stateless node operation. All filtered settings MUST be generated
         // deterministically to ensure identical IndexMetadata across all nodes.
         switch (settingKey) {
-            case "index.uuid":  // IndexMetadata.SETTING_INDEX_UUID - deterministic based on index name
-            case "index.version.created":  // IndexMetadata.SETTING_VERSION_CREATED - always Version.CURRENT
-            case "index.creation_date":  // IndexMetadata.SETTING_CREATION_DATE - deterministic based on index name
+            case "index.uuid":  
+            case "index.version.created":  
+            case "index.creation_date":  
                 return true;
             default:
                 return false;
