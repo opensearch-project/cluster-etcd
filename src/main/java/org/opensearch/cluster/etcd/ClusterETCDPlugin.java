@@ -15,6 +15,8 @@ import org.opensearch.cluster.etcd.changeapplier.ChangeApplierService;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.settings.Setting;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
@@ -30,6 +32,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 
@@ -49,10 +52,9 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
 
     @Override
     public void onNodeStarted(DiscoveryNode localNode) {
-        
         try {
              // Initialize the etcd client. TODO: Read config from cluster settings
-            etcdClient = Client.builder().endpoints("http://127.0.0.1:2379").build();
+            etcdClient = Client.builder().endpoints(clusterService.getClusterSettings().get(ETCD_ENDPOINT_SETTING)).build();
             
             String clusterName = clusterService.getClusterName().value();
             
@@ -71,8 +73,23 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
         return ByteSequence.from(goalStatePath, StandardCharsets.UTF_8);
     }
 
+    public static final Setting<String> ETCD_ENDPOINT_SETTING = Setting.simpleString(
+        "cluster.etcd.endpoint",
+            Setting.Property.NodeScope
+    );
+
     @Override
-    public void close() throws IOException {
+    public List<Setting<?>> getSettings() {
+        return List.of(ETCD_ENDPOINT_SETTING);
+    }
+
+    @Override
+    public boolean isClusterless() {
+        return true;
+    }
+
+    @Override
+    public void close() {
         if (etcdHeartbeat != null) {
             etcdHeartbeat.stop();
         }
