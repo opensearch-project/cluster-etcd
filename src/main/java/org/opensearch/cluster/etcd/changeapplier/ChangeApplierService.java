@@ -1,11 +1,7 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
 package org.opensearch.cluster.etcd.changeapplier;
 
 import org.apache.logging.log4j.LogManager;
@@ -24,9 +20,7 @@ public class ChangeApplierService {
     }
 
     public void applyNodeState(String source, NodeState nodeState) {
-        clusterApplierService.onNewClusterState(source,
-            () -> nodeState.buildClusterState(clusterApplierService.state()),
-            this::logError);
+        clusterApplierService.onNewClusterState(source, () -> nodeState.buildClusterState(clusterApplierService.state()), this::logError);
     }
 
     public void removeNode(String source, DiscoveryNode localNode) {

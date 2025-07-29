@@ -9,10 +9,21 @@ import org.opensearch.gradle.test.RestIntegTestTask
 
 buildscript {
     ext {
-        opensearch_group = "org.opensearch"
-        isSnapshot = "true" == System.getProperty("build.snapshot", "true")
         opensearch_version = System.getProperty("opensearch.version", "3.2.0-SNAPSHOT")
         buildVersionQualifier = System.getProperty("build.version_qualifier", "")
+        isSnapshot = "true" == System.getProperty("build.snapshot", "true")
+        version_tokens = opensearch_version.tokenize('-')
+        opensearch_build = version_tokens[0] + '.0'
+        plugin_no_snapshot = opensearch_build
+        if (buildVersionQualifier) {
+            opensearch_build += "-${buildVersionQualifier}"
+            plugin_no_snapshot += "-${buildVersionQualifier}"
+        }
+        if (isSnapshot) {
+            opensearch_build += "-SNAPSHOT"
+        }
+        opensearch_group = "org.opensearch"
+        opensearch_no_snapshot = opensearch_build.replace("-SNAPSHOT","")
     }
     repositories {
         mavenLocal()
@@ -22,6 +33,7 @@ buildscript {
     }
     dependencies {
         classpath "${opensearch_group}.gradle:build-tools:${opensearch_version}"
+        classpath "com.diffplug.spotless:spotless-plugin-gradle:6.25.0"
     }
 }
 
@@ -34,6 +46,8 @@ repositories {
 
 apply plugin: 'opensearch.opensearchplugin'
 apply plugin: 'opensearch.java-agent'
+apply plugin: 'com.diffplug.spotless'
+apply from: 'gradle/formatting.gradle'
 
 opensearchplugin {
   description = 'Plugin for polling cluster state from etcd'
@@ -49,12 +63,18 @@ afterEvaluate {
   project.validateNebulaPom.enabled = false
 }
 
+
+compileJava {
+    dependsOn spotlessApply
+}
+
 task integTest(type: RestIntegTestTask) {
     description = "Run tests against a cluster"
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath
 }
 tasks.named("check").configure { dependsOn(integTest) }
+tasks.named("check").configure { dependsOn(spotlessCheck) }
 
 integTest {
     // The --debug-jvm command-line option makes the cluster debuggable; this makes the tests debuggable

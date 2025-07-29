@@ -1,11 +1,7 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
 package org.opensearch.cluster.etcd.changeapplier;
 
 import org.opensearch.Version;
@@ -40,7 +36,11 @@ public class CoordinatorNodeState extends NodeState {
     private final List<RemoteNode> remoteNodes;
     private final Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments;
 
-    public CoordinatorNodeState(DiscoveryNode localNode, List<RemoteNode> remoteNodes, Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments) {
+    public CoordinatorNodeState(
+        DiscoveryNode localNode,
+        List<RemoteNode> remoteNodes,
+        Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments
+    ) {
         super(localNode);
         this.remoteNodes = remoteNodes;
         this.remoteShardAssignments = remoteShardAssignments;
@@ -67,7 +67,11 @@ public class CoordinatorNodeState extends NodeState {
                     if (shardRole == ShardRole.PRIMARY) {
                         if (indexHasPrimary == false && shardNum > 0) {
                             // If the index has primary shards, we need to figure it out from the first shard.
-                            throw new IllegalStateException("Index " + indexEntry.getKey().getName() + " has at least one primary shard, but the first shard has no primary assigned.");
+                            throw new IllegalStateException(
+                                "Index "
+                                    + indexEntry.getKey().getName()
+                                    + " has at least one primary shard, but the first shard has no primary assigned."
+                            );
                         }
                         indexHasPrimary = true;
                         shardHasPrimary = true;
@@ -84,7 +88,13 @@ public class CoordinatorNodeState extends NodeState {
                     shardRoutingTableBuilder.addShard(nodeEntry);
                 }
                 if (indexHasPrimary == true && shardHasPrimary == false) {
-                    throw new IllegalStateException("Index " + indexEntry.getKey().getName() + " has a primary shard, but shard " + shardNum + " has no primary assigned.");
+                    throw new IllegalStateException(
+                        "Index "
+                            + indexEntry.getKey().getName()
+                            + " has a primary shard, but shard "
+                            + shardNum
+                            + " has no primary assigned."
+                    );
                 }
                 indexRoutingTableBuilder.addIndexShard(shardRoutingTableBuilder.build());
                 shardNum++;
@@ -97,9 +107,7 @@ public class CoordinatorNodeState extends NodeState {
             if (indexHasPrimary == false) {
                 indexSettings.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
             }
-            IndexMetadata indexMetadata = IndexMetadata.builder(indexEntry.getKey().getName())
-                .settings(indexSettings)
-                .build();
+            IndexMetadata indexMetadata = IndexMetadata.builder(indexEntry.getKey().getName()).settings(indexSettings).build();
             routingTableBuilder.add(indexRoutingTableBuilder);
             metadataBuilder.put(indexMetadata, false);
         }
@@ -120,7 +128,8 @@ public class CoordinatorNodeState extends NodeState {
                     ),
                     Collections.emptyMap(),
                     Set.of(DiscoveryNodeRole.DATA_ROLE),
-                    Version.CURRENT);
+                    Version.CURRENT
+                );
             } catch (UnknownHostException e) {
                 throw new RuntimeException(e);
             }

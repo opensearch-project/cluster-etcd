@@ -1,11 +1,7 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
 package org.opensearch.cluster.etcd;
 
 import io.etcd.jetcd.ByteSequence;
@@ -17,7 +13,6 @@ import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
-import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -47,7 +42,19 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
     private NodeEnvironment nodeEnvironment;
 
     @Override
-    public Collection<Object> createComponents(org.opensearch.transport.client.Client client, ClusterService clusterService, ThreadPool threadPool, ResourceWatcherService resourceWatcherService, ScriptService scriptService, NamedXContentRegistry xContentRegistry, Environment environment, NodeEnvironment nodeEnvironment, NamedWriteableRegistry namedWriteableRegistry, IndexNameExpressionResolver indexNameExpressionResolver, Supplier<RepositoriesService> repositoriesServiceSupplier) {
+    public Collection<Object> createComponents(
+        org.opensearch.transport.client.Client client,
+        ClusterService clusterService,
+        ThreadPool threadPool,
+        ResourceWatcherService resourceWatcherService,
+        ScriptService scriptService,
+        NamedXContentRegistry xContentRegistry,
+        Environment environment,
+        NodeEnvironment nodeEnvironment,
+        NamedWriteableRegistry namedWriteableRegistry,
+        IndexNameExpressionResolver indexNameExpressionResolver,
+        Supplier<RepositoriesService> repositoriesServiceSupplier
+    ) {
         this.clusterService = clusterService;
         this.nodeEnvironment = nodeEnvironment;
         return Collections.emptySet();
@@ -56,18 +63,23 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
     @Override
     public void onNodeStarted(DiscoveryNode localNode) {
         try {
-             // Initialize the etcd client. TODO: Read config from cluster settings
+            // Initialize the etcd client. TODO: Read config from cluster settings
             String endpoint = clusterService.getClusterSettings().get(ETCD_ENDPOINT_SETTING);
             if (Strings.isNullOrEmpty(endpoint)) {
                 throw new IllegalStateException(ETCD_ENDPOINT_SETTING.getKey() + " has not been set");
             }
             etcdClient = Client.builder().endpoints(endpoint).build();
-            
+
             String clusterName = clusterService.getClusterName().value();
-            
-            etcdWatcher = new ETCDWatcher(localNode, getNodeKey(localNode, clusterName),
-                new ChangeApplierService(clusterService.getClusterApplierService()), etcdClient, clusterName);
-            
+
+            etcdWatcher = new ETCDWatcher(
+                localNode,
+                getNodeKey(localNode, clusterName),
+                new ChangeApplierService(clusterService.getClusterApplierService()),
+                etcdClient,
+                clusterName
+            );
+
             etcdHeartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
             etcdHeartbeat.start();
         } catch (IOException | ExecutionException | InterruptedException e) {
@@ -80,10 +92,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
         return ByteSequence.from(goalStatePath, StandardCharsets.UTF_8);
     }
 
-    public static final Setting<String> ETCD_ENDPOINT_SETTING = Setting.simpleString(
-        "cluster.etcd.endpoint",
-            Setting.Property.NodeScope
-    );
+    public static final Setting<String> ETCD_ENDPOINT_SETTING = Setting.simpleString("cluster.etcd.endpoint", Setting.Property.NodeScope);
 
     @Override
     public List<Setting<?>> getSettings() {

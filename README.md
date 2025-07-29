@@ -6,7 +6,7 @@ Within this branch, I'm updating the README to explain how to get started with e
 
 See instructions at https://etcd.io/docs/v3.5/install/.
 
-On my Mac, this meant `brew install etcd`. Then I just ran the `etcd` executable and left it running in a terminal tab. 
+On my Mac, this meant `brew install etcd`. Then I just ran the `etcd` executable and left it running in a terminal tab.
 
 On Ubuntu, I needed to run `sudo apt install etcd-server etcd-client` to get both the `etcd` and `etcdctl` commands. Installing the server automatically started the `etcd` process.
 
@@ -67,7 +67,7 @@ locally. The first will serve as a coordinator, while the other two will be data
 The cluster-etcd plugin now uses a split metadata approach that separates index configuration into distinct etcd keys:
 
 - **Settings**: `/indices/{index}/settings` - Basic index configuration needed by all nodes
-- **Mappings**: `/indices/{index}/mappings` - Field definitions needed primarily by data nodes  
+- **Mappings**: `/indices/{index}/mappings` - Field definitions needed primarily by data nodes
 
 This approach reduces etcd storage requirements and simplifies control plane logic by filtering out data plane implementation details.
 
@@ -195,7 +195,7 @@ Nodes automatically publish health and status information to ETCD at the path `{
 # View heartbeat data for all nodes
 % etcdctl get "runTask/search-unit/" --prefix
 
-# View specific node's health data  
+# View specific node's health data
 % etcdctl get "runTask/search-unit/<nodename>/actual-state"
 ```
 

@@ -1,11 +1,7 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
 package org.opensearch.cluster.etcd;
 
 import org.apache.hc.core5.http.ParseException;
@@ -17,9 +13,6 @@ import org.opensearch.rest.RestRequest;
 import org.opensearch.test.rest.OpenSearchRestTestCase;
 
 import java.io.IOException;
-import java.util.Collections;
-import java.util.List;
-import java.util.Map;
 
 public class ClusterETCDIT extends OpenSearchRestTestCase {
 
