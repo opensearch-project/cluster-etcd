@@ -18,6 +18,7 @@ import org.opensearch.core.xcontent.XContentBuilder;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
@@ -103,7 +104,16 @@ public class ETCDIndexMetadataPublisher {
         // Serialize mappings to JSON
         ByteArrayOutputStream jsonStream = new ByteArrayOutputStream();
         try (XContentBuilder jsonBuilder = XContentType.JSON.contentBuilder(jsonStream)) {
-            jsonBuilder.map(mappingMetadata.sourceAsMap());
+            // Extract the mapping content without the type wrapper (_doc)
+            // This ensures consistency with how the deserializer expects the format
+            Map<String, Object> sourceMap = mappingMetadata.sourceAsMap();
+            if (sourceMap.containsKey("_doc")) {
+                // If it has the _doc wrapper, extract just the content
+                jsonBuilder.map((Map<String, Object>) sourceMap.get("_doc"));
+            } else {
+                // Otherwise use as-is
+                jsonBuilder.map(sourceMap);
+            }
         }
         byte[] mappingsJson = jsonStream.toByteArray();
 
@@ -170,7 +180,15 @@ public class ETCDIndexMetadataPublisher {
         if (settingKey.startsWith("constant")) { // This is a placeholder for future constants
             return true;
         }
-        return false;
+        
+        switch (settingKey) {
+            case IndexMetadata.SETTING_INDEX_UUID:
+            case IndexMetadata.SETTING_VERSION_CREATED:
+            case IndexMetadata.SETTING_CREATION_DATE:
+                return true;
+            default:
+                return false;
+        }
     }
 
     /**

@@ -20,11 +20,13 @@ import org.opensearch.cluster.etcd.changeapplier.ShardRole;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.json.JsonXContent;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.DeprecationHandler;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentParser;
+import org.opensearch.Version;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -166,7 +168,9 @@ public final class ETCDStateDeserializer {
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignment = new HashMap<>();
         for (Map.Entry<String, Object> indexEntry : indices.entrySet()) {
             Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
-            String uuid = (String) indexConfig.get("uuid");
+            // Use index name as UUID if not explicitly provided in etcd
+            // This ensures consistency across all nodes while keeping it simple
+            String uuid = (String) indexConfig.getOrDefault("uuid", indexEntry.getKey());
             List<List<Map<String, Object>>> shardRouting = (List<List<Map<String, Object>>>) indexConfig.get("shard_routing");
             List<List<NodeShardAssignment>> shardAssignments = new ArrayList<>(shardRouting.size());
 
@@ -313,7 +317,19 @@ public final class ETCDStateDeserializer {
         // Start with etcd-sourced settings
         Settings.Builder settingsBuilder = indexSettings != null ? Settings.builder().put(indexSettings) : Settings.builder();
 
-        // This is just an example of how constants could be populated in the plugin.
+        // Add required system constants that must be present for IndexMetadata
+        // Use index name as UUID for simplicity and consistency
+        settingsBuilder.put(IndexMetadata.SETTING_INDEX_UUID, indexName);
+
+        // Set version to current OpenSearch version
+        settingsBuilder.put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT);
+
+        // Set creation date deterministically if not already present (for stateless operation)
+        if (!settingsBuilder.keys().contains(IndexMetadata.SETTING_CREATION_DATE)) {
+            // Use a deterministic timestamp based on index name to ensure all nodes generate the same value
+            settingsBuilder.put(IndexMetadata.SETTING_CREATION_DATE, generateDeterministicCreationDate(indexName));
+        }
+
         // Build IndexMetadata
         Settings finalSettings = settingsBuilder.build();
         IndexMetadata.Builder metadataBuilder = IndexMetadata.builder(indexName).settings(finalSettings);
@@ -391,6 +407,22 @@ public final class ETCDStateDeserializer {
 
             return new NodeHealthInfo(nodeId, ephemeralId, address, port);
         }
+    }
+
+    /**
+     * Generates a deterministic creation date based on the index name.
+     * This ensures all nodes generate the same creation date for the same index.
+     */
+    private static long generateDeterministicCreationDate(String indexName) {
+        // Generate a deterministic timestamp based on index name
+        // This ensures all nodes generate the same creation date for the same index
+        // Use a fixed epoch time (e.g., 2024-01-01) plus a hash of the index name
+        long baseEpoch = 1704067200000L; // 2024-01-01 00:00:00 UTC
+
+        // Generate a deterministic offset based on index name hash
+        int hashOffset = (indexName.hashCode() & Integer.MAX_VALUE) % (24 * 60 * 60 * 1000);
+
+        return baseEpoch + hashOffset;
     }
 
     private static class NodeHealthInfo {
