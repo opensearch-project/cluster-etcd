@@ -83,8 +83,15 @@ integTest {
     }
 }
 
+
+def numNodes = findProperty('numNodes') as Integer ?: 1
+def numZones = findProperty('numZones') as Integer ?: 1
+
 testClusters.integTest {
     testDistribution = "ARCHIVE"
+
+    if (numZones > 1) numberOfZones = numZones
+    if (numNodes > 1) numberOfNodes = numNodes
 
     // This installs our plugin into the testClusters
     plugin(project.tasks.bundlePlugin.archiveFile)

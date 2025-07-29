@@ -47,18 +47,19 @@ locally. The first will serve as a coordinator, while the other two will be data
 # Checkout the correct branch
 % git checkout clusterless_datanode
 
-# Run with the cluster-etcd plugin loaded and launch three nodes. We also need to set the clusterless mode feature flag.
-% ./gradlew run -PinstalledPlugins="['cluster-etcd']" -PnumNodes=3 -Dtests.opensearch.opensearch.experimental.feature.clusterless.enabled=true
+# Run with the cluster-etcd plugin loaded and launch three nodes. 
+# The plugin is automatically installed and etcd endpoint is configured in build.gradle.
+% ./gradlew run -PnumNodes=3
 
 # In another tab, check the local cluster state for each node
 
-# In the examples below, this will be the coordinator node. Note that the node name is runTask-0.
+# In the examples below, this will be the coordinator node. Note that the node name is integTest-0.
 % curl 'http://localhost:9200/_cluster/state?local&pretty'
 
-# In the examples below, this will be the first data node. Note that the node name is runTask-1.
+# In the examples below, this will be the first data node. Note that the node name is integTest-1.
 % curl 'http://localhost:9201/_cluster/state?local&pretty'
 
-# In the examples below, this will be the second data node. Note that the node name is runTask-2.
+# In the examples below, this will be the second data node. Note that the node name is integTest-2.
 % curl 'http://localhost:9202/_cluster/state?local&pretty'
 ```
 
@@ -74,21 +75,18 @@ This approach reduces etcd storage requirements and simplifies control plane log
 ```bash
 # Write index settings and mappings separately (new split metadata approach)
 # Settings are needed by both data nodes and coordinators
-% cat << EOF | etcdctl put runTask/indices/myindex/settings
+# Note: UUID, version, and creation date are generated automatically by nodes
+% cat << EOF | etcdctl put integTest/indices/myindex/settings
 {
   "index": {
-    "number_of_shards": "1",
-    "number_of_replicas": "0",
-    "uuid": "E8F2-ebqQ1-U4SL6NoPEyw",
-    "version": {
-      "created": "137227827"
-    }
+    "number_of_shards": "2",
+    "number_of_replicas": "0"
   }
 }
 EOF
 
 # Mappings are needed by data nodes only (flattened structure)
-% cat << EOF | etcdctl put runTask/indices/myindex/mappings
+% cat << EOF | etcdctl put integTest/indices/myindex/mappings
 {
   "properties": {
     "title": {
@@ -105,14 +103,14 @@ EOF
 EOF
 
 # Assign primary for shard 0 of myindex to the node listening on port 9201/9301
-% etcdctl put runTask/search-unit/runTask-1/goal-state '{"local_shards":{"myindex":{"0":"PRIMARY"}}}'
+% etcdctl put integTest/search-unit/integTest-1/goal-state '{"local_shards":{"myindex":{"0":"PRIMARY"}}}'
 
 # Assign primary for shard 1 of myindex to the node listening on port 9202/9302
-% etcdctl put runTask/search-unit/runTask-2/goal-state '{"local_shards":{"myindex":{"1":"PRIMARY"}}}'
+% etcdctl put integTest/search-unit/integTest-2/goal-state '{"local_shards":{"myindex":{"1":"PRIMARY"}}}'
 
 # Verify the split metadata was stored correctly
-% etcdctl get "runTask/indices/myindex/settings"
-% etcdctl get "runTask/indices/myindex/mappings"
+% etcdctl get "integTest/indices/myindex/settings"
+% etcdctl get "integTest/indices/myindex/mappings"
 
 # Check all keys to see the new structure
 % etcdctl get "" --from-key --keys-only
@@ -140,18 +138,17 @@ The coordinator automatically resolves node names to node IDs by reading health 
 
 ```bash
 # Tell the coordinator about the data nodes using their node names (not IDs).
-% cat << EOF | etcdctl put runTask/search-unit/runTask-0/goal-state
+% cat << EOF | etcdctl put integTest/search-unit/integTest-0/goal-state
 {
   "remote_shards": {
     "indices": {
       "myindex": {
-        "uuid" : "E8F2-ebqQ1-U4SL6NoPEyw",
         "shard_routing" : [
           [
-            {"node_name": "runTask-1", "primary": true }
+            {"node_name": "integTest-1", "primary": true }
           ],
           [
-            {"node_name": "runTask-2", "primary": true }
+            {"node_name": "integTest-2", "primary": true }
           ]
         ]
       }
@@ -193,10 +190,13 @@ Nodes automatically publish health and status information to ETCD at the path `{
 
 ```bash
 # View heartbeat data for all nodes
-% etcdctl get "runTask/search-unit/" --prefix
+% etcdctl get "integTest/search-unit/" --prefix
 
 # View specific node's health data
-% etcdctl get "runTask/search-unit/<nodename>/actual-state"
+% etcdctl get "integTest/search-unit/<nodename>/actual-state"
+
+# Example: View coordinator node health
+% etcdctl get "integTest/search-unit/integTest-0/actual-state"
 ```
 
 <img src="https://opensearch.org/assets/img/opensearch-logo-themed.svg" height="64px">
