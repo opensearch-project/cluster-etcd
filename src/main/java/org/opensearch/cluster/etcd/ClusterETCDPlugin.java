@@ -11,16 +11,19 @@ package org.opensearch.cluster.etcd;
 import io.etcd.jetcd.ByteSequence;
 import io.etcd.jetcd.Client;
 
+import org.opensearch.action.support.ActionFilter;
 import org.opensearch.cluster.etcd.changeapplier.ChangeApplierService;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
+import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.ClusterPlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.repositories.RepositoriesService;
@@ -36,7 +39,7 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 
-public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
+public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPlugin {
     private ClusterService clusterService;
     private ETCDWatcher etcdWatcher;
     private ETCDHeartbeat etcdHeartbeat;
@@ -54,7 +57,11 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
     public void onNodeStarted(DiscoveryNode localNode) {
         try {
              // Initialize the etcd client. TODO: Read config from cluster settings
-            etcdClient = Client.builder().endpoints(clusterService.getClusterSettings().get(ETCD_ENDPOINT_SETTING)).build();
+            String endpoint = clusterService.getClusterSettings().get(ETCD_ENDPOINT_SETTING);
+            if (Strings.isNullOrEmpty(endpoint)) {
+                throw new IllegalStateException(ETCD_ENDPOINT_SETTING.getKey() + " has not been set");
+            }
+            etcdClient = Client.builder().endpoints(endpoint).build();
             
             String clusterName = clusterService.getClusterName().value();
             
@@ -99,5 +106,10 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin {
         if (etcdClient != null) {
             etcdClient.close();
         }
+    }
+
+    @Override
+    public List<ActionFilter> getActionFilters() {
+        return List.of(new ClusterHealthActionFilter(clusterService));
     }
 }

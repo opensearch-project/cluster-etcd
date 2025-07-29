@@ -68,6 +68,8 @@ testClusters.integTest {
 
     // This installs our plugin into the testClusters
     plugin(project.tasks.bundlePlugin.archiveFile)
+
+    setting 'cluster.etcd.endpoint', 'http://localhost:2379'
 }
 
 run {
