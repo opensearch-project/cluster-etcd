@@ -1,11 +1,7 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
 package org.opensearch.cluster.etcd.changeapplier;
 
 import org.opensearch.cluster.ClusterState;
@@ -53,8 +49,7 @@ public class DataNodeState extends NodeState {
             IndexRoutingTable previousIndexRoutingTable = previousState.routingTable().index(index);
             IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(index);
             IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata);
-            for (Map.Entry<Integer, ShardRole> shardRoleEntry :
-                    assignedShards.get(index.getName()).entrySet()) {
+            for (Map.Entry<Integer, ShardRole> shardRoleEntry : assignedShards.get(index.getName()).entrySet()) {
                 int shardNum = shardRoleEntry.getKey();
                 ShardRole role = shardRoleEntry.getValue();
                 ShardId shardId = new ShardId(indexMetadata.getIndex(), shardNum);
@@ -64,15 +59,19 @@ public class DataNodeState extends NodeState {
                     role == ShardRole.PRIMARY,
                     role == ShardRole.SEARCH_REPLICA,
                     RecoverySource.EmptyStoreRecoverySource.INSTANCE, // TODO: Support other recovery sources
-                    unassignedInfo);
+                    unassignedInfo
+                );
                 shardRouting = shardRouting.initialize(localNode.getId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
-                IndexShardRoutingTable previousShardRoutingTable = previousIndexRoutingTable == null ? null : previousIndexRoutingTable.shard(shardNum);
-                Optional<ShardRouting> previouslyStartedShard = previousShardRoutingTable == null ? Optional.empty() : previousShardRoutingTable
-                    .shards()
-                    .stream()
-                    .filter(sr -> localNode.getId().equals(sr.currentNodeId()))
-                    .filter(ShardRouting::started)
-                    .findAny();
+                IndexShardRoutingTable previousShardRoutingTable = previousIndexRoutingTable == null
+                    ? null
+                    : previousIndexRoutingTable.shard(shardNum);
+                Optional<ShardRouting> previouslyStartedShard = previousShardRoutingTable == null
+                    ? Optional.empty()
+                    : previousShardRoutingTable.shards()
+                        .stream()
+                        .filter(sr -> localNode.getId().equals(sr.currentNodeId()))
+                        .filter(ShardRouting::started)
+                        .findAny();
                 if (previouslyStartedShard.isPresent()) {
                     // TODO: Someone needs to moveToStarted the first time. Probably on the local node.
                     shardRouting = shardRouting.moveToStarted();

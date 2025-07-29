@@ -1,11 +1,7 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
 package org.opensearch.cluster.etcd;
 
 import io.etcd.jetcd.ByteSequence;
@@ -31,18 +27,25 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-public class ETCDWatcher implements Closeable{
+public class ETCDWatcher implements Closeable {
     private final Logger logger = LogManager.getLogger(ETCDWatcher.class);
     private final Client etcdClient;
     private final DiscoveryNode localNode;
     private final Watch.Watcher nodeWatcher;
     private final ChangeApplierService changeApplierService;
-    private final ScheduledExecutorService scheduledExecutorService =
-            Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "etcd-watcher-scheduler"));
+    private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(
+        r -> new Thread(r, "etcd-watcher-scheduler")
+    );
     private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
     private final String clusterName;
 
-    public ETCDWatcher(DiscoveryNode localNode, ByteSequence nodeKey, ChangeApplierService changeApplierService, Client etcdClient, String clusterName) throws IOException, ExecutionException, InterruptedException {
+    public ETCDWatcher(
+        DiscoveryNode localNode,
+        ByteSequence nodeKey,
+        ChangeApplierService changeApplierService,
+        Client etcdClient,
+        String clusterName
+    ) throws IOException, ExecutionException, InterruptedException {
         this.localNode = localNode;
         this.etcdClient = etcdClient;
         this.changeApplierService = changeApplierService;

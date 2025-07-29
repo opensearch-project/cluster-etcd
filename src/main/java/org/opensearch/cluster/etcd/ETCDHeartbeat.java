@@ -1,9 +1,6 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
 package org.opensearch.cluster.etcd;
 
@@ -100,7 +97,7 @@ public class ETCDHeartbeat {
         ByteSizeValue memoryMax = osStats.getMem().getTotal();
         ByteSizeValue memoryUsed = osStats.getMem().getUsed();
 
-       // Disk
+        // Disk
         FsProbe fsProbe = new FsProbe(nodeEnvironment, null);
         long diskTotalMB = 0;
         long diskAvailableMB = 0;
@@ -116,10 +113,10 @@ public class ETCDHeartbeat {
 
         // Get heap info
         JvmStats jvmStats = JvmStats.jvmStats();
-        int heapUsedPercent = jvmStats.getMem().getHeapUsedPercent();  
+        int heapUsedPercent = jvmStats.getMem().getHeapUsedPercent();
         ByteSizeValue heapMax = jvmStats.getMem().getHeapMax();
         ByteSizeValue heapUsed = jvmStats.getMem().getHeapUsed();
-        
+
         // Build heartbeat data as a Map
         Map<String, Object> heartbeatData = new HashMap<>();
         heartbeatData.put("timestamp", System.currentTimeMillis());
@@ -138,7 +135,7 @@ public class ETCDHeartbeat {
         heartbeatData.put("heapUsedPercent", heapUsedPercent);
         heartbeatData.put("diskTotalMB", diskTotalMB);
         heartbeatData.put("diskAvailableMB", diskAvailableMB);
-        
+
         // Add node shard routing information
         try {
             ClusterState clusterState = clusterService.state();
@@ -150,14 +147,14 @@ public class ETCDHeartbeat {
 
         try {
             KV kvClient = etcdClient.getKVClient();
-            
+
             // Convert Map to JSON using XContent
             ByteArrayOutputStream jsonStream = new ByteArrayOutputStream();
             try (XContentBuilder jsonBuilder = XContentType.JSON.contentBuilder(jsonStream)) {
                 jsonBuilder.map(heartbeatData);
             }
             byte[] jsonBytes = jsonStream.toByteArray();
-            
+
             ByteSequence value = ByteSequence.from(jsonBytes);
             kvClient.put(nodeStateKey, value).get();
         } catch (InterruptedException | ExecutionException | IOException e) {
@@ -167,16 +164,16 @@ public class ETCDHeartbeat {
             throw new RuntimeException("Failed to publish heartbeat", e);
         }
     }
-    
-    // Get routing map for node by filtering through clusterState's routing table 
+
+    // Get routing map for node by filtering through clusterState's routing table
     private Map<String, List<Map<String, Object>>> getNodeRoutingMap(ClusterState clusterState) {
         Map<String, List<Map<String, Object>>> nodeRoutingMap = new HashMap<>();
-        
+
         // Iterate through all indices and their shards - report full cluster view
         for (IndexRoutingTable indexRoutingTable : clusterState.getRoutingTable()) {
             String indexName = indexRoutingTable.getIndex().getName();
             List<Map<String, Object>> allShards = new ArrayList<>();
-            
+
             for (IndexShardRoutingTable shardRoutingTable : indexRoutingTable) {
                 int shardId = shardRoutingTable.shardId().id();
                 // Include all shards regardless of which node they're assigned to
@@ -194,12 +191,12 @@ public class ETCDHeartbeat {
                     allShards.add(shardInfo);
                 }
             }
-            
+
             if (!allShards.isEmpty()) {
                 nodeRoutingMap.put(indexName, allShards);
             }
         }
-        
+
         return nodeRoutingMap;
     }
 }
