@@ -47,6 +47,7 @@ repositories {
 apply plugin: 'opensearch.opensearchplugin'
 apply plugin: 'opensearch.java-agent'
 apply plugin: 'com.diffplug.spotless'
+apply plugin: 'opensearch.pluginzip'
 apply from: 'gradle/formatting.gradle'
 
 opensearchplugin {
@@ -54,6 +55,30 @@ opensearchplugin {
   classname = 'org.opensearch.cluster.etcd.ClusterETCDPlugin'
   licenseFile rootProject.file('LICENSE.txt')
   noticeFile rootProject.file('NOTICE.txt')
+}
+
+publishing {
+    publications {
+        pluginZip(MavenPublication) { publication ->
+            pom {
+                name = "cluster-etcd"
+                description = "OpenSearch plugin for polling cluster state from etcd"
+                groupId = "org.opensearch.plugin"
+                licenses {
+                    license {
+                        name = "The Apache License, Version 2.0"
+                        url = "http://www.apache.org/licenses/LICENSE-2.0.txt"
+                    }
+                }
+                developers {
+                    developer {
+                        name = "OpenSearch"
+                        url = "https://github.com/opensearch-project/k-NN"
+                    }
+                }
+            }
+        }
+    }
 }
 
 // This requires an additional Jar not published as part of build-tools
@@ -122,6 +147,7 @@ dependencies {
   implementation "io.etcd:jetcd-common:${versions.jetcd}"
   implementation "io.etcd:jetcd-core:${versions.jetcd}"
   implementation "io.etcd:jetcd-grpc:${versions.jetcd}"
+  testImplementation "io.etcd:jetcd-launcher:${versions.jetcd}"
   implementation "io.grpc:grpc-api:${versions.grpc}"
   implementation "io.grpc:grpc-context:${versions.grpc}"
   runtimeOnly "io.grpc:grpc-core:${versions.grpc}"
