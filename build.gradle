@@ -73,7 +73,7 @@ publishing {
                 developers {
                     developer {
                         name = "OpenSearch"
-                        url = "https://github.com/opensearch-project/k-NN"
+                        url = "https://github.com/opensearch-project/cluster-etcd"
                     }
                 }
             }
