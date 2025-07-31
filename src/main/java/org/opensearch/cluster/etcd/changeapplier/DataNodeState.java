@@ -15,6 +15,7 @@ import org.opensearch.cluster.routing.RecoverySource;
 import org.opensearch.cluster.routing.RoutingTable;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.UnassignedInfo;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
 
@@ -78,6 +79,11 @@ public class DataNodeState extends NodeState {
                 }
                 indexRoutingTableBuilder.addShard(shardRouting);
                 indexMetadataBuilder.putInSyncAllocationIds(shardNum, Set.of(shardRouting.allocationId().getId()));
+                if (role == ShardRole.SEARCH_REPLICA) {
+                    Settings.Builder settingsBuilder = Settings.builder().put(indexMetadata.getSettings());
+                    settingsBuilder.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
+                    indexMetadataBuilder.settings(settingsBuilder.build());
+                }
             }
             routingTableBuilder.add(indexRoutingTableBuilder);
             metadataBuilder.put(indexMetadataBuilder);
