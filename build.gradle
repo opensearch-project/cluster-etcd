@@ -356,3 +356,7 @@ thirdPartyAudit {
      'io.netty.util.internal.shaded.org.jctools.util.UnsafeRefArrayAccess',
     )
 }
+
+allprojects {
+    version = opensearch_version + '.0'
+}
