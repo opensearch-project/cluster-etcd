@@ -14,8 +14,8 @@ import io.etcd.jetcd.watch.WatchEvent;
 import io.etcd.jetcd.watch.WatchResponse;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.cluster.etcd.changeapplier.ChangeApplierService;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
+import org.opensearch.cluster.etcd.changeapplier.NodeStateApplier;
 import org.opensearch.cluster.node.DiscoveryNode;
 
 import java.io.Closeable;
@@ -32,7 +32,7 @@ public class ETCDWatcher implements Closeable {
     private final Client etcdClient;
     private final DiscoveryNode localNode;
     private final Watch.Watcher nodeWatcher;
-    private final ChangeApplierService changeApplierService;
+    private final NodeStateApplier nodeStateApplier;
     private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(
         r -> new Thread(r, "etcd-watcher-scheduler")
     );
@@ -42,13 +42,13 @@ public class ETCDWatcher implements Closeable {
     public ETCDWatcher(
         DiscoveryNode localNode,
         ByteSequence nodeKey,
-        ChangeApplierService changeApplierService,
+        NodeStateApplier nodeStateApplier,
         Client etcdClient,
         String clusterName
     ) throws IOException, ExecutionException, InterruptedException {
         this.localNode = localNode;
         this.etcdClient = etcdClient;
-        this.changeApplierService = changeApplierService;
+        this.nodeStateApplier = nodeStateApplier;
         this.clusterName = clusterName;
         loadInitialState(nodeKey);
         nodeWatcher = etcdClient.getWatchClient().watch(nodeKey, WatchOption.builder().withRevision(0).build(), new NodeListener());
@@ -57,6 +57,7 @@ public class ETCDWatcher implements Closeable {
     @Override
     public void close() {
         nodeWatcher.close();
+        scheduledExecutorService.close();
         etcdClient.close();
     }
 
@@ -125,13 +126,13 @@ public class ETCDWatcher implements Closeable {
     private void handleNodeChange(KeyValue keyValue) {
         try {
             NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(localNode, keyValue.getValue(), etcdClient, clusterName);
-            changeApplierService.applyNodeState("update-node " + keyValue.getKey().toString(), nodeState);
+            nodeStateApplier.applyNodeState("update-node " + keyValue.getKey().toString(), nodeState);
         } catch (IOException e) {
             logger.error("Error while reading node state", e);
         }
     }
 
     private void removeNode(KeyValue keyValue) {
-        changeApplierService.removeNode("remove-node " + keyValue.getKey().toString(), localNode);
+        nodeStateApplier.removeNode("remove-node " + keyValue.getKey().toString(), localNode);
     }
 }

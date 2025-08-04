@@ -1,9 +1,6 @@
 name: Build and Test Plugin
 
 on:
-  push:
-    branches:
-      - "*"
   pull_request:
     branches:
       - "*"
@@ -14,8 +11,6 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - macOS-latest
-          - windows-latest
         java:
           - 21
           - 23
