@@ -10,6 +10,7 @@ import io.etcd.jetcd.Client;
 import io.etcd.jetcd.launcher.Etcd;
 import io.etcd.jetcd.launcher.EtcdCluster;
 import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.etcd.changeapplier.CoordinatorNodeState;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeState;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
 import org.opensearch.cluster.etcd.changeapplier.NodeStateApplier;
@@ -43,7 +44,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
         }
     }
 
-    public void testETCDWatcher() throws IOException, ExecutionException, InterruptedException {
+    public void testETCDWatcherDataNode() throws IOException, ExecutionException, InterruptedException {
 
         String clusterName = "test-cluster";
         String nodeName = "test-node";
@@ -112,6 +113,124 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
                 await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
 
+            }
+        }
+    }
+
+    public void testETCDWatcherCoordinatorNode() throws IOException, ExecutionException, InterruptedException {
+        String clusterName = "test-cluster";
+        String nodeName = "test-coordinator-node";
+        String indexName = "test-index";
+        Settings localNodeSettings = Settings.builder().put("cluster.name", clusterName).put("node.name", nodeName).build();
+        DiscoveryNode localNode = DiscoveryNode.createLocal(
+            localNodeSettings,
+            new TransportAddress(TransportAddress.META_ADDRESS, 9200),
+            nodeName
+        );
+
+        MockNodeStateApplier mockNodeStateApplier = new MockNodeStateApplier();
+        String configPath = ETCDPathUtils.buildSearchUnitConfigPath(clusterName, nodeName);
+
+        try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
+            etcdCluster.start();
+            try (
+                Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build();
+                ETCDWatcher etcdWatcher = new ETCDWatcher(
+                    localNode,
+                    ByteSequence.from(configPath, StandardCharsets.UTF_8),
+                    mockNodeStateApplier,
+                    etcdClient,
+                    clusterName
+                )
+            ) {
+                assertNull(mockNodeStateApplier.appliedNodeState);
+
+                // Set up health information for remote nodes
+                String remoteNodeName1 = "remote-node-1";
+                String remoteNodeName2 = "remote-node-2";
+                String healthPath1 = ETCDPathUtils.buildNodeActualStatePath(clusterName, remoteNodeName1);
+                String healthPath2 = ETCDPathUtils.buildNodeActualStatePath(clusterName, remoteNodeName2);
+
+                etcdPut(etcdClient, healthPath1, """
+                    {
+                        "nodeId": "remote-node-id-1",
+                        "ephemeralId": "ephemeral-id-1",
+                        "address": "192.168.1.1",
+                        "port": 9300,
+                        "timestamp": 1750099493841,
+                        "heartbeatIntervalSeconds": 5
+                    }
+                    """);
+                etcdPut(etcdClient, healthPath2, """
+                    {
+                        "nodeId": "remote-node-id-2",
+                        "ephemeralId": "ephemeral-id-2",
+                        "address": "192.168.1.2",
+                        "port": 9300,
+                        "timestamp": 1750099493841,
+                        "heartbeatIntervalSeconds": 5
+                    }
+                    """);
+
+                // Add coordinator node configuration with remote_shards
+                etcdPut(etcdClient, configPath, """
+                    {
+                       "remote_shards": {
+                         "indices": {
+                           "test-index": {
+                             "uuid": "test-index-uuid",
+                             "shard_routing": [
+                               [
+                                 {"node_name": "remote-node-1", "primary": true},
+                                 {"node_name": "remote-node-2"}
+                               ],
+                               [
+                                 {"node_name": "remote-node-2", "primary": true}
+                               ]
+                             ]
+                           }
+                         }
+                       }
+                    }
+                    """);
+
+                // Verify coordinator node state is applied
+                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+                    assertNotNull(mockNodeStateApplier.appliedNodeState);
+                    assertTrue(mockNodeStateApplier.appliedNodeState instanceof CoordinatorNodeState);
+                    CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) mockNodeStateApplier.appliedNodeState;
+                    ClusterState clusterState = coordinatorNodeState.buildClusterState(ClusterState.EMPTY_STATE);
+
+                    // Verify the coordinator node sees the index
+                    assertTrue(clusterState.metadata().hasIndex(indexName));
+                    assertEquals(2, clusterState.metadata().index(indexName).getNumberOfShards());
+
+                    // Verify routing table has the correct shard assignments
+                    assertEquals(2, clusterState.routingTable().index(indexName).shards().size());
+
+                    // Verify shard 0 has primary on remote-node-1 and replica on remote-node-2
+                    ShardRouting shard0Primary = clusterState.routingTable().index(indexName).shard(0).primaryShard();
+                    assertTrue(shard0Primary.primary());
+                    assertEquals("remote-node-id-1", shard0Primary.currentNodeId());
+                    assertEquals(1, clusterState.routingTable().index(indexName).shard(0).replicaShards().size());
+                    ShardRouting shard0Replica = clusterState.routingTable().index(indexName).shard(0).replicaShards().getFirst();
+                    assertEquals("remote-node-id-2", shard0Replica.currentNodeId());
+
+                    // Verify shard 1 has primary on remote-node-2
+                    ShardRouting shard1Primary = clusterState.routingTable().index(indexName).shard(1).primaryShard();
+                    assertTrue(shard1Primary.primary());
+                    assertEquals("remote-node-id-2", shard1Primary.currentNodeId());
+
+                    // Verify remote nodes are in the cluster state
+                    assertNotNull(clusterState.nodes().get("remote-node-id-1"));
+                    assertNotNull(clusterState.nodes().get("remote-node-id-2"));
+                });
+
+                // Remove the coordinator node config to trigger removal
+                etcdClient.getKVClient().delete(ByteSequence.from(configPath, StandardCharsets.UTF_8)).get();
+
+                // Verify coordinator node state is removed
+                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
             }
         }
     }
