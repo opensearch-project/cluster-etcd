@@ -47,7 +47,7 @@ locally. The first will serve as a coordinator, while the other two will be data
 # Checkout the correct branch
 % git checkout clusterless_datanode
 
-# Run with the cluster-etcd plugin loaded and launch three nodes. 
+# Run with the cluster-etcd plugin loaded and launch three nodes.
 # The plugin is automatically installed and etcd endpoint is configured in build.gradle.
 % ./gradlew run -PnumNodes=3
 

@@ -180,7 +180,7 @@ public class ETCDIndexMetadataPublisher {
         if (settingKey.startsWith("constant")) { // This is a placeholder for future constants
             return true;
         }
-        
+
         switch (settingKey) {
             case IndexMetadata.SETTING_INDEX_UUID:
             case IndexMetadata.SETTING_VERSION_CREATED:
