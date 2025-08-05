@@ -63,12 +63,14 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
     @Override
     public void onNodeStarted(DiscoveryNode localNode) {
         try {
-            // Initialize the etcd client. TODO: Read config from cluster settings
-            String endpoint = clusterService.getClusterSettings().get(ETCD_ENDPOINT_SETTING);
-            if (Strings.isNullOrEmpty(endpoint)) {
+            // Initialize the etcd client. Supports comma-separated endpoints.
+            String endpointSetting = clusterService.getClusterSettings().get(ETCD_ENDPOINT_SETTING);
+            if (Strings.isNullOrEmpty(endpointSetting)) {
                 throw new IllegalStateException(ETCD_ENDPOINT_SETTING.getKey() + " has not been set");
             }
-            etcdClient = Client.builder().endpoints(endpoint).build();
+            String[] endpoints = endpointSetting.split(",");
+
+            etcdClient = Client.builder().endpoints(endpoints).build();
 
             String clusterName = clusterService.getClusterName().value();
 
