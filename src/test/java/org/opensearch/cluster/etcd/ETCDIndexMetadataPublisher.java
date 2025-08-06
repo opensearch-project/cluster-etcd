@@ -26,7 +26,7 @@ import java.util.concurrent.ExecutionException;
  * Utility class for publishing index metadata to etcd in split format.
  * This splits index metadata into separate etcd entries for settings, mappings, and other fields.
  *
- * <p>The control plane can use this to publish index metadata that will be consumed by OpenSearch nodes.
+ * <p>Test classes can use this to publish index metadata that will be consumed by OpenSearch nodes.
  * Data nodes will fetch both settings and mappings, while coordinator nodes may only need settings.
  */
 public class ETCDIndexMetadataPublisher {

@@ -19,7 +19,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ExecutionException;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -37,7 +36,7 @@ import java.util.List;
 import java.util.ArrayList;
 
 public class ETCDHeartbeat {
-    private static final long HEARTBEAT_INTERVAL_SECONDS = 5;
+    private static final long DEFAULT_HEARTBEAT_INTERVAL_MILLIS = 5000; // 5 seconds
     private final Logger logger = LogManager.getLogger(getClass());
     private final String nodeName;
     private final String nodeId;
@@ -49,8 +48,19 @@ public class ETCDHeartbeat {
     private final ByteSequence nodeStateKey;
     private final NodeEnvironment nodeEnvironment;
     private final ClusterService clusterService;
+    private final long heartbeatIntervalMillis;
 
     public ETCDHeartbeat(DiscoveryNode localNode, Client etcdClient, NodeEnvironment nodeEnvironment, ClusterService clusterService) {
+        this(localNode, etcdClient, nodeEnvironment, clusterService, DEFAULT_HEARTBEAT_INTERVAL_MILLIS);
+    }
+
+    public ETCDHeartbeat(
+        DiscoveryNode localNode,
+        Client etcdClient,
+        NodeEnvironment nodeEnvironment,
+        ClusterService clusterService,
+        long heartbeatIntervalMillis
+    ) {
         this.nodeName = localNode.getName();
         this.nodeId = localNode.getId();
         this.ephemeralId = localNode.getEphemeralId();
@@ -63,6 +73,7 @@ public class ETCDHeartbeat {
         this.nodeStateKey = ByteSequence.from(statePath, StandardCharsets.UTF_8);
         this.nodeEnvironment = nodeEnvironment;
         this.clusterService = clusterService;
+        this.heartbeatIntervalMillis = heartbeatIntervalMillis;
     }
 
     private static ScheduledExecutorService createScheduler() {
@@ -70,7 +81,7 @@ public class ETCDHeartbeat {
     }
 
     public void start() {
-        scheduler.scheduleAtFixedRate(this::publishHeartbeat, 0, HEARTBEAT_INTERVAL_SECONDS, TimeUnit.SECONDS);
+        scheduler.scheduleAtFixedRate(this::publishHeartbeat, 0, heartbeatIntervalMillis, TimeUnit.MILLISECONDS);
     }
 
     public void stop() {
@@ -88,64 +99,67 @@ public class ETCDHeartbeat {
     }
 
     private void publishHeartbeat() {
-        // Get cpu info
-        OsStats osStats = OsProbe.getInstance().osStats();
-        int cpuPercent = osStats.getCpu().getPercent();
-
-        // Get memory info
-        int memoryPercent = osStats.getMem().getUsedPercent();
-        ByteSizeValue memoryMax = osStats.getMem().getTotal();
-        ByteSizeValue memoryUsed = osStats.getMem().getUsed();
-
-        // Disk
-        FsProbe fsProbe = new FsProbe(nodeEnvironment, null);
-        long diskTotalMB = 0;
-        long diskAvailableMB = 0;
         try {
-            FsInfo fsInfo = fsProbe.stats(null);
-            for (FsInfo.Path path : fsInfo) {
-                diskTotalMB += path.getTotal().getMb();
-                diskAvailableMB += path.getAvailable().getMb();
+            // Get cpu info
+            OsStats osStats = OsProbe.getInstance().osStats();
+            int cpuPercent = osStats.getCpu().getPercent();
+
+            // Get memory info
+            int memoryPercent = osStats.getMem().getUsedPercent();
+            ByteSizeValue memoryMax = osStats.getMem().getTotal();
+            ByteSizeValue memoryUsed = osStats.getMem().getUsed();
+
+            // Disk
+            long diskTotalMB = 0;
+            long diskAvailableMB = 0;
+            if (nodeEnvironment != null) {
+                try {
+                    FsProbe fsProbe = new FsProbe(nodeEnvironment, null);
+                    FsInfo fsInfo = fsProbe.stats(null);
+                    for (FsInfo.Path path : fsInfo) {
+                        diskTotalMB += path.getTotal().getMb();
+                        diskAvailableMB += path.getAvailable().getMb();
+                    }
+                } catch (IOException e) {
+                    logger.error("Failed to get fs info", e);
+                }
             }
-        } catch (IOException e) {
-            logger.error("Failed to get fs info", e);
-        }
 
-        // Get heap info
-        JvmStats jvmStats = JvmStats.jvmStats();
-        int heapUsedPercent = jvmStats.getMem().getHeapUsedPercent();
-        ByteSizeValue heapMax = jvmStats.getMem().getHeapMax();
-        ByteSizeValue heapUsed = jvmStats.getMem().getHeapUsed();
+            // Get heap info
+            JvmStats jvmStats = JvmStats.jvmStats();
+            int heapUsedPercent = jvmStats.getMem().getHeapUsedPercent();
+            ByteSizeValue heapMax = jvmStats.getMem().getHeapMax();
+            ByteSizeValue heapUsed = jvmStats.getMem().getHeapUsed();
 
-        // Build heartbeat data as a Map
-        Map<String, Object> heartbeatData = new HashMap<>();
-        heartbeatData.put("timestamp", System.currentTimeMillis());
-        heartbeatData.put("nodeName", nodeName);
-        heartbeatData.put("nodeId", nodeId);
-        heartbeatData.put("ephemeralId", ephemeralId);
-        heartbeatData.put("address", address);
-        heartbeatData.put("port", port);
-        heartbeatData.put("heartbeatIntervalSeconds", HEARTBEAT_INTERVAL_SECONDS);
-        heartbeatData.put("cpuUsedPercent", cpuPercent);
-        heartbeatData.put("memoryUsedPercent", memoryPercent);
-        heartbeatData.put("memoryMaxMB", memoryMax.getMb());
-        heartbeatData.put("memoryUsedMB", memoryUsed.getMb());
-        heartbeatData.put("heapMaxMB", heapMax.getMb());
-        heartbeatData.put("heapUsedMB", heapUsed.getMb());
-        heartbeatData.put("heapUsedPercent", heapUsedPercent);
-        heartbeatData.put("diskTotalMB", diskTotalMB);
-        heartbeatData.put("diskAvailableMB", diskAvailableMB);
+            // Build heartbeat data as a Map
+            Map<String, Object> heartbeatData = new HashMap<>();
+            heartbeatData.put("timestamp", System.currentTimeMillis());
+            heartbeatData.put("nodeName", nodeName);
+            heartbeatData.put("nodeId", nodeId);
+            heartbeatData.put("ephemeralId", ephemeralId);
+            heartbeatData.put("address", address);
+            heartbeatData.put("port", port);
+            heartbeatData.put("heartbeatIntervalMillis", heartbeatIntervalMillis);
+            heartbeatData.put("cpuUsedPercent", cpuPercent);
+            heartbeatData.put("memoryUsedPercent", memoryPercent);
+            heartbeatData.put("memoryMaxMB", memoryMax.getMb());
+            heartbeatData.put("memoryUsedMB", memoryUsed.getMb());
+            heartbeatData.put("heapMaxMB", heapMax.getMb());
+            heartbeatData.put("heapUsedMB", heapUsed.getMb());
+            heartbeatData.put("heapUsedPercent", heapUsedPercent);
+            heartbeatData.put("diskTotalMB", diskTotalMB);
+            heartbeatData.put("diskAvailableMB", diskAvailableMB);
 
-        // Add node shard routing information
-        try {
-            ClusterState clusterState = clusterService.state();
-            Map<String, List<Map<String, Object>>> nodeRoutingMap = getNodeRoutingMap(clusterState);
-            heartbeatData.put("nodeRouting", nodeRoutingMap);
-        } catch (Exception e) {
-            logger.error("Failed to get node routing information", e);
-        }
+            // Add node shard routing information
+            try {
+                ClusterState clusterState = clusterService.state();
+                Map<String, List<Map<String, Object>>> nodeRoutingMap = getNodeRoutingMap(clusterState);
+                heartbeatData.put("nodeRouting", nodeRoutingMap);
+            } catch (Exception e) {
+                logger.error("Failed to get node routing information", e);
+            }
 
-        try {
+            // Publish to ETCD
             KV kvClient = etcdClient.getKVClient();
 
             // Convert Map to JSON using XContent
@@ -157,11 +171,13 @@ public class ETCDHeartbeat {
 
             ByteSequence value = ByteSequence.from(jsonBytes);
             kvClient.put(nodeStateKey, value).get();
-        } catch (InterruptedException | ExecutionException | IOException e) {
+
+        } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            throw new RuntimeException("Failed to publish heartbeat", e);
+            logger.error("Failed to publish heartbeat", e);
+            // Don't throw the exception - let the scheduler continue with the next heartbeat
         }
     }
 
