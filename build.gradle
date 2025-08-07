@@ -139,6 +139,25 @@ run {
     useCluster testClusters.integTest
 }
 
+jacocoTestReport {
+    reports {
+        html.required = true
+    }
+}
+test.finalizedBy(project.tasks.jacocoTestReport)
+
+jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                minimum = 0.75
+            }
+        }
+    }
+}
+
+check.dependsOn(jacocoTestCoverageVerification)
+
 versions << [
   'docker': '3.3.6',
   'ducttape': '1.0.8',
