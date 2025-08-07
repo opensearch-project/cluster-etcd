@@ -11,15 +11,15 @@ package org.opensearch.cluster.etcd;
 public class ETCDPathUtils {
 
     public static String buildSearchUnitConfigPath(String clusterName, String searchName) {
-        return clusterName + "/search-unit/" + searchName + "/conf";
+        return "/" + clusterName + "/search-unit/" + searchName + "/conf";
     }
 
     public static String buildSearchUnitGoalStatePath(String clusterName, String searchName) {
-        return clusterName + "/search-unit/" + searchName + "/goal-state";
+        return "/" + clusterName + "/search-unit/" + searchName + "/goal-state";
     }
 
     public static String buildSearchUnitActualStatePath(String clusterName, String searchName) {
-        return clusterName + "/search-unit/" + searchName + "/actual-state";
+        return "/" + clusterName + "/search-unit/" + searchName + "/actual-state";
     }
 
     public static String buildNodeActualStatePath(String clusterName, String nodeName) {
@@ -32,7 +32,7 @@ public class ETCDPathUtils {
      */
     @Deprecated
     public static String buildIndexConfigPath(String clusterName, String indexName) {
-        return clusterName + "/indices/" + indexName + "/conf";
+        return "/" +clusterName + "/indices/" + indexName + "/conf";
     }
 
     /**
@@ -44,7 +44,7 @@ public class ETCDPathUtils {
      * @return the etcd path for index settings
      */
     public static String buildIndexSettingsPath(String clusterName, String indexName) {
-        return clusterName + "/indices/" + indexName + "/settings";
+        return "/" + clusterName + "/indices/" + indexName + "/settings";
     }
 
     /**
@@ -56,15 +56,15 @@ public class ETCDPathUtils {
      * @return the etcd path for index mappings
      */
     public static String buildIndexMappingsPath(String clusterName, String indexName) {
-        return clusterName + "/indices/" + indexName + "/mappings";
+        return "/" + clusterName + "/indices/" + indexName + "/mappings";
     }
 
     public static String buildShardPlannedAllocationPath(String clusterName, String indexName, int shardId) {
-        return clusterName + "/indices/" + indexName + "/shard/" + shardId + "/planned-allocation";
+        return "/" + clusterName + "/indices/" + indexName + "/shard/" + shardId + "/planned-allocation";
     }
 
     public static String buildShardActualAllocationPath(String clusterName, String indexName, int shardId) {
-        return clusterName + "/indices/" + indexName + "/shard/" + shardId + "/actual-allocation";
+        return "/" + clusterName + "/indices/" + indexName + "/shard/" + shardId + "/actual-allocation";
     }
 
 }
