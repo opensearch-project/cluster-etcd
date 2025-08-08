@@ -32,7 +32,7 @@ public class ETCDPathUtils {
      */
     @Deprecated
     public static String buildIndexConfigPath(String clusterName, String indexName) {
-        return "/" +clusterName + "/indices/" + indexName + "/conf";
+        return "/" + clusterName + "/indices/" + indexName + "/conf";
     }
 
     /**
