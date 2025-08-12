@@ -127,8 +127,8 @@ public class ETCDWatcher implements Closeable {
         try {
             NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(localNode, keyValue.getValue(), etcdClient, clusterName);
             nodeStateApplier.applyNodeState("update-node " + keyValue.getKey().toString(), nodeState);
-        } catch (IOException e) {
-            logger.error("Error while reading node state", e);
+        } catch (Exception e) {
+            logger.error("Error while processing node state", e);
         }
     }
 
