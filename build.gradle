@@ -99,11 +99,6 @@ afterEvaluate {
   project.validateNebulaPom.enabled = false
 }
 
-
-compileJava {
-    dependsOn spotlessApply
-}
-
 task integTest(type: RestIntegTestTask) {
     description = "Run tests against a cluster"
     testClassesDirs = sourceSets.test.output.classesDirs

@@ -391,6 +391,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertTrue("relocating should be present", shardInfo.containsKey("relocating"));
                     assertTrue("allocationId should be present", shardInfo.containsKey("allocationId"));
                     assertTrue("currentNodeId should be present", shardInfo.containsKey("currentNodeId"));
+                    assertTrue("currentNodeName should be present", shardInfo.containsKey("currentNodeId"));
                 });
 
                 heartbeat.stop();
