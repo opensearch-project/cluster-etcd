@@ -69,7 +69,7 @@ public class ETCDHeartbeat {
         this.etcdClient = etcdClient;
         this.scheduler = createScheduler();
         String clusterName = clusterService.getClusterName().value();
-        String statePath = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
+        String statePath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
         this.nodeStateKey = ByteSequence.from(statePath, StandardCharsets.UTF_8);
         this.nodeEnvironment = nodeEnvironment;
         this.clusterService = clusterService;
