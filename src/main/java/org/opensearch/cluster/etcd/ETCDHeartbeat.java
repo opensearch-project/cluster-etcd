@@ -204,6 +204,7 @@ public class ETCDHeartbeat {
                     }
                     shardInfo.put("allocationId", shardRouting.allocationId().getId());
                     shardInfo.put("currentNodeId", shardRouting.currentNodeId());
+                    shardInfo.put("currentNodeName", clusterState.nodes().get(shardRouting.currentNodeId()).getName());
                     allShards.add(shardInfo);
                 }
             }
