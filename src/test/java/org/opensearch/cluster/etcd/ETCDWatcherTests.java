@@ -148,8 +148,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                 // Set up health information for remote nodes
                 String remoteNodeName1 = "remote-node-1";
                 String remoteNodeName2 = "remote-node-2";
-                String healthPath1 = ETCDPathUtils.buildNodeActualStatePath(clusterName, remoteNodeName1);
-                String healthPath2 = ETCDPathUtils.buildNodeActualStatePath(clusterName, remoteNodeName2);
+                String healthPath1 = ETCDPathUtils.buildSearchUnitActualStatePath(clusterName, remoteNodeName1);
+                String healthPath2 = ETCDPathUtils.buildSearchUnitActualStatePath(clusterName, remoteNodeName2);
 
                 etcdPut(etcdClient, healthPath1, """
                     {

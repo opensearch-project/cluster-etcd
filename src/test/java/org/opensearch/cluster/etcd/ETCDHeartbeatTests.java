@@ -296,7 +296,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                 heartbeat.start();
 
                 // Wait for heartbeat to be published
-                String expectedPath = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
+                String expectedPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
                 await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
                     ByteSequence key = ByteSequence.from(expectedPath, StandardCharsets.UTF_8);
                     List<KeyValue> kvs = etcdClient.getKVClient().get(key).get().getKvs();
@@ -362,7 +362,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                 heartbeat.start();
 
                 // Wait for heartbeat to be published
-                String expectedPath = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
+                String expectedPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
                 await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
                     ByteSequence key = ByteSequence.from(expectedPath, StandardCharsets.UTF_8);
                     List<KeyValue> kvs = etcdClient.getKVClient().get(key).get().getKvs();
@@ -419,7 +419,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                 // Start heartbeat
                 heartbeat.start();
 
-                String expectedPath = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
+                String expectedPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
                 ByteSequence key = ByteSequence.from(expectedPath, StandardCharsets.UTF_8);
 
                 // Wait for first heartbeat
@@ -470,7 +470,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                 // Start heartbeat
                 heartbeat.start();
 
-                String expectedPath = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
+                String expectedPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
                 ByteSequence key = ByteSequence.from(expectedPath, StandardCharsets.UTF_8);
 
                 // Wait for heartbeat to be published
@@ -522,7 +522,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                 heartbeat.start();
 
                 // Wait for heartbeat to be published
-                String expectedPath = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
+                String expectedPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
                 await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
                     ByteSequence key = ByteSequence.from(expectedPath, StandardCharsets.UTF_8);
                     List<KeyValue> kvs = etcdClient.getKVClient().get(key).get().getKvs();

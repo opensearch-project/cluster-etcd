@@ -356,7 +356,7 @@ public final class ETCDStateDeserializer {
             List<String> nodeNames = new ArrayList<>();
 
             for (String nodeName : nodeHealthMap.keySet()) {
-                String healthKey = ETCDPathUtils.buildNodeActualStatePath(clusterName, nodeName);
+                String healthKey = ETCDPathUtils.buildSearchUnitActualStatePath(clusterName, nodeName);
                 futures.add(kvClient.get(ByteSequence.from(healthKey, StandardCharsets.UTF_8)));
                 nodeNames.add(nodeName);
             }
