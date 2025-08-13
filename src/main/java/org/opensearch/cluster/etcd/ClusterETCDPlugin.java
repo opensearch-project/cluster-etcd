@@ -35,6 +35,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
 
 public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPlugin {
+
     private ClusterService clusterService;
     private ETCDWatcher etcdWatcher;
     private ETCDHeartbeat etcdHeartbeat;
@@ -76,7 +77,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
 
             etcdWatcher = new ETCDWatcher(
                 localNode,
-                getNodeKey(localNode, clusterName),
+                getNodeGoalStateKey(localNode, clusterName),
                 new ChangeApplierService(clusterService.getClusterApplierService()),
                 etcdClient,
                 clusterName
@@ -89,8 +90,8 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
         }
     }
 
-    private ByteSequence getNodeKey(DiscoveryNode localNode, String clusterName) {
-        String goalStatePath = ETCDPathUtils.buildSearchUnitGoalStatePath(clusterName, localNode.getName());
+    private ByteSequence getNodeGoalStateKey(DiscoveryNode localNode, String clusterName) {
+        String goalStatePath = ETCDPathUtils.buildSearchUnitGoalStatePath(localNode, clusterName);
         return ByteSequence.from(goalStatePath, StandardCharsets.UTF_8);
     }
 

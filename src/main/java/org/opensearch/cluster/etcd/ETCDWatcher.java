@@ -41,7 +41,7 @@ public class ETCDWatcher implements Closeable {
 
     public ETCDWatcher(
         DiscoveryNode localNode,
-        ByteSequence nodeKey,
+        ByteSequence nodeGoalStateKey,
         NodeStateApplier nodeStateApplier,
         Client etcdClient,
         String clusterName
@@ -50,8 +50,9 @@ public class ETCDWatcher implements Closeable {
         this.etcdClient = etcdClient;
         this.nodeStateApplier = nodeStateApplier;
         this.clusterName = clusterName;
-        loadInitialState(nodeKey);
-        nodeWatcher = etcdClient.getWatchClient().watch(nodeKey, WatchOption.builder().withRevision(0).build(), new NodeListener());
+        loadInitialState(nodeGoalStateKey);
+        nodeWatcher = etcdClient.getWatchClient()
+            .watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), new NodeListener());
     }
 
     @Override

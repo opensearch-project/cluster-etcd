@@ -4,26 +4,34 @@
  */
 package org.opensearch.cluster.etcd;
 
+import org.opensearch.cluster.node.DiscoveryNode;
+
 /**
  * Utility class for constructing ETCD paths used by the cluster-etcd plugin.
  * These paths align with the standardized control plane and data plane path structure.
  */
 public class ETCDPathUtils {
+    private static final String DEFAULT_SEARCH_UNIT_GROUP = "search-unit";
+    private static final String SEARCH_UNIT_GROUP_ATTRIBUTE = "search_unit_group";
+    private static final String SEARCH_UNIT_NAME_ATTRIBUTE = "search_unit";
 
     public static String buildSearchUnitConfigPath(String clusterName, String searchName) {
         return "/" + clusterName + "/search-unit/" + searchName + "/conf";
     }
 
-    public static String buildSearchUnitGoalStatePath(String clusterName, String searchName) {
-        return "/" + clusterName + "/search-unit/" + searchName + "/goal-state";
+    public static String buildSearchUnitGoalStatePath(DiscoveryNode discoveryNode, String clusterName) {
+        String searchUnitGroup = discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_GROUP_ATTRIBUTE, DEFAULT_SEARCH_UNIT_GROUP);
+        String searchUnit = discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_NAME_ATTRIBUTE, discoveryNode.getName());
+        return String.join("/", "", clusterName, searchUnitGroup, searchUnit, "goal-state");
     }
 
-    public static String buildSearchUnitActualStatePath(String clusterName, String searchName) {
-        return "/" + clusterName + "/search-unit/" + searchName + "/actual-state";
+    public static String buildSearchUnitActualStatePath(DiscoveryNode discoveryNode, String clusterName) {
+        String searchUnitGroup = discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_GROUP_ATTRIBUTE, DEFAULT_SEARCH_UNIT_GROUP);
+        return String.join("/", "", clusterName, searchUnitGroup, discoveryNode.getName(), "actual-state");
     }
 
-    public static String buildNodeActualStatePath(String clusterName, String nodeName) {
-        return buildSearchUnitActualStatePath(clusterName, nodeName);
+    public static String buildSearchUnitActualStatePath(String clusterName, String nodeName) {
+        return String.join("/", "", clusterName, DEFAULT_SEARCH_UNIT_GROUP, nodeName, "actual-state");
     }
 
     /**
