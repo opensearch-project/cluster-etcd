@@ -26,6 +26,7 @@ import org.opensearch.core.index.shard.ShardId;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -33,12 +34,12 @@ import java.util.Set;
 
 public class CoordinatorNodeState extends NodeState {
 
-    private final List<RemoteNode> remoteNodes;
+    private final Collection<RemoteNode> remoteNodes;
     private final Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments;
 
     public CoordinatorNodeState(
         DiscoveryNode localNode,
-        List<RemoteNode> remoteNodes,
+        Collection<RemoteNode> remoteNodes,
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments
     ) {
         super(localNode);
@@ -112,28 +113,7 @@ public class CoordinatorNodeState extends NodeState {
             metadataBuilder.put(indexMetadata, false);
         }
         for (RemoteNode remoteNode : remoteNodes) {
-            DiscoveryNode node;
-            try {
-                node = new DiscoveryNode(
-                    remoteNode.nodeId(),
-                    remoteNode.nodeId(),
-                    remoteNode.ephemeralId(),
-                    remoteNode.address(),
-                    remoteNode.address(),
-                    new TransportAddress(
-                        new InetSocketAddress(
-                            InetAddress.getByAddress(InetAddresses.ipStringToBytes(remoteNode.address())),
-                            remoteNode.port()
-                        )
-                    ),
-                    Collections.emptyMap(),
-                    Set.of(DiscoveryNodeRole.DATA_ROLE),
-                    Version.CURRENT
-                );
-            } catch (UnknownHostException e) {
-                throw new RuntimeException(e);
-            }
-            nodesBuilder.add(node);
+            nodesBuilder.add(remoteNode.toDiscoveryNode());
         }
 
         return ClusterState.builder(ClusterState.EMPTY_STATE)

@@ -196,7 +196,15 @@ public class ETCDHeartbeat {
                 for (ShardRouting shardRouting : shardRoutingTable) {
                     Map<String, Object> shardInfo = new HashMap<>();
                     shardInfo.put("shardId", shardId);
-                    shardInfo.put("primary", shardRouting.primary());
+                    String role;
+                    if (shardRouting.primary()) {
+                        role = "primary";
+                    } else if (shardRouting.isSearchOnly()) {
+                        role = "search_replica";
+                    } else {
+                        role = "replica";
+                    }
+                    shardInfo.put("role", role);
                     shardInfo.put("state", shardRouting.state().name());
                     shardInfo.put("relocating", shardRouting.relocating());
                     if (shardRouting.relocating()) {

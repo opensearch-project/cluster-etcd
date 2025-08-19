@@ -8,11 +8,8 @@
 
 package org.opensearch.cluster.etcd.changeapplier;
 
-import org.opensearch.cluster.node.DiscoveryNode;
-
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -44,19 +41,26 @@ public abstract class DataNodeShard {
         return Objects.hash(indexName, shardNum);
     }
 
-    public Collection<DiscoveryNode> getReplicaNodes() {
+    public Collection<ShardAllocation> getReplicaAssignments() {
         return Collections.emptyList();
     }
 
-    public Optional<DiscoveryNode> getPrimaryNode() {
+
+    public enum ShardState {
+        STARTED, RELOCATING, UNASSIGNED, INITIALIZING, CLOSING, CLOSED
+    }
+
+    public record ShardAllocation(RemoteNode node, String allocationId, ShardState shardState) {}
+
+    public Optional<ShardAllocation> getPrimaryAllocation() {
         return Optional.empty();
     }
 
     public static class DocRepPrimary extends DataNodeShard {
-        private final Collection<DiscoveryNode> replicaNodes;
-        public DocRepPrimary(String indexName, int shardNum, Collection<DiscoveryNode> replicaNodes) {
+        private final Collection<ShardAllocation> shardAllocations;
+        public DocRepPrimary(String indexName, int shardNum, Collection<ShardAllocation> shardAllocations) {
             super(indexName, shardNum);
-            this.replicaNodes = replicaNodes;
+            this.shardAllocations = shardAllocations;
         }
 
         @Override
@@ -65,15 +69,15 @@ public abstract class DataNodeShard {
         }
 
         @Override
-        public Collection<DiscoveryNode> getReplicaNodes() {
-            return replicaNodes;
+        public Collection<ShardAllocation> getReplicaAssignments() {
+            return shardAllocations;
         }
     }
 
     public static class DocRepReplica extends DataNodeShard {
-        private final DiscoveryNode primaryNode;
+        private final ShardAllocation primaryNode;
 
-        public DocRepReplica(String indexName, int shardNum, DiscoveryNode primaryNode) {
+        public DocRepReplica(String indexName, int shardNum, ShardAllocation primaryNode) {
             super(indexName, shardNum);
             this.primaryNode = Objects.requireNonNull(primaryNode);
         }
@@ -84,7 +88,7 @@ public abstract class DataNodeShard {
         }
 
         @Override
-        public Optional<DiscoveryNode> getPrimaryNode() {
+        public Optional<ShardAllocation> getPrimaryAllocation() {
             return Optional.of(primaryNode);
         }
     }
