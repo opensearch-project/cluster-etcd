@@ -60,11 +60,10 @@ public class DataNodeState extends NodeState {
                 ShardRole role = dataNodeShard.getShardRole();
                 ShardId shardId = new ShardId(indexMetadata.getIndex(), shardNum);
 
-
                 IndexShardRoutingTable.Builder newShardRoutingTable = new IndexShardRoutingTable.Builder(shardId);
                 IndexShardRoutingTable previousShardRoutingTable = previousIndexRoutingTable == null
-                        ? new IndexShardRoutingTable.Builder(shardId).build()
-                        : previousIndexRoutingTable.shard(shardNum);
+                    ? new IndexShardRoutingTable.Builder(shardId).build()
+                    : previousIndexRoutingTable.shard(shardNum);
 
                 UnassignedInfo unassignedInfo = new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "created");
 
@@ -74,17 +73,22 @@ public class DataNodeState extends NodeState {
                     RemoteNode primaryNode = primaryAllocation.node();
                     recoverySource = RecoverySource.PeerRecoverySource.INSTANCE;
                     if (previousShardRoutingTable.primaryShard() != null
-                            && previousShardRoutingTable.primaryShard().currentNodeId().equals(primaryNode.nodeId())) {
+                        && previousShardRoutingTable.primaryShard().currentNodeId().equals(primaryNode.nodeId())) {
                         newShardRoutingTable.addShard(previousShardRoutingTable.primaryShard());
                     } else {
                         ShardRouting primaryShardRouting = ShardRouting.newUnassigned(
-                                        shardId,
-                                        true,
-                                        false,
-                                        RecoverySource.ExistingStoreRecoverySource.INSTANCE,
-                                        unassignedInfo
-                                ).initialize(primaryNode.nodeId(), primaryAllocation.allocationId(), ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE)
-                                .moveToStarted();
+                            shardId,
+                            true,
+                            false,
+                            RecoverySource.ExistingStoreRecoverySource.INSTANCE,
+                            unassignedInfo
+                        )
+                            .initialize(
+                                primaryNode.nodeId(),
+                                primaryAllocation.allocationId(),
+                                ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE
+                            )
+                            .moveToStarted();
                         // Add the primary shard routing to the index routing table
                         newShardRoutingTable.addShard(primaryShardRouting);
                     }
@@ -93,20 +97,22 @@ public class DataNodeState extends NodeState {
                     recoverySource = RecoverySource.EmptyStoreRecoverySource.INSTANCE; // For primary and search replica
                 }
 
-
                 Set<String> inSyncAllocationIds = new HashSet<>();
                 if (role == ShardRole.PRIMARY && dataNodeShard.getReplicaAssignments().isEmpty() == false) {
                     // If this is a primary, we need to add the replica shards
-                    Map<String, DataNodeShard.ShardAllocation> replicaNodesMap = new HashMap<>(dataNodeShard.getReplicaAssignments().stream()
-                            .collect(Collectors.toMap(k -> k.node().nodeId(), Function.identity())));
+                    Map<String, DataNodeShard.ShardAllocation> replicaNodesMap = new HashMap<>(
+                        dataNodeShard.getReplicaAssignments()
+                            .stream()
+                            .collect(Collectors.toMap(k -> k.node().nodeId(), Function.identity()))
+                    );
                     for (DataNodeShard.ShardAllocation shardAllocation : replicaNodesMap.values()) {
                         RemoteNode replicaNode = shardAllocation.node();
                         ShardRouting replicaShardRouting = ShardRouting.newUnassigned(
-                                shardId,
-                                false,
-                                false,
-                                RecoverySource.PeerRecoverySource.INSTANCE,
-                                unassignedInfo
+                            shardId,
+                            false,
+                            false,
+                            RecoverySource.PeerRecoverySource.INSTANCE,
+                            unassignedInfo
                         ).initialize(replicaNode.nodeId(), shardAllocation.allocationId(), ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
                         if (shardAllocation.shardState() == DataNodeShard.ShardState.STARTED) {
                             inSyncAllocationIds.add(shardAllocation.allocationId());
@@ -119,8 +125,8 @@ public class DataNodeState extends NodeState {
                 }
 
                 Optional<ShardRouting> previouslyStartedShard = previousShardRoutingTable == null
-                        ? Optional.empty()
-                        : previousShardRoutingTable.shards()
+                    ? Optional.empty()
+                    : previousShardRoutingTable.shards()
                         .stream()
                         .filter(sr -> localNode.getId().equals(sr.currentNodeId()))
                         .filter(ShardRouting::started)
@@ -131,11 +137,11 @@ public class DataNodeState extends NodeState {
                     shardRouting = previouslyStartedShard.get();
                 } else {
                     shardRouting = ShardRouting.newUnassigned(
-                            shardId,
-                            role == ShardRole.PRIMARY,
-                            role == ShardRole.SEARCH_REPLICA,
-                            recoverySource,
-                            unassignedInfo
+                        shardId,
+                        role == ShardRole.PRIMARY,
+                        role == ShardRole.SEARCH_REPLICA,
+                        recoverySource,
+                        unassignedInfo
                     );
                     shardRouting = shardRouting.initialize(localNode.getId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
                 }

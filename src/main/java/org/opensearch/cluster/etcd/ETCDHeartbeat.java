@@ -98,7 +98,8 @@ public class ETCDHeartbeat {
         }
     }
 
-    private void publishHeartbeat() {
+    // Package-private for testing
+    void publishHeartbeat() {
         try {
             // Get cpu info
             OsStats osStats = OsProbe.getInstance().osStats();

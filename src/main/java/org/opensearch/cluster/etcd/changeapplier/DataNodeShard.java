@@ -1,11 +1,7 @@
 /*
+ * Copyright OpenSearch Contributors
  * SPDX-License-Identifier: Apache-2.0
- *
- * The OpenSearch Contributors require contributions made to
- * this file be licensed under the Apache-2.0 license or a
- * compatible open source license.
  */
-
 package org.opensearch.cluster.etcd.changeapplier;
 
 import java.util.Collection;
@@ -23,7 +19,6 @@ public abstract class DataNodeShard {
         this.indexName = indexName;
         this.shardNum = shardNum;
     }
-
 
     public int getShardNum() {
         return shardNum;
@@ -45,12 +40,17 @@ public abstract class DataNodeShard {
         return Collections.emptyList();
     }
 
-
     public enum ShardState {
-        STARTED, RELOCATING, UNASSIGNED, INITIALIZING, CLOSING, CLOSED
+        STARTED,
+        RELOCATING,
+        UNASSIGNED,
+        INITIALIZING,
+        CLOSING,
+        CLOSED
     }
 
-    public record ShardAllocation(RemoteNode node, String allocationId, ShardState shardState) {}
+    public record ShardAllocation(RemoteNode node, String allocationId, ShardState shardState) {
+    }
 
     public Optional<ShardAllocation> getPrimaryAllocation() {
         return Optional.empty();
@@ -58,6 +58,7 @@ public abstract class DataNodeShard {
 
     public static class DocRepPrimary extends DataNodeShard {
         private final Collection<ShardAllocation> shardAllocations;
+
         public DocRepPrimary(String indexName, int shardNum, Collection<ShardAllocation> shardAllocations) {
             super(indexName, shardNum);
             this.shardAllocations = shardAllocations;

@@ -32,20 +32,15 @@ public record RemoteNode(String nodeName, String nodeId, String ephemeralId, Str
     public DiscoveryNode toDiscoveryNode() {
         try {
             return new DiscoveryNode(
-                    nodeName(),
-                    nodeId(),
-                    ephemeralId(),
-                    address(),
-                    address(),
-                    new TransportAddress(
-                            new InetSocketAddress(
-                                    InetAddress.getByAddress(InetAddresses.ipStringToBytes(address())),
-                                    port()
-                            )
-                    ),
-                    Collections.emptyMap(),
-                    Set.of(DiscoveryNodeRole.DATA_ROLE),
-                    Version.CURRENT
+                nodeName(),
+                nodeId(),
+                ephemeralId(),
+                address(),
+                address(),
+                new TransportAddress(new InetSocketAddress(InetAddress.getByAddress(InetAddresses.ipStringToBytes(address())), port())),
+                Collections.emptyMap(),
+                Set.of(DiscoveryNodeRole.DATA_ROLE),
+                Version.CURRENT
             );
         } catch (UnknownHostException e) {
             throw new IllegalArgumentException("Invalid address for remote node: " + address, e);
