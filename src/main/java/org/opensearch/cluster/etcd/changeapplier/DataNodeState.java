@@ -54,15 +54,7 @@ public class DataNodeState extends NodeState {
                 int shardNum = shardRoleEntry.getKey();
                 ShardRole role = shardRoleEntry.getValue();
                 ShardId shardId = new ShardId(indexMetadata.getIndex(), shardNum);
-                UnassignedInfo unassignedInfo = new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "created");
-                ShardRouting shardRouting = ShardRouting.newUnassigned(
-                    shardId,
-                    role == ShardRole.PRIMARY,
-                    role == ShardRole.SEARCH_REPLICA,
-                    RecoverySource.EmptyStoreRecoverySource.INSTANCE, // TODO: Support other recovery sources
-                    unassignedInfo
-                );
-                shardRouting = shardRouting.initialize(localNode.getId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
+
                 IndexShardRoutingTable previousShardRoutingTable = previousIndexRoutingTable == null
                     ? null
                     : previousIndexRoutingTable.shard(shardNum);
@@ -73,10 +65,22 @@ public class DataNodeState extends NodeState {
                         .filter(sr -> localNode.getId().equals(sr.currentNodeId()))
                         .filter(ShardRouting::started)
                         .findAny();
+                ShardRouting shardRouting;
+
                 if (previouslyStartedShard.isPresent()) {
-                    // TODO: Someone needs to moveToStarted the first time. Probably on the local node.
-                    shardRouting = shardRouting.moveToStarted();
+                    shardRouting = previouslyStartedShard.get();
+                } else {
+                    UnassignedInfo unassignedInfo = new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "created");
+                    shardRouting = ShardRouting.newUnassigned(
+                        shardId,
+                        role == ShardRole.PRIMARY,
+                        role == ShardRole.SEARCH_REPLICA,
+                        RecoverySource.EmptyStoreRecoverySource.INSTANCE, // TODO: Support other recovery sources
+                        unassignedInfo
+                    );
+                    shardRouting = shardRouting.initialize(localNode.getId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
                 }
+
                 indexRoutingTableBuilder.addShard(shardRouting);
                 indexMetadataBuilder.putInSyncAllocationIds(shardNum, Set.of(shardRouting.allocationId().getId()));
                 if (role == ShardRole.SEARCH_REPLICA) {
