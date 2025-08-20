@@ -20,14 +20,18 @@ import org.opensearch.cluster.etcd.changeapplier.ShardRole;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
+import org.opensearch.common.compress.CompressedXContent;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.json.JsonXContent;
+import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.DeprecationHandler;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
+import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.Version;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -281,21 +285,21 @@ public final class ETCDStateDeserializer {
             if (mappingsResponse.getKvs().isEmpty()) {
                 throw new IllegalStateException("Mappings response is empty");
             }
-            KeyValue mappingsKv = mappingsResponse.getKvs().get(0);
-            try (
-                XContentParser parser = JsonXContent.jsonXContent.createParser(
-                    NamedXContentRegistry.EMPTY,
-                    DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-                    mappingsKv.getValue().getBytes()
-                )
-            ) {
-                // Parse the mapping JSON and create MappingMetadata
-                Map<String, Object> mappingMap = parser.map();
-                if (!mappingMap.isEmpty()) {
-                    // Assume single mapping type for simplicity
-                    mappingMetadata = new MappingMetadata("_doc", mappingMap);
-                }
+            KeyValue mappingsKv = mappingsResponse.getKvs().getFirst();
+            XContentParser parser = JsonXContent.jsonXContent.createParser(
+                NamedXContentRegistry.EMPTY,
+                DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                mappingsKv.getValue().getBytes()
+            );
+            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+            try (XContentBuilder mappingsBuilder = new XContentBuilder(JsonXContent.jsonXContent, byteArrayOutputStream)) {
+                mappingsBuilder.startObject();
+                mappingsBuilder.field("_doc");
+                mappingsBuilder.copyCurrentStructure(parser);
+                mappingsBuilder.endObject();
             }
+            CompressedXContent mappingsXContent = new CompressedXContent(new BytesArray(byteArrayOutputStream.toByteArray()));
+            mappingMetadata = new MappingMetadata(mappingsXContent);
 
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException("Failed to fetch index metadata parts from etcd", e);
