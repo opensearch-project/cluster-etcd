@@ -32,9 +32,10 @@ public class CoordinatorNodeState extends NodeState {
     public CoordinatorNodeState(
         DiscoveryNode localNode,
         Collection<RemoteNode> remoteNodes,
-        Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments
+        Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments,
+        boolean converged
     ) {
-        super(localNode);
+        super(localNode, converged);
         this.remoteNodes = remoteNodes;
         this.remoteShardAssignments = remoteShardAssignments;
     }

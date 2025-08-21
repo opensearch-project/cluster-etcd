@@ -15,10 +15,6 @@ public class ETCDPathUtils {
     private static final String SEARCH_UNIT_GROUP_ATTRIBUTE = "search_unit_group";
     private static final String SEARCH_UNIT_NAME_ATTRIBUTE = "search_unit";
 
-    public static String buildSearchUnitConfigPath(String clusterName, String searchName) {
-        return "/" + clusterName + "/search-unit/" + searchName + "/conf";
-    }
-
     public static String buildSearchUnitGoalStatePath(DiscoveryNode discoveryNode, String clusterName) {
         String searchUnitGroup = discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_GROUP_ATTRIBUTE, DEFAULT_SEARCH_UNIT_GROUP);
         String searchUnit = discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_NAME_ATTRIBUTE, discoveryNode.getName());

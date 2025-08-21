@@ -31,8 +31,13 @@ public class DataNodeState extends NodeState {
     private final Map<String, IndexMetadata> indices;
     private final Map<String, Set<DataNodeShard>> assignedShards;
 
-    public DataNodeState(DiscoveryNode localNode, Map<String, IndexMetadata> indices, Map<String, Set<DataNodeShard>> assignedShards) {
-        super(localNode);
+    public DataNodeState(
+        DiscoveryNode localNode,
+        Map<String, IndexMetadata> indices,
+        Map<String, Set<DataNodeShard>> assignedShards,
+        boolean converged
+    ) {
+        super(localNode, converged);
         // The index metadata and shard assignment should be identical
         assert indices.keySet().equals(assignedShards.keySet());
         this.indices = indices;

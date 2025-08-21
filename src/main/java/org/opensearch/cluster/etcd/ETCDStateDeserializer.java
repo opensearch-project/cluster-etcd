@@ -176,9 +176,11 @@ public final class ETCDStateDeserializer {
             }
         }
 
-        Map<String, RemoteNode> remoteNodeMap = resolveNodes(fetchNodeHealthInfo(etcdClient, remoteNodeNames, clusterName));
+        Map<String, NodeHealthInfo> remoteNodeHealthMap = fetchNodeHealthInfo(etcdClient, remoteNodeNames, clusterName);
 
+        boolean converged = true;
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignment = new HashMap<>();
+        Set<RemoteNode> remoteNodes = new HashSet<>();
         for (Map.Entry<String, Object> indexEntry : indices.entrySet()) {
             Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
             // Use index name as UUID if not explicitly provided in etcd
@@ -193,14 +195,23 @@ public final class ETCDStateDeserializer {
                     String nodeName = (String) nodeEntry.get("node_name");
                     boolean isPrimary = nodeEntry.containsKey("primary") && (Boolean) nodeEntry.get("primary");
 
-                    RemoteNode remoteNode = remoteNodeMap.get(nodeName);
-                    if (remoteNode != null) {
+                    NodeHealthInfo remoteNodeHealth = remoteNodeHealthMap.get(nodeName);
+                    if (remoteNodeHealth == null) {
+                        // TODO -- Should we look at the node routing info to confirm that the target node has the
+                        // specified shard?
+                        converged = false;
+                    } else {
+                        RemoteNode remoteNode = new RemoteNode(
+                            nodeName,
+                            remoteNodeHealth.nodeId,
+                            remoteNodeHealth.ephemeralId,
+                            remoteNodeHealth.address,
+                            remoteNodeHealth.port
+                        );
+                        remoteNodes.add(remoteNode);
                         nodeShardAssignments.add(
                             new NodeShardAssignment(remoteNode.nodeId(), isPrimary ? ShardRole.PRIMARY : ShardRole.SEARCH_REPLICA)
                         );
-                    } else {
-                        LOGGER.error("Cannot resolve node name '{}' to node ID - health info not available", nodeName);
-                        throw new IllegalStateException("Cannot resolve node name '" + nodeName + "' to node ID");
                     }
                 }
                 shardAssignments.add(nodeShardAssignments);
@@ -208,7 +219,7 @@ public final class ETCDStateDeserializer {
             remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
         }
 
-        return new CoordinatorNodeState(localNode, remoteNodeMap.values(), remoteShardAssignment);
+        return new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment, converged);
     }
 
     private static DataNodeState readDataNodeState(
@@ -217,6 +228,7 @@ public final class ETCDStateDeserializer {
         Map<String, Map<String, Object>> localShards,
         String clusterName
     ) throws IOException {
+        boolean converged = true;
         Map<String, Set<DataNodeShard>> localShardAssignment = new HashMap<>();
         Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
         try (KV kvClient = etcdClient.getKVClient()) {
@@ -227,7 +239,6 @@ public final class ETCDStateDeserializer {
 
             for (Map.Entry<String, Map<String, Object>> entry : localShards.entrySet()) {
                 String indexName = entry.getKey();
-                indexNames.add(indexName);
 
                 // Fetch settings and mappings from separate etcd paths
                 String indexSettingsPath = ETCDPathUtils.buildIndexSettingsPath(clusterName, indexName);
@@ -235,13 +246,28 @@ public final class ETCDStateDeserializer {
 
                 settingsFutures.add(kvClient.get(ByteSequence.from(indexSettingsPath, StandardCharsets.UTF_8)));
                 mappingsFutures.add(kvClient.get(ByteSequence.from(indexMappingsPath, StandardCharsets.UTF_8)));
+                Set<DataNodeShard> dataNodeShards = new HashSet<>();
 
                 // Process shard assignments
                 Map<String, Object> shards = entry.getValue();
                 for (Map.Entry<String, Object> shardEntry : shards.entrySet()) {
                     int shardId = Integer.parseInt(shardEntry.getKey());
-                    localShardAssignment.computeIfAbsent(indexName, k -> new HashSet<>())
-                        .add(readDataNodeShard(indexName, shardId, shardEntry.getValue(), etcdClient, clusterName));
+                    DataNodeShardConvergence dataNodeShardConvergence = readDataNodeShard(
+                        indexName,
+                        shardId,
+                        shardEntry.getValue(),
+                        etcdClient,
+                        clusterName
+                    );
+                    converged &= dataNodeShardConvergence.converged();
+                    if (dataNodeShardConvergence.shard() != null) {
+                        dataNodeShards.add(dataNodeShardConvergence.shard());
+                    }
+                }
+
+                if (dataNodeShards.isEmpty() == false) {
+                    localShardAssignment.put(indexName, dataNodeShards);
+                    indexNames.add(indexName);
                 }
             }
 
@@ -256,11 +282,14 @@ public final class ETCDStateDeserializer {
                 indexMetadataMap.put(indexName, indexMetadata);
             }
         }
-        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment);
+        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment, converged);
+    }
+
+    private record DataNodeShardConvergence(DataNodeShard shard, boolean converged) {
     }
 
     @SuppressWarnings("unchecked")
-    private static DataNodeShard readDataNodeShard(
+    private static DataNodeShardConvergence readDataNodeShard(
         String indexName,
         int shardNum,
         Object shardConfig,
@@ -270,9 +299,9 @@ public final class ETCDStateDeserializer {
         if (shardConfig instanceof String role) {
             // Single string value indicates a primary or search replica shard
             if ("PRIMARY".equalsIgnoreCase(role)) {
-                return new DataNodeShard.SegRepPrimary(indexName, shardNum);
+                return new DataNodeShardConvergence(new DataNodeShard.SegRepPrimary(indexName, shardNum), true);
             } else if ("SEARCH_REPLICA".equalsIgnoreCase(role)) {
-                return new DataNodeShard.SegRepSearchReplica(indexName, shardNum);
+                return new DataNodeShardConvergence(new DataNodeShard.SegRepSearchReplica(indexName, shardNum), true);
             } else {
                 throw new IllegalArgumentException("Unknown shard role: " + role);
             }
@@ -287,7 +316,14 @@ public final class ETCDStateDeserializer {
 
                     Map<String, NodeHealthInfo> nodes = fetchNodeHealthInfo(etcdClient, replicaNodes, clusterName);
                     List<DataNodeShard.ShardAllocation> shardAllocations = new ArrayList<>();
+
+                    boolean converged = true;
                     for (Map.Entry<String, NodeHealthInfo> entry : nodes.entrySet()) {
+                        if (entry.getValue() == null) {
+                            converged = false;
+                            continue;
+                        }
+                        boolean replicaConverged = false;
                         for (NodeShardAllocation allocation : entry.getValue().replicaAllocations) {
                             if (allocation.indexName.equals(indexName) && allocation.shardNum == shardNum) {
                                 RemoteNode replicaNode = new RemoteNode(
@@ -298,14 +334,18 @@ public final class ETCDStateDeserializer {
                                     entry.getValue().port
                                 );
                                 DataNodeShard.ShardState shardState = DataNodeShard.ShardState.valueOf(allocation.state);
+                                if (shardState == DataNodeShard.ShardState.STARTED) {
+                                    replicaConverged = true;
+                                }
                                 shardAllocations.add(new DataNodeShard.ShardAllocation(replicaNode, allocation.allocationId, shardState));
                             }
                         }
+                        converged &= replicaConverged;
                     }
-                    return new DataNodeShard.DocRepPrimary(indexName, shardNum, shardAllocations);
+                    return new DataNodeShardConvergence(new DataNodeShard.DocRepPrimary(indexName, shardNum, shardAllocations), converged);
                 } else {
                     // Segrep primary shard
-                    return new DataNodeShard.SegRepPrimary(indexName, shardNum);
+                    return new DataNodeShardConvergence(new DataNodeShard.SegRepPrimary(indexName, shardNum), true);
                 }
             case "REPLICA":
                 String primaryNodeName = (String) shardMap.get("primary_node");
@@ -315,6 +355,9 @@ public final class ETCDStateDeserializer {
                 DataNodeShard.ShardAllocation primaryAllocation = null;
                 Map<String, NodeHealthInfo> nodes = fetchNodeHealthInfo(etcdClient, List.of(primaryNodeName), clusterName);
                 NodeHealthInfo primaryNodeInfo = nodes.get(primaryNodeName);
+                if (primaryNodeInfo == null) {
+                    return new DataNodeShardConvergence(null, false);
+                }
                 RemoteNode primaryNode = new RemoteNode(
                     primaryNodeName,
                     primaryNodeInfo.nodeId,
@@ -325,7 +368,8 @@ public final class ETCDStateDeserializer {
                 for (NodeShardAllocation allocation : primaryNodeInfo.primaryAllocations) {
                     if (allocation.indexName.equals(indexName) && allocation.shardNum == shardNum) {
                         if (!allocation.state.equals("STARTED")) {
-                            throw new IllegalArgumentException("Primary shard must be in STARTED state: " + allocation.state);
+                            // We cannot allocate the replica shard until after the primary has started
+                            return new DataNodeShardConvergence(null, false);
                         }
                         primaryAllocation = new DataNodeShard.ShardAllocation(
                             primaryNode,
@@ -336,12 +380,13 @@ public final class ETCDStateDeserializer {
                     }
                 }
                 if (primaryAllocation == null) {
-                    throw new IllegalArgumentException("Primary shard must be allocated on the specified primary node: " + primaryNodeName);
+                    // Primary shard not allocated on primary node
+                    return new DataNodeShardConvergence(null, false);
                 }
-                return new DataNodeShard.DocRepReplica(indexName, shardNum, primaryAllocation);
+                return new DataNodeShardConvergence(new DataNodeShard.DocRepReplica(indexName, shardNum, primaryAllocation), true);
             case "SEARCH_REPLICA":
                 // Segrep search replica shard
-                return new DataNodeShard.SegRepSearchReplica(indexName, shardNum);
+                return new DataNodeShardConvergence(new DataNodeShard.SegRepSearchReplica(indexName, shardNum), true);
             default:
                 throw new IllegalArgumentException("Unknown shard role: " + role);
         }
@@ -462,6 +507,7 @@ public final class ETCDStateDeserializer {
                     healthInfoMap.put(nodeName, healthInfo);
                 } else {
                     LOGGER.warn("No health information found for node: {}", nodeName);
+                    healthInfoMap.put(nodeName, null);
                 }
             } catch (InterruptedException | ExecutionException e) {
                 LOGGER.error("Failed to fetch health info for node: {}", nodeName, e);
@@ -469,24 +515,6 @@ public final class ETCDStateDeserializer {
             }
         }
         return healthInfoMap;
-    }
-
-    private static Map<String, RemoteNode> resolveNodes(Map<String, NodeHealthInfo> nodes) throws IOException {
-        Map<String, RemoteNode> nodesMap = new HashMap<>();
-        for (Map.Entry<String, NodeHealthInfo> entry : nodes.entrySet()) {
-            String nodeName = entry.getKey();
-            NodeHealthInfo healthInfo = entry.getValue();
-            if (healthInfo != null) {
-                LOGGER.debug("Resolved node '{}' to ID '{}' with ephemeral ID '{}'", nodeName, healthInfo.nodeId, healthInfo.ephemeralId);
-                nodesMap.put(
-                    nodeName,
-                    new RemoteNode(nodeName, healthInfo.nodeId, healthInfo.ephemeralId, healthInfo.address, healthInfo.port)
-                );
-            } else {
-                LOGGER.warn("No health information found for node: {}", nodeName);
-            }
-        }
-        return nodesMap;
     }
 
     private record NodeShardAllocation(String indexName, int shardNum, String allocationId, String state) {

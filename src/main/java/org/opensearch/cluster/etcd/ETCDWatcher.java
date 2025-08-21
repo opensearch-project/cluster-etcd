@@ -50,7 +50,7 @@ public class ETCDWatcher implements Closeable {
         this.etcdClient = etcdClient;
         this.nodeStateApplier = nodeStateApplier;
         this.clusterName = clusterName;
-        loadInitialState(nodeGoalStateKey);
+        loadState(nodeGoalStateKey);
         nodeWatcher = etcdClient.getWatchClient()
             .watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), new NodeListener());
     }
@@ -62,7 +62,7 @@ public class ETCDWatcher implements Closeable {
         etcdClient.close();
     }
 
-    private void loadInitialState(ByteSequence nodeKey) throws IOException, ExecutionException, InterruptedException {
+    private void loadState(ByteSequence nodeKey) throws ExecutionException, InterruptedException {
         // Load the initial state of the node from etcd
         try (KV kvClient = etcdClient.getKVClient()) {
             List<KeyValue> kvs = kvClient.get(nodeKey).get().getKvs();
@@ -128,6 +128,17 @@ public class ETCDWatcher implements Closeable {
         try {
             NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(localNode, keyValue.getValue(), etcdClient, clusterName);
             nodeStateApplier.applyNodeState("update-node " + keyValue.getKey().toString(), nodeState);
+            if (nodeState.hasConverged() == false) {
+                // Schedule a reload of the node state if it has not converged
+                scheduledExecutorService.schedule(() -> {
+                    try {
+                        logger.info("Reloading node state for key: {}", keyValue.getKey());
+                        loadState(keyValue.getKey());
+                    } catch (Exception e) {
+                        logger.error("Error while reloading node state", e);
+                    }
+                }, 1, TimeUnit.SECONDS);
+            }
         } catch (Exception e) {
             logger.error("Error while processing node state", e);
         }
