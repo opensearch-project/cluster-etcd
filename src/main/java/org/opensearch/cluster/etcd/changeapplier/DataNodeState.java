@@ -251,7 +251,6 @@ private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
     
     /**
      * Checks if a specific shard exists in the parsed node routing data and was on THIS node.
-     * Uses node name for comparison since node ID changes on restart.
      */
     private boolean checkShardInRouting(Map<String, List<Map<String, Object>>> nodeRouting, String indexName, int shardNum) {
         List<Map<String, Object>> indexShards = nodeRouting.get(indexName);
@@ -260,7 +259,6 @@ private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
         }
         
         // Look for the specific shard number that was on THIS node
-        // Use node name instead of node ID since node ID changes on restart
         return indexShards.stream()
             .anyMatch(shard -> {
                 Object shardId = shard.get("shardId");
@@ -370,33 +368,29 @@ private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
                         indexMetadata.getIndex().getName(), shardNum, shardRouting.allocationId().getId());
                 } else {
                     // No previous shard in cluster state - use ETCD-based allocation ID preservation
-                    RecoverySource smartRecoverySource = determineRecoverySource(shardNum, indexMetadata);
+                    RecoverySource recoverySource = determineRecoverySource(shardNum, indexMetadata);
                     String previousAllocationId = getPreviousAllocationId(indexMetadata.getIndex().getName(), shardNum);
                     
                     shardRouting = ShardRouting.newUnassigned(
                         shardId,
                         role == ShardRole.PRIMARY,
                         role == ShardRole.SEARCH_REPLICA,
-                        smartRecoverySource, // Use smart recovery based on ETCD data
+                        recoverySource, // Use recovery source based on ETCD data
                         unassignedInfo
                     );
                     
                     // Initialize with previous allocation ID (for allocation ID preservation across restarts)
                     shardRouting = shardRouting.initialize(localNode.getId(), previousAllocationId, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
                     
-                    // ALLOCATION ID TRACKING: Log allocation ID changes for monitoring purposes
                     String currentAllocationId = shardRouting.allocationId() != null ? shardRouting.allocationId().getId() : "null";
                     
                     if (previousAllocationId != null) {
                         if (previousAllocationId.equals(currentAllocationId)) {
-                            logger.info("✅ ALLOCATION ID PRESERVED: shard {}[{}] kept allocation ID {}", 
                                 indexMetadata.getIndex().getName(), shardNum, previousAllocationId);
                         } else {
-                            logger.info("🔄 ALLOCATION ID CHANGED: shard {}[{}] from {} to {}", 
                                 indexMetadata.getIndex().getName(), shardNum, previousAllocationId, currentAllocationId);
                         }
                     } else {
-                        logger.debug("No previous allocation ID found for shard {}[{}], using new ID: {}", 
                             indexMetadata.getIndex().getName(), shardNum, currentAllocationId);
                     }
                 }
