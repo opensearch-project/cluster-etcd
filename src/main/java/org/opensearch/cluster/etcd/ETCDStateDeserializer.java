@@ -256,7 +256,7 @@ public final class ETCDStateDeserializer {
                 indexMetadataMap.put(indexName, indexMetadata);
             }
         }
-        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment);
+        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment, etcdClient, clusterName);
     }
 
     @SuppressWarnings("unchecked")
