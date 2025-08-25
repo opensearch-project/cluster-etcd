@@ -386,12 +386,12 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     // Verify shard information structure
                     Map<String, Object> shardInfo = indexShards.get(0);
                     assertTrue("shardId should be present", shardInfo.containsKey("shardId"));
-                    assertTrue("primary should be present", shardInfo.containsKey("primary"));
+                    assertTrue("shard role should be present", shardInfo.containsKey("role"));
                     assertTrue("state should be present", shardInfo.containsKey("state"));
                     assertTrue("relocating should be present", shardInfo.containsKey("relocating"));
                     assertTrue("allocationId should be present", shardInfo.containsKey("allocationId"));
                     assertTrue("currentNodeId should be present", shardInfo.containsKey("currentNodeId"));
-                    assertTrue("currentNodeName should be present", shardInfo.containsKey("currentNodeId"));
+                    assertTrue("currentNodeName should be present", shardInfo.containsKey("currentNodeName"));
                 });
 
                 heartbeat.stop();
