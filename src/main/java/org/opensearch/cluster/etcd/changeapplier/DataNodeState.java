@@ -97,10 +97,8 @@ public class DataNodeState extends NodeState {
      */
     private boolean thisNodeHadShardBefore(String indexName, int shardNum) {
         try {
-            // Get cached node routing (reads from ETCD once per startup)
             Map<String, List<Map<String, Object>>> nodeRouting = getCachedNodeRouting();
             
-            // Check if this shard was in our previous routing
             boolean hadShard = checkShardInRouting(nodeRouting, indexName, shardNum);
             
             logger.debug("Checking if node had shard {}[{}] before restart: {}", indexName, shardNum, hadShard);
@@ -108,7 +106,7 @@ public class DataNodeState extends NodeState {
             
         } catch (Exception e) {
             logger.warn("Error checking previous shard assignment for {}[{}], assuming false", indexName, shardNum, e);
-            return false; // Safe default
+            return false; 
         }
     }
     
@@ -225,14 +223,12 @@ private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
             );
             Map<String, Object> heartbeat = parser.map();
             
-            // Extract nodeRouting section
             Map<String, Object> nodeRouting = (Map<String, Object>) heartbeat.get("nodeRouting");
             if (nodeRouting == null) {
                 logger.debug("No nodeRouting section found in heartbeat");
                 return Collections.emptyMap();
             }
             
-            // Convert to proper format
             Map<String, List<Map<String, Object>>> result = new HashMap<>();
             for (Map.Entry<String, Object> entry : nodeRouting.entrySet()) {
                 String indexName = entry.getKey();
@@ -255,7 +251,7 @@ private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
     private boolean checkShardInRouting(Map<String, List<Map<String, Object>>> nodeRouting, String indexName, int shardNum) {
         List<Map<String, Object>> indexShards = nodeRouting.get(indexName);
         if (indexShards == null) {
-            return false; // This node had no shards for this index
+            return false; 
         }
         
         // Look for the specific shard number that was on THIS node
@@ -379,20 +375,7 @@ private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
                         unassignedInfo
                     );
                     
-                    // Initialize with previous allocation ID (for allocation ID preservation across restarts)
                     shardRouting = shardRouting.initialize(localNode.getId(), previousAllocationId, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
-                    
-                    String currentAllocationId = shardRouting.allocationId() != null ? shardRouting.allocationId().getId() : "null";
-                    
-                    if (previousAllocationId != null) {
-                        if (previousAllocationId.equals(currentAllocationId)) {
-                                indexMetadata.getIndex().getName(), shardNum, previousAllocationId);
-                        } else {
-                                indexMetadata.getIndex().getName(), shardNum, previousAllocationId, currentAllocationId);
-                        }
-                    } else {
-                            indexMetadata.getIndex().getName(), shardNum, currentAllocationId);
-                    }
                 }
                 newShardRoutingTable.addShard(shardRouting);
 
