@@ -26,6 +26,7 @@ import io.etcd.jetcd.Client;
 import io.etcd.jetcd.KV;
 import io.etcd.jetcd.ByteSequence;
 import io.etcd.jetcd.KeyValue;
+import io.etcd.jetcd.kv.GetResponse;
 import org.opensearch.common.xcontent.json.JsonXContent;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentParser;
@@ -38,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -70,23 +72,30 @@ public class DataNodeState extends NodeState {
      * @param indexMetadata metadata for the index containing this shard
      * @return the recovery source to use for this shard
      */
-    private RecoverySource determineRecoverySource(int shardNum, IndexMetadata indexMetadata) {
+    private RecoverySource determineRecoverySource(int shardNum, IndexMetadata indexMetadata, ShardRole role) {
         String indexName = indexMetadata.getIndex().getName();
         
-        logger.debug("Determining recovery source for shard {}[{}]", indexName, shardNum);
+        logger.debug("Determining recovery source for shard {}[{}] with role {}", indexName, shardNum, role);
         
-        // Step 1: PRIORITY - cluster-etcd heartbeat check - did THIS node have this shard before restart?
+        // Replica shards will recover from primary
+        if (role != ShardRole.PRIMARY) {
+            logger.info("Shard {}[{}] with role {} is replica/search-replica, using PeerRecoverySource", indexName, shardNum, role);
+            return RecoverySource.PeerRecoverySource.INSTANCE;
+        }
+        
+        // For PRIMARY shards: Use ETCD-based logic
+        // 1. cluster-etcd heartbeat check - did THIS node have this shard before restart?
         if (!thisNodeHadShardBefore(indexName, shardNum)) {
-            logger.info("Shard {}[{}] was not on this node before restart, using EmptyStoreRecoverySource", indexName, shardNum);
+            logger.info("Primary shard {}[{}] was not on this node before restart, using EmptyStoreRecoverySource", indexName, shardNum);
             return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
         }
         
-        // Step 2: Node had shard before, but check if data actually exists on disk
+        // 2. Node had shard before, but check if data actually exists on disk
         if (actualDataExistsOnDisk(indexName, shardNum)) {
-            logger.info("Shard {}[{}] existed before and has data on disk, using ExistingStoreRecoverySource (data preserved)", indexName, shardNum);
+            logger.info("Primary shard {}[{}] existed before and has data on disk, using ExistingStoreRecoverySource (data preserved)", indexName, shardNum);
             return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
         } else {
-            logger.warn("Shard {}[{}] was on this node before but no data found on disk - using EmptyStoreRecoverySource (graceful fallback)", indexName, shardNum);
+            logger.warn("Primary shard {}[{}] was on this node before but no data found on disk - using EmptyStoreRecoverySource (graceful fallback)", indexName, shardNum);
             return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
         }
     }
@@ -189,7 +198,12 @@ private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
             ByteSequence key = ByteSequence.from(heartbeatPath, StandardCharsets.UTF_8);
             
             KV kvClient = etcdClient.getKVClient();
-            List<KeyValue> result = kvClient.get(key).get().getKvs();
+            CompletableFuture<GetResponse> future = kvClient.get(key);
+            if (future == null) {
+                return null;
+            }
+            
+            List<KeyValue> result = future.get().getKvs();
             
             if (result.isEmpty()) {
                 logger.debug("No previous heartbeat found at path: {}", heartbeatPath);
@@ -364,7 +378,7 @@ private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
                         indexMetadata.getIndex().getName(), shardNum, shardRouting.allocationId().getId());
                 } else {
                     // No previous shard in cluster state - use ETCD-based allocation ID preservation
-                    RecoverySource etcdRecoverySource = determineRecoverySource(shardNum, indexMetadata);
+                    RecoverySource etcdRecoverySource = determineRecoverySource(shardNum, indexMetadata, role);
                     String previousAllocationId = getPreviousAllocationId(indexMetadata.getIndex().getName(), shardNum);
                     
                     shardRouting = ShardRouting.newUnassigned(
