@@ -364,14 +364,14 @@ private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
                         indexMetadata.getIndex().getName(), shardNum, shardRouting.allocationId().getId());
                 } else {
                     // No previous shard in cluster state - use ETCD-based allocation ID preservation
-                    RecoverySource recoverySource = determineRecoverySource(shardNum, indexMetadata);
+                    RecoverySource etcdRecoverySource = determineRecoverySource(shardNum, indexMetadata);
                     String previousAllocationId = getPreviousAllocationId(indexMetadata.getIndex().getName(), shardNum);
                     
                     shardRouting = ShardRouting.newUnassigned(
                         shardId,
                         role == ShardRole.PRIMARY,
                         role == ShardRole.SEARCH_REPLICA,
-                        recoverySource, // Use recovery source based on ETCD data
+                        etcdRecoverySource, // Use recovery source based on ETCD data
                         unassignedInfo
                     );
                     
