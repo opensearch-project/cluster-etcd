@@ -1,7 +1,7 @@
 package io.clustercontroller.store;
 
 import io.clustercontroller.models.SearchUnit;
-import io.clustercontroller.models.Task;
+import io.clustercontroller.models.TaskMetadata;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
@@ -58,28 +58,28 @@ public class EtcdMetadataStore implements MetadataStore {
     // =================================================================
     
     @Override
-    public List<Task> getAllTasks() throws Exception {
+    public List<TaskMetadata> getAllTasks() throws Exception {
         log.debug("Getting all tasks from etcd");
         // TODO: etcd.getKVClient().get() with prefix
         return List.of();
     }
     
     @Override
-    public Optional<Task> getTask(String taskName) throws Exception {
+    public Optional<TaskMetadata> getTask(String taskName) throws Exception {
         log.debug("Getting task {} from etcd", taskName);
         // TODO: etcd.getKVClient().get(taskPath)
         return Optional.empty();
     }
     
     @Override
-    public String createTask(Task task) throws Exception {
+    public String createTask(TaskMetadata task) throws Exception {
         log.info("Creating task {} in etcd", task.getName());
         // TODO: etcd.getKVClient().put(taskPath, taskJson)
         return task.getName();
     }
     
     @Override
-    public void updateTask(Task task) throws Exception {
+    public void updateTask(TaskMetadata task) throws Exception {
         log.debug("Updating task {} in etcd", task.getName());
         // TODO: etcd.getKVClient().put(taskPath, taskJson)
     }

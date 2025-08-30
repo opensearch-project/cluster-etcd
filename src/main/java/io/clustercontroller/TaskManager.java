@@ -1,11 +1,10 @@
 package io.clustercontroller;
 
-import io.clustercontroller.allocation.ActualAllocationUpdater;
-import io.clustercontroller.allocation.ShardAllocator;
-import io.clustercontroller.discovery.Discovery;
-import io.clustercontroller.indices.IndexManager;
-import io.clustercontroller.models.Task;
+import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.store.MetadataStore;
+import io.clustercontroller.tasks.Task;
+import io.clustercontroller.tasks.TaskContext;
+import io.clustercontroller.tasks.TaskFactory;
 import lombok.extern.slf4j.Slf4j;
 
 import static io.clustercontroller.config.Constants.*;
@@ -17,52 +16,40 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Main task manager for cluster controller.
- * Handles task lifecycle, scheduling, and coordination with other components.
+ * Generic task manager for scheduling and executing tasks.
+ * Agnostic to specific task types - delegates execution to Task implementations.
  */
 @Slf4j
 public class TaskManager {
     
     private final MetadataStore metadataStore;
-    private final IndexManager indexManager;
-    private final Discovery discovery;
-    private final ShardAllocator shardAllocator;
-    private final ActualAllocationUpdater actualAllocationUpdater;
+    private final TaskContext taskContext;
     
     private final ScheduledExecutorService scheduler;
     private final long intervalSeconds;
     private boolean isRunning = false;
     
-    public TaskManager(
-            MetadataStore metadataStore,
-            IndexManager indexManager,
-            Discovery discovery,
-            ShardAllocator shardAllocator,
-            ActualAllocationUpdater actualAllocationUpdater,
-            long intervalSeconds) {
+    public TaskManager(MetadataStore metadataStore, TaskContext taskContext, long intervalSeconds) {
         this.metadataStore = metadataStore;
-        this.indexManager = indexManager;
-        this.discovery = discovery;
-        this.shardAllocator = shardAllocator;
-        this.actualAllocationUpdater = actualAllocationUpdater;
+        this.taskContext = taskContext;
         this.intervalSeconds = intervalSeconds;
         this.scheduler = Executors.newScheduledThreadPool(1);
     }
     
-    public Task createTask(String taskName, String input, int priority) {
+    public TaskMetadata createTask(String taskName, String input, int priority) {
         log.info("Creating task: name={}, priority={}", taskName, priority);
-        Task task = new Task(taskName, priority);
-        task.setInput(input);
+        TaskMetadata taskMetadata = new TaskMetadata(taskName, priority);
+        taskMetadata.setInput(input);
         try {
-            metadataStore.createTask(task);
+            metadataStore.createTask(taskMetadata);
         } catch (Exception e) {
             log.error("Failed to create task: {}", e.getMessage(), e);
             throw new RuntimeException("Failed to create task", e);
         }
-        return task;
+        return taskMetadata;
     }
     
-    public List<Task> getAllTasks() {
+    public List<TaskMetadata> getAllTasks() {
         log.debug("Getting all tasks");
         try {
             return metadataStore.getAllTasks();
@@ -72,7 +59,7 @@ public class TaskManager {
         }
     }
     
-    public Optional<Task> getTask(String taskName) {
+    public Optional<TaskMetadata> getTask(String taskName) {
         log.debug("Getting task: {}", taskName);
         try {
             return metadataStore.getTask(taskName);
@@ -82,12 +69,12 @@ public class TaskManager {
         }
     }
     
-    public void updateTask(Task task) {
-        log.debug("Updating task: {}", task.getName());
+    public void updateTask(TaskMetadata taskMetadata) {
+        log.debug("Updating task: {}", taskMetadata.getName());
         try {
-            metadataStore.updateTask(task);
+            metadataStore.updateTask(taskMetadata);
         } catch (Exception e) {
-            log.error("Failed to update task {}: {}", task.getName(), e.getMessage(), e);
+            log.error("Failed to update task {}: {}", taskMetadata.getName(), e.getMessage(), e);
             throw new RuntimeException("Failed to update task", e);
         }
     }
@@ -128,14 +115,14 @@ public class TaskManager {
         try {
             log.debug("Running task processing loop");
             
-            List<Task> tasks = getAllTasks();
-            cleanupOldTasks(tasks);
+            List<TaskMetadata> taskMetadataList = getAllTasks();
+            cleanupOldTasks(taskMetadataList);
             
-            Task taskToProcess = selectNextTask(tasks);
-            if (taskToProcess != null) {
-                log.info("Processing task: {}", taskToProcess.getName());
-                String result = executeTask(taskToProcess);
-                log.info("Task {} completed with result: {}", taskToProcess.getName(), result);
+            TaskMetadata taskMetadataToProcess = selectNextTask(taskMetadataList);
+            if (taskMetadataToProcess != null) {
+                log.info("Processing task: {}", taskMetadataToProcess.getName());
+                String result = executeTask(taskMetadataToProcess);
+                log.info("Task {} completed with result: {}", taskMetadataToProcess.getName(), result);
             } else {
                 log.debug("No pending tasks to process");
             }
@@ -144,47 +131,26 @@ public class TaskManager {
         }
     }
     
-    private String executeTask(Task task) {
+    private String executeTask(TaskMetadata taskMetadata) {
         try {
-            task.setStatus(TASK_STATUS_RUNNING);
-            updateTask(task);
+            taskMetadata.setStatus(TASK_STATUS_RUNNING);
+            updateTask(taskMetadata);
             
-            String action = task.getName();
-            log.info("Executing action: {}", action);
+            log.info("Executing task: {}", taskMetadata.getName());
             
-            switch (action) {
-                case TASK_ACTION_CREATE_INDEX:
-                    indexManager.createIndex(task.getInput());
-                    break;
-                case TASK_ACTION_DELETE_INDEX:
-                    indexManager.deleteIndex(task.getInput());
-                    break;
-                case TASK_ACTION_PLAN_SHARD_ALLOCATION:
-                    indexManager.planShardAllocation();
-                    break;
-                case TASK_ACTION_DISCOVER_SEARCH_UNIT:
-                    discovery.discoverSearchUnits();
-                    break;
-                case TASK_ACTION_SHARD_ALLOCATOR:
-                    shardAllocator.allocateShards();
-                    break;
-                case TASK_ACTION_ACTUAL_ALLOCATION_UPDATER:
-                    actualAllocationUpdater.updateActualAllocations();
-                    break;
-                default:
-                    log.warn("Unknown task action: {}", action);
-                    return TASK_STATUS_FAILED;
-            }
+            // Create Task implementation from metadata and execute
+            Task task = TaskFactory.createTask(taskMetadata);
+            String result = task.execute(taskContext);
             
-            task.setStatus(TASK_STATUS_COMPLETED);
-            updateTask(task);
-            return TASK_STATUS_COMPLETED;
+            taskMetadata.setStatus(result);
+            updateTask(taskMetadata);
+            return result;
             
         } catch (Exception e) {
-            log.error("Failed to execute task {}: {}", task.getName(), e.getMessage(), e);
-            task.setStatus(TASK_STATUS_FAILED);
+            log.error("Failed to execute task {}: {}", taskMetadata.getName(), e.getMessage(), e);
+            taskMetadata.setStatus(TASK_STATUS_FAILED);
             try {
-                updateTask(task);
+                updateTask(taskMetadata);
             } catch (Exception updateException) {
                 log.error("Failed to update task status to failed: {}", updateException.getMessage());
             }
@@ -192,7 +158,7 @@ public class TaskManager {
         }
     }
     
-    private Task selectNextTask(List<Task> tasks) {
+    private TaskMetadata selectNextTask(List<TaskMetadata> tasks) {
         // Select highest priority pending task
         return tasks.stream()
                 .filter(task -> TASK_STATUS_PENDING.equals(task.getStatus()) || 
@@ -205,7 +171,7 @@ public class TaskManager {
                 .orElse(null);
     }
     
-    private void cleanupOldTasks(List<Task> tasks) {
+    private void cleanupOldTasks(List<TaskMetadata> tasks) {
         // TODO: Implement task cleanup logic
         log.debug("Cleaning up old tasks");
     }

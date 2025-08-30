@@ -5,13 +5,13 @@ import static org.assertj.core.api.Assertions.*;
 import static io.clustercontroller.config.Constants.*;
 
 /**
- * Tests for Task model.
+ * Tests for TaskMetadata model.
  */
-class TaskTest {
+class TaskMetadataTest {
     
     @Test
-    void testTaskCreation() {
-        Task task = new Task();
+    void testTaskMetadataCreation() {
+        TaskMetadata task = new TaskMetadata();
         
         assertThat(task.getStatus()).isEqualTo(TASK_STATUS_PENDING);
         assertThat(task.getCreatedAt()).isNotNull();
@@ -19,11 +19,11 @@ class TaskTest {
     }
     
     @Test
-    void testTaskWithParameters() {
+    void testTaskMetadataWithParameters() {
         String taskName = "test-task";
         int priority = 5;
         
-        Task task = new Task(taskName, priority);
+        TaskMetadata task = new TaskMetadata(taskName, priority);
         
         assertThat(task.getName()).isEqualTo(taskName);
         assertThat(task.getPriority()).isEqualTo(priority);
@@ -31,8 +31,8 @@ class TaskTest {
     }
     
     @Test
-    void testTaskSetters() {
-        Task task = new Task();
+    void testTaskMetadataSetters() {
+        TaskMetadata task = new TaskMetadata();
         
         task.setName("test-task");
         task.setInput("test-input");
@@ -44,8 +44,8 @@ class TaskTest {
     }
     
     @Test
-    void testTaskStatusUpdate() {
-        Task task = new Task();
+    void testTaskMetadataStatusUpdate() {
+        TaskMetadata task = new TaskMetadata();
         
         task.setStatus(TASK_STATUS_RUNNING);
         
@@ -54,8 +54,8 @@ class TaskTest {
     }
     
     @Test
-    void testTaskToString() {
-        Task task = new Task("test-task", 1);
+    void testTaskMetadataToString() {
+        TaskMetadata task = new TaskMetadata("test-task", 1);
         
         String taskString = task.toString();
         

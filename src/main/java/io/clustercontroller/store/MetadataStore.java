@@ -1,6 +1,6 @@
 package io.clustercontroller.store;
 
-import io.clustercontroller.models.Task;
+import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.models.SearchUnit;
 import java.util.List;
 import java.util.Optional;
@@ -18,22 +18,22 @@ public interface MetadataStore {
     /**
      * Get all controller tasks sorted by priority
      */
-    List<Task> getAllTasks() throws Exception;
+    List<TaskMetadata> getAllTasks() throws Exception;
     
     /**
      * Get task by name
      */
-    Optional<Task> getTask(String taskName) throws Exception;
+    Optional<TaskMetadata> getTask(String taskName) throws Exception;
     
     /**
      * Create new task
      */
-    String createTask(Task task) throws Exception;
+    String createTask(TaskMetadata task) throws Exception;
     
     /**
      * Update existing task
      */
-    void updateTask(Task task) throws Exception;
+    void updateTask(TaskMetadata task) throws Exception;
     
     /**
      * Delete task

@@ -1,12 +1,8 @@
 package io.clustercontroller;
 
-import io.clustercontroller.allocation.ActualAllocationUpdater;
-import io.clustercontroller.allocation.ShardAllocator;
-import io.clustercontroller.config.ClusterControllerConfig;
-import io.clustercontroller.discovery.Discovery;
-import io.clustercontroller.indices.IndexManager;
-import io.clustercontroller.models.Task;
+import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.store.MetadataStore;
+import io.clustercontroller.tasks.TaskContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -28,16 +24,7 @@ class TaskManagerTest {
     private MetadataStore metadataStore;
     
     @Mock
-    private IndexManager indexManager;
-    
-    @Mock
-    private Discovery discovery;
-    
-    @Mock
-    private ShardAllocator shardAllocator;
-    
-    @Mock
-    private ActualAllocationUpdater actualAllocationUpdater;
+    private TaskContext taskContext;
     
     private TaskManager taskManager;
     
@@ -45,14 +32,7 @@ class TaskManagerTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         
-        taskManager = new TaskManager(
-            metadataStore,
-            indexManager,
-            discovery,
-            shardAllocator,
-            actualAllocationUpdater,
-            30L
-        );
+        taskManager = new TaskManager(metadataStore, taskContext, 30L);
     }
     
     @Test
@@ -66,28 +46,28 @@ class TaskManagerTest {
         String input = "test-input";
         int priority = 1;
         
-        when(metadataStore.createTask(any(Task.class))).thenReturn(taskName);
+        when(metadataStore.createTask(any(TaskMetadata.class))).thenReturn(taskName);
         
-        Task result = taskManager.createTask(taskName, input, priority);
+        TaskMetadata result = taskManager.createTask(taskName, input, priority);
         
         assertThat(result.getName()).isEqualTo(taskName);
         assertThat(result.getInput()).isEqualTo(input);
         assertThat(result.getPriority()).isEqualTo(priority);
         assertThat(result.getStatus()).isEqualTo(TASK_STATUS_PENDING);
         
-        verify(metadataStore).createTask(any(Task.class));
+        verify(metadataStore).createTask(any(TaskMetadata.class));
     }
     
     @Test
     void testGetAllTasks() throws Exception {
-        List<Task> mockTasks = List.of(
-            new Task("task1", 1),
-            new Task("task2", 2)
+        List<TaskMetadata> mockTasks = List.of(
+            new TaskMetadata("task1", 1),
+            new TaskMetadata("task2", 2)
         );
         
         when(metadataStore.getAllTasks()).thenReturn(mockTasks);
         
-        List<Task> result = taskManager.getAllTasks();
+        List<TaskMetadata> result = taskManager.getAllTasks();
         
         assertThat(result).hasSize(2);
         assertThat(result.get(0).getName()).isEqualTo("task1");
@@ -99,11 +79,11 @@ class TaskManagerTest {
     @Test
     void testGetTask() throws Exception {
         String taskName = "test-task";
-        Task mockTask = new Task(taskName, 1);
+        TaskMetadata mockTask = new TaskMetadata(taskName, 1);
         
         when(metadataStore.getTask(taskName)).thenReturn(Optional.of(mockTask));
         
-        Optional<Task> result = taskManager.getTask(taskName);
+        Optional<TaskMetadata> result = taskManager.getTask(taskName);
         
         assertThat(result).isPresent();
         assertThat(result.get().getName()).isEqualTo(taskName);

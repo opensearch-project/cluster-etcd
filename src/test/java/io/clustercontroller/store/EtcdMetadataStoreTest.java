@@ -1,6 +1,6 @@
 package io.clustercontroller.store;
 
-import io.clustercontroller.models.Task;
+import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.models.SearchUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,7 +40,7 @@ class EtcdMetadataStoreTest {
     
     @Test
     void testGetAllTasksReturnsEmpty() throws Exception {
-        List<Task> tasks = metadataStore.getAllTasks();
+        List<TaskMetadata> tasks = metadataStore.getAllTasks();
         
         assertThat(tasks).isNotNull();
         assertThat(tasks).isEmpty();
@@ -48,14 +48,14 @@ class EtcdMetadataStoreTest {
     
     @Test
     void testGetTaskReturnsEmpty() throws Exception {
-        Optional<Task> task = metadataStore.getTask("non-existent-task");
+        Optional<TaskMetadata> task = metadataStore.getTask("non-existent-task");
         
         assertThat(task).isEmpty();
     }
     
     @Test
     void testCreateTaskReturnsName() throws Exception {
-        Task task = new Task("test-task", 1);
+        TaskMetadata task = new TaskMetadata("test-task", 1);
         
         String result = metadataStore.createTask(task);
         

@@ -2,17 +2,16 @@ package io.clustercontroller.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
-import lombok.NoArgsConstructor;
 
 import java.time.OffsetDateTime;
 
 import static io.clustercontroller.config.Constants.*;
 
 /**
- * Task entity representing a unit of work to be processed by the cluster controller.
+ * Task metadata representing task state and information stored in metadata store.
  */
 @Data
-public class Task {
+public class TaskMetadata {
     
     @JsonProperty("name")
     private String name;
@@ -38,13 +37,13 @@ public class Task {
     @JsonProperty("created_at")
     private OffsetDateTime createdAt;
     
-    public Task() {
+    public TaskMetadata() {
         this.createdAt = OffsetDateTime.now();
         this.lastUpdated = OffsetDateTime.now();
         this.status = TASK_STATUS_PENDING;
     }
     
-    public Task(String name, int priority) {
+    public TaskMetadata(String name, int priority) {
         this();
         this.name = name;
         this.priority = priority;

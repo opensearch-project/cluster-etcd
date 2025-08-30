@@ -7,6 +7,7 @@ import io.clustercontroller.discovery.Discovery;
 import io.clustercontroller.indices.IndexManager;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
+import io.clustercontroller.tasks.TaskContext;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -48,13 +49,13 @@ public class ClusterControllerApplication {
             ShardAllocator shardAllocator = new ShardAllocator(metadataStore);
             ActualAllocationUpdater actualAllocationUpdater = new ActualAllocationUpdater(metadataStore);
             
-            // Initialize main task manager
+            // Create task context for component access
+            TaskContext taskContext = new TaskContext(indexManager, discovery, shardAllocator, actualAllocationUpdater);
+            
+            // Initialize generic task manager
             TaskManager taskManager = new TaskManager(
                 metadataStore,
-                indexManager,
-                discovery,
-                shardAllocator,
-                actualAllocationUpdater,
+                taskContext,
                 config.getTaskIntervalSeconds()
             );
             
