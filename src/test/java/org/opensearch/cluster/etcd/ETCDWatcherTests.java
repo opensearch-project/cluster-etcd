@@ -57,7 +57,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
         );
 
         MockNodeStateApplier mockNodeStateApplier = new MockNodeStateApplier();
-        String configPath = ETCDPathUtils.buildSearchUnitConfigPath(clusterName, nodeName);
+        String configPath = ETCDPathUtils.buildSearchUnitGoalStatePath(localNode, clusterName);
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
             try (
@@ -129,7 +129,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
         );
 
         MockNodeStateApplier mockNodeStateApplier = new MockNodeStateApplier();
-        String configPath = ETCDPathUtils.buildSearchUnitConfigPath(clusterName, nodeName);
+        String configPath = ETCDPathUtils.buildSearchUnitGoalStatePath(localNode, clusterName);
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
