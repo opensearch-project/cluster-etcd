@@ -89,27 +89,26 @@ public class DataNodeState extends NodeState {
             return RecoverySource.PeerRecoverySource.INSTANCE;
         }
 
-        // For PRIMARY shards: Use ETCD-based logic
-        // 1. cluster-etcd heartbeat check - did THIS node have this shard before restart?
-        if (!thisNodeHadShardBefore(indexName, shardNum)) {
-            logger.info("Primary shard {}[{}] was not on this node before restart, using EmptyStoreRecoverySource", indexName, shardNum);
-            return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
-        }
-
-        // 2. Node had shard before, but check if data actually exists on disk
-        if (actualDataExistsOnDisk(indexName, shardNum)) {
-            logger.info(
-                "Primary shard {}[{}] existed before and has data on disk, using ExistingStoreRecoverySource (data preserved)",
-                indexName,
-                shardNum
-            );
-            return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
+        // For PRIMARY shards: Check if this node had this shard before restart
+        if (thisNodeHadShardBefore(indexName, shardNum)) {
+            // Node had this shard before, check if data actually exists on disk
+            if (actualDataExistsOnDisk(indexName, shardNum)) {
+                logger.info(
+                    "Node had shard {}[{}] before restart and data exists on disk, using ExistingStoreRecoverySource",
+                    indexName,
+                    shardNum
+                );
+                return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
+            } else {
+                logger.warn(
+                    "Node had shard {}[{}] before restart but no data exists on disk, using EmptyStoreRecoverySource",
+                    indexName,
+                    shardNum
+                );
+                return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
+            }
         } else {
-            logger.warn(
-                "Primary shard {}[{}] was on this node before but no data found on disk - using EmptyStoreRecoverySource (graceful fallback)",
-                indexName,
-                shardNum
-            );
+            logger.info("Node did not have shard {}[{}] before restart, using EmptyStoreRecoverySource", indexName, shardNum);
             return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
         }
     }
@@ -138,6 +137,18 @@ public class DataNodeState extends NodeState {
      * Returns null if no previous allocation ID is found.
      */
     private String getPreviousAllocationId(String indexName, int shardNum) {
+        try {
+            return getPreviousAllocationIdFromHeartbeat(indexName, shardNum);
+        } catch (Exception e) {
+            logger.warn("Error extracting previous allocation ID for {}[{}]", indexName, shardNum, e);
+            return null;
+        }
+    }
+
+    /**
+     * Gets allocation ID from node heartbeat data.
+     */
+    private String getPreviousAllocationIdFromHeartbeat(String indexName, int shardNum) {
         try {
             Map<String, List<Map<String, Object>>> nodeRouting = getCachedNodeRouting();
             if (nodeRouting == null || !nodeRouting.containsKey(indexName)) {
