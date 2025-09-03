@@ -45,12 +45,12 @@ import java.util.stream.Collectors;
 
 public class DataNodeState extends NodeState {
     private static final Logger logger = LogManager.getLogger(DataNodeState.class);
-    
+
     private final Map<String, IndexMetadata> indices;
     private final Map<String, Set<DataNodeShard>> assignedShards;
     private final Client etcdClient;
     private final String clusterName;
-    
+
     // Cache for heartbeat data to avoid repeated ETCD reads
     private Map<String, List<Map<String, Object>>> cachedNodeRouting = null;
 
@@ -74,7 +74,7 @@ public class DataNodeState extends NodeState {
     /**
      * Determines the appropriate recovery source for a shard.
      * This prevents data loss on node restarts by using existing data when available.
-     * 
+     *
      * @param shardNum the shard number
      * @param indexMetadata metadata for the index containing this shard
      * @param role the shard role (PRIMARY, REPLICA, SEARCH_REPLICA)
@@ -83,13 +83,13 @@ public class DataNodeState extends NodeState {
     private RecoverySource determineRecoverySource(int shardNum, IndexMetadata indexMetadata, ShardRole role) {
         String indexName = indexMetadata.getIndex().getName();
         logger.debug("Determining recovery source for shard {}[{}] with role {}", indexName, shardNum, role);
-        
+
         // Replica shards will recover from primary
         if (role != ShardRole.PRIMARY) {
             logger.info("Shard {}[{}] with role {} is replica/search-replica, using PeerRecoverySource", indexName, shardNum, role);
             return RecoverySource.PeerRecoverySource.INSTANCE;
         }
-        
+
         // For PRIMARY shards: Check if this node had this shard before restart
         if (thisNodeHadShardBefore(indexName, shardNum)) {
             // Node had this shard before, check if data actually exists on disk
@@ -121,12 +121,12 @@ public class DataNodeState extends NodeState {
     private boolean thisNodeHadShardBefore(String indexName, int shardNum) {
         try {
             Map<String, List<Map<String, Object>>> nodeRouting = getCachedNodeRouting();
-            
+
             boolean hadShard = checkShardInRouting(nodeRouting, indexName, shardNum);
-            
+
             logger.debug("Checking if node had shard {}[{}] before restart: {}", indexName, shardNum, hadShard);
             return hadShard;
-            
+
         } catch (Exception e) {
             logger.warn("Error checking previous shard assignment for {}[{}], assuming false", indexName, shardNum, e);
             return false;
@@ -155,17 +155,17 @@ public class DataNodeState extends NodeState {
             if (nodeRouting == null || !nodeRouting.containsKey(indexName)) {
                 return null;
             }
-            
+
             List<Map<String, Object>> shards = nodeRouting.get(indexName);
             for (Map<String, Object> shard : shards) {
                 Object shardIdObj = shard.get("shardId");
                 Object currentNodeName = shard.get("currentNodeName");
                 Object allocationIdObj = shard.get("allocationId");
-                
+
                 if (shardIdObj != null && currentNodeName != null && allocationIdObj != null) {
                     int shardId = ((Number) shardIdObj).intValue();
                     String nodeName = currentNodeName.toString();
-                    
+
                     // Check if this is the right shard and it was on this node
                     if (shardId == shardNum && localNode.getName().equals(nodeName)) {
                         String allocationId = allocationIdObj.toString();
@@ -174,10 +174,10 @@ public class DataNodeState extends NodeState {
                     }
                 }
             }
-            
+
             logger.debug("No previous allocation ID found for shard {}[{}]", indexName, shardNum);
             return null;
-            
+
         } catch (Exception e) {
             logger.warn("Error extracting previous allocation ID for {}[{}]", indexName, shardNum, e);
             return null;
@@ -197,7 +197,7 @@ public class DataNodeState extends NodeState {
 
     /**
      * Checks if actual shard data exists on disk before attempting ExistingStoreRecoverySource.
-     * 
+     *
      * TODO: Implement actual disk checking when needed for production scenarios.
      */
     private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
@@ -214,28 +214,28 @@ public class DataNodeState extends NodeState {
             logger.debug("ETCD client or cluster name not available, cannot read heartbeat");
             return null;
         }
-        
+
         try {
             String heartbeatPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
             ByteSequence key = ByteSequence.from(heartbeatPath, StandardCharsets.UTF_8);
-            
+
             KV kvClient = etcdClient.getKVClient();
             CompletableFuture<GetResponse> future = kvClient.get(key);
             if (future == null) {
                 return null;
             }
-            
+
             List<KeyValue> result = future.get().getKvs();
-            
+
             if (result.isEmpty()) {
                 logger.debug("No previous heartbeat found at path: {}", heartbeatPath);
                 return null;
             }
-            
+
             String heartbeatJson = result.get(0).getValue().toString(StandardCharsets.UTF_8);
             logger.debug("Successfully read heartbeat from ETCD, size: {} chars", heartbeatJson.length());
             return heartbeatJson;
-            
+
         } catch (Exception e) {
             logger.warn("Failed to read heartbeat from ETCD", e);
             return null;
@@ -249,28 +249,28 @@ public class DataNodeState extends NodeState {
         if (heartbeatJson == null || heartbeatJson.trim().isEmpty()) {
             return Collections.emptyMap();
         }
-        
+
         try {
             // Parse JSON using JsonXContent (same pattern as ETCDStateDeserializer)
             XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, null, heartbeatJson);
             Map<String, Object> heartbeat = parser.map();
-            
+
             Map<String, Object> nodeRouting = (Map<String, Object>) heartbeat.get("nodeRouting");
             if (nodeRouting == null) {
                 logger.debug("No nodeRouting section found in heartbeat");
                 return Collections.emptyMap();
             }
-            
+
             Map<String, List<Map<String, Object>>> result = new HashMap<>();
             for (Map.Entry<String, Object> entry : nodeRouting.entrySet()) {
                 String indexName = entry.getKey();
                 List<Map<String, Object>> shards = (List<Map<String, Object>>) entry.getValue();
                 result.put(indexName, shards);
             }
-            
+
             logger.debug("Parsed nodeRouting with {} indices from heartbeat", result.size());
             return result;
-            
+
         } catch (Exception e) {
             logger.warn("Failed to parse heartbeat JSON", e);
             return Collections.emptyMap();
@@ -285,7 +285,7 @@ public class DataNodeState extends NodeState {
         if (indexShards == null) {
             return false;
         }
-        
+
         // Look for the specific shard number that was on THIS node
         return indexShards.stream().anyMatch(shard -> {
             Object shardId = shard.get("shardId");
@@ -400,7 +400,7 @@ public class DataNodeState extends NodeState {
                     // No previous shard in cluster state - use ETCD-based allocation ID preservation
                     RecoverySource etcdRecoverySource = determineRecoverySource(shardNum, indexMetadata, role);
                     String previousAllocationId = getPreviousAllocationId(indexMetadata.getIndex().getName(), shardNum);
-                    
+
                     shardRouting = ShardRouting.newUnassigned(
                         shardId,
                         role == ShardRole.PRIMARY,
@@ -408,27 +408,40 @@ public class DataNodeState extends NodeState {
                         etcdRecoverySource, // Use recovery source based on ETCD data
                         unassignedInfo
                     );
-                    
+
                     shardRouting = shardRouting.initialize(
                         localNode.getId(),
                         previousAllocationId,
                         ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE
                     );
-                    
+
                     // ALLOCATION ID TRACKING: Log allocation ID changes for monitoring purposes
                     String currentAllocationId = shardRouting.allocationId() != null ? shardRouting.allocationId().getId() : "null";
-                    
+
                     if (previousAllocationId != null) {
                         if (previousAllocationId.equals(currentAllocationId)) {
-                            logger.info("✅ ALLOCATION ID PRESERVED: shard {}[{}] kept allocation ID {}", 
-                                indexMetadata.getIndex().getName(), shardNum, previousAllocationId);
+                            logger.info(
+                                "✅ ALLOCATION ID PRESERVED: shard {}[{}] kept allocation ID {}",
+                                indexMetadata.getIndex().getName(),
+                                shardNum,
+                                previousAllocationId
+                            );
                         } else {
-                            logger.info("🔄 ALLOCATION ID CHANGED: shard {}[{}] from {} to {}", 
-                                indexMetadata.getIndex().getName(), shardNum, previousAllocationId, currentAllocationId);
+                            logger.info(
+                                "🔄 ALLOCATION ID CHANGED: shard {}[{}] from {} to {}",
+                                indexMetadata.getIndex().getName(),
+                                shardNum,
+                                previousAllocationId,
+                                currentAllocationId
+                            );
                         }
                     } else {
-                        logger.debug("No previous allocation ID found for shard {}[{}], using new ID: {}", 
-                            indexMetadata.getIndex().getName(), shardNum, currentAllocationId);
+                        logger.debug(
+                            "No previous allocation ID found for shard {}[{}], using new ID: {}",
+                            indexMetadata.getIndex().getName(),
+                            shardNum,
+                            currentAllocationId
+                        );
                     }
                 }
                 newShardRoutingTable.addShard(shardRouting);
