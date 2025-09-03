@@ -8,6 +8,7 @@ import io.clustercontroller.indices.IndexManager;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
 import io.clustercontroller.tasks.TaskContext;
+import io.clustercontroller.util.EnvironmentUtils;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -19,6 +20,9 @@ import static io.clustercontroller.config.Constants.*;
  * This application provides production-ready controller functionality for managing
  * distributed clusters at scale, including shard allocation, cluster coordination,
  * and automated operations backed by pluggable metadata stores.
+ * 
+ * Required Environment Variables:
+ * - NODE_NAME: Unique identifier for this controller instance (required for leader election)
  */
 @Slf4j
 public class ClusterControllerApplication {
@@ -42,6 +46,7 @@ public class ClusterControllerApplication {
                 config.getEtcdEndpoints()
             );
             metadataStore.initialize();
+            waitUntilLeader(metadataStore);  // blocks until leader
             
             // Initialize components
             IndexManager indexManager = new IndexManager(metadataStore);
@@ -77,4 +82,21 @@ public class ClusterControllerApplication {
             System.exit(1);
         }
     }
+
+    private static void waitUntilLeader(MetadataStore metadataStore) throws InterruptedException {
+        if (metadataStore instanceof EtcdMetadataStore) {
+            EtcdMetadataStore etcdStore = (EtcdMetadataStore) metadataStore;
+
+            String currentNodeName = EnvironmentUtils.getRequiredEnv("NODE_NAME");
+            log.info("LeaderElection - Starting leader election process...");
+            log.info("LeaderElection - Current node: {}", currentNodeName);
+            
+            while (!etcdStore.isLeader()) {
+                Thread.sleep(1000);   
+            }
+            
+            log.info("LeaderElection - SUCCESS: This node ({}) has become the leader!", currentNodeName);
+        }
+    }
+    
 }

@@ -8,10 +8,15 @@ import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.models.TaskMetadata;
+import io.clustercontroller.util.EnvironmentUtils;
 import io.etcd.jetcd.*;
 import io.etcd.jetcd.kv.GetResponse;
 import io.etcd.jetcd.kv.PutResponse;
+import io.etcd.jetcd.lease.LeaseGrantResponse;
+import io.etcd.jetcd.lease.LeaseKeepAliveResponse;
 import io.etcd.jetcd.options.GetOption;
+import io.etcd.jetcd.options.LeaseOption;
+import io.grpc.stub.StreamObserver;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
@@ -19,6 +24,7 @@ import java.time.OffsetDateTime;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static io.clustercontroller.config.Constants.PATH_DELIMITER;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -42,12 +48,17 @@ public class EtcdMetadataStore implements MetadataStore {
     private final EtcdPathResolver pathResolver;
     private final ObjectMapper objectMapper;
     
+    // Leader election fields
+    private final AtomicBoolean isLeader = new AtomicBoolean(false);
+    private final String nodeId;
+    
     /**
      * Private constructor for singleton pattern
      */
     private EtcdMetadataStore(String clusterName, String[] etcdEndpoints) throws Exception {
         this.clusterName = clusterName;
         this.etcdEndpoints = etcdEndpoints;
+        this.nodeId = EnvironmentUtils.getRequiredEnv("NODE_NAME");
         
         // Initialize Jackson ObjectMapper
         this.objectMapper = new ObjectMapper()
@@ -61,8 +72,8 @@ public class EtcdMetadataStore implements MetadataStore {
         // Initialize path resolver
         this.pathResolver = new EtcdPathResolver(clusterName);
         
-        log.info("EtcdMetadataStore initialized for cluster: {} with endpoints: {}", 
-            clusterName, String.join(",", etcdEndpoints));
+        log.info("EtcdMetadataStore initialized for cluster: {} with endpoints: {} and nodeId: {}", 
+            clusterName, String.join(",", etcdEndpoints), nodeId);
     }
     
     // =================================================================
@@ -72,9 +83,10 @@ public class EtcdMetadataStore implements MetadataStore {
     /**
      * Test constructor with injected dependencies
      */
-    private EtcdMetadataStore(String clusterName, String[] etcdEndpoints, Client etcdClient, KV kvClient) {
+    private EtcdMetadataStore(String clusterName, String[] etcdEndpoints, String nodeId, Client etcdClient, KV kvClient) {
         this.clusterName = clusterName;
         this.etcdEndpoints = etcdEndpoints;
+        this.nodeId = nodeId;
         this.etcdClient = etcdClient;
         this.kvClient = kvClient;
         
@@ -86,9 +98,8 @@ public class EtcdMetadataStore implements MetadataStore {
         // Initialize path resolver
         this.pathResolver = new EtcdPathResolver(clusterName);
         
-        log.info("EtcdMetadataStore initialized for testing with cluster: {}", clusterName);
+        log.info("EtcdMetadataStore initialized for testing with cluster: {} and nodeId: {}", clusterName, nodeId);
     }
-    
     /**
      * Get singleton instance
      */
@@ -119,11 +130,49 @@ public class EtcdMetadataStore implements MetadataStore {
     /**
      * Create test instance with mocked dependencies (for testing only)
      */
-    public static synchronized EtcdMetadataStore createTestInstance(String clusterName, String[] etcdEndpoints, Client etcdClient, KV kvClient) {
+    public static synchronized EtcdMetadataStore createTestInstance(String clusterName, String[] etcdEndpoints, String nodeId, Client etcdClient, KV kvClient) {
         resetInstance();
-        instance = new EtcdMetadataStore(clusterName, etcdEndpoints, etcdClient, kvClient);
+        instance = new EtcdMetadataStore(clusterName, etcdEndpoints, nodeId, etcdClient, kvClient);
         return instance;
     }
+    
+    // =================================================================
+    // KEY PATH BUILDERS
+    // =================================================================
+    
+    private String getControllerTasksPrefix() {
+        return "/" + clusterName + "/ctl-tasks/";
+    }
+    
+    private String getSearchUnitPrefix() {
+        return "/" + clusterName + "/search-unit/";
+    }
+    
+    private String getSearchUnitConfPath(String unitName) {
+        return getSearchUnitPrefix() + unitName + "/conf";
+    }
+    
+    private String getSearchUnitGoalStatePath(String unitName) {
+        return getSearchUnitPrefix() + unitName + "/goal-state";
+    }
+    
+    private String getSearchUnitActualStatePath(String unitName) {
+        return getSearchUnitPrefix() + unitName + "/actual-state";
+    }
+    
+    private String getIndicesPrefix() {
+        return "/" + clusterName + "/indices/";
+    }
+    
+    private String getIndexConfPath(String indexName) {
+        return getIndicesPrefix() + indexName + "/conf";
+    }
+    
+    private String getTestKey() {
+        return "/" + clusterName + "/config/test";
+    }
+    
+
     
     // =================================================================
     // CONTROLLER TASKS OPERATIONS
@@ -387,7 +436,6 @@ public class EtcdMetadataStore implements MetadataStore {
         
         return Optional.of(actualState);
     }
-    
     // =================================================================
     // INDEX CONFIGURATIONS OPERATIONS
     // =================================================================
@@ -495,6 +543,8 @@ public class EtcdMetadataStore implements MetadataStore {
     @Override
     public void initialize() throws Exception {
         log.info("Initialize called - already done in constructor");
+        // Start leader election process
+        startLeaderElection();
     }
     
     @Override
@@ -614,4 +664,65 @@ public class EtcdMetadataStore implements MetadataStore {
         String json = objectMapper.writeValueAsString(object);
         executeEtcdPut(path, json);
     }
+
+     // =================================================================
+    // CONTROLLER TASKS OPERATIONS
+    // =================================================================
+    public CompletableFuture<Boolean> startLeaderElection() {
+        Election election = etcdClient.getElectionClient();
+        String electionKey = clusterName + "-election";
+
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                ByteSequence electionKeyBytes = ByteSequence.from(electionKey, UTF_8);
+                ByteSequence nodeIdBytes = ByteSequence.from(nodeId, UTF_8);
+
+                long ttlSeconds = 30;
+                LeaseGrantResponse leaseGrant = etcdClient.getLeaseClient()
+                        .grant(ttlSeconds)
+                        .get();
+                long leaseId = leaseGrant.getID();
+
+                etcdClient.getLeaseClient().keepAlive(leaseId, new StreamObserver<LeaseKeepAliveResponse>() {
+                    @Override
+                    public void onNext(LeaseKeepAliveResponse res) {}
+                    @Override
+                    public void onError(Throwable t) {
+                        log.error("KeepAlive error: {}", t.getMessage());
+                        isLeader.set(false);
+                        result.completeExceptionally(t);
+                    }
+                    @Override
+                    public void onCompleted() {
+                        isLeader.set(false);
+                    }
+                });
+
+                election.campaign(electionKeyBytes, leaseId, nodeIdBytes)
+                        .thenAccept(leaderKey -> {
+                            log.info("Node {} is the LEADER.", nodeId);
+                            isLeader.set(true);
+                            result.complete(true);
+                        })
+                        .exceptionally(ex -> {
+                            result.completeExceptionally(ex);
+                            return null;
+                        });
+
+            } catch (Exception e) {
+                log.error("Leader election error", e);
+                result.completeExceptionally(e);
+            }
+        });
+
+        return result;
+    }
+
+
+    public boolean isLeader() {
+        return isLeader.get();
+    }
+    
 }

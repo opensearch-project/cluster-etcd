@@ -78,7 +78,6 @@ public class SearchUnitActualState {
     
     @JsonProperty("cluster_name")
     private String clusterName; // "search-cluster", "analytics-cluster", etc.
-    
 
     
     public SearchUnitActualState() {
