@@ -282,7 +282,7 @@ public final class ETCDStateDeserializer {
                 indexMetadataMap.put(indexName, indexMetadata);
             }
         }
-        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment, converged);
+        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment, converged, etcdClient, clusterName);
     }
 
     private record DataNodeShardConvergence(DataNodeShard shard, boolean converged) {
