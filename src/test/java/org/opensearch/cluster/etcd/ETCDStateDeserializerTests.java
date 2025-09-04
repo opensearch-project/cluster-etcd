@@ -89,7 +89,8 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             localNode,
             ByteSequence.from(nodeConfiguration, StandardCharsets.UTF_8),
             client,
-            "test-cluster"
+            "test-cluster",
+            true
         );
 
         assertTrue(nodeState instanceof DataNodeState);
@@ -132,7 +133,8 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             node1,
             ByteSequence.from(node1Configuration, StandardCharsets.UTF_8),
             client,
-            "test-cluster"
+            "test-cluster",
+            true
         );
 
         assertTrue(node1State instanceof DataNodeState);
@@ -189,7 +191,8 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             node2,
             ByteSequence.from(node2Configuration, StandardCharsets.UTF_8),
             client,
-            "test-cluster"
+            "test-cluster",
+            true
         );
 
         assertTrue(node2State instanceof DataNodeState);
@@ -264,7 +267,8 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             node1,
             ByteSequence.from(node1UpdatedConfiguration, StandardCharsets.UTF_8),
             client,
-            "test-cluster"
+            "test-cluster",
+            false
         );
 
         assertTrue(node1UpdatedState instanceof DataNodeState);

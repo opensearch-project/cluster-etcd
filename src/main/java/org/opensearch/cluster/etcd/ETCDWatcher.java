@@ -67,7 +67,7 @@ public class ETCDWatcher implements Closeable {
         try (KV kvClient = etcdClient.getKVClient()) {
             List<KeyValue> kvs = kvClient.get(nodeKey).get().getKvs();
             if (kvs != null && kvs.isEmpty() == false && kvs.getFirst() != null) {
-                handleNodeChange(kvs.getFirst());
+                handleNodeChange(kvs.getFirst(), true);
             }
         }
     }
@@ -84,7 +84,7 @@ public class ETCDWatcher implements Closeable {
                         } else {
                             logger.debug("Node added");
                         }
-                        scheduleRefresh(() -> handleNodeChange(event.getKeyValue()));
+                        scheduleRefresh(() -> handleNodeChange(event.getKeyValue(), false));
                         break;
                     case DELETE:
                         // Handle node removal
@@ -124,10 +124,11 @@ public class ETCDWatcher implements Closeable {
         }
     }
 
-    private void handleNodeChange(KeyValue keyValue) {
+    private void handleNodeChange(KeyValue keyValue, boolean isInitialLoad) {
         try {
-            NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(localNode, keyValue.getValue(), etcdClient, clusterName);
-            nodeStateApplier.applyNodeState("update-node " + keyValue.getKey().toString(), nodeState);
+            NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(localNode, keyValue.getValue(), etcdClient, clusterName, isInitialLoad);
+            String action = isInitialLoad ? "initial-load" : "update-node";
+            nodeStateApplier.applyNodeState(action + " " + keyValue.getKey().toString(), nodeState);
             if (nodeState.hasConverged() == false) {
                 // Schedule a reload of the node state if it has not converged
                 scheduledExecutorService.schedule(() -> {

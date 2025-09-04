@@ -37,6 +37,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -45,6 +46,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.stream.Collectors;
 
 /**
  * Sample JSON for data node:
@@ -123,10 +125,11 @@ public final class ETCDStateDeserializer {
      * @param byteSequence the serialized node state
      * @param etcdClient   the ETCD client that we'll use to retrieve index metadata for local shards
      * @param clusterName  the cluster name used to build paths for health lookups
+     * @param isInitialLoad whether this is the initial load (true) or a subsequent update (false)
      * @return the relevant node state
      */
     @SuppressWarnings("unchecked")
-    public static NodeState deserializeNodeState(DiscoveryNode localNode, ByteSequence byteSequence, Client etcdClient, String clusterName)
+    public static NodeState deserializeNodeState(DiscoveryNode localNode, ByteSequence byteSequence, Client etcdClient, String clusterName, boolean isInitialLoad)
         throws IOException {
         Map<String, Object> map;
         try (
@@ -143,7 +146,7 @@ public final class ETCDStateDeserializer {
                 // TODO: For now, assume a node is either a data node or a coordinator node.
                 throw new IllegalStateException("Both local and remote shards are present in the node state. This is not yet supported.");
             }
-            return readDataNodeState(localNode, etcdClient, (Map<String, Map<String, Object>>) map.get("local_shards"), clusterName);
+            return readDataNodeState(localNode, etcdClient, (Map<String, Map<String, Object>>) map.get("local_shards"), clusterName, isInitialLoad);
         } else if (map.containsKey("remote_shards")) {
             return readCoordinatorNodeState(localNode, etcdClient, (Map<String, Object>) map.get("remote_shards"), clusterName);
         }
@@ -226,7 +229,8 @@ public final class ETCDStateDeserializer {
         DiscoveryNode localNode,
         Client etcdClient,
         Map<String, Map<String, Object>> localShards,
-        String clusterName
+        String clusterName,
+        boolean isInitialLoad
     ) throws IOException {
         boolean converged = true;
         Map<String, Set<DataNodeShard>> localShardAssignment = new HashMap<>();
@@ -282,10 +286,148 @@ public final class ETCDStateDeserializer {
                 indexMetadataMap.put(indexName, indexMetadata);
             }
         }
-        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment, converged, etcdClient, clusterName);
+        // Only fetch allocation ID information on initial load
+        Map<String, Map<Integer, ShardAllocationInfo>> allocationInfoMap = new HashMap<>();
+        if (isInitialLoad) {
+            allocationInfoMap = fetchShardAllocationInfo(
+                localNode, etcdClient, clusterName, localShardAssignment.keySet()
+            );
+            LOGGER.debug("Fetched allocation info for initial load: {} indices", allocationInfoMap.size());
+        } else {
+            LOGGER.debug("Skipping allocation info fetch for subsequent update");
+        }
+
+        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment, converged, allocationInfoMap);
     }
 
     private record DataNodeShardConvergence(DataNodeShard shard, boolean converged) {
+    }
+
+    /**
+     * Data structure to hold allocation ID information for a shard.
+     */
+    public static class ShardAllocationInfo {
+        private final String allocationId;
+        private final boolean hadShardBefore;
+
+        public ShardAllocationInfo(String allocationId, boolean hadShardBefore) {
+            this.allocationId = allocationId;
+            this.hadShardBefore = hadShardBefore;
+        }
+
+        public String getAllocationId() {
+            return allocationId;
+        }
+
+        public boolean hadShardBefore() {
+            return hadShardBefore;
+        }
+    }
+
+    /**
+     * Fetches allocation ID information for all shards from ETCD heartbeat data.
+     * This method handles the ETCD-specific logic for reading heartbeat data.
+     */
+    private static Map<String, Map<Integer, ShardAllocationInfo>> fetchShardAllocationInfo(
+        DiscoveryNode localNode,
+        Client etcdClient,
+        String clusterName,
+        Set<String> indexNames
+    ) {
+        Map<String, Map<Integer, ShardAllocationInfo>> result = new HashMap<>();
+        
+        try {
+            String heartbeatPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
+            ByteSequence key = ByteSequence.from(heartbeatPath, StandardCharsets.UTF_8);
+
+            KV kvClient = etcdClient.getKVClient();
+            CompletableFuture<GetResponse> future = kvClient.get(key);
+            if (future == null) {
+                LOGGER.debug("No heartbeat future available for path: {}", heartbeatPath);
+                return result;
+            }
+
+            List<KeyValue> kvResult = future.get().getKvs();
+            if (kvResult.isEmpty()) {
+                LOGGER.debug("No previous heartbeat found at path: {}", heartbeatPath);
+                return result;
+            }
+
+            String heartbeatJson = kvResult.get(0).getValue().toString(StandardCharsets.UTF_8);
+            LOGGER.debug("Successfully read heartbeat from ETCD, size: {} chars", heartbeatJson.length());
+
+            // Parse the heartbeat JSON
+            Map<String, List<Map<String, Object>>> nodeRouting = parseNodeRoutingFromHeartbeat(heartbeatJson);
+            
+            // Extract allocation info for each index and shard
+            for (String indexName : indexNames) {
+                Map<Integer, ShardAllocationInfo> indexAllocationInfo = new HashMap<>();
+                List<Map<String, Object>> indexShards = nodeRouting.get(indexName);
+                
+                if (indexShards != null) {
+                    for (Map<String, Object> shard : indexShards) {
+                        Object shardIdObj = shard.get("shardId");
+                        Object currentNodeName = shard.get("currentNodeName");
+                        Object allocationIdObj = shard.get("allocationId");
+
+                        if (shardIdObj != null && currentNodeName != null && allocationIdObj != null) {
+                            int shardId = ((Number) shardIdObj).intValue();
+                            String nodeName = currentNodeName.toString();
+
+                            // Check if this shard was on this node
+                            if (localNode.getName().equals(nodeName)) {
+                                String allocationId = allocationIdObj.toString();
+                                indexAllocationInfo.put(shardId, new ShardAllocationInfo(allocationId, true));
+                                                                  LOGGER.debug("Found allocation info for shard {}[{}]: {}", indexName, shardId, allocationId);
+                            }
+                        }
+                    }
+                }
+                
+                result.put(indexName, indexAllocationInfo);
+            }
+
+        } catch (Exception e) {
+            LOGGER.warn("Failed to fetch shard allocation info from ETCD", e);
+        }
+        
+        return result;
+    }
+
+    /**
+     * Parses the heartbeat JSON and extracts the nodeRouting section.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, List<Map<String, Object>>> parseNodeRoutingFromHeartbeat(String heartbeatJson) {
+        if (heartbeatJson == null || heartbeatJson.trim().isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        try {
+            // Parse JSON using JsonXContent (same pattern as other methods in this class)
+            XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, null, heartbeatJson);
+            Map<String, Object> heartbeat = parser.map();
+
+            Map<String, Object> nodeRouting = (Map<String, Object>) heartbeat.get("nodeRouting");
+            if (nodeRouting == null) {
+                LOGGER.debug("No nodeRouting section found in heartbeat");
+                return Collections.emptyMap();
+            }
+
+            Map<String, List<Map<String, Object>>> result = new HashMap<>();
+            for (Map.Entry<String, Object> entry : nodeRouting.entrySet()) {
+                String indexName = entry.getKey();
+                List<Map<String, Object>> shards = (List<Map<String, Object>>) entry.getValue();
+                result.put(indexName, shards);
+            }
+
+            LOGGER.debug("Parsed nodeRouting with {} indices from heartbeat", result.size());
+            return result;
+
+        } catch (Exception e) {
+            LOGGER.warn("Failed to parse heartbeat JSON", e);
+            return Collections.emptyMap();
+        }
     }
 
     @SuppressWarnings("unchecked")
