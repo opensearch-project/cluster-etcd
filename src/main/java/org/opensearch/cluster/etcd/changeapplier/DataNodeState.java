@@ -18,11 +18,8 @@ import org.opensearch.cluster.routing.UnassignedInfo;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
-import org.opensearch.cluster.etcd.ETCDPathUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-
-import org.opensearch.cluster.etcd.ETCDStateDeserializer.ShardAllocationInfo;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -37,21 +34,18 @@ public class DataNodeState extends NodeState {
 
     private final Map<String, IndexMetadata> indices;
     private final Map<String, Set<DataNodeShard>> assignedShards;
-    private final Map<String, Map<Integer, ShardAllocationInfo>> allocationInfoMap;
 
     public DataNodeState(
         DiscoveryNode localNode,
         Map<String, IndexMetadata> indices,
         Map<String, Set<DataNodeShard>> assignedShards,
-        boolean converged,
-        Map<String, Map<Integer, ShardAllocationInfo>> allocationInfoMap
+        boolean converged
     ) {
         super(localNode, converged);
         // The index metadata and shard assignment should be identical
         assert indices.keySet().equals(assignedShards.keySet());
         this.indices = indices;
         this.assignedShards = assignedShards;
-        this.allocationInfoMap = allocationInfoMap;
     }
 
     /**
@@ -73,72 +67,49 @@ public class DataNodeState extends NodeState {
             return RecoverySource.PeerRecoverySource.INSTANCE;
         }
 
-        // For PRIMARY shards: Check if this node had this shard before restart
-        if (thisNodeHadShardBefore(indexName, shardNum)) {
-            // Node had this shard before, check if data actually exists on disk
-            if (actualDataExistsOnDisk(indexName, shardNum)) {
-                logger.info(
-                    "Node had shard {}[{}] before restart and data exists on disk, using ExistingStoreRecoverySource",
-                    indexName,
-                    shardNum
-                );
-                return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
-            } else {
-                logger.warn(
-                    "Node had shard {}[{}] before restart but no data exists on disk, using EmptyStoreRecoverySource",
-                    indexName,
-                    shardNum
-                );
-                return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
-            }
+        // For PRIMARY shards: Check if there's a previous allocation ID from ETCD
+        String previousAllocationId = getPreviousAllocationId(indexName, shardNum);
+        if (previousAllocationId != null) {
+            logger.info(
+                "Found previous allocation ID {} for shard {}[{}] from ETCD, using ExistingStoreRecoverySource",
+                previousAllocationId,
+                indexName,
+                shardNum
+            );
+            return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
         } else {
-            logger.info("Node did not have shard {}[{}] before restart, using EmptyStoreRecoverySource", indexName, shardNum);
+            logger.info("No previous allocation ID found for shard {}[{}] in ETCD, using EmptyStoreRecoverySource", indexName, shardNum);
             return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
         }
     }
 
     /**
-     * Checks if this node had the specified shard before restart by looking at allocation info.
-     */
-    private boolean thisNodeHadShardBefore(String indexName, int shardNum) {
-        try {
-            Map<Integer, ShardAllocationInfo> indexAllocationInfo = allocationInfoMap.get(indexName);
-            if (indexAllocationInfo == null) {
-                logger.debug("No allocation info found for index: {}", indexName);
-                return false;
-            }
-
-            ShardAllocationInfo shardInfo = indexAllocationInfo.get(shardNum);
-            boolean hadShard = shardInfo != null && shardInfo.hadShardBefore();
-
-            logger.debug("Node {} had shard {}[{}] before restart: {}", localNode.getName(), indexName, shardNum, hadShard);
-            return hadShard;
-
-        } catch (Exception e) {
-            logger.warn("Error checking if node had shard {}[{}] before restart", indexName, shardNum, e);
-            return false;
-        }
-    }
-
-    /**
-     * Gets the allocation ID for a specific shard from the allocation info.
+     * Gets the allocation ID for a specific shard from the assigned shards.
      * Returns null if no previous allocation ID is found.
      */
     private String getPreviousAllocationId(String indexName, int shardNum) {
         try {
-            Map<Integer, ShardAllocationInfo> indexAllocationInfo = allocationInfoMap.get(indexName);
-            if (indexAllocationInfo == null) {
-                logger.debug("No allocation info found for index: {}", indexName);
+            Set<DataNodeShard> shards = assignedShards.get(indexName);
+            if (shards == null) {
+                logger.debug("No shards found for index: {}", indexName);
                 return null;
             }
 
-            ShardAllocationInfo shardInfo = indexAllocationInfo.get(shardNum);
-            if (shardInfo == null) {
-                logger.debug("No allocation info found for shard {}[{}]", indexName, shardNum);
+            // Find the shard that matches the index and shard number
+            DataNodeShard matchingShard = null;
+            for (DataNodeShard shard : shards) {
+                if (shard.getIndexName().equals(indexName) && shard.getShardNum() == shardNum) {
+                    matchingShard = shard;
+                    break;
+                }
+            }
+
+            if (matchingShard == null) {
+                logger.debug("No shard found for {}[{}]", indexName, shardNum);
                 return null;
             }
 
-            String allocationId = shardInfo.getAllocationId();
+            String allocationId = matchingShard.getAllocationId();
             logger.debug("Found previous allocation ID for shard {}[{}]: {}", indexName, shardNum, allocationId);
             return allocationId;
 
@@ -147,21 +118,6 @@ public class DataNodeState extends NodeState {
             return null;
         }
     }
-
-
-
-    /**
-     * Checks if actual shard data exists on disk before attempting ExistingStoreRecoverySource.
-     *
-     * TODO: Implement actual disk checking when needed for production scenarios.
-     */
-    private boolean actualDataExistsOnDisk(String indexName, int shardNum) {
-        // For now, always return true for testing purposes
-        logger.debug("actualDataExistsOnDisk for {}[{}] - returning true (default behavior)", indexName, shardNum);
-        return true;
-    }
-
-
 
     @Override
     public ClusterState buildClusterState(ClusterState previousState) {

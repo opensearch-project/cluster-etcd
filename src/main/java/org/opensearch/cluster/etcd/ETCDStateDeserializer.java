@@ -37,7 +37,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -46,7 +45,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.stream.Collectors;
 
 /**
  * Sample JSON for data node:
@@ -129,8 +127,13 @@ public final class ETCDStateDeserializer {
      * @return the relevant node state
      */
     @SuppressWarnings("unchecked")
-    public static NodeState deserializeNodeState(DiscoveryNode localNode, ByteSequence byteSequence, Client etcdClient, String clusterName, boolean isInitialLoad)
-        throws IOException {
+    public static NodeState deserializeNodeState(
+        DiscoveryNode localNode,
+        ByteSequence byteSequence,
+        Client etcdClient,
+        String clusterName,
+        boolean isInitialLoad
+    ) throws IOException {
         Map<String, Object> map;
         try (
             XContentParser parser = JsonXContent.jsonXContent.createParser(
@@ -146,7 +149,13 @@ public final class ETCDStateDeserializer {
                 // TODO: For now, assume a node is either a data node or a coordinator node.
                 throw new IllegalStateException("Both local and remote shards are present in the node state. This is not yet supported.");
             }
-            return readDataNodeState(localNode, etcdClient, (Map<String, Map<String, Object>>) map.get("local_shards"), clusterName, isInitialLoad);
+            return readDataNodeState(
+                localNode,
+                etcdClient,
+                (Map<String, Map<String, Object>>) map.get("local_shards"),
+                clusterName,
+                isInitialLoad
+            );
         } else if (map.containsKey("remote_shards")) {
             return readCoordinatorNodeState(localNode, etcdClient, (Map<String, Object>) map.get("remote_shards"), clusterName);
         }
@@ -235,6 +244,17 @@ public final class ETCDStateDeserializer {
         boolean converged = true;
         Map<String, Set<DataNodeShard>> localShardAssignment = new HashMap<>();
         Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
+
+        // Fetch allocation ID information on initial load
+        Map<String, Map<Integer, String>> allocationInfoMap = new HashMap<>();
+        if (isInitialLoad) {
+            Set<String> indexNames = localShards.keySet();
+            allocationInfoMap = fetchShardAllocationInfo(localNode, etcdClient, clusterName, indexNames);
+            LOGGER.debug("Fetched allocation info for initial load: {} indices", allocationInfoMap.size());
+        } else {
+            LOGGER.debug("Skipping allocation info fetch for subsequent update");
+        }
+
         try (KV kvClient = etcdClient.getKVClient()) {
             // Prepare futures for fetching settings and mappings separately
             List<CompletableFuture<GetResponse>> settingsFutures = new ArrayList<>();
@@ -256,12 +276,19 @@ public final class ETCDStateDeserializer {
                 Map<String, Object> shards = entry.getValue();
                 for (Map.Entry<String, Object> shardEntry : shards.entrySet()) {
                     int shardId = Integer.parseInt(shardEntry.getKey());
+                    // Get allocation ID from the allocation info map
+                    String allocationId = null;
+                    Map<Integer, String> indexAllocationInfo = allocationInfoMap.get(indexName);
+                    if (indexAllocationInfo != null) {
+                        allocationId = indexAllocationInfo.get(shardId);
+                    }
                     DataNodeShardConvergence dataNodeShardConvergence = readDataNodeShard(
                         indexName,
                         shardId,
                         shardEntry.getValue(),
                         etcdClient,
-                        clusterName
+                        clusterName,
+                        allocationId
                     );
                     converged &= dataNodeShardConvergence.converged();
                     if (dataNodeShardConvergence.shard() != null) {
@@ -286,148 +313,71 @@ public final class ETCDStateDeserializer {
                 indexMetadataMap.put(indexName, indexMetadata);
             }
         }
-        // Only fetch allocation ID information on initial load
-        Map<String, Map<Integer, ShardAllocationInfo>> allocationInfoMap = new HashMap<>();
-        if (isInitialLoad) {
-            allocationInfoMap = fetchShardAllocationInfo(
-                localNode, etcdClient, clusterName, localShardAssignment.keySet()
-            );
-            LOGGER.debug("Fetched allocation info for initial load: {} indices", allocationInfoMap.size());
-        } else {
-            LOGGER.debug("Skipping allocation info fetch for subsequent update");
-        }
 
-        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment, converged, allocationInfoMap);
+        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment, converged);
     }
 
     private record DataNodeShardConvergence(DataNodeShard shard, boolean converged) {
     }
 
     /**
-     * Data structure to hold allocation ID information for a shard.
-     */
-    public static class ShardAllocationInfo {
-        private final String allocationId;
-        private final boolean hadShardBefore;
-
-        public ShardAllocationInfo(String allocationId, boolean hadShardBefore) {
-            this.allocationId = allocationId;
-            this.hadShardBefore = hadShardBefore;
-        }
-
-        public String getAllocationId() {
-            return allocationId;
-        }
-
-        public boolean hadShardBefore() {
-            return hadShardBefore;
-        }
-    }
-
-    /**
      * Fetches allocation ID information for all shards from ETCD heartbeat data.
-     * This method handles the ETCD-specific logic for reading heartbeat data.
+     * Reuses fetchNodeHealthInfo logic to avoid duplicating deserialization code.
      */
-    private static Map<String, Map<Integer, ShardAllocationInfo>> fetchShardAllocationInfo(
+    private static Map<String, Map<Integer, String>> fetchShardAllocationInfo(
         DiscoveryNode localNode,
         Client etcdClient,
         String clusterName,
         Set<String> indexNames
     ) {
-        Map<String, Map<Integer, ShardAllocationInfo>> result = new HashMap<>();
-        
+        Map<String, Map<Integer, String>> result = new HashMap<>();
+
         try {
-            String heartbeatPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
-            ByteSequence key = ByteSequence.from(heartbeatPath, StandardCharsets.UTF_8);
+            // Reuse fetchNodeHealthInfo logic to get health info for the local node
+            Map<String, NodeHealthInfo> healthInfoMap = fetchNodeHealthInfo(etcdClient, List.of(localNode.getName()), clusterName);
+            NodeHealthInfo localNodeHealth = healthInfoMap.get(localNode.getName());
 
-            KV kvClient = etcdClient.getKVClient();
-            CompletableFuture<GetResponse> future = kvClient.get(key);
-            if (future == null) {
-                LOGGER.debug("No heartbeat future available for path: {}", heartbeatPath);
+            if (localNodeHealth == null) {
+                LOGGER.debug("No health information found for local node: {}", localNode.getName());
                 return result;
             }
 
-            List<KeyValue> kvResult = future.get().getKvs();
-            if (kvResult.isEmpty()) {
-                LOGGER.debug("No previous heartbeat found at path: {}", heartbeatPath);
-                return result;
-            }
-
-            String heartbeatJson = kvResult.get(0).getValue().toString(StandardCharsets.UTF_8);
-            LOGGER.debug("Successfully read heartbeat from ETCD, size: {} chars", heartbeatJson.length());
-
-            // Parse the heartbeat JSON
-            Map<String, List<Map<String, Object>>> nodeRouting = parseNodeRoutingFromHeartbeat(heartbeatJson);
-            
             // Extract allocation info for each index and shard
             for (String indexName : indexNames) {
-                Map<Integer, ShardAllocationInfo> indexAllocationInfo = new HashMap<>();
-                List<Map<String, Object>> indexShards = nodeRouting.get(indexName);
-                
-                if (indexShards != null) {
-                    for (Map<String, Object> shard : indexShards) {
-                        Object shardIdObj = shard.get("shardId");
-                        Object currentNodeName = shard.get("currentNodeName");
-                        Object allocationIdObj = shard.get("allocationId");
+                Map<Integer, String> indexAllocationInfo = new HashMap<>();
 
-                        if (shardIdObj != null && currentNodeName != null && allocationIdObj != null) {
-                            int shardId = ((Number) shardIdObj).intValue();
-                            String nodeName = currentNodeName.toString();
-
-                            // Check if this shard was on this node
-                            if (localNode.getName().equals(nodeName)) {
-                                String allocationId = allocationIdObj.toString();
-                                indexAllocationInfo.put(shardId, new ShardAllocationInfo(allocationId, true));
-                                                                  LOGGER.debug("Found allocation info for shard {}[{}]: {}", indexName, shardId, allocationId);
-                            }
-                        }
+                // Check both primary and replica allocations
+                for (NodeShardAllocation allocation : localNodeHealth.primaryAllocations()) {
+                    if (indexName.equals(allocation.indexName())) {
+                        indexAllocationInfo.put(allocation.shardNum(), allocation.allocationId());
+                        LOGGER.debug(
+                            "Found primary allocation info for shard {}[{}]: {}",
+                            allocation.indexName(),
+                            allocation.shardNum(),
+                            allocation.allocationId()
+                        );
                     }
                 }
-                
+
+                for (NodeShardAllocation allocation : localNodeHealth.replicaAllocations()) {
+                    if (indexName.equals(allocation.indexName())) {
+                        indexAllocationInfo.put(allocation.shardNum(), allocation.allocationId());
+                        LOGGER.debug(
+                            "Found replica allocation info for shard {}[{}]: {}",
+                            allocation.indexName(),
+                            allocation.shardNum(),
+                            allocation.allocationId()
+                        );
+                    }
+                }
+
                 result.put(indexName, indexAllocationInfo);
             }
-
         } catch (Exception e) {
             LOGGER.warn("Failed to fetch shard allocation info from ETCD", e);
         }
-        
+
         return result;
-    }
-
-    /**
-     * Parses the heartbeat JSON and extracts the nodeRouting section.
-     */
-    @SuppressWarnings("unchecked")
-    private static Map<String, List<Map<String, Object>>> parseNodeRoutingFromHeartbeat(String heartbeatJson) {
-        if (heartbeatJson == null || heartbeatJson.trim().isEmpty()) {
-            return Collections.emptyMap();
-        }
-
-        try {
-            // Parse JSON using JsonXContent (same pattern as other methods in this class)
-            XContentParser parser = JsonXContent.jsonXContent.createParser(NamedXContentRegistry.EMPTY, null, heartbeatJson);
-            Map<String, Object> heartbeat = parser.map();
-
-            Map<String, Object> nodeRouting = (Map<String, Object>) heartbeat.get("nodeRouting");
-            if (nodeRouting == null) {
-                LOGGER.debug("No nodeRouting section found in heartbeat");
-                return Collections.emptyMap();
-            }
-
-            Map<String, List<Map<String, Object>>> result = new HashMap<>();
-            for (Map.Entry<String, Object> entry : nodeRouting.entrySet()) {
-                String indexName = entry.getKey();
-                List<Map<String, Object>> shards = (List<Map<String, Object>>) entry.getValue();
-                result.put(indexName, shards);
-            }
-
-            LOGGER.debug("Parsed nodeRouting with {} indices from heartbeat", result.size());
-            return result;
-
-        } catch (Exception e) {
-            LOGGER.warn("Failed to parse heartbeat JSON", e);
-            return Collections.emptyMap();
-        }
     }
 
     @SuppressWarnings("unchecked")
@@ -436,14 +386,15 @@ public final class ETCDStateDeserializer {
         int shardNum,
         Object shardConfig,
         Client etcdClient,
-        String clusterName
+        String clusterName,
+        String allocationId
     ) throws IOException {
         if (shardConfig instanceof String role) {
             // Single string value indicates a primary or search replica shard
             if ("PRIMARY".equalsIgnoreCase(role)) {
-                return new DataNodeShardConvergence(new DataNodeShard.SegRepPrimary(indexName, shardNum), true);
+                return new DataNodeShardConvergence(new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId), true);
             } else if ("SEARCH_REPLICA".equalsIgnoreCase(role)) {
-                return new DataNodeShardConvergence(new DataNodeShard.SegRepSearchReplica(indexName, shardNum), true);
+                return new DataNodeShardConvergence(new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId), true);
             } else {
                 throw new IllegalArgumentException("Unknown shard role: " + role);
             }
@@ -484,10 +435,13 @@ public final class ETCDStateDeserializer {
                         }
                         converged &= replicaConverged;
                     }
-                    return new DataNodeShardConvergence(new DataNodeShard.DocRepPrimary(indexName, shardNum, shardAllocations), converged);
+                    return new DataNodeShardConvergence(
+                        new DataNodeShard.DocRepPrimary(indexName, shardNum, allocationId, shardAllocations),
+                        converged
+                    );
                 } else {
                     // Segrep primary shard
-                    return new DataNodeShardConvergence(new DataNodeShard.SegRepPrimary(indexName, shardNum), true);
+                    return new DataNodeShardConvergence(new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId), true);
                 }
             case "REPLICA":
                 String primaryNodeName = (String) shardMap.get("primary_node");
@@ -525,10 +479,13 @@ public final class ETCDStateDeserializer {
                     // Primary shard not allocated on primary node
                     return new DataNodeShardConvergence(null, false);
                 }
-                return new DataNodeShardConvergence(new DataNodeShard.DocRepReplica(indexName, shardNum, primaryAllocation), true);
+                return new DataNodeShardConvergence(
+                    new DataNodeShard.DocRepReplica(indexName, shardNum, allocationId, primaryAllocation),
+                    true
+                );
             case "SEARCH_REPLICA":
                 // Segrep search replica shard
-                return new DataNodeShardConvergence(new DataNodeShard.SegRepSearchReplica(indexName, shardNum), true);
+                return new DataNodeShardConvergence(new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId), true);
             default:
                 throw new IllegalArgumentException("Unknown shard role: " + role);
         }
