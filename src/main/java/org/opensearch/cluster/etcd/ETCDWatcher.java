@@ -126,7 +126,13 @@ public class ETCDWatcher implements Closeable {
 
     private void handleNodeChange(KeyValue keyValue, boolean isInitialLoad) {
         try {
-            NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(localNode, keyValue.getValue(), etcdClient, clusterName, isInitialLoad);
+            NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(
+                localNode,
+                keyValue.getValue(),
+                etcdClient,
+                clusterName,
+                isInitialLoad
+            );
             String action = isInitialLoad ? "initial-load" : "update-node";
             nodeStateApplier.applyNodeState(action + " " + keyValue.getKey().toString(), nodeState);
             if (nodeState.hasConverged() == false) {
