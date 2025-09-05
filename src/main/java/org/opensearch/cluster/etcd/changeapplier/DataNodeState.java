@@ -52,39 +52,40 @@ public class DataNodeState extends NodeState {
      * Determines the appropriate recovery source for a shard.
      * This prevents data loss on node restarts by using existing data when available.
      *
-     * @param dataNodeShard the DataNodeShard containing allocation ID information
-     * @param indexMetadata metadata for the index containing this shard
+     * @param dataNodeShard the DataNodeShard containing all necessary information
      * @return the recovery source to use for this shard
      */
-    private RecoverySource determineRecoverySource(DataNodeShard dataNodeShard, IndexMetadata indexMetadata) {
-        String indexName = indexMetadata.getIndex().getName();
+    private RecoverySource determineRecoverySource(DataNodeShard dataNodeShard) {
+        String indexName = dataNodeShard.getIndexName();
         int shardNum = dataNodeShard.getShardNum();
         ShardRole role = dataNodeShard.getShardRole();
 
         logger.debug("Determining recovery source for shard {}[{}] with role {}", indexName, shardNum, role);
 
-        // Replica shards will recover from primary
-        if (role != ShardRole.PRIMARY) {
-            logger.info("Shard {}[{}] with role {} is replica/search-replica, using PeerRecoverySource", indexName, shardNum, role);
+        // Search replicas should always fetch fresh data from remote store
+        if (role == ShardRole.SEARCH_REPLICA) {
+            logger.info("Shard {}[{}] with role {} is search-replica, using EmptyStoreRecoverySource", indexName, shardNum, role);
+            return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
+        }
+
+        // Regular replica shards will recover from primary
+        if (role == ShardRole.REPLICA) {
+            logger.info("Shard {}[{}] with role {} is replica, using PeerRecoverySource", indexName, shardNum, role);
             return RecoverySource.PeerRecoverySource.INSTANCE;
         }
 
-        // For PRIMARY shards: Check if there's a previous allocation ID from DataNodeShard
+        // For PRIMARY shards: If previously allocated then existing, else empty
         String previousAllocationId = dataNodeShard.getAllocationId();
         if (previousAllocationId != null) {
             logger.info(
-                "Found previous allocation ID {} for shard {}[{}] from DataNodeShard, using ExistingStoreRecoverySource",
-                previousAllocationId,
+                "Primary shard {}[{}] was previously allocated (ID: {}), using ExistingStoreRecoverySource",
                 indexName,
-                shardNum
+                shardNum,
+                previousAllocationId
             );
             return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
         } else {
-            logger.info(
-                "No previous allocation ID found for shard {}[{}] in DataNodeShard, using EmptyStoreRecoverySource",
-                indexName,
-                shardNum
-            );
+            logger.info("Primary shard {}[{}] was not previously allocated, using EmptyStoreRecoverySource", indexName, shardNum);
             return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
         }
     }
@@ -146,7 +147,7 @@ public class DataNodeState extends NodeState {
                 }
 
                 // Determine recovery source for this shard
-                RecoverySource recoverySource = determineRecoverySource(dataNodeShard, indexMetadata);
+                RecoverySource recoverySource = determineRecoverySource(dataNodeShard);
                 String previousAllocationId = dataNodeShard.getAllocationId();
 
                 Set<String> inSyncAllocationIds = new HashSet<>();
@@ -210,7 +211,7 @@ public class DataNodeState extends NodeState {
                     );
 
                     // ALLOCATION ID TRACKING: Log allocation ID changes for monitoring purposes
-                    String currentAllocationId = shardRouting.allocationId() != null ? shardRouting.allocationId().getId() : "null";
+                    String currentAllocationId = shardRouting.allocationId().getId();
 
                     if (previousAllocationId != null) {
                         if (previousAllocationId.equals(currentAllocationId)) {
