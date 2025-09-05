@@ -12,28 +12,38 @@ import java.util.Optional;
 public abstract class DataNodeShard {
     private final String indexName;
     private final int shardNum;
+    private final String allocationId;
 
     public abstract ShardRole getShardRole();
 
-    public DataNodeShard(String indexName, int shardNum) {
+    public DataNodeShard(String indexName, int shardNum, String allocationId) {
         this.indexName = indexName;
         this.shardNum = shardNum;
+        this.allocationId = allocationId;
     }
 
     public int getShardNum() {
         return shardNum;
     }
 
+    public String getAllocationId() {
+        return allocationId;
+    }
+
+    public String getIndexName() {
+        return indexName;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (o == null || getClass() != o.getClass()) return false;
         DataNodeShard that = (DataNodeShard) o;
-        return shardNum == that.shardNum && Objects.equals(indexName, that.indexName);
+        return shardNum == that.shardNum && Objects.equals(indexName, that.indexName) && Objects.equals(allocationId, that.allocationId);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(indexName, shardNum);
+        return Objects.hash(indexName, shardNum, allocationId);
     }
 
     public Collection<ShardAllocation> getReplicaAssignments() {
@@ -59,8 +69,8 @@ public abstract class DataNodeShard {
     public static class DocRepPrimary extends DataNodeShard {
         private final Collection<ShardAllocation> shardAllocations;
 
-        public DocRepPrimary(String indexName, int shardNum, Collection<ShardAllocation> shardAllocations) {
-            super(indexName, shardNum);
+        public DocRepPrimary(String indexName, int shardNum, String allocationId, Collection<ShardAllocation> shardAllocations) {
+            super(indexName, shardNum, allocationId);
             this.shardAllocations = shardAllocations;
         }
 
@@ -78,8 +88,8 @@ public abstract class DataNodeShard {
     public static class DocRepReplica extends DataNodeShard {
         private final ShardAllocation primaryNode;
 
-        public DocRepReplica(String indexName, int shardNum, ShardAllocation primaryNode) {
-            super(indexName, shardNum);
+        public DocRepReplica(String indexName, int shardNum, String allocationId, ShardAllocation primaryNode) {
+            super(indexName, shardNum, allocationId);
             this.primaryNode = Objects.requireNonNull(primaryNode);
         }
 
@@ -95,8 +105,8 @@ public abstract class DataNodeShard {
     }
 
     public static class SegRepPrimary extends DataNodeShard {
-        public SegRepPrimary(String indexName, int shardNum) {
-            super(indexName, shardNum);
+        public SegRepPrimary(String indexName, int shardNum, String allocationId) {
+            super(indexName, shardNum, allocationId);
         }
 
         @Override
@@ -106,8 +116,8 @@ public abstract class DataNodeShard {
     }
 
     public static class SegRepSearchReplica extends DataNodeShard {
-        public SegRepSearchReplica(String indexName, int shardNum) {
-            super(indexName, shardNum);
+        public SegRepSearchReplica(String indexName, int shardNum, String allocationId) {
+            super(indexName, shardNum, allocationId);
         }
 
         @Override
