@@ -52,13 +52,15 @@ public class DataNodeState extends NodeState {
      * Determines the appropriate recovery source for a shard.
      * This prevents data loss on node restarts by using existing data when available.
      *
-     * @param shardNum the shard number
+     * @param dataNodeShard the DataNodeShard containing allocation ID information
      * @param indexMetadata metadata for the index containing this shard
-     * @param role the shard role (PRIMARY, REPLICA, SEARCH_REPLICA)
      * @return the recovery source to use for this shard
      */
-    private RecoverySource determineRecoverySource(int shardNum, IndexMetadata indexMetadata, ShardRole role) {
+    private RecoverySource determineRecoverySource(DataNodeShard dataNodeShard, IndexMetadata indexMetadata) {
         String indexName = indexMetadata.getIndex().getName();
+        int shardNum = dataNodeShard.getShardNum();
+        ShardRole role = dataNodeShard.getShardRole();
+
         logger.debug("Determining recovery source for shard {}[{}] with role {}", indexName, shardNum, role);
 
         // Replica shards will recover from primary
@@ -67,55 +69,23 @@ public class DataNodeState extends NodeState {
             return RecoverySource.PeerRecoverySource.INSTANCE;
         }
 
-        // For PRIMARY shards: Check if there's a previous allocation ID from ETCD
-        String previousAllocationId = getPreviousAllocationId(indexName, shardNum);
+        // For PRIMARY shards: Check if there's a previous allocation ID from DataNodeShard
+        String previousAllocationId = dataNodeShard.getAllocationId();
         if (previousAllocationId != null) {
             logger.info(
-                "Found previous allocation ID {} for shard {}[{}] from ETCD, using ExistingStoreRecoverySource",
+                "Found previous allocation ID {} for shard {}[{}] from DataNodeShard, using ExistingStoreRecoverySource",
                 previousAllocationId,
                 indexName,
                 shardNum
             );
             return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
         } else {
-            logger.info("No previous allocation ID found for shard {}[{}] in ETCD, using EmptyStoreRecoverySource", indexName, shardNum);
+            logger.info(
+                "No previous allocation ID found for shard {}[{}] in DataNodeShard, using EmptyStoreRecoverySource",
+                indexName,
+                shardNum
+            );
             return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
-        }
-    }
-
-    /**
-     * Gets the allocation ID for a specific shard from the assigned shards.
-     * Returns null if no previous allocation ID is found.
-     */
-    private String getPreviousAllocationId(String indexName, int shardNum) {
-        try {
-            Set<DataNodeShard> shards = assignedShards.get(indexName);
-            if (shards == null) {
-                logger.debug("No shards found for index: {}", indexName);
-                return null;
-            }
-
-            // Find the shard that matches the index and shard number
-            DataNodeShard matchingShard = null;
-            for (DataNodeShard shard : shards) {
-                if (shard.getIndexName().equals(indexName) && shard.getShardNum() == shardNum) {
-                    matchingShard = shard;
-                    break;
-                }
-            }
-
-            if (matchingShard == null) {
-                logger.debug("No shard found for {}[{}]", indexName, shardNum);
-                return null;
-            }
-
-            String allocationId = matchingShard.getAllocationId();
-            logger.debug("Found previous allocation ID for shard {}[{}]: {}", indexName, shardNum, allocationId);
-            return allocationId;
-
-        } catch (Exception e) {
-            logger.warn("Error extracting previous allocation ID for {}[{}]", indexName, shardNum, e);
-            return null;
         }
     }
 
@@ -147,11 +117,11 @@ public class DataNodeState extends NodeState {
 
                 UnassignedInfo unassignedInfo = new UnassignedInfo(UnassignedInfo.Reason.INDEX_CREATED, "created");
 
-                final RecoverySource recoverySource;
+                // Handle replica shards with primary allocation
                 if (role == ShardRole.REPLICA && dataNodeShard.getPrimaryAllocation().isPresent()) {
                     DataNodeShard.ShardAllocation primaryAllocation = dataNodeShard.getPrimaryAllocation().get();
                     RemoteNode primaryNode = primaryAllocation.node();
-                    recoverySource = RecoverySource.PeerRecoverySource.INSTANCE;
+
                     if (previousShardRoutingTable.primaryShard() != null
                         && previousShardRoutingTable.primaryShard().currentNodeId().equals(primaryNode.nodeId())) {
                         newShardRoutingTable.addShard(previousShardRoutingTable.primaryShard());
@@ -173,9 +143,11 @@ public class DataNodeState extends NodeState {
                         newShardRoutingTable.addShard(primaryShardRouting);
                     }
                     nodesBuilder.add(primaryNode.toDiscoveryNode());
-                } else {
-                    recoverySource = RecoverySource.EmptyStoreRecoverySource.INSTANCE; // For primary and search replica
                 }
+
+                // Determine recovery source for this shard
+                RecoverySource recoverySource = determineRecoverySource(dataNodeShard, indexMetadata);
+                String previousAllocationId = dataNodeShard.getAllocationId();
 
                 Set<String> inSyncAllocationIds = new HashSet<>();
                 if (role == ShardRole.PRIMARY && dataNodeShard.getReplicaAssignments().isEmpty() == false) {
@@ -223,14 +195,11 @@ public class DataNodeState extends NodeState {
                     );
                 } else {
                     // No previous shard in cluster state - use ETCD-based allocation ID preservation
-                    RecoverySource etcdRecoverySource = determineRecoverySource(shardNum, indexMetadata, role);
-                    String previousAllocationId = getPreviousAllocationId(indexMetadata.getIndex().getName(), shardNum);
-
                     shardRouting = ShardRouting.newUnassigned(
                         shardId,
                         role == ShardRole.PRIMARY,
                         role == ShardRole.SEARCH_REPLICA,
-                        etcdRecoverySource, // Use recovery source based on ETCD data
+                        recoverySource,
                         unassignedInfo
                     );
 
