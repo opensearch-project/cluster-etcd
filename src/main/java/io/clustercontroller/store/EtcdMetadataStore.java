@@ -62,6 +62,71 @@ public class EtcdMetadataStore implements MetadataStore {
             clusterName, String.join(",", etcdEndpoints));
     }
     
+    // =================================================================
+    // HELPER METHODS FOR COMMON ETCD OPERATIONS
+    // =================================================================
+    
+    /**
+     * Helper method for etcd get operations with prefix
+     */
+    private GetResponse getWithPrefix(String prefix) throws Exception {
+        ByteSequence prefixBytes = ByteSequence.from(prefix, StandardCharsets.UTF_8);
+        return kvClient.get(
+            prefixBytes,
+            GetOption.newBuilder().withPrefix(prefixBytes).build()
+        ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+    
+    /**
+     * Helper method for etcd get operations for single key
+     */
+    private GetResponse getSingle(String key) throws Exception {
+        ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
+        return kvClient.get(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+    
+    /**
+     * Helper method for etcd put operations
+     */
+    private void putValue(String key, String value) throws Exception {
+        ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
+        ByteSequence valueBytes = ByteSequence.from(value, StandardCharsets.UTF_8);
+        kvClient.put(keyBytes, valueBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+    
+    /**
+     * Helper method for etcd delete operations
+     */
+    private void deleteKey(String key) throws Exception {
+        ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
+        kvClient.delete(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+    
+    /**
+     * Helper method to deserialize list of objects from etcd response
+     */
+    private <T> List<T> deserializeList(GetResponse response, Class<T> clazz) throws Exception {
+        List<T> items = new ArrayList<>();
+        for (var kv : response.getKvs()) {
+            String json = kv.getValue().toString(StandardCharsets.UTF_8);
+            T item = objectMapper.readValue(json, clazz);
+            items.add(item);
+        }
+        return items;
+    }
+    
+    /**
+     * Helper method to deserialize single object from etcd response
+     */
+    private <T> Optional<T> deserializeSingle(GetResponse response, Class<T> clazz) throws Exception {
+        if (response.getCount() == 0) {
+            return Optional.empty();
+        }
+        String json = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+        T item = objectMapper.readValue(json, clazz);
+        return Optional.of(item);
+    }
+    
     /**
      * Get singleton instance
      */
@@ -92,19 +157,9 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String tasksPrefix = pathResolver.getControllerTasksPrefix();
-            ByteSequence prefixBytes = ByteSequence.from(tasksPrefix, StandardCharsets.UTF_8);
+            GetResponse response = getWithPrefix(tasksPrefix);
             
-            GetResponse response = kvClient.get(
-                prefixBytes,
-                GetOption.newBuilder().withPrefix(prefixBytes).build()
-            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            
-            List<TaskMetadata> tasks = new ArrayList<>();
-            for (var kv : response.getKvs()) {
-                String taskJson = kv.getValue().toString(StandardCharsets.UTF_8);
-                TaskMetadata task = objectMapper.readValue(taskJson, TaskMetadata.class);
-                tasks.add(task);
-            }
+            List<TaskMetadata> tasks = deserializeList(response, TaskMetadata.class);
             
             // Sort by priority (0 = highest priority)
             tasks.sort((t1, t2) -> Integer.compare(t1.getPriority(), t2.getPriority()));
@@ -124,20 +179,17 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String taskPath = pathResolver.getControllerTaskPath(taskName);
-            ByteSequence keyBytes = ByteSequence.from(taskPath, StandardCharsets.UTF_8);
+            GetResponse response = getSingle(taskPath);
             
-            GetResponse response = kvClient.get(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            Optional<TaskMetadata> result = deserializeSingle(response, TaskMetadata.class);
             
-            if (response.getCount() == 0) {
+            if (result.isPresent()) {
+                log.debug("Retrieved task {} from etcd", taskName);
+            } else {
                 log.debug("Task {} not found in etcd", taskName);
-                return Optional.empty();
             }
             
-            String taskJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
-            TaskMetadata task = objectMapper.readValue(taskJson, TaskMetadata.class);
-            
-            log.debug("Retrieved task {} from etcd", taskName);
-            return Optional.of(task);
+            return result;
             
         } catch (Exception e) {
             log.error("Failed to get task {} from etcd: {}", taskName, e.getMessage(), e);
@@ -153,10 +205,7 @@ public class EtcdMetadataStore implements MetadataStore {
             String taskPath = pathResolver.getControllerTaskPath(task.getName());
             String taskJson = objectMapper.writeValueAsString(task);
             
-            ByteSequence keyBytes = ByteSequence.from(taskPath, StandardCharsets.UTF_8);
-            ByteSequence valueBytes = ByteSequence.from(taskJson, StandardCharsets.UTF_8);
-            
-            PutResponse response = kvClient.put(keyBytes, valueBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            putValue(taskPath, taskJson);
             
             log.info("Successfully created task {} in etcd", task.getName());
             return task.getName();
@@ -175,10 +224,7 @@ public class EtcdMetadataStore implements MetadataStore {
             String taskPath = pathResolver.getControllerTaskPath(task.getName());
             String taskJson = objectMapper.writeValueAsString(task);
             
-            ByteSequence keyBytes = ByteSequence.from(taskPath, StandardCharsets.UTF_8);
-            ByteSequence valueBytes = ByteSequence.from(taskJson, StandardCharsets.UTF_8);
-            
-            kvClient.put(keyBytes, valueBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            putValue(taskPath, taskJson);
             
             log.debug("Successfully updated task {} in etcd", task.getName());
             
@@ -194,15 +240,9 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String taskPath = pathResolver.getControllerTaskPath(taskName);
-            ByteSequence keyBytes = ByteSequence.from(taskPath, StandardCharsets.UTF_8);
+            deleteKey(taskPath);
             
-            var response = kvClient.delete(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            
-            if (response.getDeleted() > 0) {
-                log.info("Successfully deleted task {} from etcd", taskName);
-            } else {
-                log.warn("Task {} not found in etcd for deletion", taskName);
-            }
+            log.info("Successfully deleted task {} from etcd", taskName);
             
         } catch (Exception e) {
             log.error("Failed to delete task {} from etcd: {}", taskName, e.getMessage(), e);
@@ -226,19 +266,9 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String unitsPrefix = pathResolver.getSearchUnitsPrefix();
-            ByteSequence prefixBytes = ByteSequence.from(unitsPrefix, StandardCharsets.UTF_8);
+            GetResponse response = getWithPrefix(unitsPrefix);
             
-            GetResponse response = kvClient.get(
-                prefixBytes,
-                GetOption.newBuilder().withPrefix(prefixBytes).build()
-            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            
-            List<SearchUnit> searchUnits = new ArrayList<>();
-            for (var kv : response.getKvs()) {
-                String unitJson = kv.getValue().toString(StandardCharsets.UTF_8);
-                SearchUnit unit = objectMapper.readValue(unitJson, SearchUnit.class);
-                searchUnits.add(unit);
-            }
+            List<SearchUnit> searchUnits = deserializeList(response, SearchUnit.class);
             
             log.debug("Retrieved {} search units from etcd", searchUnits.size());
             return searchUnits;
@@ -255,20 +285,17 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String unitPath = pathResolver.getSearchUnitConfPath(unitName);
-            ByteSequence keyBytes = ByteSequence.from(unitPath, StandardCharsets.UTF_8);
+            GetResponse response = getSingle(unitPath);
             
-            GetResponse response = kvClient.get(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            Optional<SearchUnit> result = deserializeSingle(response, SearchUnit.class);
             
-            if (response.getCount() == 0) {
+            if (result.isPresent()) {
+                log.debug("Retrieved search unit {} from etcd", unitName);
+            } else {
                 log.debug("Search unit {} not found in etcd", unitName);
-                return Optional.empty();
             }
             
-            String unitJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
-            SearchUnit unit = objectMapper.readValue(unitJson, SearchUnit.class);
-            
-            log.debug("Retrieved search unit {} from etcd", unitName);
-            return Optional.of(unit);
+            return result;
             
         } catch (Exception e) {
             log.error("Failed to get search unit {} from etcd: {}", unitName, e.getMessage(), e);
@@ -284,10 +311,7 @@ public class EtcdMetadataStore implements MetadataStore {
             String unitPath = pathResolver.getSearchUnitConfPath(unitName);
             String unitJson = objectMapper.writeValueAsString(searchUnit);
             
-            ByteSequence keyBytes = ByteSequence.from(unitPath, StandardCharsets.UTF_8);
-            ByteSequence valueBytes = ByteSequence.from(unitJson, StandardCharsets.UTF_8);
-            
-            kvClient.put(keyBytes, valueBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            putValue(unitPath, unitJson);
             
             log.info("Successfully upserted search unit {} in etcd", unitName);
             
@@ -305,10 +329,7 @@ public class EtcdMetadataStore implements MetadataStore {
             String unitPath = pathResolver.getSearchUnitConfPath(searchUnit.getName());
             String unitJson = objectMapper.writeValueAsString(searchUnit);
             
-            ByteSequence keyBytes = ByteSequence.from(unitPath, StandardCharsets.UTF_8);
-            ByteSequence valueBytes = ByteSequence.from(unitJson, StandardCharsets.UTF_8);
-            
-            kvClient.put(keyBytes, valueBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            putValue(unitPath, unitJson);
             
             log.debug("Successfully updated search unit {} in etcd", searchUnit.getName());
             
@@ -324,15 +345,9 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String unitPath = pathResolver.getSearchUnitConfPath(unitName);
-            ByteSequence keyBytes = ByteSequence.from(unitPath, StandardCharsets.UTF_8);
+            deleteKey(unitPath);
             
-            var response = kvClient.delete(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            
-            if (response.getDeleted() > 0) {
-                log.info("Successfully deleted search unit {} from etcd", unitName);
-            } else {
-                log.warn("Search unit {} not found in etcd for deletion", unitName);
-            }
+            log.info("Successfully deleted search unit {} from etcd", unitName);
             
         } catch (Exception e) {
             log.error("Failed to delete search unit {} from etcd: {}", unitName, e.getMessage(), e);
@@ -350,12 +365,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indicesPrefix = pathResolver.getIndicesPrefix();
-            ByteSequence prefixBytes = ByteSequence.from(indicesPrefix, StandardCharsets.UTF_8);
-            
-            GetResponse response = kvClient.get(
-                prefixBytes,
-                GetOption.newBuilder().withPrefix(prefixBytes).build()
-            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            GetResponse response = getWithPrefix(indicesPrefix);
             
             List<String> indexConfigs = new ArrayList<>();
             for (var kv : response.getKvs()) {
@@ -378,9 +388,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indexPath = pathResolver.getIndexConfPath(indexName);
-            ByteSequence keyBytes = ByteSequence.from(indexPath, StandardCharsets.UTF_8);
-            
-            GetResponse response = kvClient.get(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            GetResponse response = getSingle(indexPath);
             
             if (response.getCount() == 0) {
                 log.debug("Index config {} not found in etcd", indexName);
@@ -404,11 +412,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indexPath = pathResolver.getIndexConfPath(indexName);
-            
-            ByteSequence keyBytes = ByteSequence.from(indexPath, StandardCharsets.UTF_8);
-            ByteSequence valueBytes = ByteSequence.from(indexConfig, StandardCharsets.UTF_8);
-            
-            kvClient.put(keyBytes, valueBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            putValue(indexPath, indexConfig);
             
             log.info("Successfully created index config {} in etcd", indexName);
             return indexName;
@@ -425,11 +429,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indexPath = pathResolver.getIndexConfPath(indexName);
-            
-            ByteSequence keyBytes = ByteSequence.from(indexPath, StandardCharsets.UTF_8);
-            ByteSequence valueBytes = ByteSequence.from(indexConfig, StandardCharsets.UTF_8);
-            
-            kvClient.put(keyBytes, valueBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            putValue(indexPath, indexConfig);
             
             log.debug("Successfully updated index config {} in etcd", indexName);
             
@@ -445,15 +445,9 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indexPath = pathResolver.getIndexConfPath(indexName);
-            ByteSequence keyBytes = ByteSequence.from(indexPath, StandardCharsets.UTF_8);
+            deleteKey(indexPath);
             
-            var response = kvClient.delete(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            
-            if (response.getDeleted() > 0) {
-                log.info("Successfully deleted index config {} from etcd", indexName);
-            } else {
-                log.warn("Index config {} not found in etcd for deletion", indexName);
-            }
+            log.info("Successfully deleted index config {} from etcd", indexName);
             
         } catch (Exception e) {
             log.error("Failed to delete index config {} from etcd: {}", indexName, e.getMessage(), e);
