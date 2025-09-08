@@ -76,7 +76,7 @@ public interface MetadataStore {
      * Delete search unit
      */
     void deleteSearchUnit(String unitName) throws Exception;
-
+    
     // =================================================================
     // SEARCH UNIT STATE OPERATIONS (for discovery)
     // =================================================================

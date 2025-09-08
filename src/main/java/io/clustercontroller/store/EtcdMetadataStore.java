@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static io.clustercontroller.config.Constants.PATH_DELIMITER;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static io.clustercontroller.config.Constants.*;
 
 /**
  * etcd-based implementation of MetadataStore.
@@ -135,43 +136,6 @@ public class EtcdMetadataStore implements MetadataStore {
         instance = new EtcdMetadataStore(clusterName, etcdEndpoints, nodeId, etcdClient, kvClient);
         return instance;
     }
-    
-    // =================================================================
-    // KEY PATH BUILDERS
-    // =================================================================
-    
-    private String getControllerTasksPrefix() {
-        return "/" + clusterName + "/ctl-tasks/";
-    }
-    
-    private String getSearchUnitPrefix() {
-        return "/" + clusterName + "/search-unit/";
-    }
-    
-    private String getSearchUnitConfPath(String unitName) {
-        return getSearchUnitPrefix() + unitName + "/conf";
-    }
-    
-    private String getSearchUnitGoalStatePath(String unitName) {
-        return getSearchUnitPrefix() + unitName + "/goal-state";
-    }
-    
-    private String getSearchUnitActualStatePath(String unitName) {
-        return getSearchUnitPrefix() + unitName + "/actual-state";
-    }
-    
-    private String getIndicesPrefix() {
-        return "/" + clusterName + "/indices/";
-    }
-    
-    private String getIndexConfPath(String indexName) {
-        return getIndicesPrefix() + indexName + "/conf";
-    }
-    
-    private String getTestKey() {
-        return "/" + clusterName + "/config/test";
-    }
-    
 
     
     // =================================================================
@@ -670,7 +634,7 @@ public class EtcdMetadataStore implements MetadataStore {
     // =================================================================
     public CompletableFuture<Boolean> startLeaderElection() {
         Election election = etcdClient.getElectionClient();
-        String electionKey = clusterName + "-election";
+        String electionKey = clusterName + ELECTION_KEY_SUFFIX;
 
         CompletableFuture<Boolean> result = new CompletableFuture<>();
 
@@ -679,7 +643,7 @@ public class EtcdMetadataStore implements MetadataStore {
                 ByteSequence electionKeyBytes = ByteSequence.from(electionKey, UTF_8);
                 ByteSequence nodeIdBytes = ByteSequence.from(nodeId, UTF_8);
 
-                long ttlSeconds = 30;
+                long ttlSeconds = LEADER_ELECTION_TTL_SECONDS;
                 LeaseGrantResponse leaseGrant = etcdClient.getLeaseClient()
                         .grant(ttlSeconds)
                         .get();

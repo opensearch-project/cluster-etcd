@@ -4,11 +4,11 @@ import io.clustercontroller.allocation.ActualAllocationUpdater;
 import io.clustercontroller.allocation.ShardAllocator;
 import io.clustercontroller.config.ClusterControllerConfig;
 import io.clustercontroller.discovery.Discovery;
+import io.clustercontroller.election.LeaderElection;
 import io.clustercontroller.indices.IndexManager;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
 import io.clustercontroller.tasks.TaskContext;
-import io.clustercontroller.util.EnvironmentUtils;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -46,7 +46,11 @@ public class ClusterControllerApplication {
                 config.getEtcdEndpoints()
             );
             metadataStore.initialize();
-            waitUntilLeader(metadataStore);  // blocks until leader
+            
+            // Wait until this node becomes leader
+            EtcdMetadataStore etcdStore = (EtcdMetadataStore) metadataStore;
+            LeaderElection leaderElection = new LeaderElection(etcdStore);
+            leaderElection.waitUntilLeader();  // blocks until leader
             
             // Initialize components
             IndexManager indexManager = new IndexManager(metadataStore);
@@ -80,22 +84,6 @@ public class ClusterControllerApplication {
         } catch (Exception e) {
             log.error("Failed to start Cluster Controller: {}", e.getMessage(), e);
             System.exit(1);
-        }
-    }
-
-    private static void waitUntilLeader(MetadataStore metadataStore) throws InterruptedException {
-        if (metadataStore instanceof EtcdMetadataStore) {
-            EtcdMetadataStore etcdStore = (EtcdMetadataStore) metadataStore;
-
-            String currentNodeName = EnvironmentUtils.getRequiredEnv("NODE_NAME");
-            log.info("LeaderElection - Starting leader election process...");
-            log.info("LeaderElection - Current node: {}", currentNodeName);
-            
-            while (!etcdStore.isLeader()) {
-                Thread.sleep(1000);   
-            }
-            
-            log.info("LeaderElection - SUCCESS: This node ({}) has become the leader!", currentNodeName);
         }
     }
     
