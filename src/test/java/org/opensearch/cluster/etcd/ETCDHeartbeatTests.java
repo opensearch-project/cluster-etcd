@@ -587,4 +587,98 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             return parser.map();
         }
     }
+
+    public void testETCDHeartbeatWithCloudNativeAttributes() throws IOException, ExecutionException, InterruptedException {
+        String clusterName = "test-cluster";
+        String nodeName = "test-node";
+
+        // Create a node with cloud native attributes
+        Settings localNodeSettings = Settings.builder()
+            .put("cluster.name", clusterName)
+            .put("node.name", nodeName)
+            .put("node.attr.cloud_native_role", "primary")
+            .put("node.attr.cloud_native_shard_id", "00")
+            .build();
+        
+        DiscoveryNode localNode = DiscoveryNode.createLocal(
+            localNodeSettings,
+            new TransportAddress(TransportAddress.META_ADDRESS, 9200),
+            nodeName
+        );
+
+        try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
+            etcdCluster.start();
+            try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
+                ClusterService clusterService = createMockClusterService();
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+
+                // Start heartbeat
+                heartbeat.start();
+
+                // Wait for heartbeat to be published
+                String expectedPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
+                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+                    ByteSequence key = ByteSequence.from(expectedPath, StandardCharsets.UTF_8);
+                    List<KeyValue> kvs = etcdClient.getKVClient().get(key).get().getKvs();
+                    assertFalse("Heartbeat data should be published", kvs.isEmpty());
+
+                    // Parse and verify the heartbeat data structure
+                    KeyValue kv = kvs.get(0);
+                    Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
+
+                    // Verify cloud native attributes are present
+                    assertEquals("cloudNativeRole should be 'primary'", "primary", heartbeatData.get("cloudNativeRole"));
+                    assertEquals("cloudNativeShardId should be '00'", "00", heartbeatData.get("cloudNativeShardId"));
+                });
+
+                heartbeat.stop();
+            }
+        }
+    }
+
+    public void testETCDHeartbeatWithoutCloudNativeAttributes() throws IOException, ExecutionException, InterruptedException {
+        String clusterName = "test-cluster";
+        String nodeName = "test-node";
+
+        // Create a node without cloud native attributes
+        Settings localNodeSettings = Settings.builder()
+            .put("cluster.name", clusterName)
+            .put("node.name", nodeName)
+            .build();
+        
+        DiscoveryNode localNode = DiscoveryNode.createLocal(
+            localNodeSettings,
+            new TransportAddress(TransportAddress.META_ADDRESS, 9200),
+            nodeName
+        );
+
+        try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
+            etcdCluster.start();
+            try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
+                ClusterService clusterService = createMockClusterService();
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+
+                // Start heartbeat
+                heartbeat.start();
+
+                // Wait for heartbeat to be published
+                String expectedPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
+                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+                    ByteSequence key = ByteSequence.from(expectedPath, StandardCharsets.UTF_8);
+                    List<KeyValue> kvs = etcdClient.getKVClient().get(key).get().getKvs();
+                    assertFalse("Heartbeat data should be published", kvs.isEmpty());
+
+                    // Parse and verify the heartbeat data structure
+                    KeyValue kv = kvs.get(0);
+                    Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
+
+                    // Verify cloud native attributes are not present
+                    assertFalse("cloudNativeRole should not be present", heartbeatData.containsKey("cloudNativeRole"));
+                    assertFalse("cloudNativeShardId should not be present", heartbeatData.containsKey("cloudNativeShardId"));
+                });
+
+                heartbeat.stop();
+            }
+        }
+    }
 }

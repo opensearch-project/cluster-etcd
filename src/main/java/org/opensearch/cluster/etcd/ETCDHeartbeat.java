@@ -37,12 +37,16 @@ import java.util.ArrayList;
 
 public class ETCDHeartbeat {
     private static final long DEFAULT_HEARTBEAT_INTERVAL_MILLIS = 5000; // 5 seconds
+    private static final String CLOUD_NATIVE_ROLE_ATTRIBUTE = "cloud_native_role";
+    private static final String CLOUD_NATIVE_SHARD_ID_ATTRIBUTE = "cloud_native_shard_id";
     private final Logger logger = LogManager.getLogger(getClass());
     private final String nodeName;
     private final String nodeId;
     private final String ephemeralId;
     private final String address;
     private final int port;
+    private final String cloudNativeRole;
+    private final String cloudNativeShardId;
     private final Client etcdClient;
     private final ScheduledExecutorService scheduler;
     private final ByteSequence nodeStateKey;
@@ -66,6 +70,8 @@ public class ETCDHeartbeat {
         this.ephemeralId = localNode.getEphemeralId();
         this.address = localNode.getAddress().getAddress();
         this.port = localNode.getAddress().getPort();
+        this.cloudNativeRole = localNode.getAttributes().get(CLOUD_NATIVE_ROLE_ATTRIBUTE);
+        this.cloudNativeShardId = localNode.getAttributes().get(CLOUD_NATIVE_SHARD_ID_ATTRIBUTE);
         this.etcdClient = etcdClient;
         this.scheduler = createScheduler();
         String clusterName = clusterService.getClusterName().value();
@@ -141,6 +147,14 @@ public class ETCDHeartbeat {
             heartbeatData.put("address", address);
             heartbeatData.put("port", port);
             heartbeatData.put("heartbeatIntervalMillis", heartbeatIntervalMillis);
+            
+            // Add cloud native node attributes
+            if (cloudNativeRole != null) {
+                heartbeatData.put("cloudNativeRole", cloudNativeRole);
+            }
+            if (cloudNativeShardId != null) {
+                heartbeatData.put("cloudNativeShardId", cloudNativeShardId);
+            }
             heartbeatData.put("cpuUsedPercent", cpuPercent);
             heartbeatData.put("memoryUsedPercent", memoryPercent);
             heartbeatData.put("memoryMaxMB", memoryMax.getMb());
