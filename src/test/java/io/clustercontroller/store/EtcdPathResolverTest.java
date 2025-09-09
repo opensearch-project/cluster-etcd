@@ -36,7 +36,7 @@ class EtcdPathResolverTest {
     @Test
     void testGetControllerTasksPrefix() {
         String result = pathResolver.getControllerTasksPrefix();
-        assertThat(result).isEqualTo("/test-cluster/ctl-tasks/");
+        assertThat(result).isEqualTo("/test-cluster/ctl-tasks");
     }
     
     @Test
@@ -52,7 +52,7 @@ class EtcdPathResolverTest {
     @Test
     void testGetSearchUnitsPrefix() {
         String result = pathResolver.getSearchUnitsPrefix();
-        assertThat(result).isEqualTo("/test-cluster/search-units/");
+        assertThat(result).isEqualTo("/test-cluster/search-units");
     }
     
     @Test
@@ -73,11 +73,6 @@ class EtcdPathResolverTest {
         assertThat(result).isEqualTo("/test-cluster/search-units/unit-1/actual-state");
     }
     
-    @Test
-    void testGetSearchUnitActualStatesPrefix() {
-        String result = pathResolver.getSearchUnitActualStatesPrefix();
-        assertThat(result).isEqualTo("/test-cluster/search-units/");
-    }
     
     // =================================================================
     // INDEX PATHS TESTS
@@ -86,7 +81,7 @@ class EtcdPathResolverTest {
     @Test
     void testGetIndicesPrefix() {
         String result = pathResolver.getIndicesPrefix();
-        assertThat(result).isEqualTo("/test-cluster/indices/");
+        assertThat(result).isEqualTo("/test-cluster/indices");
     }
     
     @Test
@@ -130,7 +125,7 @@ class EtcdPathResolverTest {
     @Test
     void testGetCoordinatorsPrefix() {
         String result = pathResolver.getCoordinatorsPrefix();
-        assertThat(result).isEqualTo("/test-cluster/coordinators/");
+        assertThat(result).isEqualTo("/test-cluster/coordinators");
     }
     
     @Test
@@ -175,6 +170,6 @@ class EtcdPathResolverTest {
     void testClusterNameWithSpecialCharacters() {
         EtcdPathResolver specialResolver = new EtcdPathResolver("cluster-with-dashes");
         String result = specialResolver.getControllerTasksPrefix();
-        assertThat(result).isEqualTo("/cluster-with-dashes/ctl-tasks/");
+        assertThat(result).isEqualTo("/cluster-with-dashes/ctl-tasks");
     }
 }

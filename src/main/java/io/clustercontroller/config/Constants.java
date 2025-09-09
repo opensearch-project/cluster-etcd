@@ -33,6 +33,7 @@ public final class Constants {
     public static final String TASK_ACTION_ACTUAL_ALLOCATION_UPDATER = "actual_allocation_updater";
     
     // etcd path segments
+    public static final String PATH_DELIMITER = "/";
     public static final String PATH_CTL_TASKS = "ctl-tasks";
     public static final String PATH_SEARCH_UNITS = "search-units";
     public static final String PATH_INDICES = "indices";

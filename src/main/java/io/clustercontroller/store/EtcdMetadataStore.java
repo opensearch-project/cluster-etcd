@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
+import static io.clustercontroller.config.Constants.PATH_DELIMITER;
+
 /**
  * etcd-based implementation of MetadataStore.
  * Singleton to ensure single etcd client connection.
@@ -63,69 +65,8 @@ public class EtcdMetadataStore implements MetadataStore {
     }
     
     // =================================================================
-    // HELPER METHODS FOR COMMON ETCD OPERATIONS
+    // SINGLETON MANAGEMENT
     // =================================================================
-    
-    /**
-     * Helper method for etcd get operations with prefix
-     */
-    private GetResponse getWithPrefix(String prefix) throws Exception {
-        ByteSequence prefixBytes = ByteSequence.from(prefix, StandardCharsets.UTF_8);
-        return kvClient.get(
-            prefixBytes,
-            GetOption.newBuilder().withPrefix(prefixBytes).build()
-        ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    }
-    
-    /**
-     * Helper method for etcd get operations for single key
-     */
-    private GetResponse getSingle(String key) throws Exception {
-        ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
-        return kvClient.get(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    }
-    
-    /**
-     * Helper method for etcd put operations
-     */
-    private void putValue(String key, String value) throws Exception {
-        ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
-        ByteSequence valueBytes = ByteSequence.from(value, StandardCharsets.UTF_8);
-        kvClient.put(keyBytes, valueBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    }
-    
-    /**
-     * Helper method for etcd delete operations
-     */
-    private void deleteKey(String key) throws Exception {
-        ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
-        kvClient.delete(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-    }
-    
-    /**
-     * Helper method to deserialize list of objects from etcd response
-     */
-    private <T> List<T> deserializeList(GetResponse response, Class<T> clazz) throws Exception {
-        List<T> items = new ArrayList<>();
-        for (var kv : response.getKvs()) {
-            String json = kv.getValue().toString(StandardCharsets.UTF_8);
-            T item = objectMapper.readValue(json, clazz);
-            items.add(item);
-        }
-        return items;
-    }
-    
-    /**
-     * Helper method to deserialize single object from etcd response
-     */
-    private <T> Optional<T> deserializeSingle(GetResponse response, Class<T> clazz) throws Exception {
-        if (response.getCount() == 0) {
-            return Optional.empty();
-        }
-        String json = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
-        T item = objectMapper.readValue(json, clazz);
-        return Optional.of(item);
-    }
     
     /**
      * Get singleton instance
@@ -157,9 +98,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String tasksPrefix = pathResolver.getControllerTasksPrefix();
-            GetResponse response = getWithPrefix(tasksPrefix);
-            
-            List<TaskMetadata> tasks = deserializeList(response, TaskMetadata.class);
+            List<TaskMetadata> tasks = getAllObjectsByPrefix(tasksPrefix, TaskMetadata.class);
             
             // Sort by priority (0 = highest priority)
             tasks.sort((t1, t2) -> Integer.compare(t1.getPriority(), t2.getPriority()));
@@ -179,9 +118,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String taskPath = pathResolver.getControllerTaskPath(taskName);
-            GetResponse response = getSingle(taskPath);
-            
-            Optional<TaskMetadata> result = deserializeSingle(response, TaskMetadata.class);
+            Optional<TaskMetadata> result = getObjectByPath(taskPath, TaskMetadata.class);
             
             if (result.isPresent()) {
                 log.debug("Retrieved task {} from etcd", taskName);
@@ -203,9 +140,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String taskPath = pathResolver.getControllerTaskPath(task.getName());
-            String taskJson = objectMapper.writeValueAsString(task);
-            
-            putValue(taskPath, taskJson);
+            storeObjectAsJson(taskPath, task);
             
             log.info("Successfully created task {} in etcd", task.getName());
             return task.getName();
@@ -222,9 +157,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String taskPath = pathResolver.getControllerTaskPath(task.getName());
-            String taskJson = objectMapper.writeValueAsString(task);
-            
-            putValue(taskPath, taskJson);
+            storeObjectAsJson(taskPath, task);
             
             log.debug("Successfully updated task {} in etcd", task.getName());
             
@@ -240,7 +173,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String taskPath = pathResolver.getControllerTaskPath(taskName);
-            deleteKey(taskPath);
+            executeEtcdDelete(taskPath);
             
             log.info("Successfully deleted task {} from etcd", taskName);
             
@@ -266,9 +199,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String unitsPrefix = pathResolver.getSearchUnitsPrefix();
-            GetResponse response = getWithPrefix(unitsPrefix);
-            
-            List<SearchUnit> searchUnits = deserializeList(response, SearchUnit.class);
+            List<SearchUnit> searchUnits = getAllObjectsByPrefix(unitsPrefix, SearchUnit.class);
             
             log.debug("Retrieved {} search units from etcd", searchUnits.size());
             return searchUnits;
@@ -285,9 +216,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String unitPath = pathResolver.getSearchUnitConfPath(unitName);
-            GetResponse response = getSingle(unitPath);
-            
-            Optional<SearchUnit> result = deserializeSingle(response, SearchUnit.class);
+            Optional<SearchUnit> result = getObjectByPath(unitPath, SearchUnit.class);
             
             if (result.isPresent()) {
                 log.debug("Retrieved search unit {} from etcd", unitName);
@@ -309,9 +238,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String unitPath = pathResolver.getSearchUnitConfPath(unitName);
-            String unitJson = objectMapper.writeValueAsString(searchUnit);
-            
-            putValue(unitPath, unitJson);
+            storeObjectAsJson(unitPath, searchUnit);
             
             log.info("Successfully upserted search unit {} in etcd", unitName);
             
@@ -327,9 +254,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String unitPath = pathResolver.getSearchUnitConfPath(searchUnit.getName());
-            String unitJson = objectMapper.writeValueAsString(searchUnit);
-            
-            putValue(unitPath, unitJson);
+            storeObjectAsJson(unitPath, searchUnit);
             
             log.debug("Successfully updated search unit {} in etcd", searchUnit.getName());
             
@@ -345,7 +270,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String unitPath = pathResolver.getSearchUnitConfPath(unitName);
-            deleteKey(unitPath);
+            executeEtcdDelete(unitPath);
             
             log.info("Successfully deleted search unit {} from etcd", unitName);
             
@@ -365,7 +290,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indicesPrefix = pathResolver.getIndicesPrefix();
-            GetResponse response = getWithPrefix(indicesPrefix);
+            GetResponse response = executeEtcdPrefixQuery(indicesPrefix);
             
             List<String> indexConfigs = new ArrayList<>();
             for (var kv : response.getKvs()) {
@@ -388,7 +313,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indexPath = pathResolver.getIndexConfPath(indexName);
-            GetResponse response = getSingle(indexPath);
+            GetResponse response = executeEtcdGet(indexPath);
             
             if (response.getCount() == 0) {
                 log.debug("Index config {} not found in etcd", indexName);
@@ -412,7 +337,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indexPath = pathResolver.getIndexConfPath(indexName);
-            putValue(indexPath, indexConfig);
+            executeEtcdPut(indexPath, indexConfig);
             
             log.info("Successfully created index config {} in etcd", indexName);
             return indexName;
@@ -429,7 +354,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indexPath = pathResolver.getIndexConfPath(indexName);
-            putValue(indexPath, indexConfig);
+            executeEtcdPut(indexPath, indexConfig);
             
             log.debug("Successfully updated index config {} in etcd", indexName);
             
@@ -445,7 +370,7 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String indexPath = pathResolver.getIndexConfPath(indexName);
-            deleteKey(indexPath);
+            executeEtcdDelete(indexPath);
             
             log.info("Successfully deleted index config {} from etcd", indexName);
             
@@ -489,5 +414,96 @@ public class EtcdMetadataStore implements MetadataStore {
      */
     public EtcdPathResolver getPathResolver() {
         return pathResolver;
+    }
+    
+    // =================================================================
+    // PRIVATE HELPER METHODS FOR ETCD OPERATIONS
+    // =================================================================
+    
+    /**
+     * Executes etcd prefix query to retrieve all keys matching the given prefix
+     */
+    private GetResponse executeEtcdPrefixQuery(String prefix) throws Exception {
+        // Add trailing slash for etcd prefix queries to ensure precise matching
+        String prefixWithSlash = prefix + PATH_DELIMITER;
+        ByteSequence prefixBytes = ByteSequence.from(prefixWithSlash, StandardCharsets.UTF_8);
+        return kvClient.get(
+            prefixBytes,
+            GetOption.newBuilder().withPrefix(prefixBytes).build()
+        ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+    
+    /**
+     * Executes etcd get operation for a single key
+     */
+    private GetResponse executeEtcdGet(String key) throws Exception {
+        ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
+        return kvClient.get(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+    
+    /**
+     * Executes etcd put operation for a key-value pair
+     */
+    private void executeEtcdPut(String key, String value) throws Exception {
+        ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
+        ByteSequence valueBytes = ByteSequence.from(value, StandardCharsets.UTF_8);
+        kvClient.put(keyBytes, valueBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+    
+    /**
+     * Executes etcd delete operation for a key
+     */
+    private void executeEtcdDelete(String key) throws Exception {
+        ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
+        kvClient.delete(keyBytes).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+    
+    /**
+     * Deserializes list of objects from etcd GetResponse
+     */
+    private <T> List<T> deserializeObjectList(GetResponse response, Class<T> clazz) throws Exception {
+        List<T> items = new ArrayList<>();
+        for (var kv : response.getKvs()) {
+            String json = kv.getValue().toString(StandardCharsets.UTF_8);
+            T item = objectMapper.readValue(json, clazz);
+            items.add(item);
+        }
+        return items;
+    }
+    
+    /**
+     * Deserializes single object from etcd GetResponse
+     */
+    private <T> Optional<T> deserializeObject(GetResponse response, Class<T> clazz) throws Exception {
+        if (response.getCount() == 0) {
+            return Optional.empty();
+        }
+        String json = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+        T item = objectMapper.readValue(json, clazz);
+        return Optional.of(item);
+    }
+    
+    /**
+     * Retrieves all objects of a specific type using etcd prefix query
+     */
+    private <T> List<T> getAllObjectsByPrefix(String prefix, Class<T> clazz) throws Exception {
+        GetResponse response = executeEtcdPrefixQuery(prefix);
+        return deserializeObjectList(response, clazz);
+    }
+    
+    /**
+     * Retrieves single object by etcd path
+     */
+    private <T> Optional<T> getObjectByPath(String path, Class<T> clazz) throws Exception {
+        GetResponse response = executeEtcdGet(path);
+        return deserializeObject(response, clazz);
+    }
+    
+    /**
+     * Stores object as JSON at the specified etcd path
+     */
+    private void storeObjectAsJson(String path, Object object) throws Exception {
+        String json = objectMapper.writeValueAsString(object);
+        executeEtcdPut(path, json);
     }
 }

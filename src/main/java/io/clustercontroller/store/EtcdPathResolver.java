@@ -24,10 +24,10 @@ public class EtcdPathResolver {
     
     /**
      * Get prefix for all controller tasks
-     * Pattern: /<cluster-name>/ctl-tasks/
+     * Pattern: /<cluster-name>/ctl-tasks
      */
     public String getControllerTasksPrefix() {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_CTL_TASKS).toString() + PATH_DELIMITER;
+        return Paths.get(PATH_DELIMITER, clusterName, PATH_CTL_TASKS).toString();
     }
     
     /**
@@ -35,7 +35,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/ctl-tasks/<task-name>
      */
     public String getControllerTaskPath(String taskName) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_CTL_TASKS, taskName).toString();
+        return Paths.get(getControllerTasksPrefix(), taskName).toString();
     }
     
     // =================================================================
@@ -44,10 +44,10 @@ public class EtcdPathResolver {
     
     /**
      * Get prefix for all search units
-     * Pattern: /<cluster-name>/search-units/
+     * Pattern: /<cluster-name>/search-units
      */
     public String getSearchUnitsPrefix() {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_SEARCH_UNITS).toString() + PATH_DELIMITER;
+        return Paths.get(PATH_DELIMITER, clusterName, PATH_SEARCH_UNITS).toString();
     }
     
     /**
@@ -55,7 +55,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/search-units/<unit-name>/conf
      */
     public String getSearchUnitConfPath(String unitName) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_SEARCH_UNITS, unitName, SUFFIX_CONF).toString();
+        return Paths.get(getSearchUnitsPrefix(), unitName, SUFFIX_CONF).toString();
     }
     
     /**
@@ -63,7 +63,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/search-units/<unit-name>/goal-state
      */
     public String getSearchUnitGoalStatePath(String unitName) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_SEARCH_UNITS, unitName, SUFFIX_GOAL_STATE).toString();
+        return Paths.get(getSearchUnitsPrefix(), unitName, SUFFIX_GOAL_STATE).toString();
     }
     
     /**
@@ -71,16 +71,9 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/search-units/<unit-name>/actual-state
      */
     public String getSearchUnitActualStatePath(String unitName) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_SEARCH_UNITS, unitName, SUFFIX_ACTUAL_STATE).toString();
+        return Paths.get(getSearchUnitsPrefix(), unitName, SUFFIX_ACTUAL_STATE).toString();
     }
     
-    /**
-     * Get prefix for search unit actual states
-     * Pattern: /<cluster-name>/search-units/[unit-name]/actual-state
-     */
-    public String getSearchUnitActualStatesPrefix() {
-        return getSearchUnitsPrefix();
-    }
     
     // =================================================================
     // INDEX PATHS
@@ -88,10 +81,10 @@ public class EtcdPathResolver {
     
     /**
      * Get prefix for all indices
-     * Pattern: /<cluster-name>/indices/
+     * Pattern: /<cluster-name>/indices
      */
     public String getIndicesPrefix() {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_INDICES).toString() + PATH_DELIMITER;
+        return Paths.get(PATH_DELIMITER, clusterName, PATH_INDICES).toString();
     }
     
     /**
@@ -99,7 +92,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/indices/<index-name>/conf
      */
     public String getIndexConfPath(String indexName) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_INDICES, indexName, SUFFIX_CONF).toString();
+        return Paths.get(getIndicesPrefix(), indexName, SUFFIX_CONF).toString();
     }
     
     /**
@@ -107,7 +100,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/indices/<index-name>/mappings
      */
     public String getIndexMappingsPath(String indexName) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_INDICES, indexName, SUFFIX_MAPPINGS).toString();
+        return Paths.get(getIndicesPrefix(), indexName, SUFFIX_MAPPINGS).toString();
     }
     
     /**
@@ -115,7 +108,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/indices/<index-name>/settings
      */
     public String getIndexSettingsPath(String indexName) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_INDICES, indexName, SUFFIX_SETTINGS).toString();
+        return Paths.get(getIndicesPrefix(), indexName, SUFFIX_SETTINGS).toString();
     }
     
     // =================================================================
@@ -127,7 +120,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/indices/<index-name>/shard/<shard-id>/planned-allocation
      */
     public String getShardPlannedAllocationPath(String indexName, String shardId) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_INDICES, indexName, PATH_SHARD, shardId, SUFFIX_PLANNED_ALLOCATION).toString();
+        return Paths.get(getIndicesPrefix(), indexName, PATH_SHARD, shardId, SUFFIX_PLANNED_ALLOCATION).toString();
     }
     
     /**
@@ -135,7 +128,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/indices/<index-name>/shard/<shard-id>/actual-allocation
      */
     public String getShardActualAllocationPath(String indexName, String shardId) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_INDICES, indexName, PATH_SHARD, shardId, SUFFIX_ACTUAL_ALLOCATION).toString();
+        return Paths.get(getIndicesPrefix(), indexName, PATH_SHARD, shardId, SUFFIX_ACTUAL_ALLOCATION).toString();
     }
     
     // =================================================================
@@ -144,10 +137,10 @@ public class EtcdPathResolver {
     
     /**
      * Get prefix for all coordinators
-     * Pattern: /<cluster-name>/coordinators/
+     * Pattern: /<cluster-name>/coordinators
      */
     public String getCoordinatorsPrefix() {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_COORDINATORS).toString() + PATH_DELIMITER;
+        return Paths.get(PATH_DELIMITER, clusterName, PATH_COORDINATORS).toString();
     }
     
     /**
@@ -155,7 +148,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/coordinators/goal-state
      */
     public String getCoordinatorGoalStatePath() {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_COORDINATORS, SUFFIX_GOAL_STATE).toString();
+        return Paths.get(getCoordinatorsPrefix(), SUFFIX_GOAL_STATE).toString();
     }
     
     /**
@@ -163,7 +156,7 @@ public class EtcdPathResolver {
      * Pattern: /<cluster-name>/coordinators/<coordinator-name>/actual-state
      */
     public String getCoordinatorActualStatePath(String coordinatorName) {
-        return Paths.get(PATH_DELIMITER, clusterName, PATH_COORDINATORS, coordinatorName, SUFFIX_ACTUAL_STATE).toString();
+        return Paths.get(getCoordinatorsPrefix(), coordinatorName, SUFFIX_ACTUAL_STATE).toString();
     }
     
     
