@@ -49,4 +49,24 @@ public final class Constants {
     public static final String SUFFIX_SETTINGS = "settings";
     public static final String SUFFIX_PLANNED_ALLOCATION = "planned-allocation";
     public static final String SUFFIX_ACTUAL_ALLOCATION = "actual-allocation";
+    
+    // Etcd path components (alternative naming for compatibility)
+    public static final String PATH_COMPONENT_CONF = "conf";
+    public static final String PATH_COMPONENT_GOAL_STATE = "goal-state";
+    public static final String PATH_COMPONENT_ACTUAL_STATE = "actual-state";
+    
+    // Etcd path prefixes (alternative naming for compatibility)
+    public static final String PATH_PREFIX_CTL_TASKS = "ctl-tasks";
+    public static final String PATH_PREFIX_SEARCH_UNIT = "search-unit";
+    public static final String PATH_PREFIX_INDICES = "indices";
+    public static final String PATH_PREFIX_CONFIG = "config";
+    
+    // Health check thresholds
+    // TODO: Make these configurable via application properties or environment variables
+    public static final int HEALTH_CHECK_MEMORY_THRESHOLD_PERCENT = 90;
+    public static final long HEALTH_CHECK_DISK_THRESHOLD_MB = 1024;
+    
+    // Admin state values
+    public static final String ADMIN_STATE_NORMAL = "NORMAL";
+    public static final String ADMIN_STATE_DRAIN = "DRAIN";
 }

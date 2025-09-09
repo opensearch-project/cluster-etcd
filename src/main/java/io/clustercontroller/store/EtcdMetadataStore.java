@@ -5,22 +5,23 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.models.SearchUnitActualState;
+import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.models.TaskMetadata;
-import io.etcd.jetcd.ByteSequence;
-import io.etcd.jetcd.Client;
-import io.etcd.jetcd.KV;
+import io.etcd.jetcd.*;
 import io.etcd.jetcd.kv.GetResponse;
 import io.etcd.jetcd.kv.PutResponse;
 import io.etcd.jetcd.options.GetOption;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
+import java.time.OffsetDateTime;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static io.clustercontroller.config.Constants.PATH_DELIMITER;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * etcd-based implementation of MetadataStore.
@@ -69,6 +70,26 @@ public class EtcdMetadataStore implements MetadataStore {
     // =================================================================
     
     /**
+     * Test constructor with injected dependencies
+     */
+    private EtcdMetadataStore(String clusterName, String[] etcdEndpoints, Client etcdClient, KV kvClient) {
+        this.clusterName = clusterName;
+        this.etcdEndpoints = etcdEndpoints;
+        this.etcdClient = etcdClient;
+        this.kvClient = kvClient;
+        
+        // Initialize Jackson ObjectMapper
+        this.objectMapper = new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        
+        // Initialize path resolver
+        this.pathResolver = new EtcdPathResolver(clusterName);
+        
+        log.info("EtcdMetadataStore initialized for testing with cluster: {}", clusterName);
+    }
+    
+    /**
      * Get singleton instance
      */
     public static synchronized EtcdMetadataStore getInstance(String clusterName, String[] etcdEndpoints) throws Exception {
@@ -85,6 +106,22 @@ public class EtcdMetadataStore implements MetadataStore {
         if (instance == null) {
             throw new IllegalStateException("EtcdMetadataStore not initialized. Call getInstance(clusterName, etcdEndpoints) first.");
         }
+        return instance;
+    }
+    
+    /**
+     * Reset singleton instance (for testing only)
+     */
+    public static synchronized void resetInstance() {
+        instance = null;
+    }
+    
+    /**
+     * Create test instance with mocked dependencies (for testing only)
+     */
+    public static synchronized EtcdMetadataStore createTestInstance(String clusterName, String[] etcdEndpoints, Client etcdClient, KV kvClient) {
+        resetInstance();
+        instance = new EtcdMetadataStore(clusterName, etcdEndpoints, etcdClient, kvClient);
         return instance;
     }
     
@@ -278,6 +315,77 @@ public class EtcdMetadataStore implements MetadataStore {
             log.error("Failed to delete search unit {} from etcd: {}", unitName, e.getMessage(), e);
             throw new Exception("Failed to delete search unit from etcd", e);
         }
+    }
+    
+    // =================================================================
+    // SEARCH UNIT STATE OPERATIONS (for discovery)
+    // =================================================================
+    
+    @Override
+    public Map<String, SearchUnitActualState> getAllSearchUnitActualStates() throws Exception {
+        String prefix = pathResolver.getSearchUnitsPrefix();
+        GetOption option = GetOption.newBuilder()
+                .withPrefix(ByteSequence.from(prefix, UTF_8))
+                .build();
+        
+        CompletableFuture<GetResponse> getFuture = kvClient.get(
+                ByteSequence.from(prefix, UTF_8), option);
+        GetResponse response = getFuture.get();
+        
+        Map<String, SearchUnitActualState> actualStates = new HashMap<>();
+        
+        for (KeyValue kv : response.getKvs()) {
+            String key = kv.getKey().toString(UTF_8);
+            String json = kv.getValue().toString(UTF_8);
+            
+            // Parse key to get unit name and check if it's an actual-state key
+            String relativePath = key.substring(prefix.length());
+            String[] parts = relativePath.split("/");
+            if (parts.length >= 2 && "actual-state".equals(parts[1])) {
+                String unitName = parts[0];
+                try {
+                    SearchUnitActualState actualState = objectMapper.readValue(json, SearchUnitActualState.class);
+                    actualStates.put(unitName, actualState);
+                } catch (Exception e) {
+                    log.warn("Failed to parse actual state for unit {}: {}", unitName, e.getMessage());
+                }
+            }
+        }
+        
+        log.debug("Retrieved {} search unit actual states from etcd", actualStates.size());
+        return actualStates;
+    }
+    
+    @Override
+    public Optional<SearchUnitGoalState> getSearchUnitGoalState(String unitName) throws Exception {
+        String key = pathResolver.getSearchUnitGoalStatePath(unitName);
+        CompletableFuture<GetResponse> getFuture = kvClient.get(ByteSequence.from(key, UTF_8));
+        GetResponse response = getFuture.get();
+        
+        if (response.getKvs().isEmpty()) {
+            return Optional.empty();
+        }
+        
+        String json = response.getKvs().get(0).getValue().toString(UTF_8);
+        SearchUnitGoalState goalState = objectMapper.readValue(json, SearchUnitGoalState.class);
+        
+        return Optional.of(goalState);
+    }
+    
+    @Override
+    public Optional<SearchUnitActualState> getSearchUnitActualState(String unitName) throws Exception {
+        String key = pathResolver.getSearchUnitActualStatePath(unitName);
+        CompletableFuture<GetResponse> getFuture = kvClient.get(ByteSequence.from(key, UTF_8));
+        GetResponse response = getFuture.get();
+        
+        if (response.getKvs().isEmpty()) {
+            return Optional.empty();
+        }
+        
+        String json = response.getKvs().get(0).getValue().toString(UTF_8);
+        SearchUnitActualState actualState = objectMapper.readValue(json, SearchUnitActualState.class);
+        
+        return Optional.of(actualState);
     }
     
     // =================================================================

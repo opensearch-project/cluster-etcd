@@ -2,7 +2,10 @@ package io.clustercontroller.store;
 
 import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.models.SearchUnitActualState;
+import io.clustercontroller.models.SearchUnitGoalState;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -74,6 +77,24 @@ public interface MetadataStore {
      */
     void deleteSearchUnit(String unitName) throws Exception;
     
+    // =================================================================
+    // SEARCH UNIT STATE OPERATIONS (for discovery)
+    // =================================================================
+    
+    /**
+     * Get all search unit actual states (for discovery)
+     */
+    Map<String, SearchUnitActualState> getAllSearchUnitActualStates() throws Exception;
+    
+    /**
+     * Get search unit goal state
+     */
+    Optional<SearchUnitGoalState> getSearchUnitGoalState(String unitName) throws Exception;
+    
+    /**
+     * Get search unit actual state
+     */
+    Optional<SearchUnitActualState> getSearchUnitActualState(String unitName) throws Exception;
     // =================================================================
     // INDEX CONFIGURATIONS OPERATIONS
     // =================================================================

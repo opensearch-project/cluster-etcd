@@ -1,6 +1,7 @@
 package io.clustercontroller.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.clustercontroller.enums.HealthState;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -44,7 +45,7 @@ public class SearchUnit {
     private String stateAdmin; // "NORMAL", "DRAINED", etc.
     
     @JsonProperty("state_pulled")
-    private String statePulled; // "GREEN", "YELLOW", "RED"
+    private HealthState statePulled; // GREEN, YELLOW, RED
     
     @JsonProperty("node_attributes")
     private Map<String, Object> nodeAttributes;

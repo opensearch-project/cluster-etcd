@@ -1,12 +1,17 @@
-package com.uber.esdock.osgateway.entities;
+package io.clustercontroller.models;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.clustercontroller.config.Constants;
+import io.clustercontroller.enums.HealthState;
+import io.clustercontroller.enums.ShardState;
+import lombok.Data;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+@Data
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class SearchUnitActualState {
 
@@ -64,109 +69,72 @@ public class SearchUnitActualState {
     @JsonProperty("nodeRouting")
     private Map<String, List<ShardRoutingInfo>> nodeRouting; // index-name -> list of shard routing info
     
-    // Legacy fields for backward compatibility
-    @JsonProperty("node_state")
-    private String nodeState; // e.g. "GREEN", "YELLOW", "RED" - derived from node health
+    // Node role and shard information (populated by worker)
+    @JsonProperty("role")
+    private String role; // "primary", "replica", "coordinator"
     
-    @JsonProperty("last_updated")
-    private String lastUpdated;
+        @JsonProperty("shard_id")
+    private String shardId; // "shard-1", "shard-2", etc.
     
-    @JsonProperty("version")
-    private long version;
+    @JsonProperty("cluster_name")
+    private String clusterName; // "search-cluster", "analytics-cluster", etc.
+    
+
     
     public SearchUnitActualState() {
         this.nodeRouting = new HashMap<>();
-        this.version = 1;
     }
-    
-    // ========== GETTERS ==========
-    
-    // Node identification getters
-    public String getNodeName() { return nodeName; }
-    public String getAddress() { return address; }
-    public int getPort() { return port; }
-    public String getNodeId() { return nodeId; }
-    public String getEphemeralId() { return ephemeralId; }
-    
-    // Resource usage getters
-    public long getMemoryUsedMB() { return memoryUsedMB; }
-    public long getMemoryMaxMB() { return memoryMaxMB; }
-    public int getMemoryUsedPercent() { return memoryUsedPercent; }
-    public long getHeapUsedMB() { return heapUsedMB; }
-    public long getHeapMaxMB() { return heapMaxMB; }
-    public int getHeapUsedPercent() { return heapUsedPercent; }
-    public long getDiskTotalMB() { return diskTotalMB; }
-    public long getDiskAvailableMB() { return diskAvailableMB; }
-    public int getCpuUsedPercent() { return cpuUsedPercent; }
-    
-    // Timing getters
-    public long getHeartbeatIntervalMillis() { return heartbeatIntervalMillis; }
-    public long getTimestamp() { return timestamp; }
-    
-    // Main routing data getter
-    public Map<String, List<ShardRoutingInfo>> getNodeRouting() { 
-        return nodeRouting; 
-    }
-    
-    // Legacy field getters
-    public String getNodeState() { return nodeState; }
-    public String getLastUpdated() { return lastUpdated; }
-    public long getVersion() { return version; }
-    
-    // ========== SETTERS ==========
-    
-    // Node identification setters
-    public void setNodeName(String nodeName) { this.nodeName = nodeName; }
-    public void setAddress(String address) { this.address = address; }
-    public void setPort(int port) { this.port = port; }
-    public void setNodeId(String nodeId) { this.nodeId = nodeId; }
-    public void setEphemeralId(String ephemeralId) { this.ephemeralId = ephemeralId; }
-    
-    // Resource usage setters
-    public void setMemoryUsedMB(long memoryUsedMB) { this.memoryUsedMB = memoryUsedMB; }
-    public void setMemoryMaxMB(long memoryMaxMB) { this.memoryMaxMB = memoryMaxMB; }
-    public void setMemoryUsedPercent(int memoryUsedPercent) { this.memoryUsedPercent = memoryUsedPercent; }
-    public void setHeapUsedMB(long heapUsedMB) { this.heapUsedMB = heapUsedMB; }
-    public void setHeapMaxMB(long heapMaxMB) { this.heapMaxMB = heapMaxMB; }
-    public void setHeapUsedPercent(int heapUsedPercent) { this.heapUsedPercent = heapUsedPercent; }
-    public void setDiskTotalMB(long diskTotalMB) { this.diskTotalMB = diskTotalMB; }
-    public void setDiskAvailableMB(long diskAvailableMB) { this.diskAvailableMB = diskAvailableMB; }
-    public void setCpuUsedPercent(int cpuUsedPercent) { this.cpuUsedPercent = cpuUsedPercent; }
-    
-    // Timing setters
-    public void setHeartbeatIntervalMillis(long heartbeatIntervalMillis) { this.heartbeatIntervalMillis = heartbeatIntervalMillis; }
-    public void setTimestamp(long timestamp) { this.timestamp = timestamp; }
-    
-    // Main routing data setter
-    public void setNodeRouting(Map<String, List<ShardRoutingInfo>> nodeRouting) { 
-        this.nodeRouting = nodeRouting != null ? nodeRouting : new HashMap<>(); 
-    }
-    
-    // Legacy field setters
-    public void setNodeState(String nodeState) { this.nodeState = nodeState; }
-    public void setLastUpdated(String lastUpdated) { this.lastUpdated = lastUpdated; }
-    public void setVersion(long version) { this.version = version; }
     
     // ========== UTILITY METHODS ==========
-
-    @Override
-    public String toString() {
-        return "SearchUnitActualState{" +
-                "nodeName='" + nodeName + '\'' +
-                ", address='" + address + ":" + port + '\'' +
-                ", nodeId='" + nodeId + '\'' +
-                ", memoryUsed=" + memoryUsedPercent + "%" +
-                ", heapUsed=" + heapUsedPercent + "%" +
-                ", cpuUsed=" + cpuUsedPercent + "%" +
-                ", nodeRouting=" + nodeRouting.keySet() +
-                ", lastUpdated='" + lastUpdated + '\'' +
-                ", version=" + version +
-                '}';
+    
+    /**
+     * Determine if the search unit is healthy based on node state
+     */
+    public boolean isHealthy() {
+        // Consider node healthy if memory and disk usage are reasonable
+        // TODO: come up with more comprehensive health check logic
+        return memoryUsedPercent < Constants.HEALTH_CHECK_MEMORY_THRESHOLD_PERCENT 
+            && diskAvailableMB > Constants.HEALTH_CHECK_DISK_THRESHOLD_MB;
     }
+    
+    /**
+     * Determines the admin state of this search unit based on its health status.
+     * 
+     * @return NORMAL if the unit is healthy, DRAIN if unhealthy
+     */
+    public String deriveAdminState() {
+        return isHealthy() ? Constants.ADMIN_STATE_NORMAL : Constants.ADMIN_STATE_DRAIN;
+    }
+    
+    /**
+     * Derive node state directly as the final status representation
+     * Determined by the health of the node AND the presence of active shards
+     * TODO: Determine if we should report RED/YELLOW/GREEN from os directly instead of deriving it from the node state
+     * Returns: GREEN (healthy+active), YELLOW (healthy+inactive), RED (unhealthy)
+     */
+    public HealthState deriveNodeState() {
+        // First check if node is healthy based on resource usage
+        if (!isHealthy()) {
+            return HealthState.RED;
+        }
+        
+        // Then check routing info for active shards
+        if (nodeRouting != null && !nodeRouting.isEmpty()) {
+            boolean hasActiveShards = nodeRouting.values().stream()
+                    .flatMap(List::stream)
+                    .anyMatch(routing -> ShardState.STARTED.equals(routing.getState()));
+            return hasActiveShards ? HealthState.GREEN : HealthState.YELLOW;
+        }
+        
+        // If healthy but no routing info (e.g., coordinator nodes), consider it green/active
+        return HealthState.GREEN;
+    }
+
     
     /**
      * Shard routing information for a single shard on this node
      */
+    @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ShardRoutingInfo {
         @JsonProperty("shardId")
@@ -176,7 +144,7 @@ public class SearchUnitActualState {
         private boolean primary;
         
         @JsonProperty("state")
-        private String state; // e.g., "STARTED", "INITIALIZING", "RELOCATING"
+        private ShardState state; // e.g., STARTED, INITIALIZING, RELOCATING
         
         @JsonProperty("relocating")
         private boolean relocating;
@@ -189,37 +157,11 @@ public class SearchUnitActualState {
         
         public ShardRoutingInfo() {}
         
-        public ShardRoutingInfo(int shardId, boolean primary, String state) {
+        public ShardRoutingInfo(int shardId, boolean primary, ShardState state) {
             this.shardId = shardId;
             this.primary = primary;
             this.state = state;
             this.relocating = false;
-        }
-        
-        // ========== GETTERS ==========
-        public int getShardId() { return shardId; }
-        public boolean isPrimary() { return primary; }
-        public String getState() { return state; }
-        public boolean isRelocating() { return relocating; }
-        public String getAllocationId() { return allocationId; }
-        public String getCurrentNodeId() { return currentNodeId; }
-        
-        // ========== SETTERS ==========
-        public void setShardId(int shardId) { this.shardId = shardId; }
-        public void setPrimary(boolean primary) { this.primary = primary; }
-        public void setState(String state) { this.state = state; }
-        public void setRelocating(boolean relocating) { this.relocating = relocating; }
-        public void setAllocationId(String allocationId) { this.allocationId = allocationId; }
-        public void setCurrentNodeId(String currentNodeId) { this.currentNodeId = currentNodeId; }
-        
-        @Override
-        public String toString() {
-            return "ShardRoutingInfo{" +
-                    "shardId=" + shardId +
-                    ", primary=" + primary +
-                    ", state='" + state + '\'' +
-                    ", relocating=" + relocating +
-                    '}';
         }
     }
 } 
