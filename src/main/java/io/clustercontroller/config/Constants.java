@@ -31,4 +31,22 @@ public final class Constants {
     public static final String TASK_ACTION_DISCOVER_SEARCH_UNIT = "discover_search_unit";
     public static final String TASK_ACTION_SHARD_ALLOCATOR = "shard_allocator";
     public static final String TASK_ACTION_ACTUAL_ALLOCATION_UPDATER = "actual_allocation_updater";
+    
+    // etcd path segments
+    public static final String PATH_DELIMITER = "/";
+    public static final String PATH_CTL_TASKS = "ctl-tasks";
+    public static final String PATH_SEARCH_UNITS = "search-units";
+    public static final String PATH_INDICES = "indices";
+    public static final String PATH_COORDINATORS = "coordinators";
+    public static final String PATH_SHARD = "shard";
+    public static final String PATH_LEADER_ELECTION = "leader-election";
+    
+    // etcd path suffixes
+    public static final String SUFFIX_CONF = "conf";
+    public static final String SUFFIX_GOAL_STATE = "goal-state";
+    public static final String SUFFIX_ACTUAL_STATE = "actual-state";
+    public static final String SUFFIX_MAPPINGS = "mappings";
+    public static final String SUFFIX_SETTINGS = "settings";
+    public static final String SUFFIX_PLANNED_ALLOCATION = "planned-allocation";
+    public static final String SUFFIX_ACTUAL_ALLOCATION = "actual-allocation";
 }
