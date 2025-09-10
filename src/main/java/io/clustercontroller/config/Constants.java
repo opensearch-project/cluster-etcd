@@ -58,4 +58,7 @@ public final class Constants {
     // Admin state values
     public static final String ADMIN_STATE_NORMAL = "NORMAL";
     public static final String ADMIN_STATE_DRAIN = "DRAIN";
+    // Leader election constants
+    public static final String ELECTION_KEY_SUFFIX = "-election";
+    public static final long LEADER_ELECTION_TTL_SECONDS = 30L;
 }
