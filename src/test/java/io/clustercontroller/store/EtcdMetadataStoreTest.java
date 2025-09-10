@@ -26,7 +26,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Tests for EtcdMetadataStore.
+ * Unit tests for EtcdMetadataStore using mocked etcd dependencies.
  */
 public class EtcdMetadataStoreTest {
 
@@ -72,7 +72,7 @@ public class EtcdMetadataStoreTest {
     }
 
     private EtcdMetadataStore newStore() throws Exception {
-        return EtcdMetadataStore.getInstance(CLUSTER, ENDPOINTS);
+        return EtcdMetadataStore.createTestInstance(CLUSTER, ENDPOINTS, "test-node", mockEtcdClient, mockKv);
     }
 
     private GetResponse mockGetResponse(List<KeyValue> kvs) {

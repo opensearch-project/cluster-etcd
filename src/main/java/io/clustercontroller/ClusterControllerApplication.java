@@ -4,6 +4,7 @@ import io.clustercontroller.allocation.ActualAllocationUpdater;
 import io.clustercontroller.allocation.ShardAllocator;
 import io.clustercontroller.config.ClusterControllerConfig;
 import io.clustercontroller.discovery.Discovery;
+import io.clustercontroller.election.LeaderElection;
 import io.clustercontroller.indices.IndexManager;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
@@ -19,6 +20,9 @@ import static io.clustercontroller.config.Constants.*;
  * This application provides production-ready controller functionality for managing
  * distributed clusters at scale, including shard allocation, cluster coordination,
  * and automated operations backed by pluggable metadata stores.
+ * 
+ * Required Environment Variables:
+ * - NODE_NAME: Unique identifier for this controller instance (required for leader election)
  */
 @Slf4j
 public class ClusterControllerApplication {
@@ -42,6 +46,11 @@ public class ClusterControllerApplication {
                 config.getEtcdEndpoints()
             );
             metadataStore.initialize();
+            
+            // Wait until this node becomes leader
+            EtcdMetadataStore etcdStore = (EtcdMetadataStore) metadataStore;
+            LeaderElection leaderElection = new LeaderElection(etcdStore);
+            leaderElection.waitUntilLeader();  // blocks until leader
             
             // Initialize components
             IndexManager indexManager = new IndexManager(metadataStore);
@@ -77,4 +86,5 @@ public class ClusterControllerApplication {
             System.exit(1);
         }
     }
+    
 }
