@@ -29,7 +29,7 @@ class DiscoverSearchUnitTaskTest {
     }
     
     @Test
-    void testDiscoverSearchUnitTaskExecution() {
+    void testDiscoverSearchUnitTaskExecution() throws Exception {
         String taskName = "discover-search-unit-task";
         String input = "";
         DiscoverSearchUnitTask task = new DiscoverSearchUnitTask(taskName, 1, input, TASK_SCHEDULE_REPEAT);
@@ -56,7 +56,7 @@ class DiscoverSearchUnitTaskTest {
     }
     
     @Test
-    void testDiscoverSearchUnitTaskExecutionFailure() {
+    void testDiscoverSearchUnitTaskExecutionFailure() throws Exception {
         String taskName = "discover-search-unit-task";
         String input = "";
         DiscoverSearchUnitTask task = new DiscoverSearchUnitTask(taskName, 1, input, TASK_SCHEDULE_REPEAT);

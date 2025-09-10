@@ -16,6 +16,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <jetcd.version>0.7.3</jetcd.version>
     </properties>
     
     <dependencies>
@@ -54,11 +55,11 @@
             <version>2.0.7</version>
         </dependency>
         
-        <!-- etcd Client -->
+        <!-- etcd client -->
         <dependency>
             <groupId>io.etcd</groupId>
             <artifactId>jetcd-core</artifactId>
-            <version>0.7.3</version>
+            <version>${jetcd.version}</version>
         </dependency>
         
         <!-- Test Dependencies -->
