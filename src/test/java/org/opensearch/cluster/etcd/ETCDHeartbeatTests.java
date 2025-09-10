@@ -599,7 +599,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             .put("node.attr.cloud_native_role", "primary")
             .put("node.attr.cloud_native_shard_id", "00")
             .build();
-        
+
         DiscoveryNode localNode = DiscoveryNode.createLocal(
             localNodeSettings,
             new TransportAddress(TransportAddress.META_ADDRESS, 9200),
@@ -641,11 +641,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         String nodeName = "test-node";
 
         // Create a node without cloud native attributes
-        Settings localNodeSettings = Settings.builder()
-            .put("cluster.name", clusterName)
-            .put("node.name", nodeName)
-            .build();
-        
+        Settings localNodeSettings = Settings.builder().put("cluster.name", clusterName).put("node.name", nodeName).build();
+
         DiscoveryNode localNode = DiscoveryNode.createLocal(
             localNodeSettings,
             new TransportAddress(TransportAddress.META_ADDRESS, 9200),

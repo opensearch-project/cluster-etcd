@@ -147,7 +147,7 @@ public class ETCDHeartbeat {
             heartbeatData.put("address", address);
             heartbeatData.put("port", port);
             heartbeatData.put("heartbeatIntervalMillis", heartbeatIntervalMillis);
-            
+
             // Add cloud native node attributes
             if (cloudNativeRole != null) {
                 heartbeatData.put("cloudNativeRole", cloudNativeRole);
