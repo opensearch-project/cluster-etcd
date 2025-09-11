@@ -37,16 +37,16 @@ import java.util.ArrayList;
 
 public class ETCDHeartbeat {
     private static final long DEFAULT_HEARTBEAT_INTERVAL_MILLIS = 5000; // 5 seconds
-    private static final String CLOUD_NATIVE_ROLE_ATTRIBUTE = "cloud_native_role";
-    private static final String CLOUD_NATIVE_SHARD_ID_ATTRIBUTE = "cloud_native_shard_id";
+    private static final String CLUSTERLESS_ROLE_ATTRIBUTE = "clusterless_role";
+    private static final String CLUSTERLESS_SHARD_ID_ATTRIBUTE = "clusterless_shard_id";
     private final Logger logger = LogManager.getLogger(getClass());
     private final String nodeName;
     private final String nodeId;
     private final String ephemeralId;
     private final String address;
     private final int port;
-    private final String cloudNativeRole;
-    private final String cloudNativeShardId;
+    private final String clusterlessRole;
+    private final String clusterlessShardId;
     private final Client etcdClient;
     private final ScheduledExecutorService scheduler;
     private final ByteSequence nodeStateKey;
@@ -70,8 +70,8 @@ public class ETCDHeartbeat {
         this.ephemeralId = localNode.getEphemeralId();
         this.address = localNode.getAddress().getAddress();
         this.port = localNode.getAddress().getPort();
-        this.cloudNativeRole = localNode.getAttributes().get(CLOUD_NATIVE_ROLE_ATTRIBUTE);
-        this.cloudNativeShardId = localNode.getAttributes().get(CLOUD_NATIVE_SHARD_ID_ATTRIBUTE);
+        this.clusterlessRole = localNode.getAttributes().get(CLUSTERLESS_ROLE_ATTRIBUTE);
+        this.clusterlessShardId = localNode.getAttributes().get(CLUSTERLESS_SHARD_ID_ATTRIBUTE);
         this.etcdClient = etcdClient;
         this.scheduler = createScheduler();
         String clusterName = clusterService.getClusterName().value();
@@ -149,11 +149,11 @@ public class ETCDHeartbeat {
             heartbeatData.put("heartbeatIntervalMillis", heartbeatIntervalMillis);
 
             // Add cloud native node attributes
-            if (cloudNativeRole != null) {
-                heartbeatData.put("cloudNativeRole", cloudNativeRole);
+            if (clusterlessRole != null) {
+                heartbeatData.put("clusterlessRole", clusterlessRole);
             }
-            if (cloudNativeShardId != null) {
-                heartbeatData.put("cloudNativeShardId", cloudNativeShardId);
+            if (clusterlessShardId != null) {
+                heartbeatData.put("clusterlessShardId", clusterlessShardId);
             }
             heartbeatData.put("cpuUsedPercent", cpuPercent);
             heartbeatData.put("memoryUsedPercent", memoryPercent);

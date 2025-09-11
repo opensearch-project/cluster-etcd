@@ -588,16 +588,16 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         }
     }
 
-    public void testETCDHeartbeatWithCloudNativeAttributes() throws IOException, ExecutionException, InterruptedException {
+    public void testETCDHeartbeatWithClusterlessAttributes() throws IOException, ExecutionException, InterruptedException {
         String clusterName = "test-cluster";
         String nodeName = "test-node";
 
-        // Create a node with cloud native attributes
+        // Create a node with clusterless attributes
         Settings localNodeSettings = Settings.builder()
             .put("cluster.name", clusterName)
             .put("node.name", nodeName)
-            .put("node.attr.cloud_native_role", "primary")
-            .put("node.attr.cloud_native_shard_id", "00")
+            .put("node.attr.clusterless_role", "primary")
+            .put("node.attr.clusterless_shard_id", "00")
             .build();
 
         DiscoveryNode localNode = DiscoveryNode.createLocal(
@@ -626,9 +626,9 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     KeyValue kv = kvs.get(0);
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
-                    // Verify cloud native attributes are present
-                    assertEquals("cloudNativeRole should be 'primary'", "primary", heartbeatData.get("cloudNativeRole"));
-                    assertEquals("cloudNativeShardId should be '00'", "00", heartbeatData.get("cloudNativeShardId"));
+                    // Verify clusterless attributes are present
+                    assertEquals("clusterlessRole should be 'primary'", "primary", heartbeatData.get("clusterlessRole"));
+                    assertEquals("clusterlessShardId should be '00'", "00", heartbeatData.get("clusterlessShardId"));
                 });
 
                 heartbeat.stop();
@@ -640,7 +640,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         String clusterName = "test-cluster";
         String nodeName = "test-node";
 
-        // Create a node without cloud native attributes
+        // Create a node without clusterless attributes
         Settings localNodeSettings = Settings.builder().put("cluster.name", clusterName).put("node.name", nodeName).build();
 
         DiscoveryNode localNode = DiscoveryNode.createLocal(
@@ -669,9 +669,9 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     KeyValue kv = kvs.get(0);
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
-                    // Verify cloud native attributes are not present
-                    assertFalse("cloudNativeRole should not be present", heartbeatData.containsKey("cloudNativeRole"));
-                    assertFalse("cloudNativeShardId should not be present", heartbeatData.containsKey("cloudNativeShardId"));
+                    // Verify clusterless attributes are not present
+                    assertFalse("clusterlessRole should not be present", heartbeatData.containsKey("clusterlessRole"));
+                    assertFalse("clusterlessShardId should not be present", heartbeatData.containsKey("clusterlessShardId"));
                 });
 
                 heartbeat.stop();
