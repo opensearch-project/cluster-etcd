@@ -91,6 +91,10 @@ import java.util.concurrent.ExecutionException;
  *              ]
  *          },
  *          "idx2": { ... }
+ *       },
+ *       "aliases": { // Map of alias names to their target indices
+ *          "logs-current": "idx1",                    // Simple alias pointing to one index
+ *          "logs-recent": ["idx1", "idx2"]            // Multi-index alias pointing to multiple indices
  *       }
  *   }
  * }
@@ -160,6 +164,7 @@ public final class ETCDStateDeserializer {
         String clusterName
     ) throws IOException {
         Map<String, Object> indices = (Map<String, Object>) remoteShards.get("indices");
+        Map<String, Object> aliases = (Map<String, Object>) remoteShards.getOrDefault("aliases", new HashMap<>());
         Set<String> remoteNodeNames = new HashSet<>();
 
         for (Map.Entry<String, Object> indexEntry : indices.entrySet()) {
@@ -219,7 +224,7 @@ public final class ETCDStateDeserializer {
             remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
         }
 
-        return new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment, converged);
+        return new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment, aliases, converged);
     }
 
     private static DataNodeState readDataNodeState(
