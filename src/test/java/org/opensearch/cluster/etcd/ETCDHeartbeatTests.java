@@ -587,4 +587,95 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             return parser.map();
         }
     }
+
+    public void testETCDHeartbeatWithClusterlessAttributes() throws IOException, ExecutionException, InterruptedException {
+        String clusterName = "test-cluster";
+        String nodeName = "test-node";
+
+        // Create a node with clusterless attributes
+        Settings localNodeSettings = Settings.builder()
+            .put("cluster.name", clusterName)
+            .put("node.name", nodeName)
+            .put("node.attr.clusterless_role", "primary")
+            .put("node.attr.clusterless_shard_id", "00")
+            .build();
+
+        DiscoveryNode localNode = DiscoveryNode.createLocal(
+            localNodeSettings,
+            new TransportAddress(TransportAddress.META_ADDRESS, 9200),
+            nodeName
+        );
+
+        try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
+            etcdCluster.start();
+            try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
+                ClusterService clusterService = createMockClusterService();
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+
+                // Start heartbeat
+                heartbeat.start();
+
+                // Wait for heartbeat to be published
+                String expectedPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
+                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+                    ByteSequence key = ByteSequence.from(expectedPath, StandardCharsets.UTF_8);
+                    List<KeyValue> kvs = etcdClient.getKVClient().get(key).get().getKvs();
+                    assertFalse("Heartbeat data should be published", kvs.isEmpty());
+
+                    // Parse and verify the heartbeat data structure
+                    KeyValue kv = kvs.get(0);
+                    Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
+
+                    // Verify clusterless attributes are present
+                    assertEquals("clusterlessRole should be 'primary'", "primary", heartbeatData.get("clusterlessRole"));
+                    assertEquals("clusterlessShardId should be '00'", "00", heartbeatData.get("clusterlessShardId"));
+                });
+
+                heartbeat.stop();
+            }
+        }
+    }
+
+    public void testETCDHeartbeatWithoutCloudNativeAttributes() throws IOException, ExecutionException, InterruptedException {
+        String clusterName = "test-cluster";
+        String nodeName = "test-node";
+
+        // Create a node without clusterless attributes
+        Settings localNodeSettings = Settings.builder().put("cluster.name", clusterName).put("node.name", nodeName).build();
+
+        DiscoveryNode localNode = DiscoveryNode.createLocal(
+            localNodeSettings,
+            new TransportAddress(TransportAddress.META_ADDRESS, 9200),
+            nodeName
+        );
+
+        try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
+            etcdCluster.start();
+            try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
+                ClusterService clusterService = createMockClusterService();
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+
+                // Start heartbeat
+                heartbeat.start();
+
+                // Wait for heartbeat to be published
+                String expectedPath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
+                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+                    ByteSequence key = ByteSequence.from(expectedPath, StandardCharsets.UTF_8);
+                    List<KeyValue> kvs = etcdClient.getKVClient().get(key).get().getKvs();
+                    assertFalse("Heartbeat data should be published", kvs.isEmpty());
+
+                    // Parse and verify the heartbeat data structure
+                    KeyValue kv = kvs.get(0);
+                    Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
+
+                    // Verify clusterless attributes are not present
+                    assertFalse("clusterlessRole should not be present", heartbeatData.containsKey("clusterlessRole"));
+                    assertFalse("clusterlessShardId should not be present", heartbeatData.containsKey("clusterlessShardId"));
+                });
+
+                heartbeat.stop();
+            }
+        }
+    }
 }
