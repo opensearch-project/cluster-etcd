@@ -134,10 +134,10 @@ public class CoordinatorNodeState extends NodeState {
         for (Map.Entry<String, Object> aliasEntry : aliases.entrySet()) {
             String aliasName = aliasEntry.getKey();
             Object aliasValue = aliasEntry.getValue();
-            
+
             // Check if this alias points to the current index
             if (isAliasForIndex(aliasValue, indexName)) {
-                AliasMetadata.Builder aliasBuilder = AliasMetadata.builder(aliasName);                
+                AliasMetadata.Builder aliasBuilder = AliasMetadata.builder(aliasName);
                 indexMetadataBuilder.putAlias(aliasBuilder.build());
             }
         }
@@ -153,8 +153,7 @@ public class CoordinatorNodeState extends NodeState {
             List<?> indices = (List<?>) aliasValue;
             return indices.contains(indexName);
         }
-        return false; 
+        return false;
     }
-
 
 }

@@ -12,28 +12,19 @@ import io.etcd.jetcd.api.KeyValue;
 import io.etcd.jetcd.api.RangeResponse;
 import io.etcd.jetcd.kv.GetResponse;
 import org.opensearch.cluster.ClusterState;
-import org.opensearch.cluster.etcd.changeapplier.CoordinatorNodeState;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeState;
-import org.opensearch.cluster.etcd.changeapplier.NodeShardAssignment;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
-import org.opensearch.cluster.etcd.changeapplier.ShardRole;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.IndexRoutingTable;
 import org.opensearch.cluster.routing.IndexShardRoutingTable;
 import org.opensearch.cluster.routing.RoutingTable;
-import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -353,62 +344,6 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
 
         when(kvClient.get(eq(idx1SettingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1SettingsResponse, null)));
         when(kvClient.get(eq(idx1MappingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1MappingsResponse, null)));
-    }
-
-    public void testCoordinatorNodeStateWithAliases() throws IOException {
-        // Test the CoordinatorNodeState directly with aliases
-        DiscoveryNode localNode = mock(DiscoveryNode.class);
-        when(localNode.getId()).thenReturn("local-node-id");
-        
-        // Create test aliases
-        Map<String, Object> aliases = new HashMap<>();
-        aliases.put("logs-current", "idx1");
-        aliases.put("logs-recent", List.of("idx1"));
-        
-        // Create test remote shard assignments
-        Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments = new HashMap<>();
-        Index testIndex = new Index("idx1", "test-uuid");
-        List<List<NodeShardAssignment>> shardAssignments = new ArrayList<>();
-        
-        // Create a simple shard assignment
-        List<NodeShardAssignment> shard0Assignments = new ArrayList<>();
-        shard0Assignments.add(new NodeShardAssignment("node1-id", ShardRole.PRIMARY));
-        shard0Assignments.add(new NodeShardAssignment("node2-id", ShardRole.SEARCH_REPLICA));
-        shardAssignments.add(shard0Assignments);
-        
-        remoteShardAssignments.put(testIndex, shardAssignments);
-        
-        // Create CoordinatorNodeState with aliases
-        CoordinatorNodeState coordinatorState = new CoordinatorNodeState(
-            localNode,
-            new ArrayList<>(), // empty remote nodes for simplicity
-            remoteShardAssignments,
-            aliases,
-            true // converged
-        );
-        
-        // Build cluster state
-        ClusterState clusterState = coordinatorState.buildClusterState(ClusterState.EMPTY_STATE);
-        
-        // Verify that aliases are present in the cluster state
-        assertNotNull(clusterState.metadata().index("idx1"));
-        
-        // Check that aliases are properly set
-        var indexMetadata = clusterState.metadata().index("idx1");
-        assertNotNull(indexMetadata);
-        
-        // Verify alias metadata
-        assertTrue(indexMetadata.getAliases().containsKey("logs-current"));
-        assertTrue(indexMetadata.getAliases().containsKey("logs-recent"));
-        
-        // Verify aliases are simple (no filters or routing)
-        var currentAlias = indexMetadata.getAliases().get("logs-current");
-        assertNull(currentAlias.filter());
-        assertNull(currentAlias.indexRouting());
-        
-        var recentAlias = indexMetadata.getAliases().get("logs-recent");
-        assertNull(recentAlias.filter());
-        assertNull(recentAlias.indexRouting());
     }
 
     private void setupHealthMock(KV kvClient, String healthPath, String healthInfo) {

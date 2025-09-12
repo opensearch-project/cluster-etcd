@@ -228,7 +228,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     // Verify remote nodes are in the cluster state
                     assertNotNull(clusterState.nodes().get("remote-node-id-1"));
                     assertNotNull(clusterState.nodes().get("remote-node-id-2"));
-                    
+
                     // Verify aliases are present in the index metadata
                     var indexMetadata = clusterState.metadata().index(indexName);
                     assertTrue(indexMetadata.getAliases().containsKey("logs-current"));
