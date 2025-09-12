@@ -172,7 +172,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     }
                     """);
 
-                // Add coordinator node configuration with remote_shards
+                // Add coordinator node configuration with remote_shards and aliases
                 etcdPut(etcdClient, configPath, """
                     {
                        "remote_shards": {
@@ -189,6 +189,10 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                                ]
                              ]
                            }
+                         },
+                         "aliases": {
+                           "logs-current": "test-index",
+                           "logs-recent": ["test-index"]
                          }
                        }
                     }
@@ -224,6 +228,11 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     // Verify remote nodes are in the cluster state
                     assertNotNull(clusterState.nodes().get("remote-node-id-1"));
                     assertNotNull(clusterState.nodes().get("remote-node-id-2"));
+
+                    // Verify aliases are present in the index metadata
+                    var indexMetadata = clusterState.metadata().index(indexName);
+                    assertTrue(indexMetadata.getAliases().containsKey("logs-current"));
+                    assertTrue(indexMetadata.getAliases().containsKey("logs-recent"));
                 });
 
                 // Remove the coordinator node config to trigger removal

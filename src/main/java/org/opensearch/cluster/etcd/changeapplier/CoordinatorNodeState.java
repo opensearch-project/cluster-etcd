@@ -6,6 +6,7 @@ package org.opensearch.cluster.etcd.changeapplier;
 
 import org.opensearch.Version;
 import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.metadata.AliasMetadata;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -28,16 +29,19 @@ public class CoordinatorNodeState extends NodeState {
 
     private final Collection<RemoteNode> remoteNodes;
     private final Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments;
+    private final Map<String, Object> aliases;
 
     public CoordinatorNodeState(
         DiscoveryNode localNode,
         Collection<RemoteNode> remoteNodes,
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments,
+        Map<String, Object> aliases,
         boolean converged
     ) {
         super(localNode, converged);
         this.remoteNodes = remoteNodes;
         this.remoteShardAssignments = remoteShardAssignments;
+        this.aliases = aliases;
     }
 
     @Override
@@ -101,7 +105,9 @@ public class CoordinatorNodeState extends NodeState {
             if (indexHasPrimary == false) {
                 indexSettings.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
             }
-            IndexMetadata indexMetadata = IndexMetadata.builder(indexEntry.getKey().getName()).settings(indexSettings).build();
+            IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexEntry.getKey().getName()).settings(indexSettings);
+            addAliasesToIndexMetadata(indexMetadataBuilder, indexEntry.getKey().getName());
+            IndexMetadata indexMetadata = indexMetadataBuilder.build();
             routingTableBuilder.add(indexRoutingTableBuilder);
             metadataBuilder.put(indexMetadata, false);
         }
@@ -114,6 +120,40 @@ public class CoordinatorNodeState extends NodeState {
             .metadata(metadataBuilder)
             .routingTable(routingTableBuilder.build())
             .build();
+    }
+
+    /**
+     * Adds aliases to the IndexMetadata for the given index name.
+     * Processes the aliases map to find aliases that point to this index.
+     */
+    private void addAliasesToIndexMetadata(IndexMetadata.Builder indexMetadataBuilder, String indexName) {
+        if (aliases == null || aliases.isEmpty()) {
+            return;
+        }
+
+        for (Map.Entry<String, Object> aliasEntry : aliases.entrySet()) {
+            String aliasName = aliasEntry.getKey();
+            Object aliasValue = aliasEntry.getValue();
+
+            // Check if this alias points to the current index
+            if (isAliasForIndex(aliasValue, indexName)) {
+                AliasMetadata.Builder aliasBuilder = AliasMetadata.builder(aliasName);
+                indexMetadataBuilder.putAlias(aliasBuilder.build());
+            }
+        }
+    }
+
+    /**
+     * Checks if the given alias value points to the specified index.
+     */
+    private boolean isAliasForIndex(Object aliasValue, String indexName) {
+        if (aliasValue instanceof String) {
+            return indexName.equals(aliasValue);
+        } else if (aliasValue instanceof List) {
+            List<?> indices = (List<?>) aliasValue;
+            return indices.contains(indexName);
+        }
+        return false;
     }
 
 }
