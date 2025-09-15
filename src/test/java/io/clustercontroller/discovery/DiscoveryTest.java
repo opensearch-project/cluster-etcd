@@ -1,5 +1,6 @@
 package io.clustercontroller.discovery;
 
+import io.clustercontroller.config.Constants;
 import io.clustercontroller.enums.HealthState;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
@@ -89,6 +90,65 @@ class DiscoveryTest {
         assertThatCode(() -> discovery.discoverSearchUnits()).doesNotThrowAnyException();
         
         verify(metadataStore).getAllSearchUnitActualStates();
+        verify(metadataStore, times(2)).getAllSearchUnits(); // Called by cleanup + processing
+    }
+    
+    @Test
+    void testDiscoverSearchUnits_CleanupStaleSearchUnits() throws Exception {
+        // Given - Set up scenario with one fresh unit and one stale unit
+        long currentTime = System.currentTimeMillis();
+        long staleTimeoutMs = Constants.STALE_SEARCH_UNIT_TIMEOUT_MINUTES * 60 * 1000;
+        long staleTimestamp = currentTime - staleTimeoutMs - 60000; // 1 minute older than threshold
+        long freshTimestamp = currentTime - 60000; // 1 minute old (fresh)
+        
+        // Mock actual states - both units discovered from Etcd
+        Map<String, SearchUnitActualState> actualStates = new HashMap<>();
+        SearchUnitActualState freshState = createHealthyActualState("fresh-node", "10.0.1.100", 9200);
+        freshState.setRole("primary");
+        freshState.setShardId("shard-1");
+        freshState.setClusterName("test-cluster");
+        freshState.setTimestamp(freshTimestamp);
+        actualStates.put("fresh-node", freshState);
+        
+        SearchUnitActualState staleState = createHealthyActualState("stale-node", "10.0.1.101", 9200);
+        staleState.setRole("replica");
+        staleState.setShardId("shard-2");
+        staleState.setClusterName("test-cluster");
+        staleState.setTimestamp(staleTimestamp);
+        actualStates.put("stale-node", staleState);
+        
+        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(actualStates);
+        
+        // Mock existing search units - both units exist in metadata store initially
+        SearchUnit freshUnit = createMockSearchUnit("fresh-node", "primary");
+        SearchUnit staleUnit = createMockSearchUnit("stale-node", "replica");
+        List<SearchUnit> initialUnits = Arrays.asList(freshUnit, staleUnit);
+        List<SearchUnit> unitsAfterCleanup = Arrays.asList(freshUnit); // Only fresh unit remains
+        when(metadataStore.getAllSearchUnits())
+                .thenReturn(initialUnits)  // First call for cleanup
+                .thenReturn(unitsAfterCleanup); // Second call for processing
+        
+        // Mock actual state lookups for cleanup
+        when(metadataStore.getSearchUnitActualState("fresh-node"))
+                .thenReturn(Optional.of(freshState));
+        when(metadataStore.getSearchUnitActualState("stale-node"))
+                .thenReturn(Optional.of(staleState));
+        
+        // Mock unit lookups for discovery phase
+        when(metadataStore.getSearchUnit("fresh-node")).thenReturn(Optional.of(freshUnit));
+        when(metadataStore.getSearchUnit("stale-node")).thenReturn(Optional.of(staleUnit));
+        
+        // When
+        discovery.discoverSearchUnits();
+        
+        // Then - Verify the stale unit was deleted but fresh unit was not
+        verify(metadataStore).deleteSearchUnit("stale-node"); // Stale unit should be deleted
+        verify(metadataStore, never()).deleteSearchUnit("fresh-node"); // Fresh unit should NOT be deleted
+        
+        // Verify units were updated: 2 during discovery phase + 1 during processing phase (fresh unit only)
+        verify(metadataStore, times(3)).updateSearchUnit(any(SearchUnit.class));
+        
+        // Verify the cleanup and processing phases both called getAllSearchUnits
         verify(metadataStore, times(2)).getAllSearchUnits(); // Called by cleanup + processing
     }
     
