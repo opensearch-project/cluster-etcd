@@ -51,7 +51,7 @@ class DiscoveryTest {
         
         // Then
         verify(metadataStore).getAllSearchUnitActualStates();
-        verify(metadataStore).getAllSearchUnits();
+        verify(metadataStore, times(2)).getAllSearchUnits(); // Called by cleanup + processing
         verify(metadataStore, times(3)).getSearchUnit(anyString()); // 3 units
         verify(metadataStore, times(3)).upsertSearchUnit(anyString(), any(SearchUnit.class));
     }
@@ -89,7 +89,7 @@ class DiscoveryTest {
         assertThatCode(() -> discovery.discoverSearchUnits()).doesNotThrowAnyException();
         
         verify(metadataStore).getAllSearchUnitActualStates();
-        verify(metadataStore).getAllSearchUnits();
+        verify(metadataStore, times(2)).getAllSearchUnits(); // Called by cleanup + processing
     }
     
     // =================================================================
