@@ -1,6 +1,6 @@
 ## Getting started
 
-This plugin lets you run OpenSearch nodes without forming a cluster, using etcd as a shared configuration store. 
+This plugin lets you run OpenSearch nodes without forming a cluster, using etcd as a shared configuration store.
 This allows you to run a distributed OpenSearch system without the need for Zen Discovery or cluster coordination.
 
 ### Install and launch etcd
@@ -45,7 +45,7 @@ locally. The first will serve as a coordinator, while the other two will be data
 % git clone https://github.com/opensearch-project/cluster-etcd.git
 
 # Enter the cloned repo
-% cd cluster-etcd 
+% cd cluster-etcd
 
 # Run with the cluster-etcd plugin loaded and launch three nodes.
 # The plugin is automatically installed and etcd endpoint is configured in build.gradle.
@@ -91,7 +91,7 @@ You should see a response similar to:
 
 #### Push some state to etcd to add shards to the data nodes
 
-The cluster-etcd plugin uses a split metadata approach that separates index configuration into 
+The cluster-etcd plugin uses a split metadata approach that separates index configuration into
 two distinct etcd keys:
 
 - **Settings**: `/{clusterName}/indices/{index}/settings` - Basic index configuration needed by all nodes
@@ -205,9 +205,9 @@ EOF
 
 ### Usage: Set up remote store based segment replication
 
-In this example, we will provision an index with a single primary shard and one search replica. 
+In this example, we will provision an index with a single primary shard and one search replica.
 These will be placed on a pair of nodes running locally. The data will replicate via the remote store
-from the primary to the search replica. For simplicity, we'll use the `fs` repository type, which 
+from the primary to the search replica. For simplicity, we'll use the `fs` repository type, which
 just uses a directory in the local filesystem.
 
 Before following these steps, make sure that you have stopped your runnning OpenSearch instance (say,
@@ -227,16 +227,16 @@ if you ran the previous example). Ensure that etcd is still running, though.
 {
   "index": {
     "number_of_shards": "1",
-    "number_of_search_replicas": "1", 
+    "number_of_search_replicas": "1",
     "number_of_replicas": 0,
-    "remote_store.enabled": true, 
-    "replication.type": "SEGMENT", 
+    "remote_store.enabled": true,
+    "replication.type": "SEGMENT",
     "remote_store.segment.repository":"segrep-repo"
   }
 }
 EOF
 
-% etcdctl put /integTest/indices/segrep-index/mappings << EOF 
+% etcdctl put /integTest/indices/segrep-index/mappings << EOF
 {
   "properties": {
     "title": {
