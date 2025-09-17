@@ -1,6 +1,7 @@
-## Running OpenSearch with etcd cluster state
+## Getting started
 
-Within this branch, I'm updating the README to explain how to get started with etcd.
+This plugin lets you run OpenSearch nodes without forming a cluster, using etcd as a shared configuration store.
+This allows you to run a distributed OpenSearch system without the need for Zen Discovery or cluster coordination.
 
 ### Install and launch etcd
 
@@ -32,20 +33,19 @@ bar
 1
 ```
 
-### Run three OpenSearch nodes from this branch
+### Usage: Create a three-node cluster with two primary shards and a coordinator
+
+#### Run three OpenSearch nodes from this branch
 
 In order to validate that we can form a working distributed system without a cluster, we will start three OpenSearch nodes
-locally. The first will serve as a coordinator, while the other two will be data nodes
+locally. The first will serve as a coordinator, while the other two will be data nodes.
 
 ```bash
 # Clone the repo
-% git clone https://github.com/msfroh/OpenSearch.git
+% git clone https://github.com/opensearch-project/cluster-etcd.git
 
 # Enter the cloned repo
-% cd OpenSearch
-
-# Checkout the correct branch
-% git checkout clusterless_datanode
+% cd cluster-etcd
 
 # Run with the cluster-etcd plugin loaded and launch three nodes.
 # The plugin is automatically installed and etcd endpoint is configured in build.gradle.
@@ -53,30 +53,54 @@ locally. The first will serve as a coordinator, while the other two will be data
 
 # In another tab, check the local cluster state for each node
 
-# In the examples below, this will be the coordinator node. Note that the node name is integTest-0.
+# In the example below, this will be the coordinator node. Note that the node name is integTest-0.
 % curl 'http://localhost:9200/_cluster/state?local&pretty'
 
-# In the examples below, this will be the first data node. Note that the node name is integTest-1.
+# In the example below, this will be the first data node. Note that the node name is integTest-1.
 % curl 'http://localhost:9201/_cluster/state?local&pretty'
 
-# In the examples below, this will be the second data node. Note that the node name is integTest-2.
+# In the example below, this will be the second data node. Note that the node name is integTest-2.
 % curl 'http://localhost:9202/_cluster/state?local&pretty'
 ```
 
-### Push some state to etcd to start the data nodes
-
-The cluster-etcd plugin now uses a split metadata approach that separates index configuration into distinct etcd keys:
-
-- **Settings**: `/indices/{index}/settings` - Basic index configuration needed by all nodes
-- **Mappings**: `/indices/{index}/mappings` - Field definitions needed primarily by data nodes
-
-This approach reduces etcd storage requirements and simplifies control plane logic by filtering out data plane implementation details.
+Within a few seconds, the running nodes will publish heartbeats to etcd. You can see these with:
 
 ```bash
-# Write index settings and mappings separately (new split metadata approach)
+etcdctl get --prefix ''
+```
+
+You should see a response similar to:
+
+```json
+/integTest/search-unit/integTest-0/actual-state
+{"nodeName":"integTest-0","address":"127.0.0.1","memoryUsedMB":65422,"heapMaxMB":512,"diskTotalMB":948584,"cpuUsedPercent":5,
+"ephemeralId":"OYidGJ1ITdC2mMrZEW0BNQ","memoryUsedPercent":100,"heartbeatIntervalMillis":5000,"heapUsedMB":212,
+"memoryMaxMB":65536,"port":9300,"heapUsedPercent":41,"nodeRouting":{},"nodeId":"pv1sDMfZRxSTMiW5VrbN9w","diskAvailableMB":817097,
+"timestamp":1757713637663}
+/integTest/search-unit/integTest-1/actual-state
+{"nodeName":"integTest-1","address":"127.0.0.1","memoryUsedMB":65151,"heapMaxMB":512,"diskTotalMB":948584,"cpuUsedPercent":3,
+"ephemeralId":"JtRlWuB5RgmxlWIcGl5wQw","memoryUsedPercent":99,"heartbeatIntervalMillis":5000,"heapUsedMB":191,
+"memoryMaxMB":65536,"port":9301,"heapUsedPercent":37,"nodeRouting":{},"nodeId":"72ZSKe7GSBq2ZRvwHYw9zw","diskAvailableMB":817099,
+"timestamp":1757713634266}
+/integTest/search-unit/integTest-2/actual-state
+{"nodeName":"integTest-2","address":"127.0.0.1","memoryUsedMB":65151,"heapMaxMB":512,"diskTotalMB":948584,"cpuUsedPercent":3,
+"ephemeralId":"gxsZ43uxTVS_hDMbZ8Ns_g","memoryUsedPercent":99,"heartbeatIntervalMillis":5000,"heapUsedMB":212,
+"memoryMaxMB":65536,"port":9302,"heapUsedPercent":41,"nodeRouting":{},"nodeId":"zF5QLAUpQXqIwaNOD5vDKQ","diskAvailableMB":817099,
+"timestamp":1757713635798}
+```
+
+#### Push some state to etcd to add shards to the data nodes
+
+The cluster-etcd plugin uses a split metadata approach that separates index configuration into
+two distinct etcd keys:
+
+- **Settings**: `/{clusterName}/indices/{index}/settings` - Basic index configuration needed by all nodes
+- **Mappings**: `/{clusterName}/indices/{index}/mappings` - Field definitions needed primarily by data nodes
+
+```bash
+# Write index settings and mappings separately
 # Settings are needed by both data nodes and coordinators
-# Note: UUID, version, and creation date are generated automatically by nodes
-% cat << EOF | etcdctl put integTest/indices/myindex/settings
+% cat << EOF | etcdctl put /integTest/indices/myindex/settings
 {
   "index": {
     "number_of_shards": "2",
@@ -86,7 +110,7 @@ This approach reduces etcd storage requirements and simplifies control plane log
 EOF
 
 # Mappings are needed by data nodes only (flattened structure)
-% cat << EOF | etcdctl put integTest/indices/myindex/mappings
+% cat << EOF | etcdctl put /integTest/indices/myindex/mappings
 {
   "properties": {
     "title": {
@@ -103,17 +127,14 @@ EOF
 EOF
 
 # Assign primary for shard 0 of myindex to the node listening on port 9201/9301
-% etcdctl put integTest/search-unit/integTest-1/goal-state '{"local_shards":{"myindex":{"0":"PRIMARY"}}}'
+% etcdctl put /integTest/search-unit/integTest-1/goal-state '{"local_shards":{"myindex":{"0":"PRIMARY"}}}'
 
 # Assign primary for shard 1 of myindex to the node listening on port 9202/9302
-% etcdctl put integTest/search-unit/integTest-2/goal-state '{"local_shards":{"myindex":{"1":"PRIMARY"}}}'
+% etcdctl put /integTest/search-unit/integTest-2/goal-state '{"local_shards":{"myindex":{"1":"PRIMARY"}}}'
 
-# Verify the split metadata was stored correctly
-% etcdctl get "integTest/indices/myindex/settings"
-% etcdctl get "integTest/indices/myindex/mappings"
-
-# Check all keys to see the new structure
-% etcdctl get "" --from-key --keys-only
+# Check all keys to see the new structure. Within a few seconds, the heartbeats from each node
+# will contain the new shards.
+% etcdctl get --prefix ''
 
 # Check the local cluster state on each data node
 % curl 'http://localhost:9201/_cluster/state?local&pretty'
@@ -132,13 +153,11 @@ EOF
 % curl 'http://localhost:9202/myindex/_search?pretty'
 ```
 
-### Add a coordinator
-
-The coordinator automatically resolves node names to node IDs by reading health data, eliminating the need to manually extract node IDs and ephemeral IDs.
+#### Add a coordinator
 
 ```bash
-# Tell the coordinator about the data nodes using their node names (not IDs).
-% cat << EOF | etcdctl put integTest/search-unit/integTest-0/goal-state
+# Tell the coordinator about the data nodes.
+% cat << EOF | etcdctl put /integTest/search-unit/integTest-0/goal-state
 {
   "remote_shards": {
     "indices": {
@@ -184,63 +203,166 @@ EOF
 % curl 'http://localhost:9200/myindex/_search?pretty'
 ```
 
-### Heartbeat and Health Data
+### Usage: Set up remote store based segment replication
 
-Nodes automatically publish health and status information to ETCD at the path `{cluster_name}/search-unit/{node_name}/actual-state`.
+In this example, we will provision an index with a single primary shard and one search replica.
+These will be placed on a pair of nodes running locally. The data will replicate via the remote store
+from the primary to the search replica. For simplicity, we'll use the `fs` repository type, which
+just uses a directory in the local filesystem.
+
+Before following these steps, make sure that you have stopped your runnning OpenSearch instance (say,
+if you ran the previous example). Ensure that etcd is still running, though.
+
+#### Configure the index and start OpenSearch
 
 ```bash
-# View heartbeat data for all nodes
-% etcdctl get "integTest/search-unit/" --prefix
+# Create a temporary directory to hold the "remote store".
+% REPO_DIR=$(mktemp -d -t remote_repo)
 
-# View specific node's health data
-% etcdctl get "integTest/search-unit/<nodename>/actual-state"
+# Output the temporary directory so you can check its contents later.
+% echo $REPO_DIR
 
-# Example: View coordinator node health
-% etcdctl get "integTest/search-unit/integTest-0/actual-state"
+# Push the index configuration to etcd.
+% etcdctl put /integTest/indices/segrep-index/settings << EOF
+{
+  "index": {
+    "number_of_shards": "1",
+    "number_of_search_replicas": "1",
+    "number_of_replicas": 0,
+    "remote_store.enabled": true,
+    "replication.type": "SEGMENT",
+    "remote_store.segment.repository":"segrep-repo"
+  }
+}
+EOF
+
+% etcdctl put /integTest/indices/segrep-index/mappings << EOF
+{
+  "properties": {
+    "title": {
+      "type": "text"
+    }
+  }
+}
+EOF
+
+# Configure the primary.
+% etcdctl put /integTest/search-unit/integTest-0/goal-state '{"local_shards":{"segrep-index":{"0":"PRIMARY"}}}'
+
+# Configure the search replica
+% etcdctl put /integTest/search-unit/integTest-1/goal-state '{"local_shards":{"segrep-index":{"0":"SEARCH_REPLICA"}}}'
+
+# Launch OpenSearch with remote store configuration
+% ./gradlew run -PnumNodes=2 \
+    -Dtests.opensearch.node.attr.remote_store.segment.repository=segrep-repo \
+    -Dtests.opensearch.node.attr.remote_store.repository.my-repo-1.type=fs \
+    -Dtests.opensearch.node.attr.remote_store.mode=segments_only \
+    -Dtests.opensearch.node.attr.remote_store.repository.my-repo-1.settings.location="$REPO_DIR" \
+    -Dtests.opensearch.path.repo="$REPO_DIR"
 ```
 
-<img src="https://opensearch.org/assets/img/opensearch-logo-themed.svg" height="64px">
+#### Verifying replication
 
-[![Chat](https://img.shields.io/badge/chat-on%20forums-blue)](https://forum.opensearch.org/c/opensearch/)
-[![Documentation](https://img.shields.io/badge/documentation-reference-blue)](https://opensearch.org/docs/latest/opensearch/index/)
-[![Code Coverage](https://codecov.io/gh/opensearch-project/OpenSearch/branch/main/graph/badge.svg)](https://codecov.io/gh/opensearch-project/OpenSearch)
-[![Untriaged Issues](https://img.shields.io/github/issues/opensearch-project/OpenSearch/untriaged?labelColor=red)](https://github.com/opensearch-project/OpenSearch/issues?q=is%3Aissue+is%3Aopen+label%3A"untriaged")
-[![Security Vulnerabilities](https://img.shields.io/github/issues/opensearch-project/OpenSearch/security%20vulnerability?labelColor=red)](https://github.com/opensearch-project/OpenSearch/issues?q=is%3Aissue+is%3Aopen+label%3A"security%20vulnerability")
-[![Open Issues](https://img.shields.io/github/issues/opensearch-project/OpenSearch)](https://github.com/opensearch-project/OpenSearch/issues)
-[![Open Pull Requests](https://img.shields.io/github/issues-pr/opensearch-project/OpenSearch)](https://github.com/opensearch-project/OpenSearch/pulls)
-[![2.19.3 Open Issues](https://img.shields.io/github/issues/opensearch-project/OpenSearch/v2.19.3)](https://github.com/opensearch-project/OpenSearch/issues?q=is%3Aissue+is%3Aopen+label%3A"v2.19.3")
-[![2.18.1 Open Issues](https://img.shields.io/github/issues/opensearch-project/OpenSearch/v2.18.1)](https://github.com/opensearch-project/OpenSearch/issues?q=is%3Aissue+is%3Aopen+label%3A"v2.18.1")
-[![3.0.0 Open Issues](https://img.shields.io/github/issues/opensearch-project/OpenSearch/v3.0.0)](https://github.com/opensearch-project/OpenSearch/issues?q=is%3Aissue+is%3Aopen+label%3A"v3.0.0")
-[![GHA gradle check](https://github.com/opensearch-project/OpenSearch/actions/workflows/gradle-check.yml/badge.svg)](https://github.com/opensearch-project/OpenSearch/actions/workflows/gradle-check.yml)
-[![GHA validate pull request](https://github.com/opensearch-project/OpenSearch/actions/workflows/wrapper.yml/badge.svg)](https://github.com/opensearch-project/OpenSearch/actions/workflows/wrapper.yml)
-[![GHA precommit](https://github.com/opensearch-project/OpenSearch/actions/workflows/precommit.yml/badge.svg)](https://github.com/opensearch-project/OpenSearch/actions/workflows/precommit.yml)
-[![Jenkins gradle check job](https://img.shields.io/jenkins/build?jobUrl=https%3A%2F%2Fbuild.ci.opensearch.org%2Fjob%2Fgradle-check%2F&label=Jenkins%20Gradle%20Check)](https://build.ci.opensearch.org/job/gradle-check/)
+In another window, you can verify that documents are replicated from the primary to the search replica.
 
-- [Welcome!](#welcome)
-- [Project Resources](#project-resources)
-- [Code of Conduct](#code-of-conduct)
-- [Security](#security)
-- [License](#license)
-- [Copyright](#copyright)
-- [Trademark](#trademark)
+```bash
+# Add a document to the primary
+% curl -X POST -H 'Content-Type: application/json' http://localhost:9200/myindex/_doc/1 -d '{"title":"Writing to the primary"}'
 
-## Welcome!
+# Search for it from the search replica
+% curl 'http://localhost:9201/myindex/_search?pretty'
 
-**OpenSearch** is [a community-driven, open source fork](https://aws.amazon.com/blogs/opensource/introducing-opensearch/) of [Elasticsearch](https://en.wikipedia.org/wiki/Elasticsearch) and [Kibana](https://en.wikipedia.org/wiki/Kibana) following the [license change](https://blog.opensource.org/the-sspl-is-not-an-open-source-license/) in early 2021. We're looking to sustain (and evolve!) a search and analytics suite for the multitude of businesses who are dependent on the rights granted by the original, [Apache v2.0 License](LICENSE.txt).
+# Check the contents of the "remote store"
+# Note that you'll probably have to paste the value of $REPO_DIR from the previous window.
+% find $REPO_DIR
+```
 
-## Project Resources
+### Usage: Set up primary/replica document replication
 
-* [Project Website](https://opensearch.org/)
-* [Downloads](https://opensearch.org/downloads.html)
-* [Documentation](https://opensearch.org/docs/)
-* Need help? Try [Forums](https://discuss.opendistrocommunity.dev/)
-* [Project Principles](https://opensearch.org/#principles)
-* [Contributing to OpenSearch](CONTRIBUTING.md)
-* [Maintainer Responsibilities](MAINTAINERS.md)
-* [Release Management](RELEASING.md)
-* [Admin Responsibilities](ADMINS.md)
-* [Testing](TESTING.md)
-* [Security](SECURITY.md)
+As with the previous example, make sure that you've stopped the running OpenSearch process before writing the new goal state.
+
+In this example, we will launch two nodes with "traditional" document replication. This kind of goes against the premise of
+"clusterless" OpenSearch, since it involves direct communication between data nodes. However, the only communication is
+within each replication group. The primary node for a given shard must know where all replicas for that shard are located.
+All replicas for a shard must know which node holds the primary for that shard.
+
+#### Configure the index and start OpenSearch
+
+```bash
+# Write the index settings and mappings
+% cat << EOF | etcdctl put /integTest/indices/docrep-index/settings
+{
+  "index": {
+    "number_of_shards": "1",
+    "number_of_replicas": "1"
+  }
+}
+EOF
+
+% cat << EOF | etcdctl put /integTest/indices/docrep-index/mappings
+{
+  "properties": {
+    "title": {
+      "type": "text"
+    }
+  }
+}
+EOF
+
+# Create the primary shard on integTask-0, pointing to the replica on integTask-1
+% etcdctl put /integTest/search-unit/integTest-0/goal-state \
+  '{"local_shards":{"docrep-index":{"0":{"type":"primary","replica_nodes":["integTest-1"]}}}}'
+
+# Create the replica shard on integTask-1, pointing to the primary on integTask-0
+% etcdctl put /integTest/search-unit/integTest-1/goal-state \
+  '{"local_shards":{"docrep-index":{"0":{"type":"replica","primary_node":"integTest-0"}}}}'
+
+# Start OpenSearch with two nodes
+% ./gradlew run -PnumNodes=2
+```
+
+#### Cluster state convergence
+
+There is some coordination that needs to occur between the primary and replica before both shards move into a "STARTED" state.
+Specifically, the primary shard must start before the replica can be assigned. Once the replica is assigned, the primary shard
+must learn the replica's allocation ID, which it finds from the replica node's heartbeat. Then the replica is able to to
+recover from the primary. Finally, the primary waits until the replica's heartbeat shows that it has fully started. Until the
+replica is assigned, the OpenSearch process will log messages like:
+
+```
+[2025-09-15T16:56:13,956][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-0] Reloading node state for key: /integTest/search-unit/integTest-0/goal-state
+[2025-09-15T16:56:14,357][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-1] Reloading node state for key: /integTest/search-unit/integTest-1/goal-state
+[2025-09-15T16:56:14,974][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-0] Reloading node state for key: /integTest/search-unit/integTest-0/goal-state
+[2025-09-15T16:56:15,375][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-1] Reloading node state for key: /integTest/search-unit/integTest-1/goal-state
+[2025-09-15T16:56:15,991][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-0] Reloading node state for key: /integTest/search-unit/integTest-0/goal-state
+[2025-09-15T16:56:16,391][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-1] Reloading node state for key: /integTest/search-unit/integTest-1/goal-state
+[2025-09-15T16:56:17,003][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-0] Reloading node state for key: /integTest/search-unit/integTest-0/goal-state
+[2025-09-15T16:56:17,405][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-1] Reloading node state for key: /integTest/search-unit/integTest-1/goal-state
+```
+
+Once the replica has been assigned, only the node holding the primary shard will keep polling, producing log messages like:
+
+```
+[2025-09-15T16:56:20,051][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-0] Reloading node state for key: /integTest/search-unit/integTest-0/goal-state
+[2025-09-15T16:56:21,060][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-0] Reloading node state for key: /integTest/search-unit/integTest-0/goal-state
+[2025-09-15T16:56:22,076][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-0] Reloading node state for key: /integTest/search-unit/integTest-0/goal-state
+[2025-09-15T16:56:23,094][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-0] Reloading node state for key: /integTest/search-unit/integTest-0/goal-state
+[2025-09-15T16:56:24,107][INFO ][o.o.c.e.ETCDWatcher      ] [integTest-0] Reloading node state for key: /integTest/search-unit/integTest-0/goal-state
+```
+
+Once the state has converged, you can verify that updates are replicated from the primary to the replica, just like with
+remote store segment replication.
+
+#### Verifying replication
+
+```
+# Add a document to the primary
+% curl -X POST -H 'Content-Type: application/json' http://localhost:9200/myindex/_doc/1 -d '{"title":"Writing to the primary"}'
+
+# Search for it from the search replica
+% curl 'http://localhost:9201/myindex/_search?pretty'
+```
+
 
 ## Code of Conduct
 
@@ -257,9 +379,3 @@ This project is licensed under the [Apache v2.0 License](LICENSE.txt).
 ## Copyright
 
 Copyright OpenSearch Contributors. See [NOTICE](NOTICE.txt) for details.
-
-## Trademark
-
-OpenSearch is a registered trademark of Amazon Web Services.
-
-OpenSearch includes certain Apache-licensed Elasticsearch code from Elasticsearch B.V. and other source code. Elasticsearch B.V. is not the source of that other source code. ELASTICSEARCH is a registered trademark of Elasticsearch B.V.
