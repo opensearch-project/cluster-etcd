@@ -1,5 +1,7 @@
 package io.clustercontroller.store;
 
+import io.clustercontroller.models.Index;
+
 import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
@@ -123,6 +125,16 @@ public interface MetadataStore {
      * Delete index configuration
      */
     void deleteIndexConfig(String clusterId, String indexName) throws Exception;
+    
+    /**
+     * Set index mappings
+     */
+    void setIndexMappings(String clusterId, String indexName, String mappings) throws Exception;
+    
+    /**
+     * Set index settings
+     */
+    void setIndexSettings(String clusterId, String indexName, String settings) throws Exception;
     
     // =================================================================
     // CLUSTER OPERATIONS

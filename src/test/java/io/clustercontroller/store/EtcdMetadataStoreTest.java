@@ -1,6 +1,7 @@
 package io.clustercontroller.store;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.clustercontroller.models.Index;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.TaskMetadata;
 import io.etcd.jetcd.*;
@@ -10,6 +11,7 @@ import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.kv.PutResponse;
 import io.etcd.jetcd.options.GetOption;
 import org.junit.jupiter.api.*;
+import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 
@@ -21,6 +23,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -442,6 +445,90 @@ public class EtcdMetadataStoreTest {
         assertThatThrownBy(() -> store.deleteIndexConfig(CLUSTER, "test-index"))
                 .isInstanceOf(Exception.class)
                 .hasMessageContaining("Failed to delete index config from etcd");
+    }
+
+    @Test
+    public void testSetIndexMappings() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String indexName = "test-index";
+        String mappings = "{\"properties\": {\"field1\": {\"type\": \"text\"}}}";
+
+        // Mock successful put response
+        PutResponse mockPutResponse = mock(PutResponse.class);
+        when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(mockPutResponse));
+
+        // Execute
+        store.setIndexMappings("test-cluster", indexName, mappings);
+
+        // Verify the put call was made with correct key and value
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        ArgumentCaptor<ByteSequence> valueCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).put(keyCaptor.capture(), valueCaptor.capture());
+
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        String capturedValue = valueCaptor.getValue().toString(UTF_8);
+
+        assertThat(capturedKey).contains("test-cluster/indices/test-index/mappings");
+        assertThat(capturedValue).isEqualTo(mappings);
+    }
+
+    @Test
+    public void testSetIndexMappingsWithException() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String indexName = "test-index";
+        String mappings = "{\"properties\": {\"field1\": {\"type\": \"text\"}}}";
+
+        // Mock etcd failure
+        when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd connection failed")));
+
+        // Verify exception is propagated
+        assertThatThrownBy(() -> store.setIndexMappings("test-cluster", indexName, mappings))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("Failed to set index mappings in etcd");
+    }
+
+    @Test
+    public void testSetIndexSettings() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String indexName = "test-index";
+        String settings = "{\"number_of_shards\": 1, \"number_of_replicas\": 2}";
+
+        // Mock successful put response
+        PutResponse mockPutResponse = mock(PutResponse.class);
+        when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(mockPutResponse));
+
+        // Execute
+        store.setIndexSettings("test-cluster", indexName, settings);
+
+        // Verify the put call was made with correct key and value
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        ArgumentCaptor<ByteSequence> valueCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).put(keyCaptor.capture(), valueCaptor.capture());
+
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        String capturedValue = valueCaptor.getValue().toString(UTF_8);
+
+        assertThat(capturedKey).contains("test-cluster/indices/test-index/settings");
+        assertThat(capturedValue).isEqualTo(settings);
+    }
+
+    @Test
+    public void testSetIndexSettingsWithException() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String indexName = "test-index";
+        String settings = "{\"number_of_shards\": 1}";
+
+        // Mock etcd failure
+        when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd timeout")));
+
+        // Verify exception is propagated
+        assertThatThrownBy(() -> store.setIndexSettings("test-cluster", indexName, settings))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("Failed to set index settings in etcd");
     }
 
     // ------------------------- lifecycle -------------------------

@@ -1,7 +1,18 @@
 package io.clustercontroller.indices;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.clustercontroller.models.Index;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.clustercontroller.models.ShardData;
+import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.store.MetadataStore;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Manages index lifecycle operations.
@@ -11,14 +22,75 @@ import lombok.extern.slf4j.Slf4j;
 public class IndexManager {
     
     private final MetadataStore metadataStore;
+    private final ObjectMapper objectMapper;
     
     public IndexManager(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
+        this.objectMapper = new ObjectMapper();
     }
     
-    public void createIndex(String clusterId, String indexName, String indexConfig) {
+    public void createIndex(String clusterId, String indexName, String indexConfig) throws Exception {
         log.info("Creating index {} in cluster {} with config: {}", indexName, clusterId, indexConfig);
-        // TODO: Implement index creation logic
+        
+        // Parse the JSON input to extract index configuration (settings and mappings only)
+        CreateIndexRequest request = parseCreateIndexRequest(indexConfig);
+        
+        log.info("CreateIndex - Parsed index name: {}", indexName);
+        
+        // Validate the parsed input
+        if (indexName == null || indexName.isEmpty()) {
+            throw new Exception("Index name cannot be null or empty");
+        }
+        
+        // Check if index already exists
+        if (metadataStore.getIndexConfig(clusterId, indexName).isPresent()) {
+            log.info("CreateIndex - Index '{}' already exists, skipping creation", indexName);
+            return;
+        }
+        
+        // Get all available search units for allocation planning
+        List<SearchUnit> availableUnits = metadataStore.getAllSearchUnits(clusterId);
+        
+        if (availableUnits.isEmpty()) {
+            throw new Exception("No search units available for index allocation");
+        }
+        
+        // TODO: Determine number of shards from settings, adding default 1 shard for now
+        int numberOfShards = 1;
+        
+        // TODO: Calculate maximum replicas per shard based on available search units
+        List<Integer> shardReplicaCount = new ArrayList<>();
+        shardReplicaCount.add(1);
+        
+        log.info("CreateIndex - Using {} shards with replica count: {}", numberOfShards, shardReplicaCount);
+        
+        // TODO: Create allocation plan
+        List<ShardData> allocationPlan = new ArrayList<>();
+        
+        // Create the new Index configuration
+        Index newIndex = new Index();
+        newIndex.setIndexName(indexName);
+        newIndex.setShardReplicaCount(shardReplicaCount);
+        newIndex.setAllocationPlan(allocationPlan);
+        newIndex.setActive(request.isActive());
+        
+        // Store the index configuration
+        String indexConfigJson = objectMapper.writeValueAsString(newIndex);
+        String documentId = metadataStore.createIndexConfig(clusterId, indexName, indexConfigJson);
+        log.info("CreateIndex - Successfully created index configuration for '{}' with document ID: {}, active: {}", 
+            newIndex.getIndexName(), documentId, newIndex.isActive());
+        
+        // Store mappings if provided
+        if (request.getMappings() != null && !request.getMappings().trim().isEmpty()) {
+            metadataStore.setIndexMappings(clusterId, indexName, request.getMappings());
+            log.info("CreateIndex - Set mappings for index '{}'", indexName);
+        }
+        
+        // Store settings if provided
+        if (request.getSettings() != null && !request.getSettings().trim().isEmpty()) {
+            metadataStore.setIndexSettings(clusterId, indexName, request.getSettings());
+            log.info("CreateIndex - Set settings for index '{}'", indexName);
+        }
     }
     
     public void deleteIndex(String clusterId, String indexName) {
@@ -80,8 +152,28 @@ public class IndexManager {
         throw new UnsupportedOperationException("Update mapping not yet implemented");
     }
     
-    public void planShardAllocation() {
+    public void planShardAllocation() throws Exception {
         log.info("Planning shard allocation");
         // TODO: Implement shard allocation planning logic
+    }
+
+    private CreateIndexRequest parseCreateIndexRequest(String input) throws Exception {
+        return objectMapper.readValue(input, CreateIndexRequest.class);
+    }
+
+    /**
+     * Data class to hold parsed create index request
+     */
+    @Data
+    @NoArgsConstructor
+    private static class CreateIndexRequest {
+        @JsonProperty("active")
+        private boolean active = false; // Default to false
+        
+        @JsonProperty("mappings")
+        private String mappings; // Optional mappings JSON
+        
+        @JsonProperty("settings")
+        private String settings; // Optional settings JSON
     }
 }
