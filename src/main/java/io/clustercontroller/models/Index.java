@@ -33,9 +33,6 @@ public class Index {
     @JsonProperty("allocation_plan")
     private List<ShardData> allocationPlan = new ArrayList<>();
     
-    @JsonProperty("active")
-    private boolean active = false; // Default to false for rolling deployment support
-    
     @JsonProperty("created_at")
     private String createdAt = java.time.OffsetDateTime.now().toString(); // ISO timestamp for proper ordering
     

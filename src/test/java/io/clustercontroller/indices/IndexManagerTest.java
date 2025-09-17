@@ -41,7 +41,6 @@ class IndexManagerTest {
         List<SearchUnit> availableSearchUnits = createMockSearchUnits();
         String createIndexRequestJson = """
             {
-                "active": false,
                 "mappings": "{\\"properties\\": {\\"field1\\": {\\"type\\": \\"text\\"}}}",
                 "settings": "{\\"number_of_shards\\": 1}"
             }
@@ -62,7 +61,6 @@ class IndexManagerTest {
         String capturedIndexConfig = indexConfigCaptor.getValue();
         assertThat(capturedIndexConfig).isNotNull();
         assertThat(capturedIndexConfig).contains(indexName);
-        assertThat(capturedIndexConfig).contains("false"); // active flag
 
         verify(metadataStore).getAllSearchUnits(clusterId);
         
@@ -71,34 +69,6 @@ class IndexManagerTest {
         verify(metadataStore).setIndexSettings(clusterId, indexName, "{\"number_of_shards\": 1}");
     }
 
-    @Test
-    void testCreateIndex_WithActiveFlag() throws Exception {
-        // Given
-        String clusterId = "test-cluster";
-        String indexName = "active-index";
-        String createIndexRequestJson = """
-            {
-                "active": true
-            }
-            """;
-        List<SearchUnit> availableSearchUnits = createMockSearchUnits();
-
-        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(availableSearchUnits);
-        when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-456");
-
-        // When
-        indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
-
-        // Then
-        ArgumentCaptor<String> indexConfigCaptor = ArgumentCaptor.forClass(String.class);
-        verify(metadataStore).createIndexConfig(eq(clusterId), eq(indexName), indexConfigCaptor.capture());
-
-        String capturedIndexConfig = indexConfigCaptor.getValue();
-        assertThat(capturedIndexConfig).isNotNull();
-        assertThat(capturedIndexConfig).contains(indexName);
-        assertThat(capturedIndexConfig).contains("true"); // active flag
-    }
 
     @Test
     void testCreateIndex_NoAvailableSearchUnits() throws Exception {
@@ -107,7 +77,6 @@ class IndexManagerTest {
         String indexName = "test-index";
         String createIndexRequestJson = """
             {
-                "active": false
             }
             """;
 
@@ -139,7 +108,6 @@ class IndexManagerTest {
         String indexName = "existing-index";
         String createIndexRequestJson = """
             {
-                "active": false
             }
             """;
 
@@ -189,7 +157,6 @@ class IndexManagerTest {
         String capturedIndexConfig = indexConfigCaptor.getValue();
         assertThat(capturedIndexConfig).isNotNull();
         assertThat(capturedIndexConfig).contains(indexName);
-        assertThat(capturedIndexConfig).contains("false"); // default active flag
     }
 
     @Test
@@ -199,7 +166,6 @@ class IndexManagerTest {
         String indexName = "test-index";
         String createIndexRequestJson = """
             {
-                "active": false
             }
             """;
         List<SearchUnit> availableSearchUnits = createMockSearchUnits();
