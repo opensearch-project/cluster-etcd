@@ -10,7 +10,7 @@ import io.clustercontroller.models.SearchUnit;
  * Each AllocationDecider implements a specific rule for determining
  * whether a shard can be allocated to a particular node.
  * 
- * Inspired by OpenSearch's AllocationDecider pattern.
+ * Enables modular, configurable allocation policies.
  */
 public interface AllocationDecider {
     
