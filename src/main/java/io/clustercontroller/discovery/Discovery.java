@@ -1,5 +1,6 @@
 package io.clustercontroller.discovery;
 
+import io.clustercontroller.config.Constants;
 import io.clustercontroller.enums.HealthState;
 import io.clustercontroller.models.NodeAttributes;
 import io.clustercontroller.models.SearchUnit;
@@ -32,14 +33,17 @@ public class Discovery {
         // Discover and update search units from Etcd actual-states
         discoverSearchUnitsFromEtcd();
         
-        // Process all search units to ensure they're up-to-date and handle any stale ones
+        // Clean up stale search units before processing
+        cleanupStaleSearchUnits();
+        
+        // Process all search units to ensure they're up-to-date
         processAllSearchUnits();
         
         log.info("Discovery - Completed search unit discovery process");
     }
     
     /**
-     * Process all search units to ensure they're current and handle stale ones
+     * Process all search units to ensure they're current
      */
     private void processAllSearchUnits() {
         try {
@@ -163,10 +167,78 @@ public class Discovery {
         return searchUnit;
     }
     
+    /**
+     * Clean up search units with missing or stale actual state timestamp (older than configured timeout)
+     */
+    private void cleanupStaleSearchUnits() {
+        try {
+            log.info("Discovery - Starting cleanup of stale search units...");
+            
+            // Get all existing search units from metadata store
+            List<SearchUnit> allSearchUnits = metadataStore.getAllSearchUnits();
+            int deletedCount = 0;
+            
+            for (SearchUnit searchUnit : allSearchUnits) {
+                String unitName = searchUnit.getName();
+                
+                try {
+                    // Check if actual state exists
+                    java.util.Optional<SearchUnitActualState> actualStateOpt = 
+                            metadataStore.getSearchUnitActualState(unitName);
+                    
+                    boolean shouldDelete = false;
+                    String reason = "";
+                    
+                    if (!actualStateOpt.isPresent()) {
+                        // Case 1: Missing actual state
+                        shouldDelete = true;
+                        reason = "missing actual state";
+                    } else {
+                        // Case 2: Check if timestamp is older than configured timeout
+                        SearchUnitActualState actualState = actualStateOpt.get();
+                        if (isActualStateStale(actualState)) {
+                            shouldDelete = true;
+                            reason = "stale timestamp (older than " + Constants.STALE_SEARCH_UNIT_TIMEOUT_MINUTES + " minutes)";
+                        }
+                    }
+                    
+                    if (shouldDelete) {
+                        log.info("Discovery - Deleting search unit '{}' due to: {}", unitName, reason);
+                        metadataStore.deleteSearchUnit(unitName);
+                        deletedCount++;
+                    }
+                    
+                } catch (Exception e) {
+                    log.error("Discovery - Failed to check/delete search unit '{}': {}", unitName, e.getMessage());
+                }
+            }
+            
+            log.info("Discovery - Cleanup completed. Deleted {} stale search units", deletedCount);
+            
+        } catch (Exception e) {
+            log.error("Discovery - Failed to cleanup stale search units: {}", e.getMessage(), e);
+        }
+    }
     
+    /**
+     * Check if actual state timestamp is older than the configured timeout
+     */
+    private boolean isActualStateStale(SearchUnitActualState actualState) {
+        long currentTime = System.currentTimeMillis();
+        long nodeTimestamp = actualState.getTimestamp();
+        long timeDiff = currentTime - nodeTimestamp;
+        long timeoutInMs = Constants.STALE_SEARCH_UNIT_TIMEOUT_MINUTES * 60 * 1000; // Convert minutes to milliseconds
+        
+        boolean isStale = timeDiff > timeoutInMs;
+        
+        if (isStale) {
+            log.debug("Discovery - Actual state is stale: timestamp={}, age={}ms ({}min), threshold={}ms ({}min)", 
+                nodeTimestamp, timeDiff, timeDiff / (60 * 1000), timeoutInMs, Constants.STALE_SEARCH_UNIT_TIMEOUT_MINUTES);
+        }
+        
+        return isStale;
+    }
 
-    
-    
     public void monitorClusterHealth() {
         log.info("Monitoring cluster health");
         // TODO: Implement cluster health monitoring logic

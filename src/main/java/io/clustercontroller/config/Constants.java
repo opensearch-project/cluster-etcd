@@ -55,6 +55,9 @@ public final class Constants {
     public static final int HEALTH_CHECK_MEMORY_THRESHOLD_PERCENT = 90;
     public static final long HEALTH_CHECK_DISK_THRESHOLD_MB = 1024;
     
+    // Discovery cleanup thresholds
+    public static final long STALE_SEARCH_UNIT_TIMEOUT_MINUTES = 10L;
+    
     // Admin state values
     public static final String ADMIN_STATE_NORMAL = "NORMAL";
     public static final String ADMIN_STATE_DRAIN = "DRAIN";
