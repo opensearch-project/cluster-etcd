@@ -42,6 +42,6 @@ public class TemplateManager {
     public boolean templateExists(String templateName) {
         log.info("Checking if template '{}' exists", templateName);
         // TODO: Implement template existence check
-        return false;
+        throw new UnsupportedOperationException("Template existence check not yet implemented");
     }
 }

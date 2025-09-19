@@ -60,15 +60,14 @@ class AliasManagerTest {
     }
     
     @Test
-    void testAliasExists_ReturnsFalse() {
+    void testAliasExists_ThrowsUnsupportedOperation() {
         // Given
         String aliasName = "test-alias";
         
-        // When
-        boolean exists = aliasManager.aliasExists(aliasName);
-        
-        // Then
-        assertThat(exists).isFalse(); // Default implementation returns false
+        // When & Then
+        assertThatThrownBy(() -> aliasManager.aliasExists(aliasName))
+            .isInstanceOf(UnsupportedOperationException.class)
+            .hasMessageContaining("Alias existence check not yet implemented");
     }
     
     @Test

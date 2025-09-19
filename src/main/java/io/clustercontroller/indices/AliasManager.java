@@ -36,6 +36,6 @@ public class AliasManager {
     public boolean aliasExists(String aliasName) {
         log.info("Checking if alias '{}' exists", aliasName);
         // TODO: Implement alias existence check
-        return false;
+        throw new UnsupportedOperationException("Alias existence check not yet implemented");
     }
 }
