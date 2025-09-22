@@ -11,7 +11,7 @@ public final class Constants {
     
     // Default configuration values
     public static final String DEFAULT_CLUSTER_NAME = "default-cluster";
-    public static final String DEFAULT_ETCD_ENDPOINT = "localhost:2379";
+    public static final String DEFAULT_ETCD_ENDPOINT = "http://localhost:2379";
     public static final long DEFAULT_TASK_INTERVAL_SECONDS = 30L;
     
     // Task statuses

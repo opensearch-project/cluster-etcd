@@ -26,7 +26,7 @@ public class PlanShardAllocationTask implements Task {
         log.info("Executing plan shard allocation task: {}", name);
         
         try {
-            context.getIndexManager().planShardAllocation();
+            // TODO: Call ShardAllocationPlanner.plan() method when implemented
             return TASK_STATUS_COMPLETED;
         } catch (Exception e) {
             log.error("Failed to execute plan shard allocation task: {}", e.getMessage(), e);
