@@ -69,4 +69,3 @@ class ShardAllocatorTaskTest {
         verify(shardAllocator).allocateShards();
     }
 }
-

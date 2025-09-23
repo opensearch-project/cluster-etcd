@@ -69,4 +69,3 @@ class ActualAllocationUpdaterTaskTest {
         verify(actualAllocationUpdater).updateActualAllocations();
     }
 }
-
