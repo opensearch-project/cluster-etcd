@@ -7,7 +7,6 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TemplateManagerTest {
@@ -17,6 +16,8 @@ class TemplateManagerTest {
 
     @InjectMocks
     private TemplateManager templateManager;
+    
+    private final String testClusterId = "test-cluster";
 
     @BeforeEach
     void setUp() {
@@ -26,7 +27,7 @@ class TemplateManagerTest {
     @Test
     void testTemplateExists_NotImplemented() {
         String templateName = "test-template";
-        assertThatThrownBy(() -> templateManager.templateExists(templateName))
+        assertThatThrownBy(() -> templateManager.templateExists(testClusterId, templateName))
             .isInstanceOf(UnsupportedOperationException.class)
             .hasMessageContaining("Template existence check not yet implemented");
     }
@@ -36,7 +37,7 @@ class TemplateManagerTest {
         String templateName = "test-template";
         String templateConfig = "{\"index_patterns\":[\"logs-*\"]}";
 
-        assertThatThrownBy(() -> templateManager.putTemplate(templateName, templateConfig))
+        assertThatThrownBy(() -> templateManager.putTemplate(testClusterId, templateName, templateConfig))
             .isInstanceOf(UnsupportedOperationException.class)
             .hasMessageContaining("Template creation not yet implemented");
     }
@@ -45,7 +46,7 @@ class TemplateManagerTest {
     void testDeleteTemplate_NotImplemented() {
         String templateName = "test-template";
 
-        assertThatThrownBy(() -> templateManager.deleteTemplate(templateName))
+        assertThatThrownBy(() -> templateManager.deleteTemplate(testClusterId, templateName))
             .isInstanceOf(UnsupportedOperationException.class)
             .hasMessageContaining("Template deletion not yet implemented");
     }
@@ -53,8 +54,15 @@ class TemplateManagerTest {
     @Test
     void testGetTemplate_NotImplemented() {
         String templateName = "test-template";
-        assertThatThrownBy(() -> templateManager.getTemplate(templateName))
+        assertThatThrownBy(() -> templateManager.getTemplate(testClusterId, templateName))
             .isInstanceOf(UnsupportedOperationException.class)
             .hasMessageContaining("Get template not yet implemented");
+    }
+
+    @Test
+    void testGetAllTemplates_NotImplemented() {
+        assertThatThrownBy(() -> templateManager.getAllTemplates(testClusterId))
+            .isInstanceOf(UnsupportedOperationException.class)
+            .hasMessageContaining("Get all templates not yet implemented");
     }
 }

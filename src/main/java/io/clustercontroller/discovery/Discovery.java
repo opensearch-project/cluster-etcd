@@ -21,9 +21,11 @@ import java.util.Map;
 public class Discovery {
     
     private final MetadataStore metadataStore;
+    private final String clusterName;
     
-    public Discovery(MetadataStore metadataStore) {
+    public Discovery(MetadataStore metadataStore, String clusterName) {
         this.metadataStore = metadataStore;
+        this.clusterName = clusterName;
     }
     
     
@@ -47,7 +49,7 @@ public class Discovery {
      */
     private void processAllSearchUnits() {
         try {
-            List<SearchUnit> allSearchUnits = metadataStore.getAllSearchUnits();
+            List<SearchUnit> allSearchUnits = metadataStore.getAllSearchUnits(clusterName);
             log.info("Discovery - Processing {} total search units for updates", allSearchUnits.size());
             
             for (SearchUnit searchUnit : allSearchUnits) {
@@ -55,7 +57,7 @@ public class Discovery {
                     log.debug("Discovery - Processing search unit: {}", searchUnit.getName());
                     
                     // Update the search unit (this could include health checks, metrics, etc.)
-                    metadataStore.updateSearchUnit(searchUnit);
+                    metadataStore.updateSearchUnit(clusterName, searchUnit);
                     
                     log.debug("Discovery - Successfully updated search unit: {}", searchUnit.getName());
                 } catch (Exception e) {
@@ -80,12 +82,12 @@ public class Discovery {
             // Update/create search units in metadata store
             for (SearchUnit searchUnit : etcdSearchUnits) {
                 try {
-                    if (metadataStore.getSearchUnit(searchUnit.getName()).isPresent()) {
+                    if (metadataStore.getSearchUnit(clusterName, searchUnit.getName()).isPresent()) {
                         log.debug("Discovery - Updating existing search unit '{}' from Etcd", searchUnit.getName());
-                        metadataStore.updateSearchUnit(searchUnit);
+                        metadataStore.updateSearchUnit(clusterName, searchUnit);
                     } else {
                         log.info("Discovery - Creating new search unit '{}' from Etcd", searchUnit.getName());
-                        metadataStore.upsertSearchUnit(searchUnit.getName(), searchUnit);
+                        metadataStore.upsertSearchUnit(clusterName, searchUnit.getName(), searchUnit);
                     }
                 } catch (Exception e) {
                     log.warn("Discovery - Failed to update search unit '{}' from Etcd: {}", 
@@ -106,7 +108,7 @@ public class Discovery {
         
         try {
             Map<String, SearchUnitActualState> actualStates = 
-                    metadataStore.getAllSearchUnitActualStates();
+                    metadataStore.getAllSearchUnitActualStates(clusterName);
             
             List<SearchUnit> searchUnits = new ArrayList<>();
             
@@ -175,7 +177,7 @@ public class Discovery {
             log.info("Discovery - Starting cleanup of stale search units...");
             
             // Get all existing search units from metadata store
-            List<SearchUnit> allSearchUnits = metadataStore.getAllSearchUnits();
+            List<SearchUnit> allSearchUnits = metadataStore.getAllSearchUnits(clusterName);
             int deletedCount = 0;
             
             for (SearchUnit searchUnit : allSearchUnits) {
@@ -184,7 +186,7 @@ public class Discovery {
                 try {
                     // Check if actual state exists
                     java.util.Optional<SearchUnitActualState> actualStateOpt = 
-                            metadataStore.getSearchUnitActualState(unitName);
+                            metadataStore.getSearchUnitActualState(clusterName, unitName);
                     
                     boolean shouldDelete = false;
                     String reason = "";
@@ -204,7 +206,7 @@ public class Discovery {
                     
                     if (shouldDelete) {
                         log.info("Discovery - Deleting search unit '{}' due to: {}", unitName, reason);
-                        metadataStore.deleteSearchUnit(unitName);
+                        metadataStore.deleteSearchUnit(clusterName, unitName);
                         deletedCount++;
                     }
                     

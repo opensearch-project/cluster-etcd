@@ -49,3 +49,4 @@ class UnknownTaskTest {
         assertThat(task.getSchedule()).isEqualTo(schedule);
     }
 }
+

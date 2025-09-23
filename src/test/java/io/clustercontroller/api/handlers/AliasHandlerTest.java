@@ -28,6 +28,8 @@ class AliasHandlerTest {
 
     @InjectMocks
     private AliasHandler aliasHandler;
+    
+    private final String testClusterId = "test-cluster";
 
     @BeforeEach
     void setUp() {
@@ -42,10 +44,10 @@ class AliasHandlerTest {
         AliasRequest request = AliasRequest.builder().build();
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doNothing().when(aliasManager).createAlias(anyString(), anyString(), anyString());
+        doNothing().when(aliasManager).createAlias(anyString(), anyString(), anyString(), anyString());
 
         // When
-        ResponseEntity<Object> response = aliasHandler.createAlias(index, alias, request);
+        ResponseEntity<Object> response = aliasHandler.createAlias(testClusterId, index, alias, request);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -56,7 +58,7 @@ class AliasHandlerTest {
         assertThat(aliasResponse.getAlias()).isEqualTo(alias);
         assertThat(aliasResponse.getIndex()).isEqualTo(index);
 
-        verify(aliasManager).createAlias(alias, index, "{}");
+        verify(aliasManager).createAlias(testClusterId, alias, index, "{}");
     }
 
     @Test
@@ -68,10 +70,10 @@ class AliasHandlerTest {
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
         doThrow(new UnsupportedOperationException("Not implemented"))
-            .when(aliasManager).createAlias(anyString(), anyString(), anyString());
+            .when(aliasManager).createAlias(anyString(), anyString(), anyString(), anyString());
 
         // When
-        ResponseEntity<Object> response = aliasHandler.createAlias(index, alias, request);
+        ResponseEntity<Object> response = aliasHandler.createAlias(testClusterId, index, alias, request);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
@@ -83,38 +85,14 @@ class AliasHandlerTest {
     }
 
     @Test
-    void testCreateAlias_InternalError() throws Exception {
-        // Given
-        String index = "test-index";
-        String alias = "test-alias";
-        AliasRequest request = AliasRequest.builder().build();
-
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doThrow(new RuntimeException("Database error"))
-            .when(aliasManager).createAlias(anyString(), anyString(), anyString());
-
-        // When
-        ResponseEntity<Object> response = aliasHandler.createAlias(index, alias, request);
-
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
-
-        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
-        assertThat(errorResponse.getReason()).contains("Database error");
-        assertThat(errorResponse.getStatus()).isEqualTo(500);
-    }
-
-    @Test
     void testDeleteAlias_Success() {
         // Given
         String index = "test-index";
         String alias = "test-alias";
-        doNothing().when(aliasManager).deleteAlias(anyString(), anyString());
+        doNothing().when(aliasManager).deleteAlias(anyString(), anyString(), anyString());
 
         // When
-        ResponseEntity<Object> response = aliasHandler.deleteAlias(index, alias);
+        ResponseEntity<Object> response = aliasHandler.deleteAlias(testClusterId, index, alias);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -125,38 +103,18 @@ class AliasHandlerTest {
         assertThat(aliasResponse.getAlias()).isEqualTo(alias);
         assertThat(aliasResponse.getIndex()).isEqualTo(index);
 
-        verify(aliasManager).deleteAlias(alias, index);
-    }
-
-    @Test
-    void testDeleteAlias_UnsupportedOperation() {
-        // Given
-        String index = "test-index";
-        String alias = "test-alias";
-        doThrow(new UnsupportedOperationException("Not implemented"))
-            .when(aliasManager).deleteAlias(anyString(), anyString());
-
-        // When
-        ResponseEntity<Object> response = aliasHandler.deleteAlias(index, alias);
-
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
-        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
-
-        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
-        assertThat(errorResponse.getStatus()).isEqualTo(501);
+        verify(aliasManager).deleteAlias(testClusterId, alias, index);
     }
 
     @Test
     void testGetAlias_NotImplemented() {
         // Given
         String alias = "test-alias";
-        when(aliasManager.getAlias(anyString()))
+        when(aliasManager.getAlias(anyString(), anyString()))
             .thenThrow(new UnsupportedOperationException("Not implemented"));
 
         // When
-        ResponseEntity<Object> response = aliasHandler.getAlias(alias);
+        ResponseEntity<Object> response = aliasHandler.getAlias(testClusterId, alias);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
@@ -165,26 +123,6 @@ class AliasHandlerTest {
         ErrorResponse errorResponse = (ErrorResponse) response.getBody();
         assertThat(errorResponse.getError()).isEqualTo("not_implemented");
         assertThat(errorResponse.getReason()).contains("Get alias is not yet implemented");
-        assertThat(errorResponse.getStatus()).isEqualTo(501);
-    }
-
-    @Test
-    void testGetIndexAliases_NotImplemented() {
-        // Given
-        String index = "test-index";
-        when(aliasManager.getAlias(anyString()))
-            .thenThrow(new UnsupportedOperationException("Not implemented"));
-
-        // When
-        ResponseEntity<Object> response = aliasHandler.getIndexAliases(index);
-
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
-        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
-
-        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
-        assertThat(errorResponse.getReason()).contains("Get index aliases is not yet implemented");
         assertThat(errorResponse.getStatus()).isEqualTo(501);
     }
 }

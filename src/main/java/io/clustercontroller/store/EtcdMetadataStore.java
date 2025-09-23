@@ -42,7 +42,6 @@ public class EtcdMetadataStore implements MetadataStore {
     
     private static EtcdMetadataStore instance;
     
-    private final String clusterName;
     private final String[] etcdEndpoints;
     private final Client etcdClient;
     private final KV kvClient;
@@ -56,8 +55,7 @@ public class EtcdMetadataStore implements MetadataStore {
     /**
      * Private constructor for singleton pattern
      */
-    private EtcdMetadataStore(String clusterName, String[] etcdEndpoints) throws Exception {
-        this.clusterName = clusterName;
+    private EtcdMetadataStore(String[] etcdEndpoints) throws Exception {
         this.etcdEndpoints = etcdEndpoints;
         this.nodeId = EnvironmentUtils.getRequiredEnv("NODE_NAME");
         
@@ -71,10 +69,10 @@ public class EtcdMetadataStore implements MetadataStore {
         this.kvClient = etcdClient.getKVClient();
         
         // Initialize path resolver
-        this.pathResolver = new EtcdPathResolver(clusterName);
+        this.pathResolver = EtcdPathResolver.getInstance();
         
         log.info("EtcdMetadataStore initialized for cluster: {} with endpoints: {} and nodeId: {}", 
-            clusterName, String.join(",", etcdEndpoints), nodeId);
+            String.join(",", etcdEndpoints), nodeId);
     }
     
     // =================================================================
@@ -84,8 +82,7 @@ public class EtcdMetadataStore implements MetadataStore {
     /**
      * Test constructor with injected dependencies
      */
-    private EtcdMetadataStore(String clusterName, String[] etcdEndpoints, String nodeId, Client etcdClient, KV kvClient) {
-        this.clusterName = clusterName;
+    private EtcdMetadataStore(String[] etcdEndpoints, String nodeId, Client etcdClient, KV kvClient) {
         this.etcdEndpoints = etcdEndpoints;
         this.nodeId = nodeId;
         this.etcdClient = etcdClient;
@@ -97,16 +94,16 @@ public class EtcdMetadataStore implements MetadataStore {
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         
         // Initialize path resolver
-        this.pathResolver = new EtcdPathResolver(clusterName);
+        this.pathResolver = EtcdPathResolver.getInstance();
         
-        log.info("EtcdMetadataStore initialized for testing with cluster: {} and nodeId: {}", clusterName, nodeId);
+        log.info("EtcdMetadataStore initialized for testing with cluster: {} and nodeId: {}", "test-cluster", nodeId);
     }
     /**
      * Get singleton instance
      */
-    public static synchronized EtcdMetadataStore getInstance(String clusterName, String[] etcdEndpoints) throws Exception {
+    public static synchronized EtcdMetadataStore getInstance(String[] etcdEndpoints) throws Exception {
         if (instance == null) {
-            instance = new EtcdMetadataStore(clusterName, etcdEndpoints);
+            instance = new EtcdMetadataStore(etcdEndpoints);
         }
         return instance;
     }
@@ -116,7 +113,7 @@ public class EtcdMetadataStore implements MetadataStore {
      */
     public static EtcdMetadataStore getInstance() {
         if (instance == null) {
-            throw new IllegalStateException("EtcdMetadataStore not initialized. Call getInstance(clusterName, etcdEndpoints) first.");
+            throw new IllegalStateException("EtcdMetadataStore not initialized. Call getInstance(etcdEndpoints) first.");
         }
         return instance;
     }
@@ -131,9 +128,9 @@ public class EtcdMetadataStore implements MetadataStore {
     /**
      * Create test instance with mocked dependencies (for testing only)
      */
-    public static synchronized EtcdMetadataStore createTestInstance(String clusterName, String[] etcdEndpoints, String nodeId, Client etcdClient, KV kvClient) {
+    public static synchronized EtcdMetadataStore createTestInstance(String[] etcdEndpoints, String nodeId, Client etcdClient, KV kvClient) {
         resetInstance();
-        instance = new EtcdMetadataStore(clusterName, etcdEndpoints, nodeId, etcdClient, kvClient);
+        instance = new EtcdMetadataStore(etcdEndpoints, nodeId, etcdClient, kvClient);
         return instance;
     }
 
@@ -142,12 +139,11 @@ public class EtcdMetadataStore implements MetadataStore {
     // CONTROLLER TASKS OPERATIONS
     // =================================================================
     
-    @Override
-    public List<TaskMetadata> getAllTasks() throws Exception {
+    public List<TaskMetadata> getAllTasks(String clusterId) throws Exception {
         log.debug("Getting all tasks from etcd");
         
         try {
-            String tasksPrefix = pathResolver.getControllerTasksPrefix();
+            String tasksPrefix = pathResolver.getControllerTasksPrefix(clusterId);
             List<TaskMetadata> tasks = getAllObjectsByPrefix(tasksPrefix, TaskMetadata.class);
             
             // Sort by priority (0 = highest priority)
@@ -162,12 +158,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public Optional<TaskMetadata> getTask(String taskName) throws Exception {
+    public Optional<TaskMetadata> getTask(String clusterId, String taskName) throws Exception {
         log.debug("Getting task {} from etcd", taskName);
         
         try {
-            String taskPath = pathResolver.getControllerTaskPath(taskName);
+            String taskPath = pathResolver.getControllerTaskPath(clusterId, taskName);
             Optional<TaskMetadata> result = getObjectByPath(taskPath, TaskMetadata.class);
             
             if (result.isPresent()) {
@@ -184,12 +179,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public String createTask(TaskMetadata task) throws Exception {
+    public String createTask(String clusterId, TaskMetadata task) throws Exception {
         log.info("Creating task {} in etcd", task.getName());
         
         try {
-            String taskPath = pathResolver.getControllerTaskPath(task.getName());
+            String taskPath = pathResolver.getControllerTaskPath(clusterId, task.getName());
             storeObjectAsJson(taskPath, task);
             
             log.info("Successfully created task {} in etcd", task.getName());
@@ -201,12 +195,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public void updateTask(TaskMetadata task) throws Exception {
+    public void updateTask(String clusterId, TaskMetadata task) throws Exception {
         log.debug("Updating task {} in etcd", task.getName());
         
         try {
-            String taskPath = pathResolver.getControllerTaskPath(task.getName());
+            String taskPath = pathResolver.getControllerTaskPath(clusterId, task.getName());
             storeObjectAsJson(taskPath, task);
             
             log.debug("Successfully updated task {} in etcd", task.getName());
@@ -217,12 +210,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public void deleteTask(String taskName) throws Exception {
+    public void deleteTask(String clusterId, String taskName) throws Exception {
         log.info("Deleting task {} from etcd", taskName);
         
         try {
-            String taskPath = pathResolver.getControllerTaskPath(taskName);
+            String taskPath = pathResolver.getControllerTaskPath(clusterId, taskName);
             executeEtcdDelete(taskPath);
             
             log.info("Successfully deleted task {} from etcd", taskName);
@@ -233,7 +225,6 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
     public void deleteOldTasks(long olderThanTimestamp) throws Exception {
         log.debug("Deleting old tasks from etcd older than {}", olderThanTimestamp);
         // TODO: Implement etcd cleanup for old tasks
@@ -243,12 +234,11 @@ public class EtcdMetadataStore implements MetadataStore {
     // SEARCH UNITS OPERATIONS
     // =================================================================
     
-    @Override
-    public List<SearchUnit> getAllSearchUnits() throws Exception {
+    public List<SearchUnit> getAllSearchUnits(String clusterId) throws Exception {
         log.debug("Getting all search units from etcd");
         
         try {
-            String unitsPrefix = pathResolver.getSearchUnitsPrefix();
+            String unitsPrefix = pathResolver.getSearchUnitsPrefix(clusterId);
             List<SearchUnit> searchUnits = getAllObjectsByPrefix(unitsPrefix, SearchUnit.class);
             
             log.debug("Retrieved {} search units from etcd", searchUnits.size());
@@ -260,12 +250,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public Optional<SearchUnit> getSearchUnit(String unitName) throws Exception {
+    public Optional<SearchUnit> getSearchUnit(String clusterId, String unitName) throws Exception {
         log.debug("Getting search unit {} from etcd", unitName);
         
         try {
-            String unitPath = pathResolver.getSearchUnitConfPath(unitName);
+            String unitPath = pathResolver.getSearchUnitConfPath(clusterId, unitName);
             Optional<SearchUnit> result = getObjectByPath(unitPath, SearchUnit.class);
             
             if (result.isPresent()) {
@@ -282,12 +271,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public void upsertSearchUnit(String unitName, SearchUnit searchUnit) throws Exception {
+    public void upsertSearchUnit(String clusterId, String unitName, SearchUnit searchUnit) throws Exception {
         log.info("Upserting search unit {} in etcd", unitName);
         
         try {
-            String unitPath = pathResolver.getSearchUnitConfPath(unitName);
+            String unitPath = pathResolver.getSearchUnitConfPath(clusterId, unitName);
             storeObjectAsJson(unitPath, searchUnit);
             
             log.info("Successfully upserted search unit {} in etcd", unitName);
@@ -298,12 +286,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public void updateSearchUnit(SearchUnit searchUnit) throws Exception {
+    public void updateSearchUnit(String clusterId, SearchUnit searchUnit) throws Exception {
         log.debug("Updating search unit {} in etcd", searchUnit.getName());
         
         try {
-            String unitPath = pathResolver.getSearchUnitConfPath(searchUnit.getName());
+            String unitPath = pathResolver.getSearchUnitConfPath(clusterId, searchUnit.getName());
             storeObjectAsJson(unitPath, searchUnit);
             
             log.debug("Successfully updated search unit {} in etcd", searchUnit.getName());
@@ -314,12 +301,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public void deleteSearchUnit(String unitName) throws Exception {
+    public void deleteSearchUnit(String clusterId, String unitName) throws Exception {
         log.info("Deleting search unit {} from etcd", unitName);
         
         try {
-            String unitPath = pathResolver.getSearchUnitConfPath(unitName);
+            String unitPath = pathResolver.getSearchUnitConfPath(clusterId, unitName);
             executeEtcdDelete(unitPath);
             
             log.info("Successfully deleted search unit {} from etcd", unitName);
@@ -334,9 +320,8 @@ public class EtcdMetadataStore implements MetadataStore {
     // SEARCH UNIT STATE OPERATIONS (for discovery)
     // =================================================================
     
-    @Override
-    public Map<String, SearchUnitActualState> getAllSearchUnitActualStates() throws Exception {
-        String prefix = pathResolver.getSearchUnitsPrefix();
+    public Map<String, SearchUnitActualState> getAllSearchUnitActualStates(String clusterId) throws Exception {
+        String prefix = pathResolver.getSearchUnitsPrefix(clusterId);
         GetOption option = GetOption.newBuilder()
                 .withPrefix(ByteSequence.from(prefix, UTF_8))
                 .build();
@@ -369,9 +354,8 @@ public class EtcdMetadataStore implements MetadataStore {
         return actualStates;
     }
     
-    @Override
-    public Optional<SearchUnitGoalState> getSearchUnitGoalState(String unitName) throws Exception {
-        String key = pathResolver.getSearchUnitGoalStatePath(unitName);
+    public Optional<SearchUnitGoalState> getSearchUnitGoalState(String clusterId, String unitName) throws Exception {
+        String key = pathResolver.getSearchUnitGoalStatePath(clusterId, unitName);
         CompletableFuture<GetResponse> getFuture = kvClient.get(ByteSequence.from(key, UTF_8));
         GetResponse response = getFuture.get();
         
@@ -385,9 +369,8 @@ public class EtcdMetadataStore implements MetadataStore {
         return Optional.of(goalState);
     }
     
-    @Override
-    public Optional<SearchUnitActualState> getSearchUnitActualState(String unitName) throws Exception {
-        String key = pathResolver.getSearchUnitActualStatePath(unitName);
+    public Optional<SearchUnitActualState> getSearchUnitActualState(String clusterId, String unitName) throws Exception {
+        String key = pathResolver.getSearchUnitActualStatePath(clusterId, unitName);
         CompletableFuture<GetResponse> getFuture = kvClient.get(ByteSequence.from(key, UTF_8));
         GetResponse response = getFuture.get();
         
@@ -404,12 +387,11 @@ public class EtcdMetadataStore implements MetadataStore {
     // INDEX CONFIGURATIONS OPERATIONS
     // =================================================================
     
-    @Override
-    public List<String> getAllIndexConfigs() throws Exception {
+    public List<String> getAllIndexConfigs(String clusterId) throws Exception {
         log.debug("Getting all index configs from etcd");
         
         try {
-            String indicesPrefix = pathResolver.getIndicesPrefix();
+            String indicesPrefix = pathResolver.getIndicesPrefix(clusterId);
             GetResponse response = executeEtcdPrefixQuery(indicesPrefix);
             
             List<String> indexConfigs = new ArrayList<>();
@@ -427,12 +409,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public Optional<String> getIndexConfig(String indexName) throws Exception {
+    public Optional<String> getIndexConfig(String clusterId, String indexName) throws Exception {
         log.debug("Getting index config {} from etcd", indexName);
         
         try {
-            String indexPath = pathResolver.getIndexConfPath(indexName);
+            String indexPath = pathResolver.getIndexConfPath(clusterId, indexName);
             GetResponse response = executeEtcdGet(indexPath);
             
             if (response.getCount() == 0) {
@@ -451,12 +432,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public String createIndexConfig(String indexName, String indexConfig) throws Exception {
+    public String createIndexConfig(String clusterId, String indexName, String indexConfig) throws Exception {
         log.info("Creating index config {} in etcd", indexName);
         
         try {
-            String indexPath = pathResolver.getIndexConfPath(indexName);
+            String indexPath = pathResolver.getIndexConfPath(clusterId, indexName);
             executeEtcdPut(indexPath, indexConfig);
             
             log.info("Successfully created index config {} in etcd", indexName);
@@ -468,12 +448,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public void updateIndexConfig(String indexName, String indexConfig) throws Exception {
+    public void updateIndexConfig(String clusterId, String indexName, String indexConfig) throws Exception {
         log.debug("Updating index config {} in etcd", indexName);
         
         try {
-            String indexPath = pathResolver.getIndexConfPath(indexName);
+            String indexPath = pathResolver.getIndexConfPath(clusterId, indexName);
             executeEtcdPut(indexPath, indexConfig);
             
             log.debug("Successfully updated index config {} in etcd", indexName);
@@ -484,12 +463,11 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public void deleteIndexConfig(String indexName) throws Exception {
+    public void deleteIndexConfig(String clusterId, String indexName) throws Exception {
         log.info("Deleting index config {} from etcd", indexName);
         
         try {
-            String indexPath = pathResolver.getIndexConfPath(indexName);
+            String indexPath = pathResolver.getIndexConfPath(clusterId, indexName);
             executeEtcdDelete(indexPath);
             
             log.info("Successfully deleted index config {} from etcd", indexName);
@@ -504,14 +482,12 @@ public class EtcdMetadataStore implements MetadataStore {
     // CLUSTER OPERATIONS
     // =================================================================
     
-    @Override
     public void initialize() throws Exception {
         log.info("Initialize called - already done in constructor");
         // Start leader election process
         startLeaderElection();
     }
     
-    @Override
     public void close() throws Exception {
         log.info("Closing etcd metadata store");
         
@@ -526,10 +502,6 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
-    @Override
-    public String getClusterName() {
-        return clusterName;
-    }
     
     /**
      * Get the path resolver for external use
@@ -633,8 +605,9 @@ public class EtcdMetadataStore implements MetadataStore {
     // CONTROLLER TASKS OPERATIONS
     // =================================================================
     public CompletableFuture<Boolean> startLeaderElection() {
+        // TODO: Implement distributed locking mechanism and leader election support for multiple OS clusters in future
         Election election = etcdClient.getElectionClient();
-        String electionKey = clusterName + ELECTION_KEY_SUFFIX;
+        String electionKey = io.clustercontroller.config.Constants.DEFAULT_CLUSTER_NAME + ELECTION_KEY_SUFFIX;
 
         CompletableFuture<Boolean> result = new CompletableFuture<>();
 
@@ -650,15 +623,12 @@ public class EtcdMetadataStore implements MetadataStore {
                 long leaseId = leaseGrant.getID();
 
                 etcdClient.getLeaseClient().keepAlive(leaseId, new StreamObserver<LeaseKeepAliveResponse>() {
-                    @Override
                     public void onNext(LeaseKeepAliveResponse res) {}
-                    @Override
                     public void onError(Throwable t) {
                         log.error("KeepAlive error: {}", t.getMessage());
                         isLeader.set(false);
                         result.completeExceptionally(t);
                     }
-                    @Override
                     public void onCompleted() {
                         isLeader.set(false);
                     }

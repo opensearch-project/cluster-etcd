@@ -23,8 +23,8 @@ class IndexResponseTest {
         IndexResponse response = IndexResponse.createSuccess("test-index");
         
         // Then
-        assertThat(response.getAcknowledged()).isTrue();
-        assertThat(response.getShardsAcknowledged()).isTrue();
+        assertThat(response.isAcknowledged()).isTrue();
+        assertThat(response.isShardsAcknowledged()).isTrue();
         assertThat(response.getIndex()).isEqualTo("test-index");
         assertThat(response.getSettings()).isNull();
         assertThat(response.getMappings()).isNull();
@@ -36,8 +36,8 @@ class IndexResponseTest {
         IndexResponse response = IndexResponse.deleteSuccess("test-index");
         
         // Then
-        assertThat(response.getAcknowledged()).isTrue();
-        assertThat(response.getShardsAcknowledged()).isNull(); // Not set for delete
+        assertThat(response.isAcknowledged()).isTrue();
+        assertThat(response.isShardsAcknowledged()).isFalse(); // Not set for delete, defaults to false
         assertThat(response.getIndex()).isEqualTo("test-index");
     }
     
@@ -78,8 +78,8 @@ class IndexResponseTest {
         IndexResponse response = objectMapper.readValue(json, IndexResponse.class);
         
         // Then
-        assertThat(response.getAcknowledged()).isTrue();
-        assertThat(response.getShardsAcknowledged()).isFalse();
+        assertThat(response.isAcknowledged()).isTrue();
+        assertThat(response.isShardsAcknowledged()).isFalse();
         assertThat(response.getIndex()).isEqualTo("test-index");
         assertThat(response.getSettings()).containsEntry("number_of_shards", 2);
         assertThat(response.getMappings()).isNull();
@@ -101,8 +101,8 @@ class IndexResponseTest {
             .build();
         
         // Then
-        assertThat(response.getAcknowledged()).isTrue();
-        assertThat(response.getShardsAcknowledged()).isFalse();
+        assertThat(response.isAcknowledged()).isTrue();
+        assertThat(response.isShardsAcknowledged()).isFalse();
         assertThat(response.getIndex()).isEqualTo("custom-index");
         assertThat(response.getSettings()).isEqualTo(settings);
         assertThat(response.getMappings()).isEqualTo(mappings);

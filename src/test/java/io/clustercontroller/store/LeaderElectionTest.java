@@ -58,7 +58,7 @@ class LeaderElectionTest {
         
         // Create test instance with mocked dependencies
         String testNodeId = "test-node-1";
-        etcdStore = EtcdMetadataStore.createTestInstance(clusterName, etcdEndpoints, testNodeId, etcdClient, kvClient);
+        etcdStore = EtcdMetadataStore.createTestInstance(etcdEndpoints, testNodeId, etcdClient, kvClient);
     }
 
     @Test
@@ -259,8 +259,8 @@ class LeaderElectionTest {
         try {
             // Reset and try to create a new instance - this will call getNodeId()
             EtcdMetadataStore.resetInstance();
-            EtcdMetadataStore.createTestInstance("test-cluster-missing-name", 
-                    new String[]{"http://localhost:2379"}, "test-node-missing", etcdClient, kvClient);
+            EtcdMetadataStore.createTestInstance(new String[]{"http://localhost:2379"}, 
+                    "test-node-missing", etcdClient, kvClient);
             
             // If we get here, NODE_NAME was set in the environment
             // This is fine - the behavior is documented
@@ -295,9 +295,9 @@ class LeaderElectionTest {
         Boolean isLeader = electionResult.get(5, TimeUnit.SECONDS);
         assertTrue(isLeader);
         
-        // Verify that the election key is formed correctly
+        // Verify that the election key is formed correctly (using default cluster name)
         verify(electionClient).campaign(
-                argThat(key -> key.toString().contains(clusterName + "-election")),
+                argThat(key -> key.toString().contains("default-cluster-election")),
                 eq(12345L),
                 any(ByteSequence.class)
         );

@@ -27,6 +27,7 @@ public class PlanShardAllocationTask implements Task {
         
         try {
             // TODO: Call ShardAllocationPlanner.plan() method when implemented
+            log.info("Shard allocation planning - implementation pending");
             return TASK_STATUS_COMPLETED;
         } catch (Exception e) {
             log.error("Failed to execute plan shard allocation task: {}", e.getMessage(), e);
@@ -34,3 +35,4 @@ public class PlanShardAllocationTask implements Task {
         }
     }
 }
+

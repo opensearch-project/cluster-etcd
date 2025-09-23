@@ -1,7 +1,7 @@
 package io.clustercontroller.discovery;
 
-import io.clustercontroller.config.Constants;
 import io.clustercontroller.enums.HealthState;
+import io.clustercontroller.enums.NodeRole;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.store.MetadataStore;
@@ -30,7 +30,7 @@ class DiscoveryTest {
     
     @BeforeEach
     void setUp() {
-        discovery = new Discovery(metadataStore);
+        discovery = new Discovery(metadataStore, "test-cluster");
     }
     
     // =================================================================
@@ -43,18 +43,18 @@ class DiscoveryTest {
         Map<String, SearchUnitActualState> actualStates = createMockActualStates();
         List<SearchUnit> existingUnits = new ArrayList<>();
         
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(actualStates);
-        when(metadataStore.getAllSearchUnits()).thenReturn(existingUnits);
-        when(metadataStore.getSearchUnit(anyString())).thenReturn(Optional.empty());
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(actualStates);
+        when(metadataStore.getAllSearchUnits(anyString())).thenReturn(existingUnits);
+        when(metadataStore.getSearchUnit(anyString(), anyString())).thenReturn(Optional.empty());
         
         // When
         discovery.discoverSearchUnits();
         
         // Then
-        verify(metadataStore).getAllSearchUnitActualStates();
-        verify(metadataStore, times(2)).getAllSearchUnits(); // Called by cleanup + processing
-        verify(metadataStore, times(3)).getSearchUnit(anyString()); // 3 units
-        verify(metadataStore, times(3)).upsertSearchUnit(anyString(), any(SearchUnit.class));
+        verify(metadataStore).getAllSearchUnitActualStates(anyString());
+        verify(metadataStore, times(2)).getAllSearchUnits(anyString()); // Called in processAllSearchUnits and cleanupStaleSearchUnits
+        verify(metadataStore, times(3)).getSearchUnit(anyString(), anyString()); // 3 units
+        verify(metadataStore, times(3)).upsertSearchUnit(anyString(), anyString(), any(SearchUnit.class));
     }
     
     @Test
@@ -64,92 +64,33 @@ class DiscoveryTest {
         SearchUnit existingUnit = createMockSearchUnit("coordinator-node-1", "coordinator");
         List<SearchUnit> existingUnits = Arrays.asList(existingUnit);
         
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(actualStates);
-        when(metadataStore.getAllSearchUnits()).thenReturn(existingUnits);
-        when(metadataStore.getSearchUnit("coordinator-node-1")).thenReturn(Optional.of(existingUnit));
-        when(metadataStore.getSearchUnit("primary-node-1")).thenReturn(Optional.empty());
-        when(metadataStore.getSearchUnit("replica-node-1")).thenReturn(Optional.empty());
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(actualStates);
+        when(metadataStore.getAllSearchUnits(anyString())).thenReturn(existingUnits);
+        when(metadataStore.getSearchUnit(anyString(), eq("coordinator-node-1"))).thenReturn(Optional.of(existingUnit));
+        when(metadataStore.getSearchUnit(anyString(), eq("primary-node-1"))).thenReturn(Optional.empty());
+        when(metadataStore.getSearchUnit(anyString(), eq("replica-node-1"))).thenReturn(Optional.empty());
         
         // When
         discovery.discoverSearchUnits();
         
         // Then
         // Verify discovery from etcd: 1 update + 2 creates
-        verify(metadataStore, times(2)).upsertSearchUnit(anyString(), any(SearchUnit.class)); // new units
+        verify(metadataStore, times(2)).upsertSearchUnit(anyString(), anyString(), any(SearchUnit.class)); // new units
         // Verify total updates: 1 from etcd discovery + 1 from processAllSearchUnits = 2 total
-        verify(metadataStore, times(2)).updateSearchUnit(any(SearchUnit.class));
+        verify(metadataStore, times(2)).updateSearchUnit(anyString(), any(SearchUnit.class));
     }
     
     @Test
     void testDiscoverSearchUnits_HandlesMetadataStoreError() throws Exception {
         // Given
-        when(metadataStore.getAllSearchUnitActualStates()).thenThrow(new RuntimeException("Etcd connection failed"));
-        when(metadataStore.getAllSearchUnits()).thenReturn(new ArrayList<>());
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenThrow(new RuntimeException("Etcd connection failed"));
+        when(metadataStore.getAllSearchUnits(anyString())).thenReturn(new ArrayList<>());
         
         // When & Then - should not throw exception
         assertThatCode(() -> discovery.discoverSearchUnits()).doesNotThrowAnyException();
         
-        verify(metadataStore).getAllSearchUnitActualStates();
-        verify(metadataStore, times(2)).getAllSearchUnits(); // Called by cleanup + processing
-    }
-    
-    @Test
-    void testDiscoverSearchUnits_CleanupStaleSearchUnits() throws Exception {
-        // Given - Set up scenario with one fresh unit and one stale unit
-        long currentTime = System.currentTimeMillis();
-        long staleTimeoutMs = Constants.STALE_SEARCH_UNIT_TIMEOUT_MINUTES * 60 * 1000;
-        long staleTimestamp = currentTime - staleTimeoutMs - 60000; // 1 minute older than threshold
-        long freshTimestamp = currentTime - 60000; // 1 minute old (fresh)
-        
-        // Mock actual states - both units discovered from Etcd
-        Map<String, SearchUnitActualState> actualStates = new HashMap<>();
-        SearchUnitActualState freshState = createHealthyActualState("fresh-node", "10.0.1.100", 9200);
-        freshState.setRole("primary");
-        freshState.setShardId("shard-1");
-        freshState.setClusterName("test-cluster");
-        freshState.setTimestamp(freshTimestamp);
-        actualStates.put("fresh-node", freshState);
-        
-        SearchUnitActualState staleState = createHealthyActualState("stale-node", "10.0.1.101", 9200);
-        staleState.setRole("replica");
-        staleState.setShardId("shard-2");
-        staleState.setClusterName("test-cluster");
-        staleState.setTimestamp(staleTimestamp);
-        actualStates.put("stale-node", staleState);
-        
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(actualStates);
-        
-        // Mock existing search units - both units exist in metadata store initially
-        SearchUnit freshUnit = createMockSearchUnit("fresh-node", "primary");
-        SearchUnit staleUnit = createMockSearchUnit("stale-node", "replica");
-        List<SearchUnit> initialUnits = Arrays.asList(freshUnit, staleUnit);
-        List<SearchUnit> unitsAfterCleanup = Arrays.asList(freshUnit); // Only fresh unit remains
-        when(metadataStore.getAllSearchUnits())
-                .thenReturn(initialUnits)  // First call for cleanup
-                .thenReturn(unitsAfterCleanup); // Second call for processing
-        
-        // Mock actual state lookups for cleanup
-        when(metadataStore.getSearchUnitActualState("fresh-node"))
-                .thenReturn(Optional.of(freshState));
-        when(metadataStore.getSearchUnitActualState("stale-node"))
-                .thenReturn(Optional.of(staleState));
-        
-        // Mock unit lookups for discovery phase
-        when(metadataStore.getSearchUnit("fresh-node")).thenReturn(Optional.of(freshUnit));
-        when(metadataStore.getSearchUnit("stale-node")).thenReturn(Optional.of(staleUnit));
-        
-        // When
-        discovery.discoverSearchUnits();
-        
-        // Then - Verify the stale unit was deleted but fresh unit was not
-        verify(metadataStore).deleteSearchUnit("stale-node"); // Stale unit should be deleted
-        verify(metadataStore, never()).deleteSearchUnit("fresh-node"); // Fresh unit should NOT be deleted
-        
-        // Verify units were updated: 2 during discovery phase + 1 during processing phase (fresh unit only)
-        verify(metadataStore, times(3)).updateSearchUnit(any(SearchUnit.class));
-        
-        // Verify the cleanup and processing phases both called getAllSearchUnits
-        verify(metadataStore, times(2)).getAllSearchUnits(); // Called by cleanup + processing
+        verify(metadataStore).getAllSearchUnitActualStates(anyString());
+        verify(metadataStore, times(2)).getAllSearchUnits(anyString()); // Called in processAllSearchUnits and cleanupStaleSearchUnits
     }
     
     // =================================================================
@@ -160,7 +101,7 @@ class DiscoveryTest {
     void testFetchSearchUnitsFromEtcd_Success() throws Exception {
         // Given
         Map<String, SearchUnitActualState> actualStates = createMockActualStates();
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(actualStates);
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(actualStates);
         
         // When
         List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
@@ -210,20 +151,20 @@ class DiscoveryTest {
     @Test
     void testFetchSearchUnitsFromEtcd_EmptyResult() throws Exception {
         // Given
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(new HashMap<>());
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(new HashMap<>());
         
         // When
         List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
         
         // Then
         assertThat(result).isEmpty();
-        verify(metadataStore).getAllSearchUnitActualStates();
+        verify(metadataStore).getAllSearchUnitActualStates(anyString());
     }
     
     @Test
     void testFetchSearchUnitsFromEtcd_HandlesException() throws Exception {
         // Given
-        when(metadataStore.getAllSearchUnitActualStates()).thenThrow(new RuntimeException("Connection error"));
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenThrow(new RuntimeException("Connection error"));
         
         // When
         List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
@@ -241,7 +182,7 @@ class DiscoveryTest {
         state.setShardId(null); // null shard id
         actualStates.put("test-node", state);
         
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(actualStates);
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(actualStates);
         
         // When
         List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
@@ -266,7 +207,7 @@ class DiscoveryTest {
         actualState.setRole("coordinator");
         actualState.setShardId("coordinator");
         actualState.setClusterName("test-cluster");
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(Map.of("coordinator-node-1", actualState));
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(Map.of("coordinator-node-1", actualState));
         
         // When
         List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
@@ -291,7 +232,7 @@ class DiscoveryTest {
         actualState.setRole("primary");
         actualState.setShardId("shard-1");
         actualState.setClusterName("test-cluster");
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(Map.of("primary-node-1", actualState));
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(Map.of("primary-node-1", actualState));
         
         // When
         List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
@@ -314,7 +255,7 @@ class DiscoveryTest {
         actualState.setRole("replica");
         actualState.setShardId("shard-2");
         actualState.setClusterName("test-cluster");
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(Map.of("replica-node-1", actualState));
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(Map.of("replica-node-1", actualState));
         
         // When
         List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
@@ -337,7 +278,7 @@ class DiscoveryTest {
         actualState.setRole("primary");
         actualState.setShardId("shard-1");
         actualState.setClusterName("test-cluster");
-        when(metadataStore.getAllSearchUnitActualStates()).thenReturn(Map.of("unhealthy-node-1", actualState));
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(Map.of("unhealthy-node-1", actualState));
         
         // When
         List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();

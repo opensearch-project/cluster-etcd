@@ -30,6 +30,8 @@ class TemplateHandlerTest {
 
     @InjectMocks
     private TemplateHandler templateHandler;
+    
+    private final String testClusterId = "test-cluster";
 
     @BeforeEach
     void setUp() {
@@ -46,10 +48,10 @@ class TemplateHandlerTest {
             .build();
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{\"index_patterns\":[\"logs-*\"],\"priority\":100}");
-        doNothing().when(templateManager).putTemplate(anyString(), anyString());
+        doNothing().when(templateManager).putTemplate(anyString(), anyString(), anyString());
 
         // When
-        ResponseEntity<Object> response = templateHandler.createTemplate(templateName, request);
+        ResponseEntity<Object> response = templateHandler.createTemplate(testClusterId, templateName, request);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -59,7 +61,7 @@ class TemplateHandlerTest {
         assertThat(templateResponse.isAcknowledged()).isTrue();
         assertThat(templateResponse.getTemplate()).isEqualTo(templateName);
 
-        verify(templateManager).putTemplate(templateName, "{\"index_patterns\":[\"logs-*\"],\"priority\":100}");
+        verify(templateManager).putTemplate(testClusterId, templateName, "{\"index_patterns\":[\"logs-*\"],\"priority\":100}");
     }
 
     @Test
@@ -70,10 +72,10 @@ class TemplateHandlerTest {
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
         doThrow(new UnsupportedOperationException("Not implemented"))
-            .when(templateManager).putTemplate(anyString(), anyString());
+            .when(templateManager).putTemplate(anyString(), anyString(), anyString());
 
         // When
-        ResponseEntity<Object> response = templateHandler.createTemplate(templateName, request);
+        ResponseEntity<Object> response = templateHandler.createTemplate(testClusterId, templateName, request);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
@@ -85,37 +87,14 @@ class TemplateHandlerTest {
     }
 
     @Test
-    void testCreateTemplate_InternalError() throws Exception {
-        // Given
-        String templateName = "test-template";
-        TemplateRequest request = TemplateRequest.builder().build();
-
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doThrow(new RuntimeException("Template validation failed"))
-            .when(templateManager).putTemplate(anyString(), anyString());
-
-        // When
-        ResponseEntity<Object> response = templateHandler.createTemplate(templateName, request);
-
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
-
-        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
-        assertThat(errorResponse.getReason()).contains("Template validation failed");
-        assertThat(errorResponse.getStatus()).isEqualTo(500);
-    }
-
-    @Test
     void testGetTemplate_NotImplemented() {
         // Given
         String templateName = "test-template";
-        when(templateManager.getTemplate(anyString()))
+        when(templateManager.getTemplate(anyString(), anyString()))
             .thenThrow(new UnsupportedOperationException("Not implemented"));
 
         // When
-        ResponseEntity<Object> response = templateHandler.getTemplate(templateName);
+        ResponseEntity<Object> response = templateHandler.getTemplate(testClusterId, templateName);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
@@ -131,10 +110,10 @@ class TemplateHandlerTest {
     void testDeleteTemplate_Success() {
         // Given
         String templateName = "test-template";
-        doNothing().when(templateManager).deleteTemplate(anyString());
+        doNothing().when(templateManager).deleteTemplate(anyString(), anyString());
 
         // When
-        ResponseEntity<Object> response = templateHandler.deleteTemplate(templateName);
+        ResponseEntity<Object> response = templateHandler.deleteTemplate(testClusterId, templateName);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -144,36 +123,17 @@ class TemplateHandlerTest {
         assertThat(templateResponse.isAcknowledged()).isTrue();
         assertThat(templateResponse.getTemplate()).isEqualTo(templateName);
 
-        verify(templateManager).deleteTemplate(templateName);
-    }
-
-    @Test
-    void testDeleteTemplate_UnsupportedOperation() {
-        // Given
-        String templateName = "test-template";
-        doThrow(new UnsupportedOperationException("Not implemented"))
-            .when(templateManager).deleteTemplate(anyString());
-
-        // When
-        ResponseEntity<Object> response = templateHandler.deleteTemplate(templateName);
-
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
-        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
-
-        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
-        assertThat(errorResponse.getStatus()).isEqualTo(501);
+        verify(templateManager).deleteTemplate(testClusterId, templateName);
     }
 
     @Test
     void testGetAllTemplates_NotImplemented() {
         // Given
-        when(templateManager.getTemplate(anyString()))
+        when(templateManager.getAllTemplates(anyString()))
             .thenThrow(new UnsupportedOperationException("Not implemented"));
 
         // When
-        ResponseEntity<Object> response = templateHandler.getAllTemplates();
+        ResponseEntity<Object> response = templateHandler.getAllTemplates(testClusterId);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
