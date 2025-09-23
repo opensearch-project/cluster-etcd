@@ -20,8 +20,8 @@ import java.util.Map;
 @JsonInclude(JsonInclude.Include.NON_EMPTY)
 @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public class IndexResponse {
-    private Boolean acknowledged;
-    private Boolean shardsAcknowledged;
+    private boolean acknowledged;
+    private boolean shardsAcknowledged;
     private String index;
     private Map<String, Object> settings;
     private Map<String, Object> mappings;

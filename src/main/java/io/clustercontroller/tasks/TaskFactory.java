@@ -19,18 +19,6 @@ public class TaskFactory {
         String taskName = metadata.getName();
         
         return switch (taskName) {
-            case TASK_ACTION_CREATE_INDEX -> new CreateIndexTask(
-                metadata.getName(),
-                metadata.getPriority(),
-                metadata.getInput(),
-                metadata.getSchedule()
-            );
-            case TASK_ACTION_DELETE_INDEX -> new DeleteIndexTask(
-                metadata.getName(),
-                metadata.getPriority(),
-                metadata.getInput(),
-                metadata.getSchedule()
-            );
             case TASK_ACTION_DISCOVER_SEARCH_UNIT -> new DiscoverSearchUnitTask(
                 metadata.getName(),
                 metadata.getPriority(),

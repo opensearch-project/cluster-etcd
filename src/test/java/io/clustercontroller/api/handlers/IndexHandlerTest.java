@@ -7,155 +7,253 @@ import io.clustercontroller.indices.IndexManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
 import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.MockitoAnnotations;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
-@ExtendWith(MockitoExtension.class)
 class IndexHandlerTest {
 
     @Mock
     private IndexManager indexManager;
-    
+
     @Mock
     private ObjectMapper objectMapper;
-    
+
+    @InjectMocks
     private IndexHandler indexHandler;
-    
+
+    private final String testClusterId = "test-cluster";
+    private final String testIndexName = "test-index";
+
     @BeforeEach
     void setUp() {
-        indexHandler = new IndexHandler(indexManager, objectMapper);
+        MockitoAnnotations.openMocks(this);
     }
-    
+
     @Test
     void testCreateIndex_Success() throws Exception {
         // Given
-        String indexName = "test-index";
-        IndexRequest request = IndexRequest.builder()
-            .settings(Map.of("replicas", 1))
-            .build();
-        
-        when(objectMapper.writeValueAsString(any())).thenReturn("{\"settings\":{\"replicas\":1}}");
-        doNothing().when(indexManager).createIndex(anyString());
-        
+        IndexRequest request = IndexRequest.builder().build();
+
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        doNothing().when(indexManager).createIndex(anyString(), anyString(), anyString());
+
         // When
-        ResponseEntity<Object> response = indexHandler.createIndex(indexName, request);
-        
+        ResponseEntity<Object> response = indexHandler.createIndex(testClusterId, testIndexName, request);
+
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(response.getBody()).isInstanceOf(IndexResponse.class);
-        
+
         IndexResponse indexResponse = (IndexResponse) response.getBody();
-        assertThat(indexResponse.getAcknowledged()).isTrue();
-        assertThat(indexResponse.getShardsAcknowledged()).isTrue();
-        assertThat(indexResponse.getIndex()).isEqualTo(indexName);
-        
-        verify(indexManager).createIndex("{\"settings\":{\"replicas\":1}}");
+        assertThat(indexResponse.isAcknowledged()).isTrue();
+        assertThat(indexResponse.isShardsAcknowledged()).isTrue();
+        assertThat(indexResponse.getIndex()).isEqualTo(testIndexName);
+
+        verify(indexManager).createIndex(testClusterId, testIndexName, "{}");
     }
-    
-    @Test
-    void testCreateIndex_WithNullRequest() throws Exception {
-        // Given
-        String indexName = "test-index";
-        
-        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doNothing().when(indexManager).createIndex(anyString());
-        
-        // When
-        ResponseEntity<Object> response = indexHandler.createIndex(indexName, null);
-        
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        verify(indexManager).createIndex("{}");
-    }
-    
+
     @Test
     void testCreateIndex_UnsupportedOperation() throws Exception {
         // Given
-        String indexName = "test-index";
         IndexRequest request = IndexRequest.builder().build();
-        
+
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
         doThrow(new UnsupportedOperationException("Not implemented"))
-            .when(indexManager).createIndex(anyString());
-        
+            .when(indexManager).createIndex(anyString(), anyString(), anyString());
+
         // When
-        ResponseEntity<Object> response = indexHandler.createIndex(indexName, request);
-        
+        ResponseEntity<Object> response = indexHandler.createIndex(testClusterId, testIndexName, request);
+
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
         assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
-        
+
         ErrorResponse errorResponse = (ErrorResponse) response.getBody();
         assertThat(errorResponse.getError()).isEqualTo("not_implemented");
         assertThat(errorResponse.getStatus()).isEqualTo(501);
     }
-    
+
     @Test
     void testCreateIndex_InternalError() throws Exception {
         // Given
-        String indexName = "test-index";
         IndexRequest request = IndexRequest.builder().build();
-        
+
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
         doThrow(new RuntimeException("Database error"))
-            .when(indexManager).createIndex(anyString());
-        
+            .when(indexManager).createIndex(anyString(), anyString(), anyString());
+
         // When
-        ResponseEntity<Object> response = indexHandler.createIndex(indexName, request);
-        
+        ResponseEntity<Object> response = indexHandler.createIndex(testClusterId, testIndexName, request);
+
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
-        
+
         ErrorResponse errorResponse = (ErrorResponse) response.getBody();
         assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
+        assertThat(errorResponse.getReason()).contains("Database error");
         assertThat(errorResponse.getStatus()).isEqualTo(500);
     }
-    
-    @Test
-    void testGetIndex_NotImplemented() {
-        // Given
-        String indexName = "test-index";
-        
-        when(indexManager.getIndex(indexName))
-            .thenThrow(new UnsupportedOperationException("Not implemented"));
-        
-        // When
-        ResponseEntity<Object> response = indexHandler.getIndex(indexName);
-        
-        // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
-    }
-    
+
     @Test
     void testDeleteIndex_Success() {
         // Given
-        String indexName = "test-index";
-        
-        doNothing().when(indexManager).deleteIndex(indexName);
-        
+        doNothing().when(indexManager).deleteIndex(anyString(), anyString());
+
         // When
-        ResponseEntity<Object> response = indexHandler.deleteIndex(indexName);
-        
+        ResponseEntity<Object> response = indexHandler.deleteIndex(testClusterId, testIndexName);
+
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isInstanceOf(IndexResponse.class);
-        
+
         IndexResponse indexResponse = (IndexResponse) response.getBody();
-        assertThat(indexResponse.getAcknowledged()).isTrue();
-        assertThat(indexResponse.getIndex()).isEqualTo(indexName);
-        
-        verify(indexManager).deleteIndex(indexName);
+        assertThat(indexResponse.isAcknowledged()).isTrue();
+        assertThat(indexResponse.isShardsAcknowledged()).isTrue();
+        assertThat(indexResponse.getIndex()).isEqualTo(testIndexName);
+
+        verify(indexManager).deleteIndex(testClusterId, testIndexName);
+    }
+
+    @Test
+    void testDeleteIndex_UnsupportedOperation() {
+        // Given
+        doThrow(new UnsupportedOperationException("Not implemented"))
+            .when(indexManager).deleteIndex(anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response = indexHandler.deleteIndex(testClusterId, testIndexName);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
+        assertThat(errorResponse.getStatus()).isEqualTo(501);
+    }
+
+    @Test
+    void testGetIndex_NotImplemented() {
+        // Given
+        when(indexManager.getIndex(anyString(), anyString()))
+            .thenThrow(new UnsupportedOperationException("Not implemented"));
+
+        // When
+        ResponseEntity<Object> response = indexHandler.getIndex(testClusterId, testIndexName);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
+        assertThat(errorResponse.getStatus()).isEqualTo(501);
+    }
+
+    @Test
+    void testGetIndexSettings_NotImplemented() {
+        // Given
+        when(indexManager.getSettings(anyString(), anyString()))
+            .thenThrow(new UnsupportedOperationException("Not implemented"));
+
+        // When
+        ResponseEntity<Object> response = indexHandler.getIndexSettings(testClusterId, testIndexName);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
+        assertThat(errorResponse.getStatus()).isEqualTo(501);
+    }
+
+    @Test
+    void testUpdateIndexSettings_Success() {
+        // Given
+        String settingsJson = "{\"refresh_interval\":\"30s\"}";
+        doNothing().when(indexManager).updateSettings(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response = indexHandler.updateIndexSettings(testClusterId, testIndexName, settingsJson);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isInstanceOf(IndexResponse.class);
+
+        IndexResponse indexResponse = (IndexResponse) response.getBody();
+        assertThat(indexResponse.isAcknowledged()).isTrue();
+        assertThat(indexResponse.getIndex()).isEqualTo(testIndexName);
+
+        verify(indexManager).updateSettings(testClusterId, testIndexName, settingsJson);
+    }
+
+    @Test
+    void testGetIndexMapping_NotImplemented() {
+        // Given
+        when(indexManager.getMapping(anyString(), anyString()))
+            .thenThrow(new UnsupportedOperationException("Not implemented"));
+
+        // When
+        ResponseEntity<Object> response = indexHandler.getIndexMapping(testClusterId, testIndexName);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
+        assertThat(errorResponse.getStatus()).isEqualTo(501);
+    }
+
+    @Test
+    void testUpdateIndexMapping_Success() {
+        // Given
+        String mappingJson = "{\"properties\":{\"title\":{\"type\":\"text\"}}}";
+        doNothing().when(indexManager).updateMapping(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response = indexHandler.updateIndexMapping(testClusterId, testIndexName, mappingJson);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isInstanceOf(IndexResponse.class);
+
+        IndexResponse indexResponse = (IndexResponse) response.getBody();
+        assertThat(indexResponse.isAcknowledged()).isTrue();
+        assertThat(indexResponse.getIndex()).isEqualTo(testIndexName);
+
+        verify(indexManager).updateMapping(testClusterId, testIndexName, mappingJson);
+    }
+
+    @Test
+    void testMultiClusterSupport() throws Exception {
+        // Test that different cluster IDs are handled properly
+        String cluster1 = "cluster1";
+        String cluster2 = "cluster2";
+        IndexRequest request = IndexRequest.builder().build();
+
+        when(objectMapper.writeValueAsString(any())).thenReturn("{}");
+        doNothing().when(indexManager).createIndex(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response1 = indexHandler.createIndex(cluster1, testIndexName, request);
+        ResponseEntity<Object> response2 = indexHandler.createIndex(cluster2, testIndexName, request);
+
+        // Then
+        assertThat(response1.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response2.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        verify(indexManager).createIndex(cluster1, testIndexName, "{}");
+        verify(indexManager).createIndex(cluster2, testIndexName, "{}");
     }
 }

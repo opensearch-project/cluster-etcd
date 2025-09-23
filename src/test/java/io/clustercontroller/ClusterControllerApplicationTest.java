@@ -52,8 +52,8 @@ class ClusterControllerApplicationTest {
         
         // Create test instance with mocked dependencies
         String testNodeId = "test-node-1";
-        etcdStore = EtcdMetadataStore.createTestInstance("test-cluster", 
-                new String[]{"http://localhost:2379"}, testNodeId, etcdClient, kvClient);
+        etcdStore = EtcdMetadataStore.createTestInstance(new String[]{"http://localhost:2379"}, 
+                testNodeId, etcdClient, kvClient);
     }
 
     @Test
@@ -205,8 +205,8 @@ class ClusterControllerApplicationTest {
         try {
             // If NODE_NAME happens to be set in test environment, this will succeed
             // If not set, this will throw IllegalStateException as expected
-            EtcdMetadataStore.createTestInstance("test-cluster-2", 
-                    new String[]{"http://localhost:2379"}, "test-node-2", etcdClient, kvClient);
+            EtcdMetadataStore.createTestInstance(new String[]{"http://localhost:2379"}, 
+                    "test-node-2", etcdClient, kvClient);
             
             // If we get here, NODE_NAME was set in the environment
             assertTrue(true, "NODE_NAME environment variable is set");

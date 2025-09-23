@@ -11,21 +11,21 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * REST API handler for index template operations.
+ * REST API handler for index template operations with multi-cluster support.
  *
  * Provides endpoints for creating, reading, updating, and deleting index templates.
  * Templates define default settings, mappings, and aliases that are automatically
  * applied to new indices matching specified patterns.
  *
- * Supported operations:
- * - PUT /_index_template/{name} - Create or update an index template
- * - GET /_index_template/{name} - Get a specific index template
- * - DELETE /_index_template/{name} - Delete an index template
- * - GET /_index_template - Get all index templates
+ * Multi-cluster supported operations:
+ * - PUT /{clusterId}/_index_template/{name} - Create or update an index template
+ * - GET /{clusterId}/_index_template/{name} - Get a specific index template
+ * - DELETE /{clusterId}/_index_template/{name} - Delete an index template
+ * - GET /{clusterId}/_index_template - Get all index templates
  */
 @Slf4j
 @RestController
-@RequestMapping("/_index_template")
+@RequestMapping("/{clusterId}/_index_template")
 public class TemplateHandler {
 
     private final TemplateManager templateManager;
@@ -37,85 +37,91 @@ public class TemplateHandler {
     }
 
     /**
-     * Create or update an index template.
-     * PUT /_index_template/{name}
+     * Create or update an index template in the specified cluster.
+     * PUT /{clusterId}/_index_template/{name}
      */
     @PutMapping("/{name}")
-    public ResponseEntity<Object> createTemplate(@PathVariable String name, @RequestBody TemplateRequest request) {
+    public ResponseEntity<Object> createTemplate(
+            @PathVariable String clusterId,
+            @PathVariable String name, 
+            @RequestBody TemplateRequest request) {
         try {
-            log.info("Creating index template: {}", name);
+            log.info("Creating index template '{}' in cluster '{}'", name, clusterId);
             String templateConfig = objectMapper.writeValueAsString(request);
-            templateManager.putTemplate(name, templateConfig);
+            templateManager.putTemplate(clusterId, name, templateConfig);
             return ResponseEntity.ok(TemplateResponse.builder()
                 .acknowledged(true)
                 .template(name)
                 .build());
         } catch (UnsupportedOperationException e) {
-            log.error("Error creating template '{}': {}", name, e.getMessage());
+            log.error("Error creating template '{}' in cluster '{}': {}", name, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Template creation"));
         } catch (Exception e) {
-            log.error("Error creating template '{}': {}", name, e.getMessage());
+            log.error("Error creating template '{}' in cluster '{}': {}", name, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
         }
     }
 
     /**
-     * Get a specific index template.
-     * GET /_index_template/{name}
+     * Get a specific index template from the specified cluster.
+     * GET /{clusterId}/_index_template/{name}
      */
     @GetMapping("/{name}")
-    public ResponseEntity<Object> getTemplate(@PathVariable String name) {
+    public ResponseEntity<Object> getTemplate(
+            @PathVariable String clusterId,
+            @PathVariable String name) {
         try {
-            log.info("Getting index template: {}", name);
-            String templateInfo = templateManager.getTemplate(name);
+            log.info("Getting index template '{}' from cluster '{}'", name, clusterId);
+            String templateInfo = templateManager.getTemplate(clusterId, name);
             return ResponseEntity.ok(templateInfo);
         } catch (UnsupportedOperationException e) {
-            log.error("Error getting template '{}': {}", name, e.getMessage());
+            log.error("Error getting template '{}' from cluster '{}': {}", name, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Get template"));
         } catch (Exception e) {
-            log.error("Error getting template '{}': {}", name, e.getMessage());
+            log.error("Error getting template '{}' from cluster '{}': {}", name, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
         }
     }
 
     /**
-     * Delete an index template.
-     * DELETE /_index_template/{name}
+     * Delete an index template from the specified cluster.
+     * DELETE /{clusterId}/_index_template/{name}
      */
     @DeleteMapping("/{name}")
-    public ResponseEntity<Object> deleteTemplate(@PathVariable String name) {
+    public ResponseEntity<Object> deleteTemplate(
+            @PathVariable String clusterId,
+            @PathVariable String name) {
         try {
-            log.info("Deleting index template: {}", name);
-            templateManager.deleteTemplate(name);
+            log.info("Deleting index template '{}' from cluster '{}'", name, clusterId);
+            templateManager.deleteTemplate(clusterId, name);
             return ResponseEntity.ok(TemplateResponse.builder()
                 .acknowledged(true)
                 .template(name)
                 .build());
         } catch (UnsupportedOperationException e) {
-            log.error("Error deleting template '{}': {}", name, e.getMessage());
+            log.error("Error deleting template '{}' from cluster '{}': {}", name, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Template deletion"));
         } catch (Exception e) {
-            log.error("Error deleting template '{}': {}", name, e.getMessage());
+            log.error("Error deleting template '{}' from cluster '{}': {}", name, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
         }
     }
 
     /**
-     * Get all index templates.
-     * GET /_index_template
+     * Get all index templates from the specified cluster.
+     * GET /{clusterId}/_index_template
      */
     @GetMapping
-    public ResponseEntity<Object> getAllTemplates() {
+    public ResponseEntity<Object> getAllTemplates(@PathVariable String clusterId) {
         try {
-            log.info("Getting all index templates");
-            // This would typically return all templates - simplified for now
-            String templatesInfo = templateManager.getTemplate("*"); // Wildcard pattern
+            log.info("Getting all index templates from cluster '{}'", clusterId);
+            String templatesInfo = templateManager.getAllTemplates(clusterId);
             return ResponseEntity.ok(templatesInfo);
         } catch (UnsupportedOperationException e) {
-            log.error("Error getting all templates: {}", e.getMessage());
+            log.error("Error getting all templates from cluster '{}': {}", clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Get all templates"));
         } catch (Exception e) {
-            log.error("Error getting all templates: {}", e.getMessage());
+            log.error("Error getting all templates from cluster '{}': {}", clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
         }
     }

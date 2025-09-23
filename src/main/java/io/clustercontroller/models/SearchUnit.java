@@ -1,7 +1,7 @@
 package io.clustercontroller.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.clustercontroller.enums.HealthState;
+import io.clustercontroller.enums.HealthState;import io.clustercontroller.enums.NodeRole;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 

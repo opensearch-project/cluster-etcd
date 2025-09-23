@@ -13,29 +13,6 @@ import static org.assertj.core.api.Assertions.*;
 class TaskFactoryTest {
     
     @Test
-    void testCreateIndexTask() {
-        TaskMetadata metadata = new TaskMetadata(TASK_ACTION_CREATE_INDEX, 1);
-        metadata.setInput("index-config");
-        
-        Task task = TaskFactory.createTask(metadata);
-        
-        assertThat(task).isInstanceOf(CreateIndexTask.class);
-        assertThat(task.getName()).isEqualTo(TASK_ACTION_CREATE_INDEX);
-        assertThat(task.getPriority()).isEqualTo(1);
-        assertThat(task.getInput()).isEqualTo("index-config");
-    }
-    
-    @Test
-    void testDeleteIndexTask() {
-        TaskMetadata metadata = new TaskMetadata(TASK_ACTION_DELETE_INDEX, 2);
-        
-        Task task = TaskFactory.createTask(metadata);
-        
-        assertThat(task).isInstanceOf(DeleteIndexTask.class);
-        assertThat(task.getName()).isEqualTo(TASK_ACTION_DELETE_INDEX);
-    }
-    
-    @Test
     void testDiscoverSearchUnitTask() {
         TaskMetadata metadata = new TaskMetadata(TASK_ACTION_DISCOVER_SEARCH_UNIT, 3);
         
@@ -85,3 +62,4 @@ class TaskFactoryTest {
         assertThat(task.getName()).isEqualTo("unknown-task-type");
     }
 }
+

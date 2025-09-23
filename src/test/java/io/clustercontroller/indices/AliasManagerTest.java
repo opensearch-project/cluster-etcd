@@ -17,6 +17,7 @@ class AliasManagerTest {
     private MetadataStore metadataStore;
     
     private AliasManager aliasManager;
+    private final String testClusterId = "test-cluster";
     
     @BeforeEach
     void setUp() {
@@ -26,12 +27,12 @@ class AliasManagerTest {
     @Test
     void testCreateAlias_ThrowsUnsupportedOperation() {
         // Given
-        String indexName = "test-index";
         String aliasName = "test-alias";
+        String indexName = "test-index";
         String aliasConfig = "{\"filter\":{\"term\":{\"status\":\"published\"}}}";
         
         // When & Then
-        assertThatThrownBy(() -> aliasManager.createAlias(indexName, aliasName, aliasConfig))
+        assertThatThrownBy(() -> aliasManager.createAlias(testClusterId, aliasName, indexName, aliasConfig))
             .isInstanceOf(UnsupportedOperationException.class)
             .hasMessageContaining("Alias creation not yet implemented");
     }
@@ -39,11 +40,11 @@ class AliasManagerTest {
     @Test
     void testDeleteAlias_ThrowsUnsupportedOperation() {
         // Given
-        String indexName = "test-index";
         String aliasName = "test-alias";
+        String indexName = "test-index";
         
         // When & Then
-        assertThatThrownBy(() -> aliasManager.deleteAlias(indexName, aliasName))
+        assertThatThrownBy(() -> aliasManager.deleteAlias(testClusterId, aliasName, indexName))
             .isInstanceOf(UnsupportedOperationException.class)
             .hasMessageContaining("Alias deletion not yet implemented");
     }
@@ -54,7 +55,7 @@ class AliasManagerTest {
         String aliasName = "test-alias";
         
         // When & Then
-        assertThatThrownBy(() -> aliasManager.getAlias(aliasName))
+        assertThatThrownBy(() -> aliasManager.getAlias(testClusterId, aliasName))
             .isInstanceOf(UnsupportedOperationException.class)
             .hasMessageContaining("Get alias not yet implemented");
     }
@@ -65,7 +66,7 @@ class AliasManagerTest {
         String aliasName = "test-alias";
         
         // When & Then
-        assertThatThrownBy(() -> aliasManager.aliasExists(aliasName))
+        assertThatThrownBy(() -> aliasManager.aliasExists(testClusterId, aliasName))
             .isInstanceOf(UnsupportedOperationException.class)
             .hasMessageContaining("Alias existence check not yet implemented");
     }
@@ -77,6 +78,5 @@ class AliasManagerTest {
         
         // Then
         assertThat(manager).isNotNull();
-        // Verify dependencies are stored (via successful construction)
     }
 }

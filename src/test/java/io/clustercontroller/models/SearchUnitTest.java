@@ -1,5 +1,7 @@
 package io.clustercontroller.models;
 
+import io.clustercontroller.enums.HealthState;
+import io.clustercontroller.enums.NodeRole;
 import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.*;
 
@@ -37,14 +39,20 @@ class SearchUnitTest {
         SearchUnit unit = new SearchUnit();
         
         unit.setId("unit-123");
+        unit.setRole("replica");
         unit.setClusterName("test-cluster");
         unit.setZone("zone-1");
         unit.setShardId("shard-0");
+        unit.setStateAdmin("NORMAL");
+        unit.setStatePulled(HealthState.YELLOW);
         
         assertThat(unit.getId()).isEqualTo("unit-123");
+        assertThat(unit.getRole()).isEqualTo("replica");
         assertThat(unit.getClusterName()).isEqualTo("test-cluster");
         assertThat(unit.getZone()).isEqualTo("zone-1");
         assertThat(unit.getShardId()).isEqualTo("shard-0");
+        assertThat(unit.getStateAdmin()).isEqualTo("NORMAL");
+        assertThat(unit.getStatePulled()).isEqualTo(HealthState.YELLOW);
     }
     
     @Test

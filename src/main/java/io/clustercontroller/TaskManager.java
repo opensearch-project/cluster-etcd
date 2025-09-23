@@ -24,14 +24,16 @@ public class TaskManager {
     
     private final MetadataStore metadataStore;
     private final TaskContext taskContext;
+    private final String clusterName;
     
     private final ScheduledExecutorService scheduler;
     private final long intervalSeconds;
     private boolean isRunning = false;
     
-    public TaskManager(MetadataStore metadataStore, TaskContext taskContext, long intervalSeconds) {
+    public TaskManager(MetadataStore metadataStore, TaskContext taskContext, String clusterName, long intervalSeconds) {
         this.metadataStore = metadataStore;
         this.taskContext = taskContext;
+        this.clusterName = clusterName;
         this.intervalSeconds = intervalSeconds;
         this.scheduler = Executors.newScheduledThreadPool(1);
     }
@@ -41,7 +43,7 @@ public class TaskManager {
         TaskMetadata taskMetadata = new TaskMetadata(taskName, priority);
         taskMetadata.setInput(input);
         try {
-            metadataStore.createTask(taskMetadata);
+            metadataStore.createTask(clusterName, taskMetadata);
         } catch (Exception e) {
             log.error("Failed to create task: {}", e.getMessage(), e);
             throw new RuntimeException("Failed to create task", e);
@@ -52,7 +54,7 @@ public class TaskManager {
     public List<TaskMetadata> getAllTasks() {
         log.debug("Getting all tasks");
         try {
-            return metadataStore.getAllTasks();
+            return metadataStore.getAllTasks(clusterName);
         } catch (Exception e) {
             log.error("Failed to get all tasks: {}", e.getMessage(), e);
             throw new RuntimeException("Failed to get tasks", e);
@@ -62,7 +64,7 @@ public class TaskManager {
     public Optional<TaskMetadata> getTask(String taskName) {
         log.debug("Getting task: {}", taskName);
         try {
-            return metadataStore.getTask(taskName);
+            return metadataStore.getTask(clusterName, taskName);
         } catch (Exception e) {
             log.error("Failed to get task {}: {}", taskName, e.getMessage(), e);
             throw new RuntimeException("Failed to get task", e);
@@ -72,7 +74,7 @@ public class TaskManager {
     public void updateTask(TaskMetadata taskMetadata) {
         log.debug("Updating task: {}", taskMetadata.getName());
         try {
-            metadataStore.updateTask(taskMetadata);
+            metadataStore.updateTask(clusterName, taskMetadata);
         } catch (Exception e) {
             log.error("Failed to update task {}: {}", taskMetadata.getName(), e.getMessage(), e);
             throw new RuntimeException("Failed to update task", e);
@@ -82,7 +84,7 @@ public class TaskManager {
     public void deleteTask(String taskName) {
         log.info("Deleting task: {}", taskName);
         try {
-            metadataStore.deleteTask(taskName);
+            metadataStore.deleteTask(clusterName, taskName);
         } catch (Exception e) {
             log.error("Failed to delete task {}: {}", taskName, e.getMessage(), e);
             throw new RuntimeException("Failed to delete task", e);

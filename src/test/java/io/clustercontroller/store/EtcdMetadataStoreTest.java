@@ -26,7 +26,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
- * Unit tests for EtcdMetadataStore using mocked etcd dependencies.
+ * Tests for EtcdMetadataStore.
  */
 public class EtcdMetadataStoreTest {
 
@@ -72,7 +72,7 @@ public class EtcdMetadataStoreTest {
     }
 
     private EtcdMetadataStore newStore() throws Exception {
-        return EtcdMetadataStore.createTestInstance(CLUSTER, ENDPOINTS, "test-node", mockEtcdClient, mockKv);
+        return EtcdMetadataStore.createTestInstance(ENDPOINTS, "test-node", mockEtcdClient, mockKv);
     }
 
     private GetResponse mockGetResponse(List<KeyValue> kvs) {
@@ -104,9 +104,10 @@ public class EtcdMetadataStoreTest {
     @Test
     public void testSingletonGetInstance() throws Exception {
         EtcdMetadataStore s1 = newStore();
-        EtcdMetadataStore s2 = EtcdMetadataStore.getInstance(CLUSTER, ENDPOINTS);
-        assertThat(s1).isSameAs(s2);
-        assertThat(s1.getClusterName()).isEqualTo(CLUSTER);
+        // Don't call createTestInstance again as it resets the singleton
+        // Instead, verify that the singleton is properly set
+        assertThat(s1).isNotNull();
+        assertThat(EtcdMetadataStore.getInstance()).isSameAs(s1);
     }
 
     @Test
@@ -134,7 +135,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.get(any(ByteSequence.class), any(GetOption.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        List<TaskMetadata> tasks = store.getAllTasks();
+        List<TaskMetadata> tasks = store.getAllTasks(CLUSTER);
 
         assertThat(tasks).hasSize(2);
         assertThat(tasks.get(0).getName()).isEqualTo("task-top");
@@ -152,7 +153,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.get(any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        Optional<TaskMetadata> got = store.getTask("index-task");
+        Optional<TaskMetadata> got = store.getTask(CLUSTER, "index-task");
         assertThat(got).isPresent();
         assertThat(got.get().getName()).isEqualTo("index-task");
         assertThat(got.get().getPriority()).isEqualTo(3);
@@ -166,7 +167,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.get(any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        Optional<TaskMetadata> got = store.getTask("missing");
+        Optional<TaskMetadata> got = store.getTask(CLUSTER, "missing");
         assertThat(got).isEmpty();
     }
 
@@ -185,7 +186,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(mockPutResponse()));
 
-        String name = store.createTask(task);
+        String name = store.createTask(CLUSTER, task);
         assertThat(name).isEqualTo("cleanup-task");
         verify(mockKv, times(1)).put(any(ByteSequence.class), any(ByteSequence.class));
     }
@@ -204,7 +205,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(mockPutResponse()));
 
-        store.updateTask(task);
+        store.updateTask(CLUSTER, task);
         verify(mockKv, times(1)).put(any(ByteSequence.class), any(ByteSequence.class));
     }
 
@@ -217,7 +218,7 @@ public class EtcdMetadataStoreTest {
                 .thenReturn(CompletableFuture.completedFuture(mock(DeleteResponse.class)));
 
         // Call delete method
-        store.deleteTask("old-task");
+        store.deleteTask(CLUSTER, "old-task");
         
         // Verify etcd delete was called with correct parameters
         verify(mockKv, times(1)).delete(any(ByteSequence.class));
@@ -232,7 +233,7 @@ public class EtcdMetadataStoreTest {
                 .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd connection failed")));
 
         // Verify exception is propagated
-        assertThatThrownBy(() -> store.deleteTask("failing-task"))
+        assertThatThrownBy(() -> store.deleteTask(CLUSTER, "failing-task"))
                 .isInstanceOf(Exception.class)
                 .hasMessageContaining("Failed to delete task from etcd");
     }
@@ -252,7 +253,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.get(any(ByteSequence.class), any(GetOption.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        List<SearchUnit> units = store.getAllSearchUnits();
+        List<SearchUnit> units = store.getAllSearchUnits(CLUSTER);
         assertThat(units).hasSize(2);
         assertThat(units.get(0).getName()).isIn("node1", "node2");
     }
@@ -266,7 +267,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.get(any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        Optional<SearchUnit> got = store.getSearchUnit("node3");
+        Optional<SearchUnit> got = store.getSearchUnit(CLUSTER, "node3");
         assertThat(got).isPresent();
         assertThat(got.get().getName()).isEqualTo("node3");
     }
@@ -279,7 +280,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.get(any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        Optional<SearchUnit> got = store.getSearchUnit("missing");
+        Optional<SearchUnit> got = store.getSearchUnit(CLUSTER, "missing");
         assertThat(got).isEmpty();
     }
 
@@ -296,7 +297,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(mockPutResponse()));
 
-        store.upsertSearchUnit("node4", unit);
+        store.upsertSearchUnit(CLUSTER, "node4", unit);
         verify(mockKv).put(any(ByteSequence.class), any(ByteSequence.class));
     }
 
@@ -314,7 +315,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(mockPutResponse()));
 
-        store.updateSearchUnit(unit);
+        store.updateSearchUnit(CLUSTER, unit);
         verify(mockKv).put(any(ByteSequence.class), any(ByteSequence.class));
     }
 
@@ -327,7 +328,7 @@ public class EtcdMetadataStoreTest {
                 .thenReturn(CompletableFuture.completedFuture(mock(DeleteResponse.class)));
 
         // Call delete method
-        store.deleteSearchUnit("node6");
+        store.deleteSearchUnit(CLUSTER, "node6");
         
         // Verify etcd delete was called with correct parameters
         verify(mockKv).delete(any(ByteSequence.class));
@@ -342,7 +343,7 @@ public class EtcdMetadataStoreTest {
                 .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd timeout")));
 
         // Verify exception is propagated
-        assertThatThrownBy(() -> store.deleteSearchUnit("node7"))
+        assertThatThrownBy(() -> store.deleteSearchUnit(CLUSTER, "node7"))
                 .isInstanceOf(Exception.class)
                 .hasMessageContaining("Failed to delete search unit from etcd");
     }
@@ -360,7 +361,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.get(any(ByteSequence.class), any(GetOption.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        List<String> configs = store.getAllIndexConfigs();
+        List<String> configs = store.getAllIndexConfigs(CLUSTER);
         assertThat(configs).hasSize(2);
         assertThat(configs.get(0)).contains("settings");
     }
@@ -374,7 +375,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.get(any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        Optional<String> got = store.getIndexConfig("user-index");
+        Optional<String> got = store.getIndexConfig(CLUSTER, "user-index");
         assertThat(got).isPresent();
         assertThat(got.get()).contains("analysis");
     }
@@ -387,7 +388,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.get(any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        Optional<String> got = store.getIndexConfig("missing");
+        Optional<String> got = store.getIndexConfig(CLUSTER, "missing");
         assertThat(got).isEmpty();
     }
 
@@ -398,7 +399,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(mockPutResponse()));
 
-        String name = store.createIndexConfig("test-index", "{\"x\":1}");
+        String name = store.createIndexConfig(CLUSTER, "test-index", "{\"x\":1}");
         assertThat(name).isEqualTo("test-index");
         verify(mockKv).put(any(ByteSequence.class), any(ByteSequence.class));
     }
@@ -410,7 +411,7 @@ public class EtcdMetadataStoreTest {
         when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
                 .thenReturn(CompletableFuture.completedFuture(mockPutResponse()));
 
-        store.updateIndexConfig("user-index", "{\"y\":2}");
+        store.updateIndexConfig(CLUSTER, "user-index", "{\"y\":2}");
         verify(mockKv).put(any(ByteSequence.class), any(ByteSequence.class));
     }
 
@@ -423,7 +424,7 @@ public class EtcdMetadataStoreTest {
                 .thenReturn(CompletableFuture.completedFuture(mock(DeleteResponse.class)));
 
         // Call delete method
-        store.deleteIndexConfig("old-index");
+        store.deleteIndexConfig(CLUSTER, "old-index");
         
         // Verify etcd delete was called with correct parameters
         verify(mockKv).delete(any(ByteSequence.class));
@@ -438,7 +439,7 @@ public class EtcdMetadataStoreTest {
                 .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd network error")));
 
         // Verify exception is propagated
-        assertThatThrownBy(() -> store.deleteIndexConfig("test-index"))
+        assertThatThrownBy(() -> store.deleteIndexConfig(CLUSTER, "test-index"))
                 .isInstanceOf(Exception.class)
                 .hasMessageContaining("Failed to delete index config from etcd");
     }

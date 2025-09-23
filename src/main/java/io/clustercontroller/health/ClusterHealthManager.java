@@ -28,19 +28,19 @@ public class ClusterHealthManager {
         this.metadataStore = metadataStore;
     }
     
-    public String getClusterHealth(String level) {
+    public String getClusterHealth(String clusterId, String level) {
         log.info("Getting cluster health with level: {}", level);
         // TODO: Implement cluster health calculation
         throw new UnsupportedOperationException("Cluster health not yet implemented");
     }
     
-    public String getIndexHealth(String indexName, String level) {
+    public String getIndexHealth(String clusterId, String indexName, String level) {
         log.info("Getting health for index '{}' with level: {}", indexName, level);
         // TODO: Implement index-specific health calculation
         throw new UnsupportedOperationException("Index health not yet implemented");
     }
     
-    public String getClusterStats() {
+    public String getClusterStats(String clusterId) {
         log.info("Getting cluster statistics");
         // TODO: Implement cluster statistics aggregation
         throw new UnsupportedOperationException("Cluster stats not yet implemented");
