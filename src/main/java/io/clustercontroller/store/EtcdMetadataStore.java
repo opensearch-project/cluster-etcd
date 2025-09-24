@@ -1,5 +1,8 @@
 package io.clustercontroller.store;
 
+import io.clustercontroller.models.Index;
+import io.clustercontroller.config.Constants;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -421,10 +424,10 @@ public class EtcdMetadataStore implements MetadataStore {
                 return Optional.empty();
             }
             
-            String indexConfig = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+            String indexConfigJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
             
             log.debug("Retrieved index config {} from etcd", indexName);
-            return Optional.of(indexConfig);
+            return Optional.of(indexConfigJson);
             
         } catch (Exception e) {
             log.error("Failed to get index config {} from etcd: {}", indexName, e.getMessage(), e);
@@ -475,6 +478,38 @@ public class EtcdMetadataStore implements MetadataStore {
         } catch (Exception e) {
             log.error("Failed to delete index config {} from etcd: {}", indexName, e.getMessage(), e);
             throw new Exception("Failed to delete index config from etcd", e);
+        }
+    }
+    
+    @Override
+    public void setIndexMappings(String clusterId, String indexName, String mappings) throws Exception {
+        log.debug("Setting index mappings for {} in etcd", indexName);
+        
+        try {
+            String mappingsPath = pathResolver.getIndexMappingsPath(clusterId, indexName);
+            executeEtcdPut(mappingsPath, mappings);
+            
+            log.debug("Successfully set index mappings for {} in etcd", indexName);
+            
+        } catch (Exception e) {
+            log.error("Failed to set index mappings for {} in etcd: {}", indexName, e.getMessage(), e);
+            throw new Exception("Failed to set index mappings in etcd", e);
+        }
+    }
+    
+    @Override
+    public void setIndexSettings(String clusterId, String indexName, String settings) throws Exception {
+        log.debug("Setting index settings for {} in etcd", indexName);
+        
+        try {
+            String settingsPath = pathResolver.getIndexSettingsPath(clusterId, indexName);
+            executeEtcdPut(settingsPath, settings);
+            
+            log.debug("Successfully set index settings for {} in etcd", indexName);
+            
+        } catch (Exception e) {
+            log.error("Failed to set index settings for {} in etcd: {}", indexName, e.getMessage(), e);
+            throw new Exception("Failed to set index settings in etcd", e);
         }
     }
     
