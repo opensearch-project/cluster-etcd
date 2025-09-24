@@ -35,10 +35,9 @@ public class CoordinatorNodeState extends NodeState {
         DiscoveryNode localNode,
         Collection<RemoteNode> remoteNodes,
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments,
-        Map<String, Object> aliases,
-        boolean converged
+        Map<String, Object> aliases
     ) {
-        super(localNode, converged);
+        super(localNode);
         this.remoteNodes = remoteNodes;
         this.remoteShardAssignments = remoteShardAssignments;
         this.aliases = aliases;
@@ -147,13 +146,17 @@ public class CoordinatorNodeState extends NodeState {
      * Checks if the given alias value points to the specified index.
      */
     private boolean isAliasForIndex(Object aliasValue, String indexName) {
-        if (aliasValue instanceof String) {
-            return indexName.equals(aliasValue);
-        } else if (aliasValue instanceof List) {
-            List<?> indices = (List<?>) aliasValue;
-            return indices.contains(indexName);
+        switch (aliasValue) {
+            case String s -> {
+                return indexName.equals(s);
+            }
+            case List<?> list -> {
+                return list.contains(indexName);
+            }
+            default -> {
+                return false;
+            }
         }
-        return false;
     }
 
 }

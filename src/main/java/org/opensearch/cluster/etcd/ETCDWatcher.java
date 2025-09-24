@@ -14,13 +14,14 @@ import io.etcd.jetcd.watch.WatchEvent;
 import io.etcd.jetcd.watch.WatchResponse;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.cluster.etcd.changeapplier.NodeState;
 import org.opensearch.cluster.etcd.changeapplier.NodeStateApplier;
 import org.opensearch.cluster.node.DiscoveryNode;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -39,6 +40,10 @@ public class ETCDWatcher implements Closeable {
     private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
     private final String clusterName;
 
+    private final Map<String, Watch.Watcher> additionalWatchers = new HashMap<>();
+    private final NodeListener nodeListener = new NodeListener();
+    private final ByteSequence nodeGoalStateKey;
+
     public ETCDWatcher(
         DiscoveryNode localNode,
         ByteSequence nodeGoalStateKey,
@@ -47,12 +52,12 @@ public class ETCDWatcher implements Closeable {
         String clusterName
     ) throws IOException, ExecutionException, InterruptedException {
         this.localNode = localNode;
+        this.nodeGoalStateKey = nodeGoalStateKey;
         this.etcdClient = etcdClient;
         this.nodeStateApplier = nodeStateApplier;
         this.clusterName = clusterName;
         loadState(nodeGoalStateKey);
-        nodeWatcher = etcdClient.getWatchClient()
-            .watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), new NodeListener());
+        nodeWatcher = etcdClient.getWatchClient().watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), nodeListener);
     }
 
     @Override
@@ -126,25 +131,37 @@ public class ETCDWatcher implements Closeable {
 
     private void handleNodeChange(KeyValue keyValue, boolean isInitialLoad) {
         try {
-            NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(
+            ByteSequence goalState;
+            try (KV kvClient = etcdClient.getKVClient()) {
+                List<KeyValue> kvs = kvClient.get(nodeGoalStateKey).get().getKvs();
+                goalState = kvs.getFirst().getValue();
+            }
+            ETCDStateDeserializer.NodeStateResult nodeStateResult = ETCDStateDeserializer.deserializeNodeState(
                 localNode,
-                keyValue.getValue(),
+                goalState,
                 etcdClient,
                 clusterName,
                 isInitialLoad
             );
             String action = isInitialLoad ? "initial-load" : "update-node";
-            nodeStateApplier.applyNodeState(action + " " + keyValue.getKey().toString(), nodeState);
-            if (nodeState.hasConverged() == false) {
-                // Schedule a reload of the node state if it has not converged
-                scheduledExecutorService.schedule(() -> {
-                    try {
-                        logger.info("Reloading node state for key: {}", keyValue.getKey());
-                        loadState(keyValue.getKey());
-                    } catch (Exception e) {
-                        logger.error("Error while reloading node state", e);
-                    }
-                }, 1, TimeUnit.SECONDS);
+            nodeStateApplier.applyNodeState(action + " on change to " + keyValue.getKey().toString(), nodeStateResult.nodeState());
+            for (String keyToWatch : nodeStateResult.keysToWatch()) {
+                if (additionalWatchers.containsKey(keyToWatch) == false) {
+                    ByteSequence watchKey = ByteSequence.from(keyToWatch, java.nio.charset.StandardCharsets.UTF_8);
+                    Watch.Watcher watcher = etcdClient.getWatchClient()
+                        .watch(watchKey, WatchOption.builder().withRevision(0).build(), nodeListener);
+                    additionalWatchers.put(keyToWatch, watcher);
+                }
+            }
+            List<String> keysToRemove = additionalWatchers.keySet()
+                .stream()
+                .filter(key -> nodeStateResult.keysToWatch().contains(key) == false)
+                .toList();
+            for (String keyToRemove : keysToRemove) {
+                Watch.Watcher watcher = additionalWatchers.remove(keyToRemove);
+                if (watcher != null) {
+                    watcher.close();
+                }
             }
         } catch (Exception e) {
             logger.error("Error while processing node state", e);

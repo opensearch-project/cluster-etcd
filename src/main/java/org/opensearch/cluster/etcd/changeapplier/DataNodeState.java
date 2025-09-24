@@ -24,6 +24,7 @@ import org.apache.logging.log4j.Logger;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
@@ -35,13 +36,8 @@ public class DataNodeState extends NodeState {
     private final Map<String, IndexMetadata> indices;
     private final Map<String, Set<DataNodeShard>> assignedShards;
 
-    public DataNodeState(
-        DiscoveryNode localNode,
-        Map<String, IndexMetadata> indices,
-        Map<String, Set<DataNodeShard>> assignedShards,
-        boolean converged
-    ) {
-        super(localNode, converged);
+    public DataNodeState(DiscoveryNode localNode, Map<String, IndexMetadata> indices, Map<String, Set<DataNodeShard>> assignedShards) {
+        super(localNode);
         // The index metadata and shard assignment should be identical
         assert indices.keySet().equals(assignedShards.keySet());
         this.indices = indices;
@@ -102,10 +98,16 @@ public class DataNodeState extends NodeState {
         for (Map.Entry<String, IndexMetadata> entry : indices.entrySet()) {
             IndexMetadata indexMetadata = entry.getValue();
             Index index = indexMetadata.getIndex();
+            IndexMetadata oldIndexMetadata = previousState.metadata().index(index);
 
             IndexRoutingTable previousIndexRoutingTable = previousState.routingTable().index(index);
             IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(index);
             IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexMetadata);
+            if (oldIndexMetadata != null) {
+                indexMetadataBuilder.version(oldIndexMetadata.getVersion())
+                    .settingsVersion(oldIndexMetadata.getSettingsVersion())
+                    .mappingVersion(oldIndexMetadata.getMappingVersion());
+            }
             for (DataNodeShard dataNodeShard : assignedShards.get(index.getName())) {
                 int shardNum = dataNodeShard.getShardNum();
                 ShardRole role = dataNodeShard.getShardRole();
@@ -147,7 +149,6 @@ public class DataNodeState extends NodeState {
                 }
 
                 // Determine recovery source for this shard
-                RecoverySource recoverySource = determineRecoverySource(dataNodeShard);
                 String previousAllocationId = dataNodeShard.getAllocationId();
 
                 Set<String> inSyncAllocationIds = new HashSet<>();
@@ -196,6 +197,7 @@ public class DataNodeState extends NodeState {
                     );
                 } else {
                     // No previous shard in cluster state - use ETCD-based allocation ID preservation
+                    RecoverySource recoverySource = determineRecoverySource(dataNodeShard);
                     shardRouting = ShardRouting.newUnassigned(
                         shardId,
                         role == ShardRole.PRIMARY,
@@ -252,8 +254,21 @@ public class DataNodeState extends NodeState {
                     indexMetadataBuilder.settings(settingsBuilder.build());
                 }
             }
+            IndexMetadata newIndexMetadata = indexMetadataBuilder.build();
+            if (oldIndexMetadata != null && oldIndexMetadata.equals(newIndexMetadata) == false) {
+                logger.info("Index metadata for index {} changed", index.getName());
+                indexMetadataBuilder.version(oldIndexMetadata.getVersion() + 1);
+                if (oldIndexMetadata.getSettings().equals(newIndexMetadata.getSettings()) == false) {
+                    indexMetadataBuilder.settingsVersion(oldIndexMetadata.getSettingsVersion() + 1);
+                }
+                if (Objects.equals(oldIndexMetadata.mapping(), newIndexMetadata.mapping()) == false) {
+                    indexMetadataBuilder.mappingVersion(oldIndexMetadata.getMappingVersion() + 1);
+                }
+                newIndexMetadata = indexMetadataBuilder.build();
+            }
+
             routingTableBuilder.add(indexRoutingTableBuilder);
-            metadataBuilder.put(indexMetadataBuilder);
+            metadataBuilder.put(newIndexMetadata, false);
         }
         clusterStateBuilder.routingTable(routingTableBuilder.build());
         clusterStateBuilder.metadata(metadataBuilder);
