@@ -3,16 +3,15 @@ package io.clustercontroller.indices;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.clustercontroller.models.Index;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.clustercontroller.models.ShardData;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.store.MetadataStore;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
-import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Manages index lifecycle operations.
@@ -48,15 +47,8 @@ public class IndexManager {
             return;
         }
         
-        // Get all available search units for allocation planning
-        List<SearchUnit> availableUnits = metadataStore.getAllSearchUnits(clusterId);
-        
-        if (availableUnits.isEmpty()) {
-            throw new Exception("No search units available for index allocation");
-        }
-        
-        // TODO: Determine number of shards from settings, adding default 1 shard for now
-        int numberOfShards = 1;
+        // Extract number of shards from settings, defaulting to 1 if not specified
+        int numberOfShards = extractNumberOfShards(request.getSettings());
         
         // TODO: Calculate maximum replicas per shard based on available search units
         List<Integer> shardReplicaCount = new ArrayList<>();
@@ -64,14 +56,10 @@ public class IndexManager {
         
         log.info("CreateIndex - Using {} shards with replica count: {}", numberOfShards, shardReplicaCount);
         
-        // TODO: Create allocation plan
-        List<ShardData> allocationPlan = new ArrayList<>();
-        
         // Create the new Index configuration
         Index newIndex = new Index();
         newIndex.setIndexName(indexName);
         newIndex.setShardReplicaCount(shardReplicaCount);
-        newIndex.setAllocationPlan(allocationPlan);
         
         // Store the index configuration
         String indexConfigJson = objectMapper.writeValueAsString(newIndex);
@@ -80,14 +68,16 @@ public class IndexManager {
             newIndex.getIndexName(), documentId);
         
         // Store mappings if provided
-        if (request.getMappings() != null && !request.getMappings().trim().isEmpty()) {
-            metadataStore.setIndexMappings(clusterId, indexName, request.getMappings());
+        if (request.getMappings() != null && !request.getMappings().isEmpty()) {
+            String mappingsJson = objectMapper.writeValueAsString(request.getMappings());
+            metadataStore.setIndexMappings(clusterId, indexName, mappingsJson);
             log.info("CreateIndex - Set mappings for index '{}'", indexName);
         }
         
         // Store settings if provided
-        if (request.getSettings() != null && !request.getSettings().trim().isEmpty()) {
-            metadataStore.setIndexSettings(clusterId, indexName, request.getSettings());
+        if (request.getSettings() != null && !request.getSettings().isEmpty()) {
+            String settingsJson = objectMapper.writeValueAsString(request.getSettings());
+            metadataStore.setIndexSettings(clusterId, indexName, settingsJson);
             log.info("CreateIndex - Set settings for index '{}'", indexName);
         }
     }
@@ -151,13 +141,35 @@ public class IndexManager {
         throw new UnsupportedOperationException("Update mapping not yet implemented");
     }
     
-    public void planShardAllocation() throws Exception {
-        log.info("Planning shard allocation");
-        // TODO: Implement shard allocation planning logic
-    }
 
     private CreateIndexRequest parseCreateIndexRequest(String input) throws Exception {
         return objectMapper.readValue(input, CreateIndexRequest.class);
+    }
+
+    /**
+     * Extract the number of shards from the settings map.
+     * Returns 1 as default if not specified or if parsing fails.
+     */
+    private int extractNumberOfShards(Map<String, Object> settings) {
+        if (settings == null || settings.isEmpty()) {
+            log.debug("No settings provided, using default number of shards: 1");
+            return 1;
+        }
+        
+        try {
+            Object shardsObj = settings.get("number_of_shards");
+            if (shardsObj != null) {
+                int shards = ((Number) shardsObj).intValue();
+                log.debug("Extracted number_of_shards from settings: {}", shards);
+                return shards;
+            } else {
+                log.debug("number_of_shards not found in settings, using default: 1");
+                return 1;
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract number_of_shards from settings, using default: 1. Error: {}", e.getMessage());
+            return 1;
+        }
     }
 
     /**
@@ -167,9 +179,9 @@ public class IndexManager {
     @NoArgsConstructor
     private static class CreateIndexRequest {
         @JsonProperty("mappings")
-        private String mappings; // Optional mappings JSON
+        private Map<String, Object> mappings; // Optional mappings JSON
         
         @JsonProperty("settings")
-        private String settings; // Optional settings JSON
+        private Map<String, Object> settings; // Optional settings JSON
     }
 }

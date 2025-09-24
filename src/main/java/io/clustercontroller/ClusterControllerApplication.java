@@ -68,7 +68,7 @@ public class ClusterControllerApplication {
     public MetadataStore metadataStore(ClusterControllerConfig config) {
         log.info("Initializing cluster-agnostic MetadataStore connection to etcd");
         try {
-            EtcdMetadataStore store = EtcdMetadataStore.getInstance();
+            EtcdMetadataStore store = EtcdMetadataStore.getInstance(config.getEtcdEndpoints());
             store.initialize();
             log.info("MetadataStore initialized successfully");
             return store;

@@ -1,6 +1,5 @@
 package io.clustercontroller.indices;
 
-import io.clustercontroller.models.Index;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.store.MetadataStore;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,14 +40,13 @@ class IndexManagerTest {
         List<SearchUnit> availableSearchUnits = createMockSearchUnits();
         String createIndexRequestJson = """
             {
-                "mappings": "{\\"properties\\": {\\"field1\\": {\\"type\\": \\"text\\"}}}",
-                "settings": "{\\"number_of_shards\\": 1}"
+                "mappings": {"properties": {"field1": {"type": "text"}}},
+                "settings": {"number_of_shards": 1}
             }
             """;
 
         // Mock dependencies
         when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(availableSearchUnits);
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-123");
 
         // When
@@ -62,11 +60,11 @@ class IndexManagerTest {
         assertThat(capturedIndexConfig).isNotNull();
         assertThat(capturedIndexConfig).contains(indexName);
 
-        verify(metadataStore).getAllSearchUnits(clusterId);
+        // getAllSearchUnits is no longer called since the check was removed
         
         // Verify that setIndexMappings and setIndexSettings are called with correct values
-        verify(metadataStore).setIndexMappings(clusterId, indexName, "{\"properties\": {\"field1\": {\"type\": \"text\"}}}");
-        verify(metadataStore).setIndexSettings(clusterId, indexName, "{\"number_of_shards\": 1}");
+        verify(metadataStore).setIndexMappings(clusterId, indexName, "{\"properties\":{\"field1\":{\"type\":\"text\"}}}");
+        verify(metadataStore).setIndexSettings(clusterId, indexName, "{\"number_of_shards\":1}");
     }
 
 
@@ -81,12 +79,13 @@ class IndexManagerTest {
             """;
 
         when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(new ArrayList<>());
+        when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-123");
 
-        // When & Then
-        assertThatThrownBy(() -> indexManager.createIndex(clusterId, indexName, createIndexRequestJson))
-                .isInstanceOf(Exception.class)
-                .hasMessage("No search units available for index allocation");
+        // When
+        indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
+
+        // Then - should succeed even without search units (search units check was removed)
+        verify(metadataStore).createIndexConfig(eq(clusterId), eq(indexName), any(String.class));
     }
 
     @Test
@@ -141,10 +140,8 @@ class IndexManagerTest {
         String clusterId = "test-cluster";
         String indexName = "test-index";
         String createIndexRequestJson = "{}"; // Empty JSON should use defaults
-        List<SearchUnit> availableSearchUnits = createMockSearchUnits();
 
         when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(availableSearchUnits);
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-789");
 
         // When
@@ -168,10 +165,8 @@ class IndexManagerTest {
             {
             }
             """;
-        List<SearchUnit> availableSearchUnits = createMockSearchUnits();
 
         when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(availableSearchUnits);
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-999");
 
         // When
@@ -181,6 +176,48 @@ class IndexManagerTest {
         verify(metadataStore).createIndexConfig(eq(clusterId), eq(indexName), any(String.class));
         verify(metadataStore, never()).setIndexMappings(any(), any(), any());
         verify(metadataStore, never()).setIndexSettings(any(), any(), any());
+    }
+
+    @Test
+    void testCreateIndex_WithCustomNumberOfShards() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String createIndexRequestJson = """
+            {
+                "settings": {"number_of_shards": 3, "number_of_replicas": 1}
+            }
+            """;
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-456");
+
+        // When
+        indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
+
+        // Then
+        verify(metadataStore).createIndexConfig(eq(clusterId), eq(indexName), any(String.class));
+        verify(metadataStore).setIndexSettings(clusterId, indexName, "{\"number_of_shards\":3,\"number_of_replicas\":1}");
+    }
+
+    @Test
+    void testCreateIndex_WithInvalidSettingsJson() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String createIndexRequestJson = """
+            {
+                "settings": {"invalid_field": "invalid_value"}
+            }
+            """;
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-789");
+
+        // When
+        indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
+
+        // Then - should still work with default shard count (1) even with invalid settings
+        verify(metadataStore).createIndexConfig(eq(clusterId), eq(indexName), any(String.class));
+        verify(metadataStore).setIndexSettings(clusterId, indexName, "{\"invalid_field\":\"invalid_value\"}");
     }
 
     private List<SearchUnit> createMockSearchUnits() {
