@@ -9,7 +9,7 @@ import org.opensearch.gradle.test.RestIntegTestTask
 
 buildscript {
     ext {
-        opensearch_version = System.getProperty("opensearch.version", "3.2.0-SNAPSHOT")
+        opensearch_version = System.getProperty("opensearch.version", "3.3.0-SNAPSHOT")
         version_qualifier = System.getProperty("build.version_qualifier", "")
         buildVersionQualifier = System.getProperty("build.version_qualifier", "")
         isSnapshot = "true" == System.getProperty("build.snapshot", "true")
@@ -332,10 +332,7 @@ thirdPartyAudit {
      'io.netty.internal.tcnative.SSLSession',
      'io.netty.internal.tcnative.SSLSessionCache',
      'io.netty.internal.tcnative.SessionTicketKey',
-     'io.netty.internal.tcnative.SniHostNameMatcher',
-     'org.slf4j.impl.StaticLoggerBinder',
-     'org.slf4j.impl.StaticMDCBinder',
-     'org.slf4j.impl.StaticMarkerBinder'
+     'io.netty.internal.tcnative.SniHostNameMatcher'
   )
 
   ignoreViolations(
@@ -360,12 +357,6 @@ thirdPartyAudit {
      'com.google.protobuf.UnsafeUtil$Android64MemoryAccessor',
      'com.google.protobuf.UnsafeUtil$JvmMemoryAccessor',
      'com.google.protobuf.UnsafeUtil$MemoryAccessor',
-     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator',
-     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$1',
-     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$2',
-     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$3',
-     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$4',
-     'io.netty.handler.ssl.util.OpenJdkSelfSignedCertGenerator$5',
      'io.netty.util.internal.PlatformDependent0',
      'io.netty.util.internal.PlatformDependent0$1',
      'io.netty.util.internal.PlatformDependent0$2',

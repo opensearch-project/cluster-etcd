@@ -61,11 +61,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             {
               "index": {
                 "number_of_shards": "2",
-                "number_of_replicas": "0",
-                "uuid": "E8F2-ebqQ1-U4SL6NoPEyw",
-                "version": {
-                  "created": "137227827"
-                }
+                "number_of_replicas": "0"
               }
             }
             """, StandardCharsets.UTF_8)).build()).build();
@@ -85,13 +81,14 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         when(kvClient.get(eq(idx1SettingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1SettingsResponse, null)));
         when(kvClient.get(eq(idx1MappingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1MappingsResponse, null)));
 
-        NodeState nodeState = ETCDStateDeserializer.deserializeNodeState(
+        ETCDStateDeserializer.NodeStateResult nodeStateResult = ETCDStateDeserializer.deserializeNodeState(
             localNode,
             ByteSequence.from(nodeConfiguration, StandardCharsets.UTF_8),
             client,
             "test-cluster",
             true
         );
+        NodeState nodeState = nodeStateResult.nodeState();
 
         assertTrue(nodeState instanceof DataNodeState);
         DataNodeState dataNodeState = (DataNodeState) nodeState;
@@ -99,6 +96,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         ClusterState clusterState = dataNodeState.buildClusterState(emptyClusterState);
         assertEquals(1, clusterState.getMetadata().indices().size());
         assertTrue(clusterState.getMetadata().hasIndex("idx1"));
+        assertEquals(2, nodeStateResult.keysToWatch().size());
     }
 
     public void testDocumentReplicationSetup() throws IOException {
@@ -129,13 +127,15 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         setupIndexMetadataMocks(kvClient);
 
         // Step 1: Deserialize node1 state
-        NodeState node1State = ETCDStateDeserializer.deserializeNodeState(
+        ETCDStateDeserializer.NodeStateResult node1StateResult = ETCDStateDeserializer.deserializeNodeState(
             node1,
             ByteSequence.from(node1Configuration, StandardCharsets.UTF_8),
             client,
             "test-cluster",
             true
         );
+        assertEquals(2, node1StateResult.keysToWatch().size());
+        NodeState node1State = node1StateResult.nodeState();
 
         assertTrue(node1State instanceof DataNodeState);
         DataNodeState dataNode1State = (DataNodeState) node1State;
@@ -187,14 +187,16 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             }
             """;
 
-        NodeState node2State = ETCDStateDeserializer.deserializeNodeState(
+        ETCDStateDeserializer.NodeStateResult node2StateResult = ETCDStateDeserializer.deserializeNodeState(
             node2,
             ByteSequence.from(node2Configuration, StandardCharsets.UTF_8),
             client,
             "test-cluster",
             true
         );
+        assertEquals(2, node2StateResult.keysToWatch().size());
 
+        NodeState node2State = node2StateResult.nodeState();
         assertTrue(node2State instanceof DataNodeState);
         DataNodeState dataNode2State = (DataNodeState) node2State;
 
@@ -211,8 +213,8 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         assertEquals("node1-id", node2ClusterState.getRoutingTable().index("idx1").shard(0).primaryShard().currentNodeId());
 
         // Replica should be INITIALIZING on node2
-        assertTrue(node2ClusterState.getRoutingTable().index("idx1").shard(0).replicaShards().get(0).initializing());
-        assertEquals("node2-id", node2ClusterState.getRoutingTable().index("idx1").shard(0).replicaShards().get(0).currentNodeId());
+        assertTrue(node2ClusterState.getRoutingTable().index("idx1").shard(0).replicaShards().getFirst().initializing());
+        assertEquals("node2-id", node2ClusterState.getRoutingTable().index("idx1").shard(0).replicaShards().getFirst().currentNodeId());
 
         // Step 6: Write heartbeat for node2 showing STARTED primary and INITIALIZING replica
         String node2HealthPath = ETCDPathUtils.buildSearchUnitActualStatePath("test-cluster", "node2");
@@ -263,13 +265,16 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             }
             """;
 
-        NodeState node1UpdatedState = ETCDStateDeserializer.deserializeNodeState(
+        ETCDStateDeserializer.NodeStateResult node1UpdatedStateResult = ETCDStateDeserializer.deserializeNodeState(
             node1,
             ByteSequence.from(node1UpdatedConfiguration, StandardCharsets.UTF_8),
             client,
             "test-cluster",
             false
         );
+
+        NodeState node1UpdatedState = node1UpdatedStateResult.nodeState();
+        assertEquals(3, node1UpdatedStateResult.keysToWatch().size());
 
         assertTrue(node1UpdatedState instanceof DataNodeState);
         DataNodeState dataNode1UpdatedState = (DataNodeState) node1UpdatedState;
@@ -305,8 +310,11 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         assertEquals("node1-id", node1UpdatedClusterState.getRoutingTable().index("idx1").shard(0).primaryShard().currentNodeId());
 
         // Replica should be INITIALIZING on node2
-        assertTrue(node1UpdatedClusterState.getRoutingTable().index("idx1").shard(0).replicaShards().get(0).initializing());
-        assertEquals("node2-id", node1UpdatedClusterState.getRoutingTable().index("idx1").shard(0).replicaShards().get(0).currentNodeId());
+        assertTrue(node1UpdatedClusterState.getRoutingTable().index("idx1").shard(0).replicaShards().getFirst().initializing());
+        assertEquals(
+            "node2-id",
+            node1UpdatedClusterState.getRoutingTable().index("idx1").shard(0).replicaShards().getFirst().currentNodeId()
+        );
     }
 
     private void setupIndexMetadataMocks(KV kvClient) {

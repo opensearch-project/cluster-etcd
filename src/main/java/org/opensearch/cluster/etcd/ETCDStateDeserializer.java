@@ -24,10 +24,12 @@ import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.compress.CompressedXContent;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.common.xcontent.json.JsonXContent;
 import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.DeprecationHandler;
+import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
@@ -37,12 +39,15 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
@@ -113,6 +118,9 @@ import java.util.concurrent.ExecutionException;
  * </pre>
  */
 public final class ETCDStateDeserializer {
+    public record NodeStateResult(NodeState nodeState, Collection<String> keysToWatch) {
+    }
+
     private ETCDStateDeserializer() {}
 
     private static final Logger LOGGER = LogManager.getLogger(ETCDStateDeserializer.class);
@@ -131,7 +139,7 @@ public final class ETCDStateDeserializer {
      * @return the relevant node state
      */
     @SuppressWarnings("unchecked")
-    public static NodeState deserializeNodeState(
+    public static NodeStateResult deserializeNodeState(
         DiscoveryNode localNode,
         ByteSequence byteSequence,
         Client etcdClient,
@@ -169,7 +177,7 @@ public final class ETCDStateDeserializer {
     }
 
     @SuppressWarnings("unchecked")
-    private static CoordinatorNodeState readCoordinatorNodeState(
+    private static NodeStateResult readCoordinatorNodeState(
         DiscoveryNode localNode,
         Client etcdClient,
         Map<String, Object> remoteShards,
@@ -195,6 +203,7 @@ public final class ETCDStateDeserializer {
 
         Map<String, NodeHealthInfo> remoteNodeHealthMap = fetchNodeHealthInfo(etcdClient, remoteNodeNames, clusterName);
 
+        List<String> keysToWatch = new ArrayList<>();
         boolean converged = true;
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignment = new HashMap<>();
         Set<RemoteNode> remoteNodes = new HashSet<>();
@@ -216,7 +225,7 @@ public final class ETCDStateDeserializer {
                     if (remoteNodeHealth == null) {
                         // TODO -- Should we look at the node routing info to confirm that the target node has the
                         // specified shard?
-                        converged = false;
+                        keysToWatch.add(ETCDPathUtils.buildSearchUnitActualStatePath(clusterName, nodeName));
                     } else {
                         RemoteNode remoteNode = new RemoteNode(
                             nodeName,
@@ -236,10 +245,11 @@ public final class ETCDStateDeserializer {
             remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
         }
 
-        return new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment, aliases, converged);
+        CoordinatorNodeState coordinatorNodeState = new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment, aliases);
+        return new NodeStateResult(coordinatorNodeState, keysToWatch);
     }
 
-    private static DataNodeState readDataNodeState(
+    private static NodeStateResult readDataNodeState(
         DiscoveryNode localNode,
         Client etcdClient,
         Map<String, Map<String, Object>> localShards,
@@ -247,6 +257,7 @@ public final class ETCDStateDeserializer {
         boolean isInitialLoad
     ) throws IOException {
         boolean converged = true;
+        Set<String> pathsToWatch = new HashSet<>();
         Map<String, Set<DataNodeShard>> localShardAssignment = new HashMap<>();
         Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
 
@@ -272,6 +283,8 @@ public final class ETCDStateDeserializer {
                 // Fetch settings and mappings from separate etcd paths
                 String indexSettingsPath = ETCDPathUtils.buildIndexSettingsPath(clusterName, indexName);
                 String indexMappingsPath = ETCDPathUtils.buildIndexMappingsPath(clusterName, indexName);
+                pathsToWatch.add(indexSettingsPath);
+                pathsToWatch.add(indexMappingsPath);
 
                 settingsFutures.add(kvClient.get(ByteSequence.from(indexSettingsPath, StandardCharsets.UTF_8)));
                 mappingsFutures.add(kvClient.get(ByteSequence.from(indexMappingsPath, StandardCharsets.UTF_8)));
@@ -295,7 +308,7 @@ public final class ETCDStateDeserializer {
                         clusterName,
                         allocationId
                     );
-                    converged &= dataNodeShardConvergence.converged();
+                    pathsToWatch.addAll(dataNodeShardConvergence.nonConvergedPaths());
                     if (dataNodeShardConvergence.shard() != null) {
                         dataNodeShards.add(dataNodeShardConvergence.shard());
                     }
@@ -319,10 +332,10 @@ public final class ETCDStateDeserializer {
             }
         }
 
-        return new DataNodeState(localNode, indexMetadataMap, localShardAssignment, converged);
+        return new NodeStateResult(new DataNodeState(localNode, indexMetadataMap, localShardAssignment), pathsToWatch);
     }
 
-    private record DataNodeShardConvergence(DataNodeShard shard, boolean converged) {
+    private record DataNodeShardConvergence(DataNodeShard shard, Collection<String> nonConvergedPaths) {
     }
 
     /**
@@ -397,9 +410,15 @@ public final class ETCDStateDeserializer {
         if (shardConfig instanceof String role) {
             // Single string value indicates a primary or search replica shard
             if ("PRIMARY".equalsIgnoreCase(role)) {
-                return new DataNodeShardConvergence(new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId), true);
+                return new DataNodeShardConvergence(
+                    new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId),
+                    Collections.emptySet()
+                );
             } else if ("SEARCH_REPLICA".equalsIgnoreCase(role)) {
-                return new DataNodeShardConvergence(new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId), true);
+                return new DataNodeShardConvergence(
+                    new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId),
+                    Collections.emptySet()
+                );
             } else {
                 throw new IllegalArgumentException("Unknown shard role: " + role);
             }
@@ -415,10 +434,10 @@ public final class ETCDStateDeserializer {
                     Map<String, NodeHealthInfo> nodes = fetchNodeHealthInfo(etcdClient, replicaNodes, clusterName);
                     List<DataNodeShard.ShardAllocation> shardAllocations = new ArrayList<>();
 
-                    boolean converged = true;
+                    List<String> nonConvergedPaths = new ArrayList<>();
                     for (Map.Entry<String, NodeHealthInfo> entry : nodes.entrySet()) {
                         if (entry.getValue() == null) {
-                            converged = false;
+                            nonConvergedPaths.add(ETCDPathUtils.buildSearchUnitActualStatePath(clusterName, entry.getKey()));
                             continue;
                         }
                         boolean replicaConverged = false;
@@ -438,26 +457,32 @@ public final class ETCDStateDeserializer {
                                 shardAllocations.add(new DataNodeShard.ShardAllocation(replicaNode, allocation.allocationId, shardState));
                             }
                         }
-                        converged &= replicaConverged;
+                        if (replicaConverged == false) {
+                            nonConvergedPaths.add(ETCDPathUtils.buildSearchUnitActualStatePath(clusterName, entry.getKey()));
+                        }
                     }
                     return new DataNodeShardConvergence(
                         new DataNodeShard.DocRepPrimary(indexName, shardNum, allocationId, shardAllocations),
-                        converged
+                        nonConvergedPaths
                     );
                 } else {
                     // Segrep primary shard
-                    return new DataNodeShardConvergence(new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId), true);
+                    return new DataNodeShardConvergence(
+                        new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId),
+                        Collections.emptySet()
+                    );
                 }
             case "REPLICA":
                 String primaryNodeName = (String) shardMap.get("primary_node");
                 if (primaryNodeName == null) {
                     throw new IllegalArgumentException("Replica shard must have a primary node specified");
                 }
+                String primaryNodeActualStatePath = ETCDPathUtils.buildSearchUnitActualStatePath(clusterName, primaryNodeName);
                 DataNodeShard.ShardAllocation primaryAllocation = null;
                 Map<String, NodeHealthInfo> nodes = fetchNodeHealthInfo(etcdClient, List.of(primaryNodeName), clusterName);
                 NodeHealthInfo primaryNodeInfo = nodes.get(primaryNodeName);
                 if (primaryNodeInfo == null) {
-                    return new DataNodeShardConvergence(null, false);
+                    return new DataNodeShardConvergence(null, List.of(primaryNodeActualStatePath));
                 }
                 RemoteNode primaryNode = new RemoteNode(
                     primaryNodeName,
@@ -470,7 +495,7 @@ public final class ETCDStateDeserializer {
                     if (allocation.indexName.equals(indexName) && allocation.shardNum == shardNum) {
                         if (!allocation.state.equals("STARTED")) {
                             // We cannot allocate the replica shard until after the primary has started
-                            return new DataNodeShardConvergence(null, false);
+                            return new DataNodeShardConvergence(null, List.of(primaryNodeActualStatePath));
                         }
                         primaryAllocation = new DataNodeShard.ShardAllocation(
                             primaryNode,
@@ -482,15 +507,18 @@ public final class ETCDStateDeserializer {
                 }
                 if (primaryAllocation == null) {
                     // Primary shard not allocated on primary node
-                    return new DataNodeShardConvergence(null, false);
+                    return new DataNodeShardConvergence(null, List.of(primaryNodeActualStatePath));
                 }
                 return new DataNodeShardConvergence(
                     new DataNodeShard.DocRepReplica(indexName, shardNum, allocationId, primaryAllocation),
-                    true
+                    Collections.emptySet()
                 );
             case "SEARCH_REPLICA":
                 // Segrep search replica shard
-                return new DataNodeShardConvergence(new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId), true);
+                return new DataNodeShardConvergence(
+                    new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId),
+                    Collections.emptySet()
+                );
             default:
                 throw new IllegalArgumentException("Unknown shard role: " + role);
         }
@@ -531,16 +559,17 @@ public final class ETCDStateDeserializer {
                 throw new IllegalStateException("Mappings response is empty");
             }
             KeyValue mappingsKv = mappingsResponse.getKvs().getFirst();
-            XContentParser parser = JsonXContent.jsonXContent.createParser(
-                NamedXContentRegistry.EMPTY,
-                DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-                mappingsKv.getValue().getBytes()
-            );
+            Map<String, Object> mappingsMap = XContentHelper.convertToMap(
+                new BytesArray(mappingsKv.getValue().getBytes()),
+                true,
+                MediaTypeRegistry.JSON
+            ).v2();
+            SortedMap<String, Object> sortedMappingsMap = sortMapRecursively(mappingsMap);
             ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
             try (XContentBuilder mappingsBuilder = new XContentBuilder(JsonXContent.jsonXContent, byteArrayOutputStream)) {
                 mappingsBuilder.startObject();
                 mappingsBuilder.field("_doc");
-                mappingsBuilder.copyCurrentStructure(parser);
+                mappingsBuilder.map(sortedMappingsMap);
                 mappingsBuilder.endObject();
             }
             CompressedXContent mappingsXContent = new CompressedXContent(new BytesArray(byteArrayOutputStream.toByteArray()));
@@ -552,6 +581,19 @@ public final class ETCDStateDeserializer {
 
         // Build IndexMetadata with both etcd-sourced and constant values
         return buildIndexMetadataWithConstants(indexName, indexSettings, mappingMetadata);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static SortedMap<String, Object> sortMapRecursively(Map<String, Object> inputMap) {
+        SortedMap<String, Object> sortedMap = new TreeMap<>();
+        for (Map.Entry<String, Object> entry : inputMap.entrySet()) {
+            Object value = entry.getValue();
+            if (value instanceof Map) {
+                value = sortMapRecursively((Map<String, Object>) value);
+            }
+            sortedMap.put(entry.getKey(), value);
+        }
+        return sortedMap;
     }
 
     /**
