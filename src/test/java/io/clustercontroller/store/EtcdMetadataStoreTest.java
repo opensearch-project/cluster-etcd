@@ -359,8 +359,8 @@ public class EtcdMetadataStoreTest {
         EtcdMetadataStore store = newStore();
 
         GetResponse resp = mockGetResponse(Arrays.asList(
-                mockKv("{\"settings\":{\"refresh_interval\":\"1s\"}}"),
-                mockKv("{\"settings\":{\"number_of_shards\":3}}")
+                mockKv("{\"index_name\":\"index1\",\"shard_replica_count\":[1,2]}"),
+                mockKv("{\"index_name\":\"index2\",\"shard_replica_count\":[3]}")
         ));
         when(mockKv.get(any(ByteSequence.class), any(GetOption.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
