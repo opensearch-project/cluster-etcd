@@ -14,9 +14,13 @@ import lombok.Getter;
 @AllArgsConstructor
 public class TaskContext {
     
+    private final String clusterName;
     private final IndexManager indexManager;
     private final Discovery discovery;
     private final ShardAllocator shardAllocator;
     private final ActualAllocationUpdater actualAllocationUpdater;
 }
+
+
+
 

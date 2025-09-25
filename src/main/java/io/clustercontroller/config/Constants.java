@@ -38,7 +38,6 @@ public final class Constants {
     public static final String PATH_SEARCH_UNITS = "search-units";
     public static final String PATH_INDICES = "indices";
     public static final String PATH_COORDINATORS = "coordinators";
-    public static final String PATH_SHARD = "shard";
     public static final String PATH_LEADER_ELECTION = "leader-election";
     
     // etcd path suffixes

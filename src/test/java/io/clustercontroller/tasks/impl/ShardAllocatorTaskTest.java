@@ -1,5 +1,6 @@
 package io.clustercontroller.tasks.impl;
 
+import io.clustercontroller.allocation.AllocationStrategy;
 import io.clustercontroller.allocation.ShardAllocator;
 import io.clustercontroller.tasks.TaskContext;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,6 +27,7 @@ class ShardAllocatorTaskTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         when(taskContext.getShardAllocator()).thenReturn(shardAllocator);
+        when(taskContext.getClusterName()).thenReturn("test-cluster");
     }
     
     @Test
@@ -37,7 +39,7 @@ class ShardAllocatorTaskTest {
         String result = task.execute(taskContext);
         
         assertThat(result).isEqualTo(TASK_STATUS_COMPLETED);
-        verify(shardAllocator).allocateShards();
+        verify(shardAllocator).planShardAllocation("test-cluster", AllocationStrategy.USE_ALL_AVAILABLE_NODES);
     }
     
     @Test
@@ -61,11 +63,14 @@ class ShardAllocatorTaskTest {
         String input = "";
         ShardAllocatorTask task = new ShardAllocatorTask(taskName, 1, input, TASK_SCHEDULE_REPEAT);
         
-        doThrow(new RuntimeException("Shard allocation failed")).when(shardAllocator).allocateShards();
+        doThrow(new RuntimeException("Shard allocation failed")).when(shardAllocator).planShardAllocation("test-cluster", AllocationStrategy.USE_ALL_AVAILABLE_NODES);
         
         String result = task.execute(taskContext);
         
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
-        verify(shardAllocator).allocateShards();
+        verify(shardAllocator).planShardAllocation("test-cluster", AllocationStrategy.USE_ALL_AVAILABLE_NODES);
     }
 }
+
+
+

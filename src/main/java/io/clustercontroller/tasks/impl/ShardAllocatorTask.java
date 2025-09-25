@@ -1,5 +1,6 @@
 package io.clustercontroller.tasks.impl;
 
+import io.clustercontroller.allocation.AllocationStrategy;
 import io.clustercontroller.tasks.Task;
 import io.clustercontroller.tasks.TaskContext;
 import lombok.AllArgsConstructor;
@@ -26,7 +27,9 @@ public class ShardAllocatorTask implements Task {
         log.info("Executing shard allocator task: {}", name);
         
         try {
-            context.getShardAllocator().allocateShards();
+            String clusterId = context.getClusterName();
+            AllocationStrategy strategy = AllocationStrategy.USE_ALL_AVAILABLE_NODES; // TODO: Pick from config later
+            context.getShardAllocator().planShardAllocation(clusterId, strategy);
             return TASK_STATUS_COMPLETED;
         } catch (Exception e) {
             log.error("Failed to execute shard allocator task: {}", e.getMessage(), e);
@@ -34,3 +37,5 @@ public class ShardAllocatorTask implements Task {
         }
     }
 }
+
+
