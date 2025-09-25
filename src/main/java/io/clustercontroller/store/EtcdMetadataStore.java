@@ -743,5 +743,62 @@ public class EtcdMetadataStore implements MetadataStore {
             throw e;
         }
     }
+
+    @Override
+    public void deletePlannedAllocation(String clusterId, String indexName, String shardId) throws Exception {
+        log.debug("Deleting planned allocation for index {} shard {} from etcd", indexName, shardId);
+
+        try {
+            String allocationPath = pathResolver.getShardPlannedAllocationPath(clusterId, indexName, shardId);
+            executeEtcdDelete(allocationPath);
+            log.debug("Successfully deleted planned allocation for index {} shard {} from etcd", indexName, shardId);
+        } catch (Exception e) {
+            log.error("Failed to delete planned allocation for index {} shard {} from etcd: {}", indexName, shardId, e.getMessage(), e);
+            throw new Exception("Failed to delete planned allocation from etcd", e);
+        }
+    }
+
+    @Override
+    public void updateSearchUnitGoalState(String clusterId, String unitName, SearchUnitGoalState goalState) throws Exception {
+        log.debug("Updating goal state for search unit {} in etcd", unitName);
+
+        try {
+            String goalStatePath = pathResolver.getSearchUnitGoalStatePath(clusterId, unitName);
+            String goalStateJson = objectMapper.writeValueAsString(goalState);
+            executeEtcdPut(goalStatePath, goalStateJson);
+            log.debug("Successfully updated goal state for search unit {} in etcd", unitName);
+        } catch (Exception e) {
+            log.error("Failed to update goal state for search unit {} in etcd: {}", unitName, e.getMessage(), e);
+            throw new Exception("Failed to update goal state in etcd", e);
+        }
+    }
+
+    @Override
+    public void deleteIndexSettings(String clusterId, String indexName) throws Exception {
+        log.debug("Deleting index settings for {} in etcd", indexName);
+
+        try {
+            String settingsPath = pathResolver.getIndexSettingsPath(clusterId, indexName);
+            executeEtcdDelete(settingsPath);
+            log.debug("Successfully deleted index settings for {} in etcd", indexName);
+        } catch (Exception e) {
+            log.error("Failed to delete index settings for {} in etcd: {}", indexName, e.getMessage(), e);
+            throw new Exception("Failed to delete index settings in etcd", e);
+        }
+    }
+
+    @Override
+    public void deleteIndexMappings(String clusterId, String indexName) throws Exception {
+        log.debug("Deleting index mappings for {} in etcd", indexName);
+
+        try {
+            String mappingsPath = pathResolver.getIndexMappingsPath(clusterId, indexName);
+            executeEtcdDelete(mappingsPath);
+            log.debug("Successfully deleted index mappings for {} in etcd", indexName);
+        } catch (Exception e) {
+            log.error("Failed to delete index mappings for {} in etcd: {}", indexName, e.getMessage(), e);
+            throw new Exception("Failed to delete index mappings in etcd", e);
+        }
+    }
     
 }

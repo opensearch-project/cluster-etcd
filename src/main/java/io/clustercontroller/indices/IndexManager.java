@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import io.clustercontroller.models.Index;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.store.MetadataStore;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -12,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Manages index lifecycle operations.
@@ -88,9 +90,59 @@ public class IndexManager {
         }
     }
     
-    public void deleteIndex(String clusterId, String indexName) {
-        log.info("Deleting index {} from cluster {}", indexName, clusterId);
-        // TODO: Implement index deletion logic
+    public void deleteIndex(String clusterId, String indexName) throws Exception {
+        log.info("DeleteIndex - Starting deletion of index '{}' from cluster '{}'", indexName, clusterId);
+
+        // Validate input parameters
+        if (indexName == null || indexName.trim().isEmpty()) {
+            throw new Exception("Index name cannot be null or empty");
+        }
+        if (clusterId == null || clusterId.trim().isEmpty()) {
+            throw new Exception("Cluster ID cannot be null or empty");
+        }
+
+        // Check if index exists
+        if (!metadataStore.getIndexConfig(clusterId, indexName).isPresent()) {
+            log.warn("DeleteIndex - Index '{}' not found in cluster '{}', nothing to delete", indexName, clusterId);
+            return;
+        }
+
+        try {
+            // Step 1: Remove all planned allocations for this index
+            deleteAllPlannedAllocationsFromIndex(clusterId, indexName);
+
+            // Step 2: Delete the index configuration from etcd
+            metadataStore.deleteIndexConfig(clusterId, indexName);
+            log.info("DeleteIndex - Successfully deleted index configuration for '{}' from cluster '{}'",
+                indexName, clusterId);
+
+            // Step 3: Delete index settings and mappings
+            try {
+                metadataStore.deleteIndexSettings(clusterId, indexName);
+                log.info("DeleteIndex - Successfully deleted index settings for '{}' from cluster '{}'",
+                    indexName, clusterId);
+            } catch (Exception e) {
+                log.warn("DeleteIndex - Failed to delete settings for '{}': {}", indexName, e.getMessage());
+            }
+
+            try {
+                metadataStore.deleteIndexMappings(clusterId, indexName);
+                log.info("DeleteIndex - Successfully deleted index mappings for '{}' from cluster '{}'",
+                    indexName, clusterId);
+            } catch (Exception e) {
+                log.warn("DeleteIndex - Failed to delete mappings for '{}': {}", indexName, e.getMessage());
+            }
+
+            // Step 4: Clean up goal states for this deleted index
+            cleanupGoalStatesForDeletedIndex(clusterId, indexName);
+
+        } catch (Exception e) {
+            log.error("DeleteIndex - Failed to delete index '{}' from cluster '{}': {}",
+                indexName, clusterId, e.getMessage(), e);
+            throw new Exception("Failed to delete index '" + indexName + "' from cluster '" + clusterId + "'", e);
+        }
+
+        log.info("DeleteIndex - Index '{}' deletion completed successfully from cluster '{}'", indexName, clusterId);
     }
     
     /**
@@ -202,6 +254,86 @@ public class IndexManager {
             log.warn("Failed to extract number_of_replicas from settings, using default: 1. Error: {}", e.getMessage());
             return 1;
         }
+    }
+
+    /**
+     * Delete all planned allocations from an index
+     */
+    private void deleteAllPlannedAllocationsFromIndex(String clusterId, String indexName) throws Exception {
+        log.info("DeleteIndex - Cleaning up ALL planned allocations from index '{}'", indexName);
+
+        try {
+            // Get the index configuration to determine number of shards
+            Optional<String> indexConfigOpt = metadataStore.getIndexConfig(clusterId, indexName);
+            if (!indexConfigOpt.isPresent()) {
+                log.warn("DeleteIndex - Index '{}' not found, skipping planned allocation cleanup", indexName);
+                return;
+            }
+
+            // Parse the index configuration to get number of shards
+            Index index = objectMapper.readValue(indexConfigOpt.get(), Index.class);
+            int numShards = index.getNumberOfShards();
+
+            log.info("DeleteIndex - Deleting planned allocations for {} shards from index '{}'", numShards, indexName);
+
+            // Delete planned allocations for shards 0 to numShards-1
+            for (int shardId = 0; shardId < numShards; shardId++) {
+                try {
+                    metadataStore.deletePlannedAllocation(clusterId, indexName, String.valueOf(shardId));
+                } catch (Exception e) {
+                    log.warn("DeleteIndex - Failed to delete planned allocation {}/{}: {}", 
+                        indexName, shardId, e.getMessage());
+                }
+            }
+
+            log.info("DeleteIndex - Cleaned up planned allocations for {} shards from index '{}'", 
+                numShards, indexName);
+
+        } catch (Exception e) {
+            log.error("DeleteIndex - Failed to cleanup planned allocations from index '{}': {}", 
+                indexName, e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * Cleans up goal states (local shards) for an index from all search units
+     */
+    private void cleanupGoalStatesForDeletedIndex(String clusterId, String deletedIndexName) throws Exception {
+        log.info("DeleteIndex - Starting immediate goal state cleanup for deleted index '{}'", deletedIndexName);
+        try {
+            // Get all search units to check their goal states
+            List<SearchUnit> allSearchUnits = metadataStore.getAllSearchUnits(clusterId);
+            for (SearchUnit searchUnit : allSearchUnits) {
+                String unitName = searchUnit.getName();
+                try {
+                    // Get current goal state for this unit
+                    Optional<SearchUnitGoalState> goalStateOpt = metadataStore.getSearchUnitGoalState(clusterId, unitName);
+                    if (!goalStateOpt.isPresent()) {
+                        log.debug("DeleteIndex - No goal state found for unit '{}'", unitName);
+                        continue;
+                    }
+                    SearchUnitGoalState goalState = goalStateOpt.get();
+                    // Check if this unit has the deleted index in its goal state
+                    if (!goalState.getLocalShards().containsKey(deletedIndexName)) {
+                        log.debug("DeleteIndex - Unit '{}' does not have deleted index '{}' in goal state", unitName, deletedIndexName);
+                        continue;
+                    }
+                    // Remove the deleted index from goal state
+                    Map<String, Map<String, String>> localShards = goalState.getLocalShards();
+                    localShards.remove(deletedIndexName);
+                    // Save updated goal state
+                    metadataStore.updateSearchUnitGoalState(clusterId, unitName, goalState);
+                    log.info("DeleteIndex - Removed deleted index '{}' from goal state of unit '{}'", deletedIndexName, unitName);
+                } catch (Exception e) {
+                    log.error("DeleteIndex - Failed to cleanup goal state for unit '{}': {}", unitName, e.getMessage(), e);
+                }
+            }
+        } catch (Exception e) {
+            log.error("DeleteIndex - Failed to get search units for goal state cleanup: {}", e.getMessage(), e);
+            throw e;
+        }
+        log.info("DeleteIndex - Completed immediate goal state cleanup for deleted index '{}'", deletedIndexName);
     }
 
     /**

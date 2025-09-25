@@ -136,6 +136,26 @@ public interface MetadataStore {
      */
     void setIndexSettings(String clusterId, String indexName, String settings) throws Exception;
     
+    /**
+     * Delete index settings
+     */
+    void deleteIndexSettings(String clusterId, String indexName) throws Exception;
+    
+    /**
+     * Delete index mappings
+     */
+    void deleteIndexMappings(String clusterId, String indexName) throws Exception;
+    
+    /**
+     * Delete a planned allocation for a specific shard
+     */
+    void deletePlannedAllocation(String clusterId, String indexName, String shardId) throws Exception;
+    
+    /**
+     * Update search unit goal state
+     */
+    void updateSearchUnitGoalState(String clusterId, String unitName, SearchUnitGoalState goalState) throws Exception;
+    
     // =================================================================
     // SHARD ALLOCATION OPERATIONS
     // =================================================================
