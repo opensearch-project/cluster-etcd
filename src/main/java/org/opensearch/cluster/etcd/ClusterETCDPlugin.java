@@ -122,6 +122,6 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
 
     @Override
     public List<ActionFilter> getActionFilters() {
-        return List.of(new ClusterHealthActionFilter(clusterService));
+        return List.of(new ClusterManagerActionFilter(clusterService));
     }
 }
