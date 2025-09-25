@@ -50,9 +50,14 @@ public class IndexManager {
         // Extract number of shards from settings, defaulting to 1 if not specified
         int numberOfShards = extractNumberOfShards(request.getSettings());
         
-        // TODO: Calculate maximum replicas per shard based on available search units
+        // Extract number of replicas from settings, defaulting to 1 if not specified
+        int numberOfReplicas = extractNumberOfReplicas(request.getSettings());
+        
+        // Create shard replica count list based on actual settings
         List<Integer> shardReplicaCount = new ArrayList<>();
-        shardReplicaCount.add(1);
+        for (int i = 0; i < numberOfShards; i++) {
+            shardReplicaCount.add(numberOfReplicas);
+        }
         
         log.info("CreateIndex - Using {} shards with replica count: {}", numberOfShards, shardReplicaCount);
         
@@ -168,6 +173,32 @@ public class IndexManager {
             }
         } catch (Exception e) {
             log.warn("Failed to extract number_of_shards from settings, using default: 1. Error: {}", e.getMessage());
+            return 1;
+        }
+    }
+
+    /**
+     * Extract the number of replicas from the settings map.
+     * Returns 1 as default if not specified or if parsing fails.
+     */
+    private int extractNumberOfReplicas(Map<String, Object> settings) {
+        if (settings == null || settings.isEmpty()) {
+            log.debug("No settings provided, using default number of replicas: 1");
+            return 1;
+        }
+        
+        try {
+            Object replicasObj = settings.get("number_of_replicas");
+            if (replicasObj != null) {
+                int replicas = ((Number) replicasObj).intValue();
+                log.debug("Extracted number_of_replicas from settings: {}", replicas);
+                return replicas;
+            } else {
+                log.debug("number_of_replicas not found in settings, using default: 1");
+                return 1;
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract number_of_replicas from settings, using default: 1. Error: {}", e.getMessage());
             return 1;
         }
     }

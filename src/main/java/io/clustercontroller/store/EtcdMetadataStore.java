@@ -393,25 +393,29 @@ public class EtcdMetadataStore implements MetadataStore {
     
     public List<Index> getAllIndexConfigs(String clusterId) throws Exception {
         log.debug("Getting all index configs from etcd");
-        
+
         try {
             String indicesPrefix = pathResolver.getIndicesPrefix(clusterId);
             GetResponse response = executeEtcdPrefixQuery(indicesPrefix);
-            
+
             List<Index> indexConfigs = new ArrayList<>();
             for (var kv : response.getKvs()) {
-                String indexConfigJson = kv.getValue().toString(StandardCharsets.UTF_8);
-                try {
-                    Index indexConfig = objectMapper.readValue(indexConfigJson, Index.class);
-                    indexConfigs.add(indexConfig);
-                } catch (Exception parseException) {
-                    log.warn("Failed to parse index config JSON: {}, skipping", indexConfigJson);
+                String key = kv.getKey().toString(StandardCharsets.UTF_8);
+                // Only process keys that end with /conf (index configuration files)
+                if (key.endsWith("/conf")) {
+                    String indexConfigJson = kv.getValue().toString(StandardCharsets.UTF_8);
+                    try {
+                        Index indexConfig = objectMapper.readValue(indexConfigJson, Index.class);
+                        indexConfigs.add(indexConfig);
+                    } catch (Exception parseException) {
+                        log.warn("Failed to parse index config JSON: {}, skipping", indexConfigJson);
+                    }
                 }
             }
-            
+
             log.debug("Retrieved {} index configs from etcd", indexConfigs.size());
             return indexConfigs;
-            
+
         } catch (Exception e) {
             log.error("Failed to get all index configs from etcd: {}", e.getMessage(), e);
             throw new Exception("Failed to retrieve index configs from etcd", e);

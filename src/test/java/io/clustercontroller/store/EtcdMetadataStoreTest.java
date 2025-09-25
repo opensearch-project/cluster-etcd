@@ -93,6 +93,15 @@ public class EtcdMetadataStoreTest {
         return kv;
     }
 
+    private KeyValue mockKvWithKey(String keyUtf8, String valueUtf8) {
+        KeyValue kv = mock(KeyValue.class);
+        ByteSequence key = ByteSequence.from(keyUtf8, StandardCharsets.UTF_8);
+        ByteSequence val = ByteSequence.from(valueUtf8, StandardCharsets.UTF_8);
+        when(kv.getKey()).thenReturn(key);
+        when(kv.getValue()).thenReturn(val);
+        return kv;
+    }
+
     private PutResponse mockPutResponse() {
         return mock(PutResponse.class);
     }
@@ -358,14 +367,18 @@ public class EtcdMetadataStoreTest {
     public void testGetAllIndexConfigs() throws Exception {
         EtcdMetadataStore store = newStore();
 
+        // Mock response with keys that end with /conf (index configs) and other keys (settings, mappings)
         GetResponse resp = mockGetResponse(Arrays.asList(
-                mockKv("{\"index_name\":\"index1\",\"shard_replica_count\":[1,2]}"),
-                mockKv("{\"index_name\":\"index2\",\"shard_replica_count\":[3]}")
+                mockKvWithKey("/test-cluster/indices/index1/conf", "{\"index_name\":\"index1\",\"shard_replica_count\":[1,2]}"),
+                mockKvWithKey("/test-cluster/indices/index1/settings", "{\"number_of_shards\":1,\"number_of_replicas\":2}"),
+                mockKvWithKey("/test-cluster/indices/index2/conf", "{\"index_name\":\"index2\",\"shard_replica_count\":[3]}"),
+                mockKvWithKey("/test-cluster/indices/index2/mappings", "{\"properties\":{\"title\":{\"type\":\"text\"}}}")
         ));
         when(mockKv.get(any(ByteSequence.class), any(GetOption.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
         List<Index> configs = store.getAllIndexConfigs(CLUSTER);
+        // Should only return 2 configs (the /conf keys), not the settings/mappings
         assertThat(configs).hasSize(2);
         assertThat(configs.get(0).getIndexName()).isNotNull();
     }
