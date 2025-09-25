@@ -26,6 +26,8 @@ public class Index {
     @JsonProperty("shard_replica_count")
     private List<Integer> shardReplicaCount = new ArrayList<>();
     
+    @JsonProperty("num_shards")
+    private Integer numShards = 1; // default to 1 shard
     
     @JsonProperty("created_at")
     private String createdAt = java.time.OffsetDateTime.now().toString(); // ISO timestamp for proper ordering
