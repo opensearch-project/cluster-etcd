@@ -168,7 +168,7 @@ dependencies {
   testImplementation "com.github.docker-java:docker-java-api:${versions.docker}"
   testImplementation "com.github.docker-java:docker-java-transport:${versions.docker}"
   testImplementation "com.github.docker-java:docker-java-transport-zerodep:${versions.docker}"
-  runtimeOnly "com.google.api.grpc:proto-google-common-protos:2.61.0"
+  runtimeOnly "com.google.api.grpc:proto-google-common-protos:2.61.2"
   runtimeOnly "com.google.guava:failureaccess:1.0.3"
   runtimeOnly "com.google.guava:guava:${versions.guava}"
   runtimeOnly "com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava"
