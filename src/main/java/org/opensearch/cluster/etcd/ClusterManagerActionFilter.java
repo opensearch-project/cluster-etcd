@@ -4,21 +4,25 @@
  */
 package org.opensearch.cluster.etcd;
 
+import org.opensearch.OpenSearchStatusException;
 import org.opensearch.action.ActionRequest;
 import org.opensearch.action.admin.cluster.health.ClusterHealthAction;
 import org.opensearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.opensearch.action.support.ActionFilter;
 import org.opensearch.action.support.ActionFilterChain;
+import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadRequest;
+import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.core.action.ActionListener;
 import org.opensearch.core.action.ActionResponse;
+import org.opensearch.core.rest.RestStatus;
 import org.opensearch.tasks.Task;
 
-public class ClusterHealthActionFilter implements ActionFilter {
+public class ClusterManagerActionFilter implements ActionFilter {
     private final ClusterService clusterService;
 
-    public ClusterHealthActionFilter(ClusterService clusterService) {
+    public ClusterManagerActionFilter(ClusterService clusterService) {
         this.clusterService = clusterService;
     }
 
@@ -46,6 +50,14 @@ public class ClusterHealthActionFilter implements ActionFilter {
                 clusterState
             );
             clusterHealthResponseListener.onResponse(clusterHealthResponse);
+            return;
+        }
+        if (request instanceof ClusterManagerNodeReadRequest<?> r) {
+            r.local(true);
+        } else if (request instanceof ClusterManagerNodeRequest<?> r) {
+            listener.onFailure(
+                new OpenSearchStatusException("Cannot execute action {} on clusterless node", RestStatus.BAD_REQUEST, action)
+            );
             return;
         }
         chain.proceed(task, action, request, listener);
