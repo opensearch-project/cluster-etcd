@@ -91,13 +91,13 @@ class EtcdPathResolverTest {
     @Test
     void testGetShardPlannedAllocationPath() {
         String path = pathResolver.getShardPlannedAllocationPath(testClusterName, "index1", "shard1");
-        assertThat(path).isEqualTo("/test-cluster/indices/index1/shard/shard1/planned-allocation");
+        assertThat(path).isEqualTo("/test-cluster/indices/index1/shard1/planned-allocation");
     }
 
     @Test
     void testGetShardActualAllocationPath() {
         String path = pathResolver.getShardActualAllocationPath(testClusterName, "index1", "shard1");
-        assertThat(path).isEqualTo("/test-cluster/indices/index1/shard/shard1/actual-allocation");
+        assertThat(path).isEqualTo("/test-cluster/indices/index1/shard1/actual-allocation");
     }
 
     @Test

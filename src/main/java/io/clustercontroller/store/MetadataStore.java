@@ -1,11 +1,11 @@
 package io.clustercontroller.store;
 
-import io.clustercontroller.models.Index;
-
 import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
+import io.clustercontroller.models.ShardAllocation;
+import io.clustercontroller.models.Index;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -104,7 +104,7 @@ public interface MetadataStore {
     /**
      * Get all index configurations
      */
-    List<String> getAllIndexConfigs(String clusterId) throws Exception;
+    List<Index> getAllIndexConfigs(String clusterId) throws Exception;
     
     /**
      * Get index configuration by name
@@ -135,6 +135,20 @@ public interface MetadataStore {
      * Set index settings
      */
     void setIndexSettings(String clusterId, String indexName, String settings) throws Exception;
+    
+    // =================================================================
+    // SHARD ALLOCATION OPERATIONS
+    // =================================================================
+    
+    /**
+     * Get planned allocation for a specific shard
+     */
+    ShardAllocation getPlannedAllocation(String clusterId, String indexName, String shardId) throws Exception;
+    
+    /**
+     * Set planned allocation for a specific shard
+     */
+    void setPlannedAllocation(String clusterId, String indexName, String shardId, ShardAllocation allocation) throws Exception;
     
     // =================================================================
     // CLUSTER OPERATIONS

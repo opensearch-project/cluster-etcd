@@ -123,18 +123,18 @@ public class EtcdPathResolver {
     
     /**
      * Get shard planned allocation path
-     * Pattern: /<cluster-name>/indices/<index-name>/shard/<shard-id>/planned-allocation
+     * Pattern: /<cluster-name>/indices/<index-name>/<shard-id>/planned-allocation
      */
     public String getShardPlannedAllocationPath(String clusterName, String indexName, String shardId) {
-        return Paths.get(getIndicesPrefix(clusterName), indexName, PATH_SHARD, shardId, SUFFIX_PLANNED_ALLOCATION).toString();
+        return Paths.get(getIndicesPrefix(clusterName), indexName, shardId, SUFFIX_PLANNED_ALLOCATION).toString();
     }
     
     /**
      * Get shard actual allocation path
-     * Pattern: /<cluster-name>/indices/<index-name>/shard/<shard-id>/actual-allocation
+     * Pattern: /<cluster-name>/indices/<index-name>/<shard-id>/actual-allocation
      */
     public String getShardActualAllocationPath(String clusterName, String indexName, String shardId) {
-        return Paths.get(getIndicesPrefix(clusterName), indexName, PATH_SHARD, shardId, SUFFIX_ACTUAL_ALLOCATION).toString();
+        return Paths.get(getIndicesPrefix(clusterName), indexName, shardId, SUFFIX_ACTUAL_ALLOCATION).toString();
     }
     
     // =================================================================

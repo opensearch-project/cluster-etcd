@@ -1,6 +1,7 @@
 package io.clustercontroller.store;
 
 import io.clustercontroller.models.Index;
+import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.config.Constants;
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -390,22 +391,31 @@ public class EtcdMetadataStore implements MetadataStore {
     // INDEX CONFIGURATIONS OPERATIONS
     // =================================================================
     
-    public List<String> getAllIndexConfigs(String clusterId) throws Exception {
+    public List<Index> getAllIndexConfigs(String clusterId) throws Exception {
         log.debug("Getting all index configs from etcd");
-        
+
         try {
             String indicesPrefix = pathResolver.getIndicesPrefix(clusterId);
             GetResponse response = executeEtcdPrefixQuery(indicesPrefix);
-            
-            List<String> indexConfigs = new ArrayList<>();
+
+            List<Index> indexConfigs = new ArrayList<>();
             for (var kv : response.getKvs()) {
-                String indexConfig = kv.getValue().toString(StandardCharsets.UTF_8);
-                indexConfigs.add(indexConfig);
+                String key = kv.getKey().toString(StandardCharsets.UTF_8);
+                // Only process keys that end with /conf (index configuration files)
+                if (key.endsWith("/conf")) {
+                    String indexConfigJson = kv.getValue().toString(StandardCharsets.UTF_8);
+                    try {
+                        Index indexConfig = objectMapper.readValue(indexConfigJson, Index.class);
+                        indexConfigs.add(indexConfig);
+                    } catch (Exception parseException) {
+                        log.warn("Failed to parse index config JSON: {}, skipping", indexConfigJson);
+                    }
+                }
             }
-            
+
             log.debug("Retrieved {} index configs from etcd", indexConfigs.size());
             return indexConfigs;
-            
+
         } catch (Exception e) {
             log.error("Failed to get all index configs from etcd: {}", e.getMessage(), e);
             throw new Exception("Failed to retrieve index configs from etcd", e);
@@ -692,6 +702,46 @@ public class EtcdMetadataStore implements MetadataStore {
 
     public boolean isLeader() {
         return isLeader.get();
+    }
+    
+    // =================================================================
+    // SHARD ALLOCATION OPERATIONS
+    // =================================================================
+    
+    @Override
+    public ShardAllocation getPlannedAllocation(String clusterId, String indexName, String shardId) throws Exception {
+        String path = pathResolver.getShardPlannedAllocationPath(clusterId, indexName, shardId);
+        
+        try {
+            ByteSequence key = ByteSequence.from(path, UTF_8);
+            GetResponse response = kvClient.get(key).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            if (response.getKvs().isEmpty()) {
+                return null; // No planned allocation exists
+            }
+            
+            String json = response.getKvs().get(0).getValue().toString(UTF_8);
+            return objectMapper.readValue(json, ShardAllocation.class);
+            
+        } catch (Exception e) {
+            log.error("Failed to get planned allocation for shard {}/{}: {}", indexName, shardId, e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    @Override
+    public void setPlannedAllocation(String clusterId, String indexName, String shardId, ShardAllocation allocation) throws Exception {
+        String path = pathResolver.getShardPlannedAllocationPath(clusterId, indexName, shardId);
+        
+        try {
+            String json = objectMapper.writeValueAsString(allocation);
+            executeEtcdPut(path, json);
+            log.debug("Set planned allocation for shard {}/{}: {}", indexName, shardId, allocation);
+            
+        } catch (Exception e) {
+            log.error("Failed to set planned allocation for shard {}/{}: {}", indexName, shardId, e.getMessage(), e);
+            throw e;
+        }
     }
     
 }

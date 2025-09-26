@@ -140,10 +140,11 @@ public class ClusterControllerApplication {
      */
     @Bean
     public TaskContext taskContext(
+            ClusterControllerConfig config,
             IndexManager indexManager,
             Discovery discovery,
             ShardAllocator shardAllocator,
             ActualAllocationUpdater actualAllocationUpdater) {
-        return new TaskContext(indexManager, discovery, shardAllocator, actualAllocationUpdater);
+        return new TaskContext(config.getClusterName(), indexManager, discovery, shardAllocator, actualAllocationUpdater);
     }
 }

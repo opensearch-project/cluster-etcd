@@ -3,6 +3,7 @@ package io.clustercontroller.store;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.TaskMetadata;
 import io.etcd.jetcd.*;
 import io.etcd.jetcd.kv.DeleteResponse;
@@ -88,6 +89,15 @@ public class EtcdMetadataStoreTest {
     private KeyValue mockKv(String valueUtf8) {
         KeyValue kv = mock(KeyValue.class);
         ByteSequence val = ByteSequence.from(valueUtf8, StandardCharsets.UTF_8);
+        when(kv.getValue()).thenReturn(val);
+        return kv;
+    }
+
+    private KeyValue mockKvWithKey(String keyUtf8, String valueUtf8) {
+        KeyValue kv = mock(KeyValue.class);
+        ByteSequence key = ByteSequence.from(keyUtf8, StandardCharsets.UTF_8);
+        ByteSequence val = ByteSequence.from(valueUtf8, StandardCharsets.UTF_8);
+        when(kv.getKey()).thenReturn(key);
         when(kv.getValue()).thenReturn(val);
         return kv;
     }
@@ -357,16 +367,20 @@ public class EtcdMetadataStoreTest {
     public void testGetAllIndexConfigs() throws Exception {
         EtcdMetadataStore store = newStore();
 
+        // Mock response with keys that end with /conf (index configs) and other keys (settings, mappings)
         GetResponse resp = mockGetResponse(Arrays.asList(
-                mockKv("{\"settings\":{\"refresh_interval\":\"1s\"}}"),
-                mockKv("{\"settings\":{\"number_of_shards\":3}}")
+                mockKvWithKey("/test-cluster/indices/index1/conf", "{\"index_name\":\"index1\",\"shard_replica_count\":[1,2]}"),
+                mockKvWithKey("/test-cluster/indices/index1/settings", "{\"number_of_shards\":1,\"number_of_replicas\":2}"),
+                mockKvWithKey("/test-cluster/indices/index2/conf", "{\"index_name\":\"index2\",\"shard_replica_count\":[3]}"),
+                mockKvWithKey("/test-cluster/indices/index2/mappings", "{\"properties\":{\"title\":{\"type\":\"text\"}}}")
         ));
         when(mockKv.get(any(ByteSequence.class), any(GetOption.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
 
-        List<String> configs = store.getAllIndexConfigs(CLUSTER);
+        List<Index> configs = store.getAllIndexConfigs(CLUSTER);
+        // Should only return 2 configs (the /conf keys), not the settings/mappings
         assertThat(configs).hasSize(2);
-        assertThat(configs.get(0)).contains("settings");
+        assertThat(configs.get(0).getIndexName()).isNotNull();
     }
 
     @Test
@@ -538,6 +552,133 @@ public class EtcdMetadataStoreTest {
         EtcdMetadataStore store = newStore();
         store.close();
         verify(mockEtcdClient, times(1)).close();
+    }
+
+    // ------------------------- shard allocation tests -------------------------
+
+    @Test
+    public void testGetPlannedAllocationSuccess() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String shardId = "0";
+
+        // Mock ShardAllocation response
+        ShardAllocation expectedAllocation = new ShardAllocation(shardId, indexName);
+        expectedAllocation.setIngestSUs(Arrays.asList("node1"));
+        expectedAllocation.setSearchSUs(Arrays.asList("node2", "node3"));
+
+        String allocationJson = new ObjectMapper().writeValueAsString(expectedAllocation);
+        ByteSequence mockValue = ByteSequence.from(allocationJson, UTF_8);
+
+        KeyValue mockKeyValue = mock(KeyValue.class);
+        when(mockKeyValue.getValue()).thenReturn(mockValue);
+
+        GetResponse mockResponse = mock(GetResponse.class);
+        when(mockResponse.getKvs()).thenReturn(Arrays.asList(mockKeyValue));
+
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(mockResponse));
+
+        // Execute
+        ShardAllocation result = store.getPlannedAllocation(clusterId, indexName, shardId);
+
+        // Verify
+        assertThat(result).isNotNull();
+        assertThat(result.getShardId()).isEqualTo(shardId);
+        assertThat(result.getIndexName()).isEqualTo(indexName);
+        assertThat(result.getIngestSUs()).containsExactly("node1");
+        assertThat(result.getSearchSUs()).containsExactly("node2", "node3");
+    }
+
+    @Test
+    public void testGetPlannedAllocationNotFound() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String shardId = "0";
+
+        // Mock empty response
+        GetResponse mockResponse = mock(GetResponse.class);
+        when(mockResponse.getKvs()).thenReturn(Collections.emptyList());
+
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(mockResponse));
+
+        // Execute
+        ShardAllocation result = store.getPlannedAllocation(clusterId, indexName, shardId);
+
+        // Verify
+        assertThat(result).isNull();
+    }
+
+    @Test
+    public void testGetPlannedAllocationWithException() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String shardId = "0";
+
+        // Mock etcd failure
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd timeout")));
+
+        // Verify exception is propagated
+        assertThatThrownBy(() -> store.getPlannedAllocation(clusterId, indexName, shardId))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("etcd timeout");
+    }
+
+    @Test
+    public void testSetPlannedAllocationSuccess() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String shardId = "0";
+
+        ShardAllocation allocation = new io.clustercontroller.models.ShardAllocation(shardId, indexName);
+        allocation.setIngestSUs(Arrays.asList("node1"));
+        allocation.setSearchSUs(Arrays.asList("node2", "node3"));
+
+        PutResponse mockPutResponse = mock(PutResponse.class);
+        when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(mockPutResponse));
+
+        // Execute
+        store.setPlannedAllocation(clusterId, indexName, shardId, allocation);
+
+        // Verify the put call was made with correct key and value
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        ArgumentCaptor<ByteSequence> valueCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).put(keyCaptor.capture(), valueCaptor.capture());
+
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        String capturedValue = valueCaptor.getValue().toString(UTF_8);
+
+        assertThat(capturedKey).contains("test-cluster/indices/test-index/0/planned-allocation");
+        assertThat(capturedValue).contains("\"shard_id\":\"0\"");
+        assertThat(capturedValue).contains("\"index_name\":\"test-index\"");
+        assertThat(capturedValue).contains("\"ingest_sus\":[\"node1\"]");
+        assertThat(capturedValue).contains("\"search_sus\":[\"node2\",\"node3\"]");
+    }
+
+    @Test
+    public void testSetPlannedAllocationWithException() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String shardId = "0";
+
+        ShardAllocation allocation = new io.clustercontroller.models.ShardAllocation(shardId, indexName);
+
+        // Mock etcd failure
+        when(mockKv.put(any(ByteSequence.class), any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd timeout")));
+
+        // Verify exception is propagated
+        assertThatThrownBy(() -> store.setPlannedAllocation(clusterId, indexName, shardId, allocation))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("etcd timeout");
     }
 
     // ------------------------- reflection util -------------------------
