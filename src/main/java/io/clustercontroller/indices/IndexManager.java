@@ -64,6 +64,7 @@ public class IndexManager {
         // Create the new Index configuration
         Index newIndex = new Index();
         newIndex.setIndexName(indexName);
+        newIndex.setNumberOfShards(numberOfShards);
         newIndex.setShardReplicaCount(shardReplicaCount);
         
         // Store the index configuration

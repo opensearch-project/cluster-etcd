@@ -20,6 +20,9 @@ public class Index {
     @JsonProperty("index_name")
     private String indexName;
     
+    @JsonProperty("number_of_shards")
+    private int numberOfShards;
+    
     @JsonProperty("shard_replica_count")
     private List<Integer> shardReplicaCount = new ArrayList<>();
     

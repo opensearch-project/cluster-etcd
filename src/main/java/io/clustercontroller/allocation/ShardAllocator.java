@@ -60,14 +60,25 @@ public class ShardAllocator {
             // For each index
             for (Index indexConfig : indexConfigs) {
                 String indexName = indexConfig.getIndexName();
+                int numberOfShards = indexConfig.getNumberOfShards();
                 List<Integer> shardReplicaCounts = indexConfig.getShardReplicaCount();
                 
-                log.debug("Processing index {} with {} shards", indexName, shardReplicaCounts.size());
+                log.debug("Processing index {} with {} shards", indexName, numberOfShards);
                 
                 // For each shard in the index
-                for (int shardIndex = 0; shardIndex < shardReplicaCounts.size(); shardIndex++) {
+                for (int shardIndex = 0; shardIndex < numberOfShards; shardIndex++) {
                     String shardId = String.valueOf(shardIndex);
-                    int replicaCount = shardReplicaCounts.get(shardIndex);
+                    
+                    // Validate and get replica count for RESPECT_REPLICA_COUNT strategy
+                    int replicaCount = 0; // Default for USE_ALL_AVAILABLE_NODES
+                    if (strategy == AllocationStrategy.RESPECT_REPLICA_COUNT) {
+                        if (shardReplicaCounts == null || shardIndex >= shardReplicaCounts.size()) {
+                            log.error("Missing replica count for shard {} in index {} - required for RESPECT_REPLICA_COUNT strategy", 
+                                     shardIndex, indexName);
+                            continue;
+                        }
+                        replicaCount = shardReplicaCounts.get(shardIndex);
+                    }
                     
                     // Get current planned allocation and all nodes
                     ShardAllocation currentPlanned = metadataStore.getPlannedAllocation(clusterId, indexName, shardId);
