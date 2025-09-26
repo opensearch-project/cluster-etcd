@@ -33,6 +33,7 @@ public class Index {
     public Index(String indexName, List<Integer> shardReplicaCount) {
         this.indexName = indexName;
         this.shardReplicaCount = shardReplicaCount != null ? shardReplicaCount : new ArrayList<>();
+        this.numberOfShards = this.shardReplicaCount.size();
     }
     
     // Custom setters to maintain null safety
