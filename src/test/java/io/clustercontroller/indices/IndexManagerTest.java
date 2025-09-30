@@ -121,17 +121,74 @@ class IndexManagerTest {
     }
 
     @Test
-    void testDeleteIndex() throws Exception {
+    void testDeleteIndex_Success() throws Exception {
         // Given
         String clusterId = "test-cluster";
         String indexName = "test-index";
+        
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
 
         // When
         indexManager.deleteIndex(clusterId, indexName);
 
         // Then
-        // Verify the method was called (implementation is TODO)
-        verify(metadataStore, never()).deleteIndexConfig(any(), any());
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).deletePrefix(clusterId, "/" + clusterId + "/indices/" + indexName);
+    }
+
+    @Test
+    void testDeleteIndex_IndexNotFound() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "non-existent-index";
+        
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+
+        // When
+        indexManager.deleteIndex(clusterId, indexName);
+
+        // Then
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore, never()).deletePrefix(any(), any());
+    }
+
+    @Test
+    void testDeleteIndex_EmptyIndexName() {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.deleteIndex(clusterId, indexName))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("Index name cannot be null or empty");
+    }
+
+    @Test
+    void testDeleteIndex_NullClusterId() {
+        // Given
+        String clusterId = null;
+        String indexName = "test-index";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.deleteIndex(clusterId, indexName))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("Cluster ID cannot be null or empty");
+    }
+
+    @Test
+    void testDeleteIndex_DeletePrefixThrowsException() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        doThrow(new Exception("Delete prefix failed")).when(metadataStore).deletePrefix(any(), any());
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.deleteIndex(clusterId, indexName))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("Failed to delete index 'test-index' from cluster 'test-cluster'");
     }
 
     @Test
