@@ -2,8 +2,8 @@ package io.clustercontroller;
 
 import io.clustercontroller.allocation.ActualAllocationUpdater;
 import io.clustercontroller.allocation.ShardAllocator;
+import io.clustercontroller.config.ApplicationConfig;
 import io.clustercontroller.config.ClusterControllerConfig;
-import io.clustercontroller.discovery.Discovery;
 import io.clustercontroller.health.ClusterHealthManager;
 import io.clustercontroller.indices.AliasManager;
 import io.clustercontroller.indices.IndexManager;
@@ -53,10 +53,15 @@ public class ClusterControllerApplication {
     
     @Bean
     @Primary
-    public ClusterControllerConfig config() {
+    public ApplicationConfig applicationConfig() {
+        return new ApplicationConfig();
+    }
+    
+    @Bean
+    public ClusterControllerConfig config(ApplicationConfig applicationConfig) {
         ClusterControllerConfig config = new ClusterControllerConfig(
             DEFAULT_CLUSTER_NAME, 
-            new String[]{DEFAULT_ETCD_ENDPOINT}, 
+            applicationConfig.getEndpoints(), 
             DEFAULT_TASK_INTERVAL_SECONDS
         );
         log.info("Loaded configuration with default cluster: {}", config.getClusterName());
@@ -90,15 +95,9 @@ public class ClusterControllerApplication {
     }
 
     @Bean
-    public Discovery discovery(MetadataStore metadataStore, ClusterControllerConfig config) {
-        log.info("Initializing Discovery for cluster: {}", config.getClusterName());
-        return new Discovery(metadataStore, config.getClusterName());
-    }
-
-    @Bean
-    public ClusterHealthManager clusterHealthManager(Discovery discovery, MetadataStore metadataStore) {
+    public ClusterHealthManager clusterHealthManager(MetadataStore metadataStore) {
         log.info("Initializing ClusterHealthManager for multi-cluster support");
-        return new ClusterHealthManager(discovery, metadataStore);
+        return new ClusterHealthManager(metadataStore);
     }
 
     @Bean
@@ -153,7 +152,6 @@ public class ClusterControllerApplication {
     public TaskContext taskContext(
             ClusterControllerConfig config,
             IndexManager indexManager,
-            Discovery discovery,
             ShardAllocator shardAllocator,
             ActualAllocationUpdater actualAllocationUpdater,
             GoalStateOrchestrator goalStateOrchestrator) {

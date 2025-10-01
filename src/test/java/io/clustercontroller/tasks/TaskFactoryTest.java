@@ -12,15 +12,7 @@ import static org.assertj.core.api.Assertions.*;
  */
 class TaskFactoryTest {
     
-    @Test
-    void testDiscoverSearchUnitTask() {
-        TaskMetadata metadata = new TaskMetadata(TASK_ACTION_DISCOVER_SEARCH_UNIT, 3);
-        
-        Task task = TaskFactory.createTask(metadata);
-        
-        assertThat(task).isInstanceOf(DiscoverSearchUnitTask.class);
-        assertThat(task.getName()).isEqualTo(TASK_ACTION_DISCOVER_SEARCH_UNIT);
-    }
+    // Discovery task removed - discovery logic moved to TaskManager
     
     @Test
     void testShardAllocatorTask() {

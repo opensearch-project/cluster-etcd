@@ -1,6 +1,5 @@
 package io.clustercontroller.health;
 
-import io.clustercontroller.discovery.Discovery;
 import io.clustercontroller.store.MetadataStore;
 import lombok.extern.slf4j.Slf4j;
 
@@ -20,11 +19,9 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ClusterHealthManager {
     
-    private final Discovery discovery;
     private final MetadataStore metadataStore;
     
-    public ClusterHealthManager(Discovery discovery, MetadataStore metadataStore) {
-        this.discovery = discovery;
+    public ClusterHealthManager(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
     }
     
