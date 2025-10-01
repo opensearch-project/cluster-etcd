@@ -16,6 +16,11 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.etcd.changeapplier.NodeStateApplier;
 import org.opensearch.cluster.node.DiscoveryNode;
+import org.opensearch.common.settings.Settings;
+import org.opensearch.common.unit.TimeValue;
+import org.opensearch.threadpool.ExecutorBuilder;
+import org.opensearch.threadpool.FixedExecutorBuilder;
+import org.opensearch.threadpool.ThreadPool;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -23,23 +28,18 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ETCDWatcher implements Closeable {
+    public static final String THREAD_POOL_NAME = "etcd-watcher";
     private final Logger logger = LogManager.getLogger(ETCDWatcher.class);
     private final Client etcdClient;
     private final DiscoveryNode localNode;
     private final Watch.Watcher nodeWatcher;
     private final NodeStateApplier nodeStateApplier;
-    private final ScheduledExecutorService scheduledExecutorService = Executors.newSingleThreadScheduledExecutor(
-        r -> new Thread(r, "etcd-watcher-scheduler")
-    );
     private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
+    private final ThreadPool threadPool;
     private final String clusterName;
-
     private final Map<String, Watch.Watcher> additionalWatchers = new HashMap<>();
     private final NodeListener nodeListener = new NodeListener();
     private final ByteSequence nodeGoalStateKey;
@@ -49,12 +49,14 @@ public class ETCDWatcher implements Closeable {
         ByteSequence nodeGoalStateKey,
         NodeStateApplier nodeStateApplier,
         Client etcdClient,
+        ThreadPool threadPool,
         String clusterName
     ) throws IOException, ExecutionException, InterruptedException {
         this.localNode = localNode;
         this.nodeGoalStateKey = nodeGoalStateKey;
         this.etcdClient = etcdClient;
         this.nodeStateApplier = nodeStateApplier;
+        this.threadPool = threadPool;
         this.clusterName = clusterName;
         loadState(nodeGoalStateKey);
         nodeWatcher = etcdClient.getWatchClient().watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), nodeListener);
@@ -63,8 +65,11 @@ public class ETCDWatcher implements Closeable {
     @Override
     public void close() {
         nodeWatcher.close();
-        scheduledExecutorService.close();
         etcdClient.close();
+    }
+
+    public static ExecutorBuilder<?> createExecutorBuilder(Settings settings) {
+        return new FixedExecutorBuilder(settings, THREAD_POOL_NAME, 1, 100, THREAD_POOL_NAME);
     }
 
     private void loadState(ByteSequence nodeKey) throws ExecutionException, InterruptedException {
@@ -105,7 +110,7 @@ public class ETCDWatcher implements Closeable {
 
         private void scheduleRefresh(Runnable nextAction) {
             pendingAction.set(nextAction);
-            scheduledExecutorService.schedule(() -> {
+            threadPool.schedule(() -> {
                 Runnable action = pendingAction.get();
                 if (action != null) {
                     try {
@@ -115,7 +120,7 @@ public class ETCDWatcher implements Closeable {
                     }
                 }
                 pendingAction.compareAndSet(action, null);
-            }, 100, TimeUnit.MILLISECONDS);
+            }, TimeValue.timeValueMillis(100), THREAD_POOL_NAME);
         }
 
         @Override

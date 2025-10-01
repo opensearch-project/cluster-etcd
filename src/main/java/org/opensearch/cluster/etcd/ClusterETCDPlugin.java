@@ -13,6 +13,7 @@ import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.settings.Setting;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.Strings;
 import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
@@ -23,6 +24,7 @@ import org.opensearch.plugins.ClusterPlugin;
 import org.opensearch.plugins.Plugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.script.ScriptService;
+import org.opensearch.threadpool.ExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
 import org.opensearch.watcher.ResourceWatcherService;
 
@@ -41,6 +43,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
     private ETCDHeartbeat etcdHeartbeat;
     private Client etcdClient;
     private NodeEnvironment nodeEnvironment;
+    private ThreadPool threadPool;
 
     @Override
     public Collection<Object> createComponents(
@@ -58,6 +61,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
     ) {
         this.clusterService = clusterService;
         this.nodeEnvironment = nodeEnvironment;
+        this.threadPool = threadPool;
         return Collections.emptySet();
     }
 
@@ -80,10 +84,11 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
                 getNodeGoalStateKey(localNode, clusterName),
                 new ChangeApplierService(clusterService.getClusterApplierService()),
                 etcdClient,
+                threadPool,
                 clusterName
             );
 
-            etcdHeartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
+            etcdHeartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool);
             etcdHeartbeat.start();
         } catch (IOException | ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
@@ -109,15 +114,17 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
 
     @Override
     public void close() {
-        if (etcdHeartbeat != null) {
-            etcdHeartbeat.stop();
-        }
         if (etcdWatcher != null) {
             etcdWatcher.close();
         }
         if (etcdClient != null) {
             etcdClient.close();
         }
+    }
+
+    @Override
+    public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
+        return List.of(ETCDWatcher.createExecutorBuilder(settings), ETCDHeartbeat.createExecutorBuilder(settings));
     }
 
     @Override
