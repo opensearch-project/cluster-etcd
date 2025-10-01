@@ -5,6 +5,7 @@ import io.clustercontroller.models.Index;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitGoalState;
+import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -24,10 +25,12 @@ public class IndexManager {
     
     private final MetadataStore metadataStore;
     private final ObjectMapper objectMapper;
+    private final EtcdPathResolver pathResolver;
     
     public IndexManager(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
         this.objectMapper = new ObjectMapper();
+        this.pathResolver = EtcdPathResolver.getInstance();
     }
     
     public void createIndex(String clusterId, String indexName, String indexConfig) throws Exception {
@@ -111,7 +114,7 @@ public class IndexManager {
         try {
             // Delete all index data using prefix delete
             // This will remove: conf, settings, mappings, and all planned allocations
-            String indexPrefix = "/" + clusterId + "/indices/" + indexName;
+            String indexPrefix = pathResolver.getIndexPrefix(clusterId, indexName);
             metadataStore.deletePrefix(clusterId, indexPrefix);
             log.info("DeleteIndex - Successfully deleted all index data for '{}' from cluster '{}'",
                 indexName, clusterId);
