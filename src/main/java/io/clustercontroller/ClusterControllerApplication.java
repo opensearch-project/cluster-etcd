@@ -2,8 +2,8 @@ package io.clustercontroller;
 
 import io.clustercontroller.allocation.ActualAllocationUpdater;
 import io.clustercontroller.allocation.ShardAllocator;
-import io.clustercontroller.config.ApplicationConfig;
 import io.clustercontroller.config.ClusterControllerConfig;
+import io.clustercontroller.discovery.Discovery;
 import io.clustercontroller.health.ClusterHealthManager;
 import io.clustercontroller.indices.AliasManager;
 import io.clustercontroller.indices.IndexManager;
@@ -21,8 +21,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Primary;
-
-import static io.clustercontroller.config.Constants.*;
 
 /**
  * Main Spring Boot application class for the Cluster Controller with multi-cluster support.
@@ -53,19 +51,8 @@ public class ClusterControllerApplication {
     
     @Bean
     @Primary
-    public ApplicationConfig applicationConfig() {
-        return new ApplicationConfig();
-    }
-    
-    @Bean
-    public ClusterControllerConfig config(ApplicationConfig applicationConfig) {
-        ClusterControllerConfig config = new ClusterControllerConfig(
-            DEFAULT_CLUSTER_NAME, 
-            applicationConfig.getEndpoints(), 
-            DEFAULT_TASK_INTERVAL_SECONDS
-        );
-        log.info("Loaded configuration with default cluster: {}", config.getClusterName());
-        return config;
+    public ClusterControllerConfig config() {
+        return new ClusterControllerConfig();
     }
     
     /**
@@ -154,7 +141,10 @@ public class ClusterControllerApplication {
             IndexManager indexManager,
             ShardAllocator shardAllocator,
             ActualAllocationUpdater actualAllocationUpdater,
-            GoalStateOrchestrator goalStateOrchestrator) {
-        return new TaskContext(config.getClusterName(), indexManager, discovery, shardAllocator, actualAllocationUpdater, goalStateOrchestrator);
+            GoalStateOrchestrator goalStateOrchestrator,
+            MetadataStore metadataStore) {
+        // Create Discovery instance but don't expose as separate bean
+        Discovery discovery = new Discovery(metadataStore, config.getClusterName());
+        return new TaskContext(config.getClusterName(), indexManager, shardAllocator, actualAllocationUpdater, goalStateOrchestrator, discovery);
     }
 }

@@ -2,6 +2,7 @@ package io.clustercontroller.tasks;
 
 import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.tasks.impl.ActualAllocationUpdaterTask;
+import io.clustercontroller.tasks.impl.GoalStateOrchestratorTask;
 import io.clustercontroller.tasks.impl.PlanShardAllocationTask;
 import io.clustercontroller.tasks.impl.ShardAllocatorTask;
 import io.clustercontroller.tasks.impl.UnknownTask;
