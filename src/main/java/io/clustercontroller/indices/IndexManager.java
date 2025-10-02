@@ -4,6 +4,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import io.clustercontroller.models.Index;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.models.SearchUnitGoalState;
+import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -12,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Manages index lifecycle operations.
@@ -22,10 +25,12 @@ public class IndexManager {
     
     private final MetadataStore metadataStore;
     private final ObjectMapper objectMapper;
+    private final EtcdPathResolver pathResolver;
     
     public IndexManager(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
         this.objectMapper = new ObjectMapper();
+        this.pathResolver = EtcdPathResolver.getInstance();
     }
     
     public void createIndex(String clusterId, String indexName, String indexConfig) throws Exception {
@@ -66,6 +71,7 @@ public class IndexManager {
         newIndex.setIndexName(indexName);
         newIndex.setNumberOfShards(numberOfShards);
         newIndex.setShardReplicaCount(shardReplicaCount);
+        newIndex.setNumShards(numberOfShards);
         
         // Store the index configuration
         String indexConfigJson = objectMapper.writeValueAsString(newIndex);
@@ -88,9 +94,38 @@ public class IndexManager {
         }
     }
     
-    public void deleteIndex(String clusterId, String indexName) {
-        log.info("Deleting index {} from cluster {}", indexName, clusterId);
-        // TODO: Implement index deletion logic
+    public void deleteIndex(String clusterId, String indexName) throws Exception {
+        log.info("DeleteIndex - Starting deletion of index '{}' from cluster '{}'", indexName, clusterId);
+
+        // Validate input parameters
+        if (indexName == null || indexName.trim().isEmpty()) {
+            throw new Exception("Index name cannot be null or empty");
+        }
+        if (clusterId == null || clusterId.trim().isEmpty()) {
+            throw new Exception("Cluster ID cannot be null or empty");
+        }
+
+        // Check if index exists
+        if (!metadataStore.getIndexConfig(clusterId, indexName).isPresent()) {
+            log.warn("DeleteIndex - Index '{}' not found in cluster '{}', nothing to delete", indexName, clusterId);
+            return;
+        }
+
+        try {
+            // Delete all index data using prefix delete
+            // This will remove: conf, settings, mappings, and all planned allocations
+            String indexPrefix = pathResolver.getIndexPrefix(clusterId, indexName);
+            metadataStore.deletePrefix(clusterId, indexPrefix);
+            log.info("DeleteIndex - Successfully deleted all index data for '{}' from cluster '{}'",
+                indexName, clusterId);
+
+        } catch (Exception e) {
+            log.error("DeleteIndex - Failed to delete index '{}' from cluster '{}': {}",
+                indexName, clusterId, e.getMessage(), e);
+            throw new Exception("Failed to delete index '" + indexName + "' from cluster '" + clusterId + "'", e);
+        }
+
+        log.info("DeleteIndex - Index '{}' deletion completed successfully from cluster '{}'", indexName, clusterId);
     }
     
     /**
@@ -203,6 +238,8 @@ public class IndexManager {
             return 1;
         }
     }
+
+
 
     /**
      * Data class to hold parsed create index request

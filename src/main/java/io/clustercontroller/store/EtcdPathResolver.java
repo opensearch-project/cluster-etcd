@@ -94,6 +94,14 @@ public class EtcdPathResolver {
     }
     
     /**
+     * Get prefix for a specific index (for prefix deletion)
+     * Pattern: /<cluster-name>/indices/<index-name>
+     */
+    public String getIndexPrefix(String clusterName, String indexName) {
+        return Paths.get(getIndicesPrefix(clusterName), indexName).toString();
+    }
+    
+    /**
      * Get index configuration path
      * Pattern: /<cluster-name>/indices/<index-name>/conf
      */

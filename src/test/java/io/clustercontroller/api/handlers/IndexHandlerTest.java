@@ -104,7 +104,7 @@ class IndexHandlerTest {
     }
 
     @Test
-    void testDeleteIndex_Success() {
+    void testDeleteIndex_Success() throws Exception {
         // Given
         doNothing().when(indexManager).deleteIndex(anyString(), anyString());
 
@@ -124,7 +124,7 @@ class IndexHandlerTest {
     }
 
     @Test
-    void testDeleteIndex_UnsupportedOperation() {
+    void testDeleteIndex_UnsupportedOperation() throws Exception {
         // Given
         doThrow(new UnsupportedOperationException("Not implemented"))
             .when(indexManager).deleteIndex(anyString(), anyString());

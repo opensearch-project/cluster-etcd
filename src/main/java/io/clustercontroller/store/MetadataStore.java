@@ -136,6 +136,11 @@ public interface MetadataStore {
      */
     void setIndexSettings(String clusterId, String indexName, String settings) throws Exception;
     
+    /**
+     * Delete all keys with the given prefix
+     */
+    void deletePrefix(String clusterId, String prefix) throws Exception;
+    
     // =================================================================
     // SHARD ALLOCATION OPERATIONS
     // =================================================================

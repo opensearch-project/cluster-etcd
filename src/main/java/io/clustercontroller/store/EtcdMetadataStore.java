@@ -2,9 +2,7 @@ package io.clustercontroller.store;
 
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.ShardAllocation;
-import io.clustercontroller.config.Constants;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -15,7 +13,7 @@ import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.util.EnvironmentUtils;
 import io.etcd.jetcd.*;
 import io.etcd.jetcd.kv.GetResponse;
-import io.etcd.jetcd.kv.PutResponse;
+import io.etcd.jetcd.options.DeleteOption;
 import io.etcd.jetcd.lease.LeaseGrantResponse;
 import io.etcd.jetcd.lease.LeaseKeepAliveResponse;
 import io.etcd.jetcd.options.GetOption;
@@ -24,7 +22,6 @@ import io.grpc.stub.StreamObserver;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
-import java.time.OffsetDateTime;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -741,6 +738,31 @@ public class EtcdMetadataStore implements MetadataStore {
         } catch (Exception e) {
             log.error("Failed to set planned allocation for shard {}/{}: {}", indexName, shardId, e.getMessage(), e);
             throw e;
+        }
+    }
+
+
+
+
+    @Override
+    public void deletePrefix(String clusterId, String prefix) throws Exception {
+        log.debug("Deleting all keys with prefix {} in etcd", prefix);
+
+        try {
+            // Add trailing slash for etcd prefix queries to ensure precise matching
+            String prefixWithSlash = prefix + PATH_DELIMITER;
+            ByteSequence prefixBytes = ByteSequence.from(prefixWithSlash, StandardCharsets.UTF_8);
+            
+            // Use etcd delete with prefix option
+            kvClient.delete(
+                prefixBytes,
+                DeleteOption.newBuilder().withPrefix(prefixBytes).build()
+            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            log.debug("Successfully deleted all keys with prefix {} in etcd", prefix);
+        } catch (Exception e) {
+            log.error("Failed to delete keys with prefix {} in etcd: {}", prefix, e.getMessage(), e);
+            throw new Exception("Failed to delete keys with prefix in etcd", e);
         }
     }
     
