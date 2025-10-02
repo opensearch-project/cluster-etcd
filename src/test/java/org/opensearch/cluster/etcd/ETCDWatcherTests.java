@@ -22,6 +22,7 @@ import org.opensearch.test.OpenSearchTestCase;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
@@ -240,6 +241,77 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
                 // Verify coordinator node state is removed
                 await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
+            }
+        }
+    }
+
+    public void testETCDWatcherCoordinatorNodeWithRemoteClusters() throws IOException, ExecutionException, InterruptedException {
+        String clusterName = "test-cluster";
+        String nodeName = "test-coordinator-node-ccs";
+        Settings localNodeSettings = Settings.builder().put("cluster.name", clusterName).put("node.name", nodeName).build();
+        DiscoveryNode localNode = DiscoveryNode.createLocal(
+            localNodeSettings,
+            new TransportAddress(TransportAddress.META_ADDRESS, 9200),
+            nodeName
+        );
+
+        MockNodeStateApplier mockNodeStateApplier = new MockNodeStateApplier();
+        String configPath = ETCDPathUtils.buildSearchUnitGoalStatePath(localNode, clusterName);
+
+        try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
+            etcdCluster.start();
+            try (
+                Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build();
+                ETCDWatcher etcdWatcher = new ETCDWatcher(
+                    localNode,
+                    ByteSequence.from(configPath, StandardCharsets.UTF_8),
+                    mockNodeStateApplier,
+                    etcdClient,
+                    clusterName
+                )
+            ) {
+                // Add coordinator node configuration with remote_clusters
+                etcdPut(etcdClient, configPath, """
+                        {
+                          "remote_shards": {
+                            "indices": {},
+                            "remote_clusters": {
+                              "cluster_one": {
+                                "seeds": [
+                                  "10.0.1.10:9300",
+                                  "10.0.1.11:9300"
+                                ]
+                              },
+                              "cluster_two": {
+                                "seeds": [
+                                  "10.0.2.20:9300"
+                                ]
+                              }
+                            }
+                          }
+                        }
+                    """);
+
+                // Verify coordinator node state is applied and contains remote cluster settings
+                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+                    assertNotNull(mockNodeStateApplier.appliedNodeState);
+                    assertTrue(mockNodeStateApplier.appliedNodeState instanceof CoordinatorNodeState);
+                    CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) mockNodeStateApplier.appliedNodeState;
+                    ClusterState clusterState = coordinatorNodeState.buildClusterState(ClusterState.EMPTY_STATE);
+
+                    // Verify persistent settings contain the remote cluster configurations
+                    Settings persistentSettings = clusterState.metadata().persistentSettings();
+                    assertNotNull(persistentSettings);
+                    List<String> clusterOneSeeds = persistentSettings.getAsList("cluster.remote.cluster_one.seeds");
+                    List<String> clusterTwoSeeds = persistentSettings.getAsList("cluster.remote.cluster_two.seeds");
+
+                    assertEquals(2, clusterOneSeeds.size());
+                    assertEquals("10.0.1.10:9300", clusterOneSeeds.get(0));
+                    assertEquals("10.0.1.11:9300", clusterOneSeeds.get(1));
+
+                    assertEquals(1, clusterTwoSeeds.size());
+                    assertEquals("10.0.2.20:9300", clusterTwoSeeds.get(0));
+                });
             }
         }
     }
