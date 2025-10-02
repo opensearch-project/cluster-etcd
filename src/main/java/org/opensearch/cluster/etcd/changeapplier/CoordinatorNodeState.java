@@ -37,7 +37,7 @@ public class CoordinatorNodeState extends NodeState {
         Collection<RemoteNode> remoteNodes,
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments,
         Map<String, Object> aliases,
-        Map<String, Settings> remoteClusters        
+        Map<String, Settings> remoteClusters
     ) {
         super(localNode);
         this.remoteNodes = remoteNodes;
@@ -124,7 +124,7 @@ public class CoordinatorNodeState extends NodeState {
             }
             metadataBuilder.persistentSettings(persistentSettingsBuilder.build());
         }
-        
+
         return ClusterState.builder(ClusterState.EMPTY_STATE)
             .nodes(nodesBuilder)
             .metadata(metadataBuilder)

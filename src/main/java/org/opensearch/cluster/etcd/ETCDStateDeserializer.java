@@ -258,7 +258,13 @@ public final class ETCDStateDeserializer {
             remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
         }
 
-        CoordinatorNodeState coordinatorNodeState = new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment, aliases, remoteClusters);
+        CoordinatorNodeState coordinatorNodeState = new CoordinatorNodeState(
+            localNode,
+            remoteNodes,
+            remoteShardAssignment,
+            aliases,
+            remoteClusters
+        );
         return new NodeStateResult(coordinatorNodeState, keysToWatch);
     }
 
