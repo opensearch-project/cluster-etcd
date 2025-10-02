@@ -1,0 +1,4 @@
+# Application Configuration
+etcd:
+  endpoints:
+    - http://localhost:2379

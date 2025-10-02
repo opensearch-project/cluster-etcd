@@ -12,7 +12,6 @@ import static org.assertj.core.api.Assertions.*;
  */
 class TaskFactoryTest {
     
-    // Discovery task removed - discovery logic moved to TaskManager
     
     @Test
     void testShardAllocatorTask() {

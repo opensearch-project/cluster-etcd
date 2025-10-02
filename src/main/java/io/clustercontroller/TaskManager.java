@@ -189,7 +189,7 @@ public class TaskManager {
         log.debug("Cleaning up old tasks");
     }
     
-    // ========== Discovery Methods (moved from Discovery class) ==========
+    // ========== Discovery Methods ==========
     
     /**
      * Discover search units from cluster topology.
