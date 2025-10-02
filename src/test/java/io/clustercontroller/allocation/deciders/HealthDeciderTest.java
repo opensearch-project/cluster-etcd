@@ -20,8 +20,8 @@ class HealthDeciderTest {
     
     @Test
     void testHealthyNodesAccepted() {
-        SearchUnit greenNode = createSearchUnit("node1", "primary", "NORMAL", HealthState.GREEN);
-        SearchUnit yellowNode = createSearchUnit("node2", "replica", "NORMAL", HealthState.YELLOW);
+        SearchUnit greenNode = createSearchUnit("node1", "PRIMARY", "NORMAL", HealthState.GREEN);
+        SearchUnit yellowNode = createSearchUnit("node2", "SEARCH_REPLICA", "NORMAL", HealthState.YELLOW);
         
         assertThat(decider.canAllocate("0", greenNode, "test-index", NodeRole.PRIMARY))
             .isEqualTo(Decision.YES);
@@ -31,9 +31,9 @@ class HealthDeciderTest {
     
     @Test
     void testUnhealthyNodesRejected() {
-        SearchUnit redNode = createSearchUnit("node1", "primary", "NORMAL", HealthState.RED);
-        SearchUnit drainedNode = createSearchUnit("node2", "primary", "DRAIN", HealthState.GREEN);
-        SearchUnit nullAdminNode = createSearchUnit("node3", "primary", null, HealthState.GREEN);
+        SearchUnit redNode = createSearchUnit("node1", "PRIMARY", "NORMAL", HealthState.RED);
+        SearchUnit drainedNode = createSearchUnit("node2", "PRIMARY", "DRAIN", HealthState.GREEN);
+        SearchUnit nullAdminNode = createSearchUnit("node3", "PRIMARY", null, HealthState.GREEN);
         
         assertThat(decider.canAllocate("0", redNode, "test-index", NodeRole.PRIMARY))
             .isEqualTo(Decision.NO);

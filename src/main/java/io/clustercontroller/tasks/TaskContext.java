@@ -4,6 +4,7 @@ import io.clustercontroller.allocation.ActualAllocationUpdater;
 import io.clustercontroller.allocation.ShardAllocator;
 import io.clustercontroller.discovery.Discovery;
 import io.clustercontroller.indices.IndexManager;
+import io.clustercontroller.orchestration.GoalStateOrchestrator;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 
@@ -19,6 +20,7 @@ public class TaskContext {
     private final Discovery discovery;
     private final ShardAllocator shardAllocator;
     private final ActualAllocationUpdater actualAllocationUpdater;
+    private final GoalStateOrchestrator goalStateOrchestrator;
 }
 
 

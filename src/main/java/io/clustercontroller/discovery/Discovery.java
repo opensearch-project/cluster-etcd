@@ -185,19 +185,18 @@ public class Discovery {
                 
                 try {
                     // Check if actual state exists
-                    java.util.Optional<SearchUnitActualState> actualStateOpt = 
+                    SearchUnitActualState actualState = 
                             metadataStore.getSearchUnitActualState(clusterName, unitName);
                     
                     boolean shouldDelete = false;
                     String reason = "";
                     
-                    if (!actualStateOpt.isPresent()) {
+                    if (actualState == null) {
                         // Case 1: Missing actual state
                         shouldDelete = true;
                         reason = "missing actual state";
                     } else {
                         // Case 2: Check if timestamp is older than configured timeout
-                        SearchUnitActualState actualState = actualStateOpt.get();
                         if (isActualStateStale(actualState)) {
                             shouldDelete = true;
                             reason = "stale timestamp (older than " + Constants.STALE_SEARCH_UNIT_TIMEOUT_MINUTES + " minutes)";

@@ -355,34 +355,54 @@ public class EtcdMetadataStore implements MetadataStore {
         return actualStates;
     }
     
-    public Optional<SearchUnitGoalState> getSearchUnitGoalState(String clusterId, String unitName) throws Exception {
+    public SearchUnitGoalState getSearchUnitGoalState(String clusterId, String unitName) throws Exception {
         String key = pathResolver.getSearchUnitGoalStatePath(clusterId, unitName);
         CompletableFuture<GetResponse> getFuture = kvClient.get(ByteSequence.from(key, UTF_8));
         GetResponse response = getFuture.get();
         
         if (response.getKvs().isEmpty()) {
-            return Optional.empty();
+            return null;
         }
         
         String json = response.getKvs().get(0).getValue().toString(UTF_8);
         SearchUnitGoalState goalState = objectMapper.readValue(json, SearchUnitGoalState.class);
         
-        return Optional.of(goalState);
+        return goalState;
     }
     
-    public Optional<SearchUnitActualState> getSearchUnitActualState(String clusterId, String unitName) throws Exception {
+    public SearchUnitActualState getSearchUnitActualState(String clusterId, String unitName) throws Exception {
         String key = pathResolver.getSearchUnitActualStatePath(clusterId, unitName);
         CompletableFuture<GetResponse> getFuture = kvClient.get(ByteSequence.from(key, UTF_8));
         GetResponse response = getFuture.get();
         
         if (response.getKvs().isEmpty()) {
-            return Optional.empty();
+            return null;
         }
         
         String json = response.getKvs().get(0).getValue().toString(UTF_8);
         SearchUnitActualState actualState = objectMapper.readValue(json, SearchUnitActualState.class);
         
-        return Optional.of(actualState);
+        return actualState;
+    }
+    
+    public void setSearchUnitGoalState(String clusterId, String unitName, SearchUnitGoalState goalState) throws Exception {
+        String key = pathResolver.getSearchUnitGoalStatePath(clusterId, unitName);
+        String json = objectMapper.writeValueAsString(goalState);
+        
+        CompletableFuture<PutResponse> putFuture = kvClient.put(ByteSequence.from(key, UTF_8), ByteSequence.from(json, UTF_8));
+        putFuture.get();
+        
+        log.debug("Successfully set goal state for search unit {}", unitName);
+    }
+    
+    public void setSearchUnitActualState(String clusterId, String unitName, SearchUnitActualState actualState) throws Exception {
+        String key = pathResolver.getSearchUnitActualStatePath(clusterId, unitName);
+        String json = objectMapper.writeValueAsString(actualState);
+        
+        CompletableFuture<PutResponse> putFuture = kvClient.put(ByteSequence.from(key, UTF_8), ByteSequence.from(json, UTF_8));
+        putFuture.get();
+        
+        log.debug("Successfully set actual state for search unit {}", unitName);
     }
     // =================================================================
     // INDEX CONFIGURATIONS OPERATIONS

@@ -18,9 +18,9 @@ public final class NodeAttributes {
     public static final String NODE_MASTER = "node.master";
     
     // Role constants for consistency
-    public static final String ROLE_COORDINATOR = "coordinator";
-    public static final String ROLE_PRIMARY = "primary";
-    public static final String ROLE_REPLICA = "replica";
+    public static final String ROLE_COORDINATOR = "COORDINATOR";
+    public static final String ROLE_PRIMARY = "PRIMARY";
+    public static final String ROLE_REPLICA = "SEARCH_REPLICA";
     
     // Predefined attribute maps for each role
     public static final Map<String, String> COORDINATOR_ATTRIBUTES = Map.of(

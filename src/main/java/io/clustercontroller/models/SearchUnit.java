@@ -24,7 +24,7 @@ public class SearchUnit {
     private String clusterName;
     
     @JsonProperty("role")
-    private String role; // "primary", "replica", "coordinator"
+    private String role; // "PRIMARY", "SEARCH_REPLICA", "COORDINATOR"
     
     @JsonProperty("host")
     private String host;

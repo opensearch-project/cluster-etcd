@@ -20,9 +20,9 @@ class NodeAttributesTest {
     
     @Test
     void testRoleConstants() {
-        assertThat(ROLE_COORDINATOR).isEqualTo("coordinator");
-        assertThat(ROLE_PRIMARY).isEqualTo("primary");
-        assertThat(ROLE_REPLICA).isEqualTo("replica");
+        assertThat(ROLE_COORDINATOR).isEqualTo("COORDINATOR");
+        assertThat(ROLE_PRIMARY).isEqualTo("PRIMARY");
+        assertThat(ROLE_REPLICA).isEqualTo("SEARCH_REPLICA");
     }
     
     @Test

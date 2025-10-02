@@ -20,9 +20,9 @@ class RoleDeciderTest {
     
     @Test
     void testPrimaryTargetRole() {
-        SearchUnit primaryNode = createSearchUnit("node1", "primary");
-        SearchUnit replicaNode = createSearchUnit("node2", "replica");
-        SearchUnit coordinatorNode = createSearchUnit("coord1", "coordinator");
+        SearchUnit primaryNode = createSearchUnit("node1", "PRIMARY");
+        SearchUnit replicaNode = createSearchUnit("node2", "SEARCH_REPLICA");
+        SearchUnit coordinatorNode = createSearchUnit("coord1", "COORDINATOR");
         
         // For PRIMARY target, only PRIMARY nodes allowed
         assertThat(decider.canAllocate("0", primaryNode, "test-index", NodeRole.PRIMARY))
@@ -35,9 +35,9 @@ class RoleDeciderTest {
     
     @Test
     void testReplicaTargetRole() {
-        SearchUnit primaryNode = createSearchUnit("node1", "primary");
-        SearchUnit replicaNode = createSearchUnit("node2", "replica");
-        SearchUnit coordinatorNode = createSearchUnit("coord1", "coordinator");
+        SearchUnit primaryNode = createSearchUnit("node1", "PRIMARY");
+        SearchUnit replicaNode = createSearchUnit("node2", "SEARCH_REPLICA");
+        SearchUnit coordinatorNode = createSearchUnit("coord1", "COORDINATOR");
         
         // For REPLICA target, only REPLICA nodes allowed
         assertThat(decider.canAllocate("0", primaryNode, "test-index", NodeRole.REPLICA))
@@ -50,7 +50,7 @@ class RoleDeciderTest {
     
     @Test
     void testCoordinatorAlwaysRejected() {
-        SearchUnit coordinatorNode = createSearchUnit("coord1", "coordinator");
+        SearchUnit coordinatorNode = createSearchUnit("coord1", "COORDINATOR");
         
         assertThat(decider.canAllocate("0", coordinatorNode, "test-index", NodeRole.PRIMARY))
             .isEqualTo(Decision.NO);

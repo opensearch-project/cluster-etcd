@@ -43,6 +43,12 @@ public class TaskFactory {
                 metadata.getInput(),
                 metadata.getSchedule()
             );
+            case TASK_ACTION_GOAL_STATE_ORCHESTRATOR -> new GoalStateOrchestratorTask(
+                metadata.getName(),
+                metadata.getPriority(),
+                metadata.getInput(),
+                metadata.getSchedule()
+            );
             default -> {
                 log.warn("Unknown task type: {}", taskName);
                 yield new UnknownTask(metadata.getName(), metadata.getPriority(), metadata.getInput(), metadata.getSchedule());
@@ -50,3 +56,6 @@ public class TaskFactory {
         };
     }
 }
+
+
+

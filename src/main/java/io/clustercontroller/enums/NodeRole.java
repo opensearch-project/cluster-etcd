@@ -6,9 +6,9 @@ package io.clustercontroller.enums;
  * PRIMARY: ingest + search, REPLICA: search only, COORDINATOR: routing only
  */
 public enum NodeRole {
-    PRIMARY("primary"),
-    REPLICA("replica"), 
-    COORDINATOR("coordinator");
+    PRIMARY("PRIMARY"),
+    REPLICA("SEARCH_REPLICA"), 
+    COORDINATOR("COORDINATOR");
     
     private final String value;
     
@@ -23,9 +23,9 @@ public enum NodeRole {
     public static NodeRole fromString(String value) {
         if (value == null) return null;
         
-        String normalized = value.toLowerCase().trim();
+        String trimmed = value.trim();
         for (NodeRole role : NodeRole.values()) {
-            if (role.value.equals(normalized)) {
+            if (role.value.equals(trimmed)) {
                 return role;
             }
         }

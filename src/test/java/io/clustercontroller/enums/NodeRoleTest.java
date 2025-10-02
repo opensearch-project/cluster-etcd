@@ -10,17 +10,17 @@ class NodeRoleTest {
     
     @Test
     void testFromStringValidValues() {
-        assertThat(NodeRole.fromString("primary")).isEqualTo(NodeRole.PRIMARY);
-        assertThat(NodeRole.fromString("replica")).isEqualTo(NodeRole.REPLICA);
-        assertThat(NodeRole.fromString("coordinator")).isEqualTo(NodeRole.COORDINATOR);
+        assertThat(NodeRole.fromString("PRIMARY")).isEqualTo(NodeRole.PRIMARY);
+        assertThat(NodeRole.fromString("SEARCH_REPLICA")).isEqualTo(NodeRole.REPLICA);
+        assertThat(NodeRole.fromString("COORDINATOR")).isEqualTo(NodeRole.COORDINATOR);
         
         // Test case insensitive
         assertThat(NodeRole.fromString("PRIMARY")).isEqualTo(NodeRole.PRIMARY);
-        assertThat(NodeRole.fromString("REPLICA")).isEqualTo(NodeRole.REPLICA);
+        assertThat(NodeRole.fromString("SEARCH_REPLICA")).isEqualTo(NodeRole.REPLICA);
         
         // Test with whitespace
-        assertThat(NodeRole.fromString(" primary ")).isEqualTo(NodeRole.PRIMARY);
-        assertThat(NodeRole.fromString("\treplica\n")).isEqualTo(NodeRole.REPLICA);
+        assertThat(NodeRole.fromString(" PRIMARY ")).isEqualTo(NodeRole.PRIMARY);
+        assertThat(NodeRole.fromString("\tSEARCH_REPLICA\n")).isEqualTo(NodeRole.REPLICA);
     }
     
     @Test
@@ -33,8 +33,11 @@ class NodeRoleTest {
     
     @Test
     void testGetValue() {
-        assertThat(NodeRole.PRIMARY.getValue()).isEqualTo("primary");
-        assertThat(NodeRole.REPLICA.getValue()).isEqualTo("replica");
-        assertThat(NodeRole.COORDINATOR.getValue()).isEqualTo("coordinator");
+        assertThat(NodeRole.PRIMARY.getValue()).isEqualTo("PRIMARY");
+        assertThat(NodeRole.REPLICA.getValue()).isEqualTo("SEARCH_REPLICA");
+        assertThat(NodeRole.COORDINATOR.getValue()).isEqualTo("COORDINATOR");
     }
 }
+
+
+
