@@ -115,9 +115,14 @@ public class TaskManager {
     
     private void processTaskLoop() {
         try {
-            log.debug("Running task processing loop");
+            log.info("Running task processing loop - checking for tasks");
             
             List<TaskMetadata> taskMetadataList = getAllTasks();
+            log.info("Found {} tasks in etcd", taskMetadataList.size());
+            for (TaskMetadata task : taskMetadataList) {
+                log.info("Task: {} status: {} priority: {}", task.getName(), task.getStatus(), task.getPriority());
+            }
+            
             cleanupOldTasks(taskMetadataList);
             
             TaskMetadata taskMetadataToProcess = selectNextTask(taskMetadataList);
@@ -126,7 +131,7 @@ public class TaskManager {
                 String result = executeTask(taskMetadataToProcess);
                 log.info("Task {} completed with result: {}", taskMetadataToProcess.getName(), result);
             } else {
-                log.debug("No pending tasks to process");
+                log.info("No pending tasks to process");
             }
         } catch (Exception e) {
             log.error("Error in task processing loop: {}", e.getMessage(), e);
@@ -161,11 +166,12 @@ public class TaskManager {
     }
     
     private TaskMetadata selectNextTask(List<TaskMetadata> tasks) {
-        // Select highest priority pending task
+        // Simple priority-based selection - execute all repeat tasks regardless of status
+        // This prevents priority inversion and task starvation
         return tasks.stream()
-                .filter(task -> TASK_STATUS_PENDING.equals(task.getStatus()) || 
-                               (TASK_SCHEDULE_REPEAT.equals(task.getSchedule()) && TASK_STATUS_COMPLETED.equals(task.getStatus())))
+                .filter(task -> TASK_SCHEDULE_REPEAT.equals(task.getSchedule()) || TASK_STATUS_PENDING.equals(task.getStatus()))
                 .min((t1, t2) -> {
+                    // Compare by priority (lower number = higher priority)
                     int priorityCompare = Integer.compare(t1.getPriority(), t2.getPriority());
                     if (priorityCompare != 0) return priorityCompare;
                     return t1.getLastUpdated().compareTo(t2.getLastUpdated());

@@ -3,11 +3,13 @@ package io.clustercontroller.store;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.TaskMetadata;
 import io.etcd.jetcd.*;
 import io.etcd.jetcd.kv.DeleteResponse;
 import io.etcd.jetcd.kv.GetResponse;
+import io.etcd.jetcd.kv.TxnResponse;
 import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.kv.PutResponse;
 import io.etcd.jetcd.options.GetOption;
@@ -21,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
@@ -679,6 +682,128 @@ public class EtcdMetadataStoreTest {
         assertThatThrownBy(() -> store.setPlannedAllocation(clusterId, indexName, shardId, allocation))
                 .isInstanceOf(Exception.class)
                 .hasMessageContaining("etcd timeout");
+    }
+
+    @Test
+    void testSetSearchUnitGoalStateConcurrentModification() throws Exception {
+        // Setup
+        String clusterId = "test-cluster";
+        String unitName = "test-node";
+        SearchUnitGoalState goalState1 = new SearchUnitGoalState();
+        SearchUnitGoalState goalState2 = new SearchUnitGoalState();
+        
+        // Add different shard allocations to make them distinct
+        goalState1.getLocalShards().put("index1", Map.of("0", "PRIMARY"));
+        goalState2.getLocalShards().put("index2", Map.of("0", "SEARCH_REPLICA"));
+
+        // Create store instance
+        EtcdMetadataStore store = newStore();
+
+        // Mock etcd client for CAS behavior
+        KV mockKvClient = mock(KV.class);
+        setPrivateField(store, "kvClient", mockKvClient);
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getSearchUnitGoalStatePath(clusterId, unitName))
+            .thenReturn("/test-cluster/search-units/test-node/goal-state");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        // Simulate concurrent modification scenario
+        ByteSequence keyBytes = ByteSequence.from("/test-cluster/search-units/test-node/goal-state", UTF_8);
+        
+        // First call: GET returns current revision
+        GetResponse getResponse = mock(GetResponse.class);
+        KeyValue mockKv = mock(KeyValue.class);
+        when(mockKv.getModRevision()).thenReturn(100L);
+        when(getResponse.getCount()).thenReturn(1L);
+        when(getResponse.getKvs()).thenReturn(List.of(mockKv));
+        
+        CompletableFuture<GetResponse> getFuture = CompletableFuture.completedFuture(getResponse);
+        when(mockKvClient.get(keyBytes)).thenReturn(getFuture);
+
+        // Second call: Transaction fails (concurrent modification)
+        Txn mockTxn = mock(Txn.class);
+        TxnResponse mockTxnResponse = mock(TxnResponse.class);
+        when(mockTxnResponse.isSucceeded()).thenReturn(false); // CAS failed
+        
+        CompletableFuture<TxnResponse> txnFuture = CompletableFuture.completedFuture(mockTxnResponse);
+        when(mockTxn.commit()).thenReturn(txnFuture);
+        when(mockTxn.Else(any())).thenReturn(mockTxn);
+        when(mockTxn.Then(any())).thenReturn(mockTxn);
+        when(mockTxn.If(any())).thenReturn(mockTxn);
+        when(mockKvClient.txn()).thenReturn(mockTxn);
+
+        // Test: Should throw RuntimeException due to concurrent modification
+        assertThatThrownBy(() -> store.setSearchUnitGoalState(clusterId, unitName, goalState1))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Failed to update goal state for test-node due to concurrent modification");
+
+        // Verify the CAS operation was attempted
+        verify(mockKvClient).get(keyBytes);
+        verify(mockKvClient).txn();
+        verify(mockTxn).If(any());
+        verify(mockTxn).Then(any());
+        verify(mockTxn).Else(any());
+        verify(mockTxn).commit();
+    }
+
+    @Test
+    void testSetSearchUnitGoalStateSuccessfulCAS() throws Exception {
+        // Setup
+        String clusterId = "test-cluster";
+        String unitName = "test-node";
+        SearchUnitGoalState goalState = new SearchUnitGoalState();
+        goalState.getLocalShards().put("index1", Map.of("0", "PRIMARY"));
+
+        // Create store instance
+        EtcdMetadataStore store = newStore();
+
+        // Mock etcd client for successful CAS
+        KV mockKvClient = mock(KV.class);
+        setPrivateField(store, "kvClient", mockKvClient);
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getSearchUnitGoalStatePath(clusterId, unitName))
+            .thenReturn("/test-cluster/search-units/test-node/goal-state");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        ByteSequence keyBytes = ByteSequence.from("/test-cluster/search-units/test-node/goal-state", UTF_8);
+        
+        // First call: GET returns current revision
+        GetResponse getResponse = mock(GetResponse.class);
+        KeyValue mockKv = mock(KeyValue.class);
+        when(mockKv.getModRevision()).thenReturn(100L);
+        when(getResponse.getCount()).thenReturn(1L);
+        when(getResponse.getKvs()).thenReturn(List.of(mockKv));
+        
+        CompletableFuture<GetResponse> getFuture = CompletableFuture.completedFuture(getResponse);
+        when(mockKvClient.get(keyBytes)).thenReturn(getFuture);
+
+        // Second call: Transaction succeeds
+        Txn mockTxn = mock(Txn.class);
+        TxnResponse mockTxnResponse = mock(TxnResponse.class);
+        when(mockTxnResponse.isSucceeded()).thenReturn(true); // CAS succeeded
+        
+        CompletableFuture<TxnResponse> txnFuture = CompletableFuture.completedFuture(mockTxnResponse);
+        when(mockTxn.commit()).thenReturn(txnFuture);
+        when(mockTxn.Else(any())).thenReturn(mockTxn);
+        when(mockTxn.Then(any())).thenReturn(mockTxn);
+        when(mockTxn.If(any())).thenReturn(mockTxn);
+        when(mockKvClient.txn()).thenReturn(mockTxn);
+
+        // Test: Should succeed without throwing exception
+        assertThatCode(() -> store.setSearchUnitGoalState(clusterId, unitName, goalState))
+                .doesNotThrowAnyException();
+
+        // Verify the CAS operation was performed
+        verify(mockKvClient).get(keyBytes);
+        verify(mockKvClient).txn();
+        verify(mockTxn).If(any());
+        verify(mockTxn).Then(any());
+        verify(mockTxn).Else(any());
+        verify(mockTxn).commit();
     }
 
     // ------------------------- reflection util -------------------------

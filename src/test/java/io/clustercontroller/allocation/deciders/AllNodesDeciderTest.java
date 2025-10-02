@@ -20,10 +20,10 @@ class AllNodesDeciderTest {
     
     @Test
     void testAcceptsAllNodes() {
-        SearchUnit primaryNode = createSearchUnit("node1", "primary", HealthState.GREEN);
-        SearchUnit replicaNode = createSearchUnit("node2", "replica", HealthState.YELLOW);
-        SearchUnit coordinatorNode = createSearchUnit("coord1", "coordinator", HealthState.GREEN);
-        SearchUnit unhealthyNode = createSearchUnit("node3", "primary", HealthState.RED);
+        SearchUnit primaryNode = createSearchUnit("node1", "PRIMARY", HealthState.GREEN);
+        SearchUnit replicaNode = createSearchUnit("node2", "SEARCH_REPLICA", HealthState.YELLOW);
+        SearchUnit coordinatorNode = createSearchUnit("coord1", "COORDINATOR", HealthState.GREEN);
+        SearchUnit unhealthyNode = createSearchUnit("node3", "PRIMARY", HealthState.RED);
         
         assertThat(decider.canAllocate("0", primaryNode, "test-index", NodeRole.PRIMARY))
             .isEqualTo(Decision.YES);

@@ -7,6 +7,8 @@ import io.clustercontroller.discovery.Discovery;
 import io.clustercontroller.health.ClusterHealthManager;
 import io.clustercontroller.indices.AliasManager;
 import io.clustercontroller.indices.IndexManager;
+import io.clustercontroller.orchestration.GoalStateOrchestrator;
+import io.clustercontroller.orchestration.GoalStateOrchestrationStrategy;
 import io.clustercontroller.templates.TemplateManager;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
@@ -124,6 +126,15 @@ public class ClusterControllerApplication {
     }
 
     /**
+     * GoalStateOrchestrator bean for orchestrating goal states from planned allocations.
+     */
+    @Bean
+    public GoalStateOrchestrator goalStateOrchestrator(MetadataStore metadataStore) {
+        log.info("Initializing GoalStateOrchestrator with RollingUpdateOrchestrationStrategy");
+        return new GoalStateOrchestrator(metadataStore);
+    }
+
+    /**
      * TaskManager bean for scheduling and executing background tasks.
      */
     @Bean
@@ -144,7 +155,8 @@ public class ClusterControllerApplication {
             IndexManager indexManager,
             Discovery discovery,
             ShardAllocator shardAllocator,
-            ActualAllocationUpdater actualAllocationUpdater) {
-        return new TaskContext(config.getClusterName(), indexManager, discovery, shardAllocator, actualAllocationUpdater);
+            ActualAllocationUpdater actualAllocationUpdater,
+            GoalStateOrchestrator goalStateOrchestrator) {
+        return new TaskContext(config.getClusterName(), indexManager, discovery, shardAllocator, actualAllocationUpdater, goalStateOrchestrator);
     }
 }

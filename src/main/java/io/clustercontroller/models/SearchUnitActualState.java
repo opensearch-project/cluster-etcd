@@ -71,7 +71,7 @@ public class SearchUnitActualState {
     
     // Node role and shard information (populated by worker)
     @JsonProperty("role")
-    private String role; // "primary", "replica", "coordinator"
+    private String role; // "PRIMARY", "SEARCH_REPLICA", "COORDINATOR"
     
         @JsonProperty("shard_id")
     private String shardId; // "shard-1", "shard-2", etc.

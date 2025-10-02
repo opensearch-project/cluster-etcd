@@ -91,12 +91,22 @@ public interface MetadataStore {
     /**
      * Get search unit goal state
      */
-    Optional<SearchUnitGoalState> getSearchUnitGoalState(String clusterId, String unitName) throws Exception;
+    SearchUnitGoalState getSearchUnitGoalState(String clusterId, String unitName) throws Exception;
     
     /**
      * Get search unit actual state
      */
-    Optional<SearchUnitActualState> getSearchUnitActualState(String clusterId, String unitName) throws Exception;
+    SearchUnitActualState getSearchUnitActualState(String clusterId, String unitName) throws Exception;
+    
+    /**
+     * Set search unit goal state
+     */
+    void setSearchUnitGoalState(String clusterId, String unitName, SearchUnitGoalState goalState) throws Exception;
+    
+    /**
+     * Set search unit actual state
+     */
+    void setSearchUnitActualState(String clusterId, String unitName, SearchUnitActualState actualState) throws Exception;
     // =================================================================
     // INDEX CONFIGURATIONS OPERATIONS
     // =================================================================

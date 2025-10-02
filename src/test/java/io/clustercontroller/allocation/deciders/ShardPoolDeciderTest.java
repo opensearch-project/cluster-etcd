@@ -51,7 +51,7 @@ class ShardPoolDeciderTest {
     private SearchUnit createSearchUnit(String name, String shardId) {
         SearchUnit unit = new SearchUnit();
         unit.setName(name);
-        unit.setRole("primary");
+        unit.setRole("PRIMARY");
         unit.setStateAdmin("NORMAL");
         unit.setStatePulled(HealthState.GREEN);
         unit.setShardId(shardId);

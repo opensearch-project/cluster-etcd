@@ -13,11 +13,16 @@ import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.util.EnvironmentUtils;
 import io.etcd.jetcd.*;
 import io.etcd.jetcd.kv.GetResponse;
+import io.etcd.jetcd.kv.TxnResponse;
+import io.etcd.jetcd.op.Cmp;
+import io.etcd.jetcd.op.CmpTarget;
+import io.etcd.jetcd.op.Op;
 import io.etcd.jetcd.options.DeleteOption;
 import io.etcd.jetcd.lease.LeaseGrantResponse;
 import io.etcd.jetcd.lease.LeaseKeepAliveResponse;
 import io.etcd.jetcd.options.GetOption;
 import io.etcd.jetcd.options.LeaseOption;
+import io.etcd.jetcd.options.PutOption;
 import io.grpc.stub.StreamObserver;
 import lombok.extern.slf4j.Slf4j;
 
@@ -355,34 +360,74 @@ public class EtcdMetadataStore implements MetadataStore {
         return actualStates;
     }
     
-    public Optional<SearchUnitGoalState> getSearchUnitGoalState(String clusterId, String unitName) throws Exception {
+    public SearchUnitGoalState getSearchUnitGoalState(String clusterId, String unitName) throws Exception {
         String key = pathResolver.getSearchUnitGoalStatePath(clusterId, unitName);
         CompletableFuture<GetResponse> getFuture = kvClient.get(ByteSequence.from(key, UTF_8));
         GetResponse response = getFuture.get();
         
         if (response.getKvs().isEmpty()) {
-            return Optional.empty();
+            return null;
         }
         
         String json = response.getKvs().get(0).getValue().toString(UTF_8);
         SearchUnitGoalState goalState = objectMapper.readValue(json, SearchUnitGoalState.class);
         
-        return Optional.of(goalState);
+        return goalState;
     }
     
-    public Optional<SearchUnitActualState> getSearchUnitActualState(String clusterId, String unitName) throws Exception {
+    public SearchUnitActualState getSearchUnitActualState(String clusterId, String unitName) throws Exception {
         String key = pathResolver.getSearchUnitActualStatePath(clusterId, unitName);
         CompletableFuture<GetResponse> getFuture = kvClient.get(ByteSequence.from(key, UTF_8));
         GetResponse response = getFuture.get();
         
         if (response.getKvs().isEmpty()) {
-            return Optional.empty();
+            return null;
         }
         
         String json = response.getKvs().get(0).getValue().toString(UTF_8);
         SearchUnitActualState actualState = objectMapper.readValue(json, SearchUnitActualState.class);
         
-        return Optional.of(actualState);
+        return actualState;
+    }
+    
+    public void setSearchUnitGoalState(String clusterId, String unitName, SearchUnitGoalState goalState) throws Exception {
+        String key = pathResolver.getSearchUnitGoalStatePath(clusterId, unitName);
+        String json = objectMapper.writeValueAsString(goalState);
+        
+        // Use Compare-And-Swap (CAS) pattern with mod_revision for thread-safe updates
+        ByteSequence keyBytes = ByteSequence.from(key, UTF_8);
+        ByteSequence valueBytes = ByteSequence.from(json, UTF_8);
+        
+        // Get current revision to use in CAS operation
+        GetResponse getResponse = kvClient.get(keyBytes).get();
+        long currentRevision = 0;
+        if (getResponse.getCount() > 0) {
+            currentRevision = getResponse.getKvs().get(0).getModRevision();
+        }
+        
+        // Perform atomic CAS operation
+        TxnResponse txnResponse = kvClient.txn()
+            .If(new Cmp(keyBytes, Cmp.Op.EQUAL, CmpTarget.modRevision(currentRevision)))
+            .Then(Op.put(keyBytes, valueBytes, PutOption.DEFAULT))
+            .Else(Op.get(keyBytes, GetOption.DEFAULT))
+            .commit()
+            .get();
+            
+        if (!txnResponse.isSucceeded()) {
+            throw new RuntimeException("Failed to update goal state for " + unitName + " due to concurrent modification. Please retry.");
+        }
+        
+        log.debug("Successfully set goal state for search unit {} using CAS", unitName);
+    }
+    
+    public void setSearchUnitActualState(String clusterId, String unitName, SearchUnitActualState actualState) throws Exception {
+        String key = pathResolver.getSearchUnitActualStatePath(clusterId, unitName);
+        String json = objectMapper.writeValueAsString(actualState);
+        
+        var putFuture = kvClient.put(ByteSequence.from(key, UTF_8), ByteSequence.from(json, UTF_8));
+        putFuture.get();
+        
+        log.debug("Successfully set actual state for search unit {}", unitName);
     }
     // =================================================================
     // INDEX CONFIGURATIONS OPERATIONS

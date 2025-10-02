@@ -31,9 +31,9 @@ class AllocationDecisionEngineTest {
         engine.registerDecider(ShardPoolDecider.class, new ShardPoolDecider());
         
         // Create test nodes
-        healthyPrimary = createSearchUnit("node1", "primary", "NORMAL", HealthState.GREEN, "0");
-        unhealthyNode = createSearchUnit("node2", "primary", "NORMAL", HealthState.RED, "0");
-        coordinatorNode = createSearchUnit("coord1", "coordinator", "NORMAL", HealthState.GREEN, "0");
+        healthyPrimary = createSearchUnit("node1", "PRIMARY", "NORMAL", HealthState.GREEN, "0");
+        unhealthyNode = createSearchUnit("node2", "PRIMARY", "NORMAL", HealthState.RED, "0");
+        coordinatorNode = createSearchUnit("coord1", "COORDINATOR", "NORMAL", HealthState.GREEN, "0");
     }
     
     
@@ -85,7 +85,7 @@ class AllocationDecisionEngineTest {
     
     @Test
     void testShardPoolFiltering() {
-        SearchUnit wrongShardNode = createSearchUnit("wrong1", "primary", "NORMAL", HealthState.GREEN, "1");
+        SearchUnit wrongShardNode = createSearchUnit("wrong1", "PRIMARY", "NORMAL", HealthState.GREEN, "1");
         
         engine.enableDecider(ShardPoolDecider.class);
         
@@ -104,11 +104,11 @@ class AllocationDecisionEngineTest {
         engine.enableDecider(RoleDecider.class);
         engine.enableDecider(ShardPoolDecider.class);
         
-        SearchUnit perfectNode = createSearchUnit("perfect", "primary", "NORMAL", HealthState.GREEN, "0");
-        SearchUnit wrongShardNode = createSearchUnit("wrong-shard", "primary", "NORMAL", HealthState.GREEN, "1");
-        SearchUnit wrongRoleNode = createSearchUnit("wrong-role", "replica", "NORMAL", HealthState.GREEN, "0");
-        SearchUnit unhealthyNode = createSearchUnit("unhealthy", "primary", "NORMAL", HealthState.RED, "0");
-        SearchUnit drainedNode = createSearchUnit("drained", "primary", "DRAIN", HealthState.GREEN, "0");
+        SearchUnit perfectNode = createSearchUnit("perfect", "PRIMARY", "NORMAL", HealthState.GREEN, "0");
+        SearchUnit wrongShardNode = createSearchUnit("wrong-shard", "PRIMARY", "NORMAL", HealthState.GREEN, "1");
+        SearchUnit wrongRoleNode = createSearchUnit("wrong-role", "SEARCH_REPLICA", "NORMAL", HealthState.GREEN, "0");
+        SearchUnit unhealthyNode = createSearchUnit("unhealthy", "PRIMARY", "NORMAL", HealthState.RED, "0");
+        SearchUnit drainedNode = createSearchUnit("drained", "PRIMARY", "DRAIN", HealthState.GREEN, "0");
         
         List<SearchUnit> candidates = Arrays.asList(
             perfectNode, wrongShardNode, wrongRoleNode, unhealthyNode, drainedNode

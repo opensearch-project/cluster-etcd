@@ -31,6 +31,7 @@ public final class Constants {
     public static final String TASK_ACTION_DISCOVER_SEARCH_UNIT = "discover_search_unit";
     public static final String TASK_ACTION_SHARD_ALLOCATOR = "shard_allocator";
     public static final String TASK_ACTION_ACTUAL_ALLOCATION_UPDATER = "actual_allocation_updater";
+    public static final String TASK_ACTION_GOAL_STATE_ORCHESTRATOR = "goal_state_orchestrator";
     
     // etcd path segments
     public static final String PATH_DELIMITER = "/";
