@@ -270,6 +270,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
             try (
                 Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build();
                 ETCDWatcher etcdWatcher = new ETCDWatcher(
@@ -277,6 +278,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     ByteSequence.from(configPath, StandardCharsets.UTF_8),
                     mockNodeStateApplier,
                     etcdClient,
+                    threadPool,
                     clusterName
                 )
             ) {
@@ -322,6 +324,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     assertEquals(1, clusterTwoSeeds.size());
                     assertEquals("10.0.2.20:9300", clusterTwoSeeds.get(0));
                 });
+            } finally {
+                threadPool.shutdown();
             }
         }
     }
