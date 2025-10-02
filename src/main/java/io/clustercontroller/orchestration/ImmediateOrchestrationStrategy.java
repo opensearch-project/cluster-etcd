@@ -116,7 +116,7 @@ public class ImmediateOrchestrationStrategy implements GoalStateOrchestrationStr
             String role = planned.getIngestSUs().contains(nodeId) ? NodeRole.PRIMARY.getValue() : NodeRole.REPLICA.getValue();
             
             // Update goal state with new shard allocation
-            SearchUnitGoalState newGoalState = updateGoalState(currentGoalState, indexName, shardId, role);
+            SearchUnitGoalState newGoalState = updateGoalStateForIndexShard(currentGoalState, indexName, shardId, role);
             
             // Set new goal state in etcd
             metadataStore.setSearchUnitGoalState(clusterId, nodeId, newGoalState);
@@ -127,7 +127,7 @@ public class ImmediateOrchestrationStrategy implements GoalStateOrchestrationStr
         }
     }
     
-    private SearchUnitGoalState updateGoalState(SearchUnitGoalState current, String indexName, String shardId, String role) {
+    private SearchUnitGoalState updateGoalStateForIndexShard(SearchUnitGoalState current, String indexName, String shardId, String role) {
         if (current == null) {
             current = new SearchUnitGoalState();
         }
