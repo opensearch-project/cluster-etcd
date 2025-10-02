@@ -308,7 +308,6 @@ thirdPartyAudit {
      'com.google.gson.JsonObject',
      'com.google.gson.JsonParser',
      'com.google.gson.JsonPrimitive',
-     'io.grpc.stub.BlockingClientCall',
      'io.netty.channel.epoll.Epoll',
      'io.netty.channel.epoll.EpollChannelOption',
      'io.netty.channel.epoll.EpollEventLoopGroup',
