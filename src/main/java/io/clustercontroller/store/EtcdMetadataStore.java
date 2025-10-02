@@ -389,7 +389,7 @@ public class EtcdMetadataStore implements MetadataStore {
         String key = pathResolver.getSearchUnitGoalStatePath(clusterId, unitName);
         String json = objectMapper.writeValueAsString(goalState);
         
-        CompletableFuture<PutResponse> putFuture = kvClient.put(ByteSequence.from(key, UTF_8), ByteSequence.from(json, UTF_8));
+        var putFuture = kvClient.put(ByteSequence.from(key, UTF_8), ByteSequence.from(json, UTF_8));
         putFuture.get();
         
         log.debug("Successfully set goal state for search unit {}", unitName);
@@ -399,7 +399,7 @@ public class EtcdMetadataStore implements MetadataStore {
         String key = pathResolver.getSearchUnitActualStatePath(clusterId, unitName);
         String json = objectMapper.writeValueAsString(actualState);
         
-        CompletableFuture<PutResponse> putFuture = kvClient.put(ByteSequence.from(key, UTF_8), ByteSequence.from(json, UTF_8));
+        var putFuture = kvClient.put(ByteSequence.from(key, UTF_8), ByteSequence.from(json, UTF_8));
         putFuture.get();
         
         log.debug("Successfully set actual state for search unit {}", unitName);
