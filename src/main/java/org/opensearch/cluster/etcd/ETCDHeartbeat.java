@@ -5,6 +5,8 @@
 package org.opensearch.cluster.etcd;
 
 import io.etcd.jetcd.Client;
+import org.opensearch.common.settings.Settings;
+import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.monitor.fs.FsProbe;
 import java.io.IOException;
@@ -18,7 +20,6 @@ import org.opensearch.monitor.jvm.JvmStats;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -32,10 +33,15 @@ import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.routing.IndexRoutingTable;
 import org.opensearch.cluster.routing.IndexShardRoutingTable;
 import org.opensearch.cluster.routing.ShardRouting;
+import org.opensearch.threadpool.ExecutorBuilder;
+import org.opensearch.threadpool.FixedExecutorBuilder;
+import org.opensearch.threadpool.ThreadPool;
+
 import java.util.List;
 import java.util.ArrayList;
 
 public class ETCDHeartbeat {
+    public static final String THREAD_POOL_NAME = "etcd-heartbeat";
     private static final long DEFAULT_HEARTBEAT_INTERVAL_MILLIS = 5000; // 5 seconds
     private static final String CLUSTERLESS_ROLE_ATTRIBUTE = "clusterless_role";
     private static final String CLUSTERLESS_SHARD_ID_ATTRIBUTE = "clusterless_shard_id";
@@ -48,14 +54,20 @@ public class ETCDHeartbeat {
     private final String clusterlessRole;
     private final String clusterlessShardId;
     private final Client etcdClient;
-    private final ScheduledExecutorService scheduler;
+    private final ThreadPool threadPool;
     private final ByteSequence nodeStateKey;
     private final NodeEnvironment nodeEnvironment;
     private final ClusterService clusterService;
     private final long heartbeatIntervalMillis;
 
-    public ETCDHeartbeat(DiscoveryNode localNode, Client etcdClient, NodeEnvironment nodeEnvironment, ClusterService clusterService) {
-        this(localNode, etcdClient, nodeEnvironment, clusterService, DEFAULT_HEARTBEAT_INTERVAL_MILLIS);
+    public ETCDHeartbeat(
+        DiscoveryNode localNode,
+        Client etcdClient,
+        NodeEnvironment nodeEnvironment,
+        ClusterService clusterService,
+        ThreadPool threadPool
+    ) {
+        this(localNode, etcdClient, nodeEnvironment, clusterService, threadPool, DEFAULT_HEARTBEAT_INTERVAL_MILLIS);
     }
 
     public ETCDHeartbeat(
@@ -63,6 +75,7 @@ public class ETCDHeartbeat {
         Client etcdClient,
         NodeEnvironment nodeEnvironment,
         ClusterService clusterService,
+        ThreadPool threadPool,
         long heartbeatIntervalMillis
     ) {
         this.nodeName = localNode.getName();
@@ -73,7 +86,7 @@ public class ETCDHeartbeat {
         this.clusterlessRole = localNode.getAttributes().get(CLUSTERLESS_ROLE_ATTRIBUTE);
         this.clusterlessShardId = localNode.getAttributes().get(CLUSTERLESS_SHARD_ID_ATTRIBUTE);
         this.etcdClient = etcdClient;
-        this.scheduler = createScheduler();
+        this.threadPool = threadPool;
         String clusterName = clusterService.getClusterName().value();
         String statePath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
         this.nodeStateKey = ByteSequence.from(statePath, StandardCharsets.UTF_8);
@@ -86,22 +99,12 @@ public class ETCDHeartbeat {
         return Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "etcd-heartbeat-scheduler"));
     }
 
-    public void start() {
-        scheduler.scheduleAtFixedRate(this::publishHeartbeat, 0, heartbeatIntervalMillis, TimeUnit.MILLISECONDS);
+    public static ExecutorBuilder<?> createExecutorBuilder(Settings settings) {
+        return new FixedExecutorBuilder(settings, THREAD_POOL_NAME, 1, 1, THREAD_POOL_NAME);
     }
 
-    public void stop() {
-        scheduler.shutdown();
-        try {
-            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                logger.warn("Scheduler did not terminate in 5 seconds");
-                scheduler.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            logger.warn("Scheduler interrupted", e);
-            scheduler.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
+    public void start() {
+        threadPool.scheduleWithFixedDelay(this::publishHeartbeat, TimeValue.timeValueMillis(heartbeatIntervalMillis), THREAD_POOL_NAME);
     }
 
     // Package-private for testing

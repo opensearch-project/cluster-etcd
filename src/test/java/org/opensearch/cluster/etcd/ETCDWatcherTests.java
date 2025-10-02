@@ -19,6 +19,8 @@ import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.threadpool.TestThreadPool;
+import org.opensearch.threadpool.ThreadPool;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -61,6 +63,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
         String configPath = ETCDPathUtils.buildSearchUnitGoalStatePath(localNode, clusterName);
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
             try (
                 Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build();
                 ETCDWatcher etcdWatcher = new ETCDWatcher(
@@ -68,6 +71,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     ByteSequence.from(configPath, StandardCharsets.UTF_8),
                     mockNodeStateApplier,
                     etcdClient,
+                    threadPool,
                     clusterName
                 )
             ) {
@@ -114,6 +118,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
                 await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
 
+            } finally {
+                threadPool.shutdown();
             }
         }
     }
@@ -134,6 +140,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
             try (
                 Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build();
                 ETCDWatcher etcdWatcher = new ETCDWatcher(
@@ -141,6 +148,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     ByteSequence.from(configPath, StandardCharsets.UTF_8),
                     mockNodeStateApplier,
                     etcdClient,
+                    threadPool,
                     clusterName
                 )
             ) {
@@ -241,6 +249,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
                 // Verify coordinator node state is removed
                 await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
+            } finally {
+                threadPool.shutdown();
             }
         }
     }

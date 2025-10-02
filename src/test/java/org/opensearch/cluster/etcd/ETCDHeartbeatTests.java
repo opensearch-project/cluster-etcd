@@ -33,6 +33,8 @@ import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.threadpool.TestThreadPool;
+import org.opensearch.threadpool.ThreadPool;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -52,7 +54,7 @@ import static org.testcontainers.shaded.org.awaitility.Awaitility.await;
 @ThreadLeakFilters(filters = { TestContainerThreadLeakFilter.class })
 public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
-    public void testETCDHeartbeatStartStop() throws IOException {
+    public void testETCDHeartbeatStartStop() throws InterruptedException {
         // Setup mocks
         DiscoveryNode localNode = createMockDiscoveryNode();
         Client etcdClient = mock(Client.class);
@@ -64,7 +66,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(etcdClient.getKVClient()).thenReturn(kvClient);
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool);
 
         // Test start and stop
         heartbeat.start();
@@ -75,14 +78,14 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-
-        heartbeat.stop();
+        threadPool.shutdownNow();
+        threadPool.awaitTermination(1, TimeUnit.SECONDS);
 
         // The test should complete without hanging, indicating proper scheduler management
         assertTrue("Test completed successfully", true);
     }
 
-    public void testETCDHeartbeatBasicMockingBehavior() throws IOException {
+    public void testETCDHeartbeatBasicMockingBehavior() throws InterruptedException {
         // Setup mocks
         DiscoveryNode localNode = createMockDiscoveryNode();
         Client etcdClient = mock(Client.class);
@@ -94,7 +97,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(etcdClient.getKVClient()).thenReturn(kvClient);
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool, 100);
 
         // Test the lifecycle without actual scheduling - just ensure construction and cleanup work
         heartbeat.start();
@@ -104,16 +108,16 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             Thread.sleep(200);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            threadPool.shutdown();
         }
-
-        heartbeat.stop();
 
         // Verify that some interaction happened with the KV client (heartbeat was attempted)
         // Note: We don't verify the exact number of calls since it depends on timing
         verify(etcdClient, times(1)).getKVClient();
     }
 
-    public void testETCDHeartbeatWithClusterServiceRouting() throws IOException {
+    public void testETCDHeartbeatWithClusterServiceRouting() throws IOException, InterruptedException {
         // Setup mocks
         DiscoveryNode localNode = createMockDiscoveryNode();
         Client etcdClient = mock(Client.class);
@@ -125,7 +129,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(etcdClient.getKVClient()).thenReturn(kvClient);
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool, 100);
 
         // Test that heartbeat can be constructed and managed with routing information
         heartbeat.start();
@@ -135,15 +140,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             Thread.sleep(200);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            threadPool.shutdown();
         }
-
-        heartbeat.stop();
 
         // Verify that ETCD client was accessed (indicates heartbeat execution attempted)
         verify(etcdClient, times(1)).getKVClient();
     }
 
-    public void testETCDHeartbeatErrorHandling() throws IOException {
+    public void testETCDHeartbeatErrorHandling() throws InterruptedException {
         // Setup mocks
         DiscoveryNode localNode = createMockDiscoveryNode();
         Client etcdClient = mock(Client.class);
@@ -157,7 +162,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             CompletableFuture.failedFuture(new RuntimeException("ETCD connection failed"))
         );
 
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool);
 
         // Start heartbeat - it should handle the error gracefully and not crash
         heartbeat.start();
@@ -167,16 +173,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             Thread.sleep(200);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            threadPool.shutdown();
         }
-
-        // Stop should work even after errors - this tests error resilience
-        heartbeat.stop();
 
         // Test passes if we reach here without exceptions - the heartbeat handles errors gracefully
         assertTrue("Heartbeat handled errors gracefully", true);
     }
 
-    public void testETCDHeartbeatClusterServiceError() throws IOException {
+    public void testETCDHeartbeatClusterServiceError() throws InterruptedException {
         // Setup mocks
         DiscoveryNode localNode = createMockDiscoveryNode();
         Client etcdClient = mock(Client.class);
@@ -191,7 +196,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(etcdClient.getKVClient()).thenReturn(kvClient);
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService);
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool, 100);
 
         // Start heartbeat - it should handle the cluster service error gracefully
         heartbeat.start();
@@ -201,9 +207,9 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             Thread.sleep(200);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            threadPool.shutdown();
         }
-
-        heartbeat.stop();
 
         // Test that the heartbeat handles cluster service errors gracefully
         // The heartbeat should still attempt to publish (without routing info) despite the cluster service error
@@ -288,9 +294,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -303,7 +310,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertFalse("Heartbeat data should be published", kvs.isEmpty());
 
                     // Parse and verify the heartbeat data
-                    KeyValue kv = kvs.get(0);
+                    KeyValue kv = kvs.getFirst();
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify required fields are present
@@ -335,8 +342,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     long now = System.currentTimeMillis();
                     assertTrue("timestamp should be recent", Math.abs(now - timestamp) < 10000);
                 });
-
-                heartbeat.stop();
+            } finally {
+                threadPool.shutdown();
             }
         }
     }
@@ -354,9 +361,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterServiceWithRouting(clusterName);
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -369,7 +377,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertFalse("Heartbeat data should be published", kvs.isEmpty());
 
                     // Parse and verify the heartbeat data
-                    KeyValue kv = kvs.get(0);
+                    KeyValue kv = kvs.getFirst();
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify routing information is present
@@ -384,7 +392,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertFalse("Index should have shards", indexShards.isEmpty());
 
                     // Verify shard information structure
-                    Map<String, Object> shardInfo = indexShards.get(0);
+                    Map<String, Object> shardInfo = indexShards.getFirst();
                     assertTrue("shardId should be present", shardInfo.containsKey("shardId"));
                     assertTrue("shard role should be present", shardInfo.containsKey("role"));
                     assertTrue("state should be present", shardInfo.containsKey("state"));
@@ -394,7 +402,9 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertTrue("currentNodeName should be present", shardInfo.containsKey("currentNodeName"));
                 });
 
-                heartbeat.stop();
+                threadPool.shutdown();
+            } finally {
+                threadPool.shutdown();
             }
         }
     }
@@ -412,9 +422,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 200); // 200ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 200); // 200ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -429,7 +440,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                 });
 
                 // Get first timestamp
-                KeyValue firstKv = etcdClient.getKVClient().get(key).get().getKvs().get(0);
+                KeyValue firstKv = etcdClient.getKVClient().get(key).get().getKvs().getFirst();
                 Map<String, Object> firstHeartbeat = parseHeartbeatJson(firstKv.getValue());
                 long firstTimestamp = ((Number) firstHeartbeat.get("timestamp")).longValue();
 
@@ -438,14 +449,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     List<KeyValue> kvs = etcdClient.getKVClient().get(key).get().getKvs();
                     assertFalse("Subsequent heartbeat should be published", kvs.isEmpty());
 
-                    KeyValue kv = kvs.get(0);
+                    KeyValue kv = kvs.getFirst();
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
                     long currentTimestamp = ((Number) heartbeatData.get("timestamp")).longValue();
 
                     assertTrue("Timestamp should be updated", currentTimestamp > firstTimestamp);
                 });
-
-                heartbeat.stop();
+                threadPool.shutdown();
+            } finally {
+                threadPool.shutdown();
             }
         }
     }
@@ -463,9 +475,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -480,28 +493,30 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                 });
 
                 // Stop heartbeat
-                heartbeat.stop();
+                threadPool.shutdown();
 
                 // Wait a bit longer than the heartbeat interval to ensure no more updates
                 Thread.sleep(300); // Wait 300ms (more than 100ms interval)
 
                 // Get the timestamp after stopping
-                KeyValue finalKv = etcdClient.getKVClient().get(key).get().getKvs().get(0);
+                KeyValue finalKv = etcdClient.getKVClient().get(key).get().getKvs().getFirst();
                 Map<String, Object> finalHeartbeat = parseHeartbeatJson(finalKv.getValue());
                 long finalTimestamp = ((Number) finalHeartbeat.get("timestamp")).longValue();
 
                 // Wait another interval and verify no new updates
                 Thread.sleep(200); // Wait another 200ms
-                KeyValue laterKv = etcdClient.getKVClient().get(key).get().getKvs().get(0);
+                KeyValue laterKv = etcdClient.getKVClient().get(key).get().getKvs().getFirst();
                 Map<String, Object> laterHeartbeat = parseHeartbeatJson(laterKv.getValue());
                 long laterTimestamp = ((Number) laterHeartbeat.get("timestamp")).longValue();
 
                 assertEquals("No new heartbeats should be published after stop", finalTimestamp, laterTimestamp);
+            } finally {
+                threadPool.shutdown();
             }
         }
     }
 
-    public void testETCDHeartbeatDataFormat() throws IOException, ExecutionException, InterruptedException {
+    public void testETCDHeartbeatDataFormat() {
         String clusterName = "test-cluster";
         String nodeName = "test-node";
 
@@ -514,9 +529,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -529,7 +545,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertFalse("Heartbeat data should be published", kvs.isEmpty());
 
                     // Parse and verify the heartbeat data structure
-                    KeyValue kv = kvs.get(0);
+                    KeyValue kv = kvs.getFirst();
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify all numeric fields are actually numbers
@@ -570,8 +586,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertTrue("memoryMaxMB should be positive", ((Number) heartbeatData.get("memoryMaxMB")).longValue() > 0);
                     assertTrue("heapMaxMB should be positive", ((Number) heartbeatData.get("heapMaxMB")).longValue() > 0);
                 });
-
-                heartbeat.stop();
+            } finally {
+                threadPool.shutdown();
             }
         }
     }
@@ -608,9 +624,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -623,15 +640,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertFalse("Heartbeat data should be published", kvs.isEmpty());
 
                     // Parse and verify the heartbeat data structure
-                    KeyValue kv = kvs.get(0);
+                    KeyValue kv = kvs.getFirst();
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify clusterless attributes are present
                     assertEquals("clusterlessRole should be 'primary'", "primary", heartbeatData.get("clusterlessRole"));
                     assertEquals("clusterlessShardId should be '00'", "00", heartbeatData.get("clusterlessShardId"));
                 });
-
-                heartbeat.stop();
+            } finally {
+                threadPool.shutdown();
             }
         }
     }
@@ -651,9 +668,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -666,15 +684,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertFalse("Heartbeat data should be published", kvs.isEmpty());
 
                     // Parse and verify the heartbeat data structure
-                    KeyValue kv = kvs.get(0);
+                    KeyValue kv = kvs.getFirst();
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify clusterless attributes are not present
                     assertFalse("clusterlessRole should not be present", heartbeatData.containsKey("clusterlessRole"));
                     assertFalse("clusterlessShardId should not be present", heartbeatData.containsKey("clusterlessShardId"));
                 });
-
-                heartbeat.stop();
+            } finally {
+                threadPool.shutdown();
             }
         }
     }
