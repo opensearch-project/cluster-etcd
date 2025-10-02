@@ -30,17 +30,20 @@ public class CoordinatorNodeState extends NodeState {
     private final Collection<RemoteNode> remoteNodes;
     private final Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments;
     private final Map<String, Object> aliases;
+    private final Map<String, Settings> remoteClusters;
 
     public CoordinatorNodeState(
         DiscoveryNode localNode,
         Collection<RemoteNode> remoteNodes,
         Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments,
-        Map<String, Object> aliases
+        Map<String, Object> aliases,
+        Map<String, Settings> remoteClusters
     ) {
         super(localNode);
         this.remoteNodes = remoteNodes;
         this.remoteShardAssignments = remoteShardAssignments;
         this.aliases = aliases;
+        this.remoteClusters = remoteClusters;
     }
 
     @Override
@@ -112,6 +115,14 @@ public class CoordinatorNodeState extends NodeState {
         }
         for (RemoteNode remoteNode : remoteNodes) {
             nodesBuilder.add(remoteNode.toDiscoveryNode());
+        }
+
+        if (this.remoteClusters != null && !this.remoteClusters.isEmpty()) {
+            Settings.Builder persistentSettingsBuilder = Settings.builder();
+            for (Settings remoteSetting : this.remoteClusters.values()) {
+                persistentSettingsBuilder.put(remoteSetting);
+            }
+            metadataBuilder.persistentSettings(persistentSettingsBuilder.build());
         }
 
         return ClusterState.builder(ClusterState.EMPTY_STATE)

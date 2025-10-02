@@ -185,6 +185,7 @@ public final class ETCDStateDeserializer {
     ) throws IOException {
         Map<String, Object> indices = (Map<String, Object>) remoteShards.get("indices");
         Map<String, Object> aliases = (Map<String, Object>) remoteShards.getOrDefault("aliases", new HashMap<>());
+        Map<String, Object> remoteClustersConfig = (Map<String, Object>) remoteShards.getOrDefault("remote_clusters", new HashMap<>());
         Set<String> remoteNodeNames = new HashSet<>();
 
         for (Map.Entry<String, Object> indexEntry : indices.entrySet()) {
@@ -202,6 +203,18 @@ public final class ETCDStateDeserializer {
         }
 
         Map<String, NodeHealthInfo> remoteNodeHealthMap = fetchNodeHealthInfo(etcdClient, remoteNodeNames, clusterName);
+
+        Map<String, Settings> remoteClusters = new HashMap<>();
+        for (Map.Entry<String, Object> entry : remoteClustersConfig.entrySet()) {
+            String alias = entry.getKey();
+            Map<String, Object> config = (Map<String, Object>) entry.getValue();
+            if (config.containsKey("seeds")) {
+                List<String> seeds = (List<String>) config.get("seeds");
+                String settingKey = "cluster.remote." + alias + ".seeds";
+                Settings remoteSettings = Settings.builder().putList(settingKey, seeds).build();
+                remoteClusters.put(alias, remoteSettings);
+            }
+        }
 
         List<String> keysToWatch = new ArrayList<>();
         boolean converged = true;
@@ -245,7 +258,13 @@ public final class ETCDStateDeserializer {
             remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
         }
 
-        CoordinatorNodeState coordinatorNodeState = new CoordinatorNodeState(localNode, remoteNodes, remoteShardAssignment, aliases);
+        CoordinatorNodeState coordinatorNodeState = new CoordinatorNodeState(
+            localNode,
+            remoteNodes,
+            remoteShardAssignment,
+            aliases,
+            remoteClusters
+        );
         return new NodeStateResult(coordinatorNodeState, keysToWatch);
     }
 
