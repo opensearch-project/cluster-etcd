@@ -1,13 +1,14 @@
 package io.clustercontroller.config;
 
+import lombok.Data;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.Constructor;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
-import java.util.Map;
 
 import static io.clustercontroller.config.Constants.*;
 
@@ -26,9 +27,9 @@ public class ClusterControllerConfig {
     private static final String CONFIG_FILE = "application.yml";
     
     public ClusterControllerConfig() {
-        Map<String, Object> config = loadYamlConfig();
+        ConfigModel config = loadYamlConfig();
         
-        // Parse configuration values
+        // Parse configuration values with null-safe defaults
         this.clusterName = parseClusterName(config);
         this.etcdEndpoints = parseEndpoints(config);
         this.taskIntervalSeconds = parseTaskIntervalSeconds(config);
@@ -37,32 +38,32 @@ public class ClusterControllerConfig {
                 clusterName, String.join(", ", etcdEndpoints), taskIntervalSeconds);
     }
     
-    private Map<String, Object> loadYamlConfig() {
-        Yaml yaml = new Yaml();
+    private ConfigModel loadYamlConfig() {
+        Yaml yaml = new Yaml(new Constructor(ConfigModel.class));
         
         try (InputStream is = getClass().getClassLoader().getResourceAsStream(CONFIG_FILE)) {
             if (is != null) {
-                Map<String, Object> config = yaml.load(is);
+                ConfigModel config = yaml.load(is);
                 log.info("Loaded configuration from {}", CONFIG_FILE);
-                return config != null ? config : Map.of();
+                return config != null ? config : new ConfigModel();
             } else {
                 log.warn("Configuration file {} not found, using defaults", CONFIG_FILE);
             }
         } catch (IOException e) {
             log.warn("Failed to load configuration file {}, using defaults: {}", CONFIG_FILE, e.getMessage());
+        } catch (Exception e) {
+            log.warn("Failed to parse configuration file {}, using defaults: {}", CONFIG_FILE, e.getMessage());
         }
         
-        return Map.of();
+        return new ConfigModel();
     }
     
-    @SuppressWarnings("unchecked")
-    private String parseClusterName(Map<String, Object> config) {
+    private String parseClusterName(ConfigModel config) {
         try {
-            Map<String, Object> clusterConfig = (Map<String, Object>) config.get("cluster");
-            if (clusterConfig != null) {
-                String name = (String) clusterConfig.get("name");
-                if (name != null && !name.trim().isEmpty()) {
-                    return name.trim();
+            if (config.getCluster() != null && config.getCluster().getName() != null) {
+                String name = config.getCluster().getName().trim();
+                if (!name.isEmpty()) {
+                    return name;
                 }
             }
         } catch (Exception e) {
@@ -72,14 +73,12 @@ public class ClusterControllerConfig {
         return DEFAULT_CLUSTER_NAME;
     }
     
-    @SuppressWarnings("unchecked")
-    private String[] parseEndpoints(Map<String, Object> config) {
+    private String[] parseEndpoints(ConfigModel config) {
         try {
-            Map<String, Object> etcdConfig = (Map<String, Object>) config.get("etcd");
-            if (etcdConfig != null) {
-                List<String> endpointsList = (List<String>) etcdConfig.get("endpoints");
-                if (endpointsList != null && !endpointsList.isEmpty()) {
-                    return endpointsList.toArray(new String[0]);
+            if (config.getEtcd() != null && config.getEtcd().getEndpoints() != null) {
+                var endpoints = config.getEtcd().getEndpoints();
+                if (!endpoints.isEmpty()) {
+                    return endpoints.toArray(new String[0]);
                 }
             }
         } catch (Exception e) {
@@ -89,20 +88,40 @@ public class ClusterControllerConfig {
         return new String[]{DEFAULT_ETCD_ENDPOINT};
     }
     
-    @SuppressWarnings("unchecked")
-    private long parseTaskIntervalSeconds(Map<String, Object> config) {
+    private long parseTaskIntervalSeconds(ConfigModel config) {
         try {
-            Map<String, Object> taskConfig = (Map<String, Object>) config.get("task");
-            if (taskConfig != null) {
-                Object intervalObj = taskConfig.get("intervalSeconds");
-                if (intervalObj instanceof Number) {
-                    return ((Number) intervalObj).longValue();
-                }
+            if (config.getTask() != null && config.getTask().getIntervalSeconds() != null) {
+                return config.getTask().getIntervalSeconds();
             }
         } catch (Exception e) {
             log.warn("Failed to parse task interval from config, using default: {}", e.getMessage());
         }
         
         return DEFAULT_TASK_INTERVAL_SECONDS;
+    }
+    
+    /**
+     * Configuration model for the application.yml file.
+     */
+    @Data
+    public static class ConfigModel {
+        private Cluster cluster;
+        private Etcd etcd;
+        private Task task;
+    }
+    
+    @Data
+    public static class Cluster {
+        private String name;
+    }
+    
+    @Data
+    public static class Etcd {
+        private List<String> endpoints;
+    }
+    
+    @Data
+    public static class Task {
+        private Long intervalSeconds;
     }
 }
