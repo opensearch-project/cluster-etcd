@@ -1,6 +1,9 @@
 # Application Configuration
 cluster:
   name: default-cluster
+  lock:
+    ttl:
+      seconds: 60
 
 etcd:
   endpoints:
@@ -18,9 +21,3 @@ controller:
   keepalive:
     interval:
       seconds: 10
-
-# Cluster Lock Configuration
-cluster:
-  lock:
-    ttl:
-      seconds: 60
