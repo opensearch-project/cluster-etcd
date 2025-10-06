@@ -1,15 +1,20 @@
 package io.clustercontroller;
 
+import io.clustercontroller.multicluster.AssignmentPolicy;
+import io.clustercontroller.multicluster.RendezvousHashPolicy;
 import io.clustercontroller.store.EtcdMetadataStore;
 import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.tasks.TaskContext;
 import io.etcd.jetcd.*;
+import io.etcd.jetcd.common.exception.ClosedClientException;
 import io.etcd.jetcd.kv.GetResponse;
 import io.etcd.jetcd.lock.LockResponse;
 import io.etcd.jetcd.options.GetOption;
 import io.etcd.jetcd.options.PutOption;
 import io.etcd.jetcd.options.WatchOption;
+import io.etcd.jetcd.support.CloseableClient;
+import io.etcd.jetcd.support.Observers;
 import io.etcd.jetcd.watch.WatchEvent;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
@@ -52,6 +57,7 @@ public class MultiClusterManager {
     private final MetadataStore metadataStore;
     private final TaskContext taskContext;
     private final EtcdPathResolver pathResolver;
+    private final AssignmentPolicy assignmentPolicy;
     
     // Runtime state
     private final ConcurrentMap<String, ClusterBinding> runningClusters = new ConcurrentHashMap<>();
@@ -71,6 +77,7 @@ public class MultiClusterManager {
         private final ByteSequence lockKey;
         private final Watch.Watcher watcher;
         private final ScheduledFuture<?> keepAliveTask;
+        private final CloseableClient keepAliveObserver;
     }
     
     /**
@@ -92,6 +99,9 @@ public class MultiClusterManager {
         this.keepAliveInterval = Duration.ofSeconds(keepAliveIntervalSeconds);
         this.pathResolver = EtcdPathResolver.getInstance();
         
+        // Initialize Rendezvous Hash policy with capacity of 10 clusters, topK=1 for exclusive ownership
+        this.assignmentPolicy = new RendezvousHashPolicy(10, 1);
+        
         // Access etcd clients via reflection from EtcdMetadataStore
         try {
             var etcdClientField = EtcdMetadataStore.class.getDeclaredField("etcdClient");
@@ -106,7 +116,8 @@ public class MultiClusterManager {
             throw new RuntimeException("Failed to access etcd client from EtcdMetadataStore", e);
         }
         
-        this.scheduler = Executors.newScheduledThreadPool(3, r -> {
+        // Pool size: 1 controller heartbeat + up to 10 cluster health checks + rebalancing tasks
+        this.scheduler = Executors.newScheduledThreadPool(15, r -> {
             Thread t = new Thread(r);
             t.setName("multi-cluster-scheduler-" + t.getId());
             t.setDaemon(true);
@@ -132,9 +143,14 @@ public class MultiClusterManager {
         
         // Step 2: Discover clusters and attempt initial acquisition
         Set<String> clusters = listClusters();
+        Set<String> controllers = listControllers();
         log.info("Discovered {} clusters: {}", clusters.size(), clusters);
+        log.info("Discovered {} controllers: {}", controllers.size(), controllers);
         
-        // Step 3: Try to acquire clusters
+        // Step 3: Refresh policy with current state
+        assignmentPolicy.refresh(controllerId, controllers, clusters, runningClusters.keySet());
+        
+        // Step 4: Try to acquire clusters
         reconcile(clusters);
         
         // Step 4: Watch for membership changes
@@ -212,25 +228,32 @@ public class MultiClusterManager {
     }
     
     /**
-     * Reconcile cluster assignments
+     * Reconcile cluster assignments based on policy
      */
     private void reconcile(Set<String> clusters) {
         log.debug("Reconciling cluster assignments. Current: {}, Discovered: {}", 
             runningClusters.keySet(), clusters);
         
-        // Stop TaskManagers for clusters that no longer exist
+        // Step 1: Release clusters we shouldn't own anymore (policy-driven rebalancing)
         for (String ownedCluster : new ArrayList<>(runningClusters.keySet())) {
             if (!clusters.contains(ownedCluster)) {
                 log.info("Cluster {} no longer exists, stopping TaskManager", ownedCluster);
                 stopAndCleanup(ownedCluster);
+            } else if (assignmentPolicy.shouldRelease(ownedCluster)) {
+                log.info("Policy says to release cluster {}, stopping TaskManager", ownedCluster);
+                stopAndCleanup(ownedCluster);
             }
         }
         
-        // Attempt to acquire new clusters
+        // Step 2: Attempt to acquire clusters we should own (policy-driven)
         for (String clusterId : clusters) {
             if (!runningClusters.containsKey(clusterId)) {
-                log.info("Attempting to acquire cluster: {}", clusterId);
-                tryAcquireCluster(clusterId);
+                if (assignmentPolicy.shouldAttempt(clusterId, runningClusters.size())) {
+                    log.info("Policy says to attempt cluster: {}", clusterId);
+                    tryAcquireCluster(clusterId);
+                } else {
+                    log.debug("Policy says NOT to attempt cluster: {}", clusterId);
+                }
             }
         }
         
@@ -255,7 +278,14 @@ public class MultiClusterManager {
             
             log.debug("Created lease {} for cluster {}", clusterLeaseId, clusterId);
             
-            // Step 2: Acquire exclusive lock (blocks until owned or fails)
+            // Step 2: Start keep-alive for the lease BEFORE acquiring lock
+            CloseableClient keepAliveObserver = leaseClient.keepAlive(clusterLeaseId, Observers.observer(response -> {
+                // Keep-alive response received
+            }));
+            
+            log.debug("Started keep-alive for lease {}", clusterLeaseId);
+            
+            // Step 3: Acquire exclusive lock (blocks until owned or fails)
             String lockPath = pathResolver.getClusterLockPath(clusterId);
             LockResponse lockResponse = lockClient.lock(
                 ByteSequence.from(lockPath, UTF_8),
@@ -283,20 +313,19 @@ public class MultiClusterManager {
                 metadataStore, 
                 taskContext, 
                 clusterId, 
-                30L // TODO: Make configurable
+                10L // Run task loop every 10 seconds
             );
             taskManager.start();
             
             log.info("Started TaskManager for cluster: {}", clusterId);
             
-            // Step 5: Setup keepalive tied to worker liveness
+            // Step 5: Setup health check tied to worker liveness
+            // Note: Keep-alive is handled automatically by the keepAliveObserver
             ScheduledFuture<?> keepAliveTask = scheduler.scheduleAtFixedRate(() -> {
                 if (!taskManager.isRunning()) {
                     log.warn("TaskManager for cluster {} is not running, stopping", clusterId);
                     stopAndCleanup(clusterId);
-                    return;
                 }
-                safeKeepAlive(clusterLeaseId);
             }, keepAliveInterval.toSeconds(), keepAliveInterval.toSeconds(), TimeUnit.SECONDS);
             
             // Step 6: Watch the lock key for changes (lease expiration, etc.)
@@ -323,7 +352,8 @@ public class MultiClusterManager {
                 taskManager, 
                 lockKey, 
                 watcher, 
-                keepAliveTask
+                keepAliveTask,
+                keepAliveObserver
             );
             runningClusters.put(clusterId, binding);
             
@@ -383,6 +413,15 @@ public class MultiClusterManager {
             log.error("Error closing watcher for cluster {}", clusterId, e);
         }
         
+        // Close keep-alive observer
+        try {
+            if (binding.getKeepAliveObserver() != null) {
+                binding.getKeepAliveObserver().close();
+            }
+        } catch (Exception e) {
+            log.error("Error closing keep-alive observer for cluster {}", clusterId, e);
+        }
+        
         // Revoke lease (fast unlock)
         safeRevoke(binding.getLeaseId());
         
@@ -417,12 +456,15 @@ public class MultiClusterManager {
                 .build(),
             watchResponse -> {
                 log.debug("Cluster membership changed, reconciling...");
-                try {
-                    Set<String> clusters = listClusters();
-                    reconcile(clusters);
-                } catch (Exception e) {
-                    log.error("Error during reconciliation after cluster change", e);
-                }
+                // Offload to scheduler to avoid blocking etcd's event thread
+                scheduler.execute(() -> {
+                    try {
+                        Set<String> clusters = listClusters();
+                        reconcile(clusters);
+                    } catch (Exception e) {
+                        log.error("Error during reconciliation after cluster change", e);
+                    }
+                });
             }
         );
         
@@ -434,8 +476,18 @@ public class MultiClusterManager {
                 .withPrefix(ByteSequence.from(controllersPrefix, UTF_8))
                 .build(),
             watchResponse -> {
-                log.debug("Controller membership changed");
-                // For now, just log. In future, we can implement rebalancing logic
+                log.info("Controller membership changed, rebalancing...");
+                // Offload to scheduler to avoid blocking etcd's event thread
+                scheduler.execute(() -> {
+                    try {
+                        Set<String> clusters = listClusters();
+                        Set<String> controllers = listControllers();
+                        assignmentPolicy.refresh(controllerId, controllers, clusters, runningClusters.keySet());
+                        reconcile(clusters);
+                    } catch (Exception e) {
+                        log.error("Error during rebalancing after controller change", e);
+                    }
+                });
             }
         );
         

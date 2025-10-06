@@ -103,14 +103,11 @@ public class TaskManager {
     }
     
     public void stop() {
-        log.info("Stopping task manager");
+        log.info("[Cluster: {}] Stopping task manager", clusterName);
         isRunning = false;
         scheduler.shutdown();
-        try {
-            metadataStore.close();
-        } catch (Exception e) {
-            log.error("Error closing metadata store: {}", e.getMessage());
-        }
+        // NOTE: Do NOT close metadataStore here - it's a shared resource used by all TaskManagers
+        // The metadataStore will be closed when the application shuts down
     }
     
     public boolean isRunning() {
@@ -119,32 +116,34 @@ public class TaskManager {
     
     private void processTaskLoop() {
         try {
-            // Only process tasks if this node is the leader
-            if (!metadataStore.isLeader()) {
-                log.debug("Skipping task processing - not the leader");
-                return;
-            }
+            // TODO: Leader check disabled for multi-cluster mode
+            // In multi-cluster mode, MultiClusterManager handles cluster ownership via distributed locks
+            // If reverting to single-cluster mode, uncomment the following:
+            // if (!metadataStore.isLeader()) {
+            //     log.debug("Skipping task processing - not the leader");
+            //     return;
+            // }
             
-            log.info("Running task processing loop - checking for tasks");
+            log.info("[Cluster: {}] Running task processing loop - checking for tasks", clusterName);
             
             List<TaskMetadata> taskMetadataList = getAllTasks();
-            log.info("Found {} tasks in etcd", taskMetadataList.size());
+            log.info("[Cluster: {}] Found {} tasks in etcd", clusterName, taskMetadataList.size());
             for (TaskMetadata task : taskMetadataList) {
-                log.info("Task: {} status: {} priority: {}", task.getName(), task.getStatus(), task.getPriority());
+                log.info("[Cluster: {}] Task: {} status: {} priority: {}", clusterName, task.getName(), task.getStatus(), task.getPriority());
             }
             
             cleanupOldTasks(taskMetadataList);
             
             TaskMetadata taskMetadataToProcess = selectNextTask(taskMetadataList);
             if (taskMetadataToProcess != null) {
-                log.info("Processing task: {}", taskMetadataToProcess.getName());
+                log.info("[Cluster: {}] Processing task: {}", clusterName, taskMetadataToProcess.getName());
                 String result = executeTask(taskMetadataToProcess);
-                log.info("Task {} completed with result: {}", taskMetadataToProcess.getName(), result);
+                log.info("[Cluster: {}] Task {} completed with result: {}", clusterName, taskMetadataToProcess.getName(), result);
             } else {
-                log.info("No pending tasks to process");
+                log.info("[Cluster: {}] No pending tasks to process", clusterName);
             }
         } catch (Exception e) {
-            log.error("Error in task processing loop: {}", e.getMessage(), e);
+            log.error("[Cluster: {}] Error in task processing loop: {}", clusterName, e.getMessage(), e);
         }
     }
     
