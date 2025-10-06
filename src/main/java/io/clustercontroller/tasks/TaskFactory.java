@@ -1,7 +1,11 @@
 package io.clustercontroller.tasks;
 
 import io.clustercontroller.models.TaskMetadata;
-import io.clustercontroller.tasks.impl.*;
+import io.clustercontroller.tasks.impl.ActualAllocationUpdaterTask;
+import io.clustercontroller.tasks.impl.GoalStateOrchestratorTask;
+import io.clustercontroller.tasks.impl.PlanShardAllocationTask;
+import io.clustercontroller.tasks.impl.ShardAllocatorTask;
+import io.clustercontroller.tasks.impl.UnknownTask;
 import lombok.extern.slf4j.Slf4j;
 
 import static io.clustercontroller.config.Constants.*;
@@ -19,12 +23,6 @@ public class TaskFactory {
         String taskName = metadata.getName();
         
         return switch (taskName) {
-            case TASK_ACTION_DISCOVER_SEARCH_UNIT -> new DiscoverSearchUnitTask(
-                metadata.getName(),
-                metadata.getPriority(),
-                metadata.getInput(),
-                metadata.getSchedule()
-            );
             case TASK_ACTION_SHARD_ALLOCATOR -> new ShardAllocatorTask(
                 metadata.getName(),
                 metadata.getPriority(),

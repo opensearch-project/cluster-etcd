@@ -17,10 +17,10 @@ public class TaskContext {
     
     private final String clusterName;
     private final IndexManager indexManager;
-    private final Discovery discovery;
     private final ShardAllocator shardAllocator;
     private final ActualAllocationUpdater actualAllocationUpdater;
     private final GoalStateOrchestrator goalStateOrchestrator;
+    private final Discovery discovery; // Available but not used in scheduled tasks
 }
 
 

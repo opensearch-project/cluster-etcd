@@ -35,7 +35,6 @@ class ConstantsTest {
         assertThat(TASK_ACTION_CREATE_INDEX).isEqualTo("create_index");
         assertThat(TASK_ACTION_DELETE_INDEX).isEqualTo("delete_index");
         assertThat(TASK_ACTION_PLAN_SHARD_ALLOCATION).isEqualTo("plan_shard_allocation");
-        assertThat(TASK_ACTION_DISCOVER_SEARCH_UNIT).isEqualTo("discover_search_unit");
         assertThat(TASK_ACTION_SHARD_ALLOCATOR).isEqualTo("shard_allocator");
         assertThat(TASK_ACTION_ACTUAL_ALLOCATION_UPDATER).isEqualTo("actual_allocation_updater");
     }

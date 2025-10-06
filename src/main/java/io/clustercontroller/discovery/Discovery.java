@@ -28,7 +28,7 @@ public class Discovery {
         this.clusterName = clusterName;
     }
     
-    
+
     public void discoverSearchUnits() throws Exception {
         log.info("Discovery - Starting search unit discovery process");
         

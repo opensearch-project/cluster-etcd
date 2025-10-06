@@ -28,7 +28,6 @@ public final class Constants {
     public static final String TASK_ACTION_CREATE_INDEX = "create_index";
     public static final String TASK_ACTION_DELETE_INDEX = "delete_index";
     public static final String TASK_ACTION_PLAN_SHARD_ALLOCATION = "plan_shard_allocation";
-    public static final String TASK_ACTION_DISCOVER_SEARCH_UNIT = "discover_search_unit";
     public static final String TASK_ACTION_SHARD_ALLOCATOR = "shard_allocator";
     public static final String TASK_ACTION_ACTUAL_ALLOCATION_UPDATER = "actual_allocation_updater";
     public static final String TASK_ACTION_GOAL_STATE_ORCHESTRATOR = "goal_state_orchestrator";

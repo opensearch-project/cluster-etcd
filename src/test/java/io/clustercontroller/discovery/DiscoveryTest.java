@@ -290,21 +290,6 @@ class DiscoveryTest {
         assertThat(unit.getStatePulled()).isEqualTo(HealthState.RED);
     }
     
-    // =================================================================
-    // MONITORING TESTS
-    // =================================================================
-    
-    @Test
-    void testMonitorClusterHealth() {
-        // When & Then - should not throw exception
-        assertThatCode(() -> discovery.monitorClusterHealth()).doesNotThrowAnyException();
-    }
-    
-    @Test
-    void testUpdateClusterTopology() {
-        // When & Then - should not throw exception
-        assertThatCode(() -> discovery.updateClusterTopology()).doesNotThrowAnyException();
-    }
     
     // =================================================================
     // HELPER METHODS
