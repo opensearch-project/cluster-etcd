@@ -63,4 +63,13 @@ public final class Constants {
     // Leader election constants
     public static final String ELECTION_KEY_SUFFIX = "-election";
     public static final long LEADER_ELECTION_TTL_SECONDS = 30L;
+    
+    // Multi-cluster coordination paths
+    public static final String PATH_MULTI_CLUSTER = "multi-cluster";
+    public static final String PATH_CONTROLLERS = "controllers";
+    public static final String PATH_CLUSTERS = "clusters";
+    public static final String PATH_LOCKS = "locks";
+    public static final String PATH_HEARTBEAT = "heartbeat";
+    public static final String PATH_ASSIGNED = "assigned";
+    public static final String PATH_METADATA = "metadata";
 }

@@ -113,6 +113,10 @@ public class TaskManager {
         }
     }
     
+    public boolean isRunning() {
+        return isRunning;
+    }
+    
     private void processTaskLoop() {
         try {
             // Only process tasks if this node is the leader
