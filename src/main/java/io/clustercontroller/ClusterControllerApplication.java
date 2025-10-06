@@ -14,13 +14,17 @@ import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
 import io.clustercontroller.tasks.TaskContext;
 import io.clustercontroller.TaskManager;
+import io.clustercontroller.util.EnvironmentUtils;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Primary;
+
+import static io.clustercontroller.config.Constants.*;
 
 /**
  * Main Spring Boot application class for the Cluster Controller with multi-cluster support.
@@ -52,7 +56,9 @@ public class ClusterControllerApplication {
     @Bean
     @Primary
     public ClusterControllerConfig config() {
-        return new ClusterControllerConfig();
+        ClusterControllerConfig config = new ClusterControllerConfig();
+        log.info("Loaded configuration with cluster: {}", config.getClusterName());
+        return config;
     }
     
     /**
@@ -79,6 +85,12 @@ public class ClusterControllerApplication {
     public IndexManager indexManager(MetadataStore metadataStore) {
         log.info("Initializing IndexManager for multi-cluster support");
         return new IndexManager(metadataStore);
+    }
+
+    @Bean
+    public Discovery discovery(MetadataStore metadataStore, ClusterControllerConfig config) {
+        log.info("Initializing Discovery for cluster: {}", config.getClusterName());
+        return new Discovery(metadataStore, config.getClusterName());
     }
 
     @Bean
@@ -121,8 +133,77 @@ public class ClusterControllerApplication {
     }
 
     /**
-     * TaskManager bean for scheduling and executing background tasks.
+     * TaskContext bean to provide dependencies to tasks.
      */
+    @Bean
+    public TaskContext taskContext(
+            ClusterControllerConfig config,
+            IndexManager indexManager,
+            Discovery discovery,
+            ShardAllocator shardAllocator,
+            ActualAllocationUpdater actualAllocationUpdater,
+            GoalStateOrchestrator goalStateOrchestrator) {
+        // Actual constructor order: clusterName, indexManager, shardAllocator, actualAllocationUpdater, goalStateOrchestrator, discovery
+        return new TaskContext(
+            config.getClusterName(), 
+            indexManager, 
+            shardAllocator, 
+            actualAllocationUpdater, 
+            goalStateOrchestrator,
+            discovery
+        );
+    }
+
+    /**
+     * MultiClusterManager bean for managing multiple clusters with distributed locking.
+     * Replaces the single TaskManager with multi-cluster coordination.
+     */
+    @Bean
+    public MultiClusterManager multiClusterManager(
+            MetadataStore metadataStore,
+            TaskContext taskContext,
+            @Value("${controller.id}") String controllerId,
+            @Value("${controller.ttl.seconds}") int controllerTtlSeconds,
+            @Value("${cluster.lock.ttl.seconds}") int clusterLockTtlSeconds,
+            @Value("${controller.keepalive.interval.seconds}") int keepAliveIntervalSeconds) {
+        
+        log.info("========================================");
+        log.info("Initializing MultiClusterManager");
+        log.info("Controller ID: {}", controllerId);
+        log.info("Controller TTL: {} seconds", controllerTtlSeconds);
+        log.info("Cluster Lock TTL: {} seconds", clusterLockTtlSeconds);
+        log.info("KeepAlive Interval: {} seconds", keepAliveIntervalSeconds);
+        log.info("========================================");
+        
+        MultiClusterManager manager = new MultiClusterManager(
+            (EtcdMetadataStore) metadataStore,
+            taskContext,
+            controllerId,
+            controllerTtlSeconds,
+            clusterLockTtlSeconds,
+            keepAliveIntervalSeconds
+        );
+        
+        try {
+            manager.start();
+            log.info("========================================");
+            log.info("MultiClusterManager started successfully!");
+            log.info("Controller '{}' is now managing {} cluster(s): {}", 
+                controllerId, 
+                manager.getManagedClusterCount(),
+                manager.getManagedClusters());
+            log.info("========================================");
+        } catch (Exception e) {
+            log.error("Failed to start MultiClusterManager", e);
+            throw new RuntimeException("MultiClusterManager startup failed", e);
+        }
+        
+        return manager;
+    }
+
+    // TODO: Old single-cluster TaskManager - disabled in favor of MultiClusterManager
+    // Uncomment below if you need to revert to single-cluster mode
+    /*
     @Bean
     public TaskManager taskManager(MetadataStore metadataStore, TaskContext taskContext, ClusterControllerConfig config) {
         log.info("Initializing TaskManager for cluster: {}", config.getClusterName());
@@ -131,20 +212,5 @@ public class ClusterControllerApplication {
         log.info("TaskManager started with background processing for cluster: {}", config.getClusterName());
         return taskManager;
     }
-
-    /**
-     * TaskContext bean to provide dependencies to tasks.
-     */
-    @Bean
-    public TaskContext taskContext(
-            ClusterControllerConfig config,
-            IndexManager indexManager,
-            ShardAllocator shardAllocator,
-            ActualAllocationUpdater actualAllocationUpdater,
-            GoalStateOrchestrator goalStateOrchestrator,
-            MetadataStore metadataStore) {
-        // Create Discovery instance but don't expose as separate bean
-        Discovery discovery = new Discovery(metadataStore, config.getClusterName());
-        return new TaskContext(config.getClusterName(), indexManager, shardAllocator, actualAllocationUpdater, goalStateOrchestrator, discovery);
-    }
+    */
 }

@@ -140,7 +140,11 @@ public class MultiClusterManager {
         // Step 4: Watch for membership changes
         setupWatchers();
         
-        log.info("MultiClusterManager started successfully. Managing {} clusters", runningClusters.size());
+        log.info("========================================");
+        log.info("MultiClusterManager STARTUP COMPLETE");
+        log.info("Controller ID: {}", controllerId);
+        log.info("Managing {} cluster(s): {}", runningClusters.size(), runningClusters.keySet());
+        log.info("========================================");
     }
     
     /**
@@ -259,8 +263,12 @@ public class MultiClusterManager {
             ).get(5, TimeUnit.SECONDS);
             
             ByteSequence lockKey = lockResponse.getKey();
-            log.info("Successfully acquired lock for cluster: {} (lockKey: {})", 
-                clusterId, lockKey.toString(UTF_8));
+            log.info("========================================");
+            log.info("✓ LOCK ACQUIRED for cluster: {}", clusterId);
+            log.info("  Controller: {}", controllerId);
+            log.info("  Lock Key: {}", lockKey.toString(UTF_8));
+            log.info("  Lease ID: {}", clusterLeaseId);
+            log.info("========================================");
             
             // Step 3: Create observability pointer
             String assignmentPath = pathResolver.getControllerAssignmentPath(controllerId, clusterId);
@@ -319,7 +327,14 @@ public class MultiClusterManager {
             );
             runningClusters.put(clusterId, binding);
             
-            log.info("Successfully started managing cluster: {}", clusterId);
+            log.info("========================================");
+            log.info("✓ CLUSTER MANAGEMENT STARTED");
+            log.info("  Cluster ID: {}", clusterId);
+            log.info("  Controller: {}", controllerId);
+            log.info("  TaskManager: RUNNING");
+            log.info("  Total Managed Clusters: {}", runningClusters.size());
+            log.info("  All Managed Clusters: {}", runningClusters.keySet());
+            log.info("========================================");
             
         } catch (TimeoutException e) {
             log.warn("Timeout acquiring cluster {}: {}", clusterId, e.getMessage());
@@ -380,7 +395,13 @@ public class MultiClusterManager {
             log.debug("Error deleting assignment pointer for cluster {}: {}", clusterId, e.getMessage());
         }
         
-        log.info("Cleanup completed for cluster: {}", clusterId);
+        log.info("========================================");
+        log.info("✗ CLUSTER MANAGEMENT STOPPED");
+        log.info("  Cluster ID: {}", clusterId);
+        log.info("  Controller: {}", controllerId);
+        log.info("  Remaining Managed Clusters: {}", runningClusters.size());
+        log.info("  All Managed Clusters: {}", runningClusters.keySet());
+        log.info("========================================");
     }
     
     /**

@@ -15,6 +15,9 @@ import static io.clustercontroller.config.Constants.*;
 /**
  * Configuration for cluster controller.
  * Loads configuration from application.yml with fallbacks to constants.
+ * 
+ * TODO: Refactor to use Spring's @ConfigurationProperties instead of manual SnakeYAML parsing
+ * This would allow Spring to handle all property resolution including environment variables.
  */
 @Slf4j
 @Getter
