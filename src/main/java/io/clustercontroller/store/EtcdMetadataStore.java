@@ -20,9 +20,7 @@ import io.etcd.jetcd.op.CmpTarget;
 import io.etcd.jetcd.op.Op;
 import io.etcd.jetcd.options.DeleteOption;
 import io.etcd.jetcd.options.GetOption;
-import io.etcd.jetcd.options.LeaseOption;
 import io.etcd.jetcd.options.PutOption;
-import io.grpc.stub.StreamObserver;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.charset.StandardCharsets;
@@ -33,7 +31,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static io.clustercontroller.config.Constants.PATH_DELIMITER;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static io.clustercontroller.config.Constants.*;
 
 /**
  * etcd-based implementation of MetadataStore.
