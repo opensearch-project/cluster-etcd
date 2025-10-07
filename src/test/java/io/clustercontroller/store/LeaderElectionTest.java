@@ -86,7 +86,7 @@ class LeaderElectionTest {
                 .thenReturn(campaignFuture);
 
         // Start leader election
-        CompletableFuture<Boolean> electionResult = etcdStore.startLeaderElection();
+        CompletableFuture<Boolean> electionResult = etcdStore.getLeaderElection().startElection();
         
         // Wait for result with timeout
         Boolean isLeader = electionResult.get(5, TimeUnit.SECONDS);
@@ -121,7 +121,7 @@ class LeaderElectionTest {
                 .thenReturn(campaignFuture);
 
         // Start leader election
-        CompletableFuture<Boolean> electionResult = etcdStore.startLeaderElection();
+        CompletableFuture<Boolean> electionResult = etcdStore.getLeaderElection().startElection();
         
         // Verify election failure
         assertThrows(Exception.class, () -> electionResult.get(5, TimeUnit.SECONDS));
@@ -153,7 +153,7 @@ class LeaderElectionTest {
         }).when(leaseClient).keepAlive(anyLong(), any(StreamObserver.class));
 
         // Start leader election
-        CompletableFuture<Boolean> electionResult = etcdStore.startLeaderElection();
+        CompletableFuture<Boolean> electionResult = etcdStore.getLeaderElection().startElection();
         
         // Verify keep alive error causes election failure
         assertThrows(Exception.class, () -> electionResult.get(5, TimeUnit.SECONDS));
@@ -190,7 +190,7 @@ class LeaderElectionTest {
         }).when(leaseClient).keepAlive(anyLong(), any(StreamObserver.class));
 
         // Start leader election
-        CompletableFuture<Boolean> electionResult = etcdStore.startLeaderElection();
+        CompletableFuture<Boolean> electionResult = etcdStore.getLeaderElection().startElection();
         
         // Wait for initial election success
         Boolean isLeader = electionResult.get(5, TimeUnit.SECONDS);
@@ -218,8 +218,8 @@ class LeaderElectionTest {
                 .thenReturn(CompletableFuture.completedFuture(campaignResponse));
 
         // Start multiple leader elections
-        CompletableFuture<Boolean> election1 = etcdStore.startLeaderElection();
-        CompletableFuture<Boolean> election2 = etcdStore.startLeaderElection();
+        CompletableFuture<Boolean> election1 = etcdStore.getLeaderElection().startElection();
+        CompletableFuture<Boolean> election2 = etcdStore.getLeaderElection().startElection();
         
         // Both should succeed
         assertTrue(election1.get(5, TimeUnit.SECONDS));
@@ -289,15 +289,15 @@ class LeaderElectionTest {
                 .thenReturn(CompletableFuture.completedFuture(campaignResponse));
 
         // Start election
-        CompletableFuture<Boolean> electionResult = etcdStore.startLeaderElection();
+        CompletableFuture<Boolean> electionResult = etcdStore.getLeaderElection().startElection();
         
         // Wait for election to complete
         Boolean isLeader = electionResult.get(5, TimeUnit.SECONDS);
         assertTrue(isLeader);
         
-        // Verify that the election key is formed correctly (using default cluster name)
+        // Verify that the election key is formed correctly (controller-level, not cluster-specific)
         verify(electionClient).campaign(
-                argThat(key -> key.toString().contains("default-cluster-election")),
+                argThat(key -> key.toString().contains("/controller-leader-election")),
                 eq(12345L),
                 any(ByteSequence.class)
         );

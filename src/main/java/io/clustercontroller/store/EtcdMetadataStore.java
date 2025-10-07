@@ -1,5 +1,6 @@
 package io.clustercontroller.store;
 
+import io.clustercontroller.election.LeaderElection;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.ShardAllocation;
 
@@ -18,8 +19,6 @@ import io.etcd.jetcd.op.Cmp;
 import io.etcd.jetcd.op.CmpTarget;
 import io.etcd.jetcd.op.Op;
 import io.etcd.jetcd.options.DeleteOption;
-import io.etcd.jetcd.lease.LeaseGrantResponse;
-import io.etcd.jetcd.lease.LeaseKeepAliveResponse;
 import io.etcd.jetcd.options.GetOption;
 import io.etcd.jetcd.options.LeaseOption;
 import io.etcd.jetcd.options.PutOption;
@@ -57,6 +56,7 @@ public class EtcdMetadataStore implements MetadataStore {
     // Leader election fields
     private final AtomicBoolean isLeader = new AtomicBoolean(false);
     private final String nodeId;
+    private final LeaderElection leaderElection;
     
     /**
      * Private constructor for singleton pattern
@@ -77,7 +77,10 @@ public class EtcdMetadataStore implements MetadataStore {
         // Initialize path resolver
         this.pathResolver = EtcdPathResolver.getInstance();
         
-        log.info("EtcdMetadataStore initialized for cluster: {} with endpoints: {} and nodeId: {}", 
+        // Initialize leader election (controller-level, not cluster-specific)
+        this.leaderElection = new LeaderElection(etcdClient, nodeId, isLeader);
+        
+        log.info("EtcdMetadataStore initialized with endpoints: {} and nodeId: {}", 
             String.join(",", etcdEndpoints), nodeId);
     }
     
@@ -102,7 +105,10 @@ public class EtcdMetadataStore implements MetadataStore {
         // Initialize path resolver
         this.pathResolver = EtcdPathResolver.getInstance();
         
-        log.info("EtcdMetadataStore initialized for testing with cluster: {} and nodeId: {}", "test-cluster", nodeId);
+        // Initialize leader election for testing (controller-level, not cluster-specific)
+        this.leaderElection = new LeaderElection(etcdClient, nodeId, isLeader);
+        
+        log.info("EtcdMetadataStore initialized for testing with nodeId: {}", nodeId);
     }
     /**
      * Get singleton instance
@@ -572,7 +578,7 @@ public class EtcdMetadataStore implements MetadataStore {
     public void initialize() throws Exception {
         log.info("Initialize called - already done in constructor");
         // Start leader election process
-        startLeaderElection();
+        leaderElection.startElection();
     }
     
     public void close() throws Exception {
@@ -689,59 +695,23 @@ public class EtcdMetadataStore implements MetadataStore {
     }
 
      // =================================================================
-    // CONTROLLER TASKS OPERATIONS
+    // LEADER ELECTION OPERATIONS
     // =================================================================
-    public CompletableFuture<Boolean> startLeaderElection() {
-        // TODO: Implement distributed locking mechanism and leader election support for multiple OS clusters in future
-        Election election = etcdClient.getElectionClient();
-        String electionKey = io.clustercontroller.config.Constants.DEFAULT_CLUSTER_NAME + ELECTION_KEY_SUFFIX;
-
-        CompletableFuture<Boolean> result = new CompletableFuture<>();
-
-        CompletableFuture.runAsync(() -> {
-            try {
-                ByteSequence electionKeyBytes = ByteSequence.from(electionKey, UTF_8);
-                ByteSequence nodeIdBytes = ByteSequence.from(nodeId, UTF_8);
-
-                long ttlSeconds = LEADER_ELECTION_TTL_SECONDS;
-                LeaseGrantResponse leaseGrant = etcdClient.getLeaseClient()
-                        .grant(ttlSeconds)
-                        .get();
-                long leaseId = leaseGrant.getID();
-
-                etcdClient.getLeaseClient().keepAlive(leaseId, new StreamObserver<LeaseKeepAliveResponse>() {
-                    public void onNext(LeaseKeepAliveResponse res) {}
-                    public void onError(Throwable t) {
-                        log.error("KeepAlive error: {}", t.getMessage());
-                        isLeader.set(false);
-                        result.completeExceptionally(t);
-                    }
-                    public void onCompleted() {
-                        isLeader.set(false);
-                    }
-                });
-
-                election.campaign(electionKeyBytes, leaseId, nodeIdBytes)
-                        .thenAccept(leaderKey -> {
-                            log.info("Node {} is the LEADER.", nodeId);
-                            isLeader.set(true);
-                            result.complete(true);
-                        })
-                        .exceptionally(ex -> {
-                            result.completeExceptionally(ex);
-                            return null;
-                        });
-
-            } catch (Exception e) {
-                log.error("Leader election error", e);
-                result.completeExceptionally(e);
-            }
-        });
-
-        return result;
+    
+    /**
+     * Get the leader election instance for direct access.
+     * 
+     * @return the LeaderElection instance
+     */
+    public LeaderElection getLeaderElection() {
+        return leaderElection;
     }
-
-
+    
+    /**
+     * Check if this node is currently the leader.
+     * 
+     * @return true if this node is the leader, false otherwise
+     */
     public boolean isLeader() {
         return isLeader.get();
     }
