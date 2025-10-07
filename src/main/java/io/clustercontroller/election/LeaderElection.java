@@ -26,6 +26,7 @@ public class LeaderElection {
     private final Client etcdClient;
     private final String nodeId;
     private final AtomicBoolean isLeader;
+    private final AtomicBoolean isShuttingDown = new AtomicBoolean(false);
     
     /**
      * Constructor for LeaderElection
@@ -49,16 +50,13 @@ public class LeaderElection {
      * @return CompletableFuture that completes with true when this node becomes leader
      */
     public CompletableFuture<Boolean> startElection() {
-        log.info("LeaderElection - Starting controller-level leader election for node: {}", nodeId);
-        log.info("LeaderElection - Election key: {}", CONTROLLER_ELECTION_KEY);
+        log.info("LeaderElection - Starting leader election for node: {}", nodeId);
         
         Election election = etcdClient.getElectionClient();
         CompletableFuture<Boolean> result = new CompletableFuture<>();
 
         CompletableFuture.runAsync(() -> {
             try {
-                log.info("LeaderElection - Node {} attempting to campaign for controller leadership", nodeId);
-                
                 ByteSequence electionKeyBytes = ByteSequence.from(CONTROLLER_ELECTION_KEY, UTF_8);
                 ByteSequence nodeIdBytes = ByteSequence.from(nodeId, UTF_8);
 
@@ -68,21 +66,26 @@ public class LeaderElection {
                         .grant(ttlSeconds)
                         .get();
                 long leaseId = leaseGrant.getID();
-                
-                log.info("LeaderElection - Node {} obtained lease ID: {} with TTL: {}s", nodeId, leaseId, ttlSeconds);
 
                 // Keep the lease alive
                 etcdClient.getLeaseClient().keepAlive(leaseId, new StreamObserver<LeaseKeepAliveResponse>() {
                     @Override
                     public void onNext(LeaseKeepAliveResponse res) {
-                        log.debug("LeaderElection - Lease keep-alive successful for node {}", nodeId);
+                        //
                     }
                     
                     @Override
                     public void onError(Throwable t) {
-                        log.error("LeaderElection - Lease keep-alive error for node {}: {}", nodeId, t.getMessage());
+                        // Don't log errors if we're shutting down - this is expected
+                        if (!isShuttingDown.get()) {
+                            log.error("LeaderElection - Lease keep-alive error for node {}: {}", nodeId, t.getMessage());
+                        } else {
+                            log.debug("LeaderElection - Lease keep-alive error during shutdown for node {}: {}", nodeId, t.getMessage());
+                        }
                         isLeader.set(false);
-                        result.completeExceptionally(t);
+                        if (!isShuttingDown.get()) {
+                            result.completeExceptionally(t);
+                        }
                     }
                     
                     @Override
@@ -91,8 +94,6 @@ public class LeaderElection {
                         isLeader.set(false);
                     }
                 });
-
-                log.info("LeaderElection - Node {} starting campaign with lease ID: {}", nodeId, leaseId);
                 
                 // Campaign for leadership - this blocks until leadership is acquired
                 election.campaign(electionKeyBytes, leaseId, nodeIdBytes)
@@ -102,9 +103,16 @@ public class LeaderElection {
                             result.complete(true);
                         })
                         .exceptionally(ex -> {
-                            log.error("LeaderElection - Node {} failed during campaign: {}", nodeId, ex.getMessage(), ex);
+                            // Don't log errors if we're shutting down - this is expected
+                            if (!isShuttingDown.get()) {
+                                log.error("LeaderElection - Node {} failed during campaign: {}", nodeId, ex.getMessage(), ex);
+                            } else {
+                                log.debug("LeaderElection - Node {} election cancelled during shutdown", nodeId);
+                            }
                             isLeader.set(false);
-                            result.completeExceptionally(ex);
+                            if (!isShuttingDown.get()) {
+                                result.completeExceptionally(ex);
+                            }
                             return null;
                         });
 
@@ -126,5 +134,16 @@ public class LeaderElection {
      */
     public boolean isLeader() {
         return isLeader.get();
+    }
+    
+    /**
+     * Gracefully shutdown the leader election process.
+     * This sets the shutting down flag to suppress error logging during shutdown.
+     * Should be called before closing the etcd client.
+     */
+    public void shutdown() {
+        log.info("LeaderElection - Shutting down leader election for node: {}", nodeId);
+        isShuttingDown.set(true);
+        isLeader.set(false);
     }
 }

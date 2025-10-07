@@ -23,6 +23,7 @@ import io.etcd.jetcd.options.GetOption;
 import io.etcd.jetcd.options.PutOption;
 import lombok.extern.slf4j.Slf4j;
 
+import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -578,10 +579,16 @@ public class EtcdMetadataStore implements MetadataStore {
         leaderElection.startElection();
     }
     
+    @PreDestroy
     public void close() throws Exception {
         log.info("Closing etcd metadata store");
         
         try {
+            // Shutdown leader election first to avoid errors during etcd client closure
+            if (leaderElection != null) {
+                leaderElection.shutdown();
+            }
+            
             if (etcdClient != null) {
                 etcdClient.close();
                 log.info("etcd client closed successfully");
