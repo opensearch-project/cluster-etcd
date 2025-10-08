@@ -160,25 +160,42 @@ class IndexHandlerTest {
     }
 
     @Test
-    void testGetIndexSettings_NotImplemented() {
+    void testGetIndexSettings_Success() throws Exception {
         // Given
-        when(indexManager.getSettings(anyString(), anyString()))
-            .thenThrow(new UnsupportedOperationException("Not implemented"));
+        String expectedSettings = "{\"number_of_shards\": 3, \"refresh_interval\": \"30s\"}";
+        when(indexManager.getSettings(anyString(), anyString())).thenReturn(expectedSettings);
 
         // When
         ResponseEntity<Object> response = indexHandler.getIndexSettings(testClusterId, testIndexName);
 
         // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
-        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isEqualTo(expectedSettings);
 
-        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
-        assertThat(errorResponse.getStatus()).isEqualTo(501);
+        verify(indexManager).getSettings(testClusterId, testIndexName);
     }
 
     @Test
-    void testUpdateIndexSettings_Success() {
+    void testGetIndexSettings_Exception() throws Exception {
+        // Given
+        when(indexManager.getSettings(anyString(), anyString()))
+            .thenThrow(new RuntimeException("Index not found"));
+
+        // When
+        ResponseEntity<Object> response = indexHandler.getIndexSettings(testClusterId, testIndexName);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
+        assertThat(errorResponse.getReason()).contains("Index not found");
+        assertThat(errorResponse.getStatus()).isEqualTo(500);
+    }
+
+    @Test
+    void testUpdateIndexSettings_Success() throws Exception {
         // Given
         String settingsJson = "{\"refresh_interval\":\"30s\"}";
         doNothing().when(indexManager).updateSettings(anyString(), anyString(), anyString());
@@ -192,9 +209,30 @@ class IndexHandlerTest {
 
         IndexResponse indexResponse = (IndexResponse) response.getBody();
         assertThat(indexResponse.isAcknowledged()).isTrue();
+        assertThat(indexResponse.isShardsAcknowledged()).isTrue();
         assertThat(indexResponse.getIndex()).isEqualTo(testIndexName);
 
         verify(indexManager).updateSettings(testClusterId, testIndexName, settingsJson);
+    }
+
+    @Test
+    void testUpdateIndexSettings_Exception() throws Exception {
+        // Given
+        String settingsJson = "{\"refresh_interval\":\"30s\"}";
+        doThrow(new RuntimeException("Failed to update settings"))
+            .when(indexManager).updateSettings(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response = indexHandler.updateIndexSettings(testClusterId, testIndexName, settingsJson);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
+        assertThat(errorResponse.getReason()).contains("Failed to update settings");
+        assertThat(errorResponse.getStatus()).isEqualTo(500);
     }
 
     @Test

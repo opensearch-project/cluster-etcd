@@ -60,8 +60,8 @@ public class ShardAllocator {
             // For each index
             for (Index indexConfig : indexConfigs) {
                 String indexName = indexConfig.getIndexName();
-                int numberOfShards = indexConfig.getNumberOfShards();
-                List<Integer> shardReplicaCounts = indexConfig.getShardReplicaCount();
+                int numberOfShards = indexConfig.getSettings().getNumberOfShards();
+                List<Integer> shardReplicaCounts = indexConfig.getSettings().getShardReplicaCount();
                 
                 log.debug("Processing index {} with {} shards", indexName, numberOfShards);
                 
