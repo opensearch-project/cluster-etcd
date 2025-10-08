@@ -219,12 +219,19 @@ class ClusterControllerApplicationTest {
 
     /**
      * Helper method to get leader status using reflection
+     * Accesses the LeaderElection's internal isLeader field
      */
     private AtomicBoolean getLeaderStatusFromStore() {
         try {
-            var field = EtcdMetadataStore.class.getDeclaredField("isLeader");
-            field.setAccessible(true);
-            return (AtomicBoolean) field.get(etcdStore);
+            // First get the leaderElection field from EtcdMetadataStore
+            var leaderElectionField = EtcdMetadataStore.class.getDeclaredField("leaderElection");
+            leaderElectionField.setAccessible(true);
+            var leaderElection = leaderElectionField.get(etcdStore);
+            
+            // Then get the isLeader field from LeaderElection
+            var isLeaderField = leaderElection.getClass().getDeclaredField("isLeader");
+            isLeaderField.setAccessible(true);
+            return (AtomicBoolean) isLeaderField.get(leaderElection);
         } catch (Exception e) {
             fail("Could not access isLeader field: " + e.getMessage());
             return null;

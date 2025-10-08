@@ -25,7 +25,7 @@ public class LeaderElection {
     
     private final Client etcdClient;
     private final String nodeId;
-    private final AtomicBoolean isLeader;
+    private final AtomicBoolean isLeader = new AtomicBoolean(false);
     private final AtomicBoolean isShuttingDown = new AtomicBoolean(false);
     
     /**
@@ -34,12 +34,10 @@ public class LeaderElection {
      * 
      * @param etcdClient the etcd client instance
      * @param nodeId the unique identifier for this node
-     * @param isLeader atomic boolean to track leader state (shared with caller)
      */
-    public LeaderElection(Client etcdClient, String nodeId, AtomicBoolean isLeader) {
+    public LeaderElection(Client etcdClient, String nodeId) {
         this.etcdClient = etcdClient;
         this.nodeId = nodeId;
-        this.isLeader = isLeader;
     }
     
     /**
@@ -67,11 +65,12 @@ public class LeaderElection {
                         .get();
                 long leaseId = leaseGrant.getID();
 
-                // Keep the lease alive
+                // Keep the lease alive - this continuously renews the lease while the node holds leadership.
+                // If renewal fails (node dies, network partition, etc.), the lease expires and leadership is lost.
                 etcdClient.getLeaseClient().keepAlive(leaseId, new StreamObserver<LeaseKeepAliveResponse>() {
                     @Override
                     public void onNext(LeaseKeepAliveResponse res) {
-                        //
+                        // Keep-alive successful - no action needed, just continue renewing
                     }
                     
                     @Override

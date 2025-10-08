@@ -28,7 +28,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static io.clustercontroller.config.Constants.PATH_DELIMITER;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -52,7 +51,6 @@ public class EtcdMetadataStore implements MetadataStore {
     private final ObjectMapper objectMapper;
     
     // Leader election fields
-    private final AtomicBoolean isLeader = new AtomicBoolean(false);
     private final String nodeId;
     private final LeaderElection leaderElection;
     
@@ -76,7 +74,7 @@ public class EtcdMetadataStore implements MetadataStore {
         this.pathResolver = EtcdPathResolver.getInstance();
         
         // Initialize leader election (controller-level, not cluster-specific)
-        this.leaderElection = new LeaderElection(etcdClient, nodeId, isLeader);
+        this.leaderElection = new LeaderElection(etcdClient, nodeId);
         
         log.info("EtcdMetadataStore initialized with endpoints: {} and nodeId: {}", 
             String.join(",", etcdEndpoints), nodeId);
@@ -104,7 +102,7 @@ public class EtcdMetadataStore implements MetadataStore {
         this.pathResolver = EtcdPathResolver.getInstance();
         
         // Initialize leader election for testing (controller-level, not cluster-specific)
-        this.leaderElection = new LeaderElection(etcdClient, nodeId, isLeader);
+        this.leaderElection = new LeaderElection(etcdClient, nodeId);
         
         log.info("EtcdMetadataStore initialized for testing with nodeId: {}", nodeId);
     }
@@ -717,7 +715,7 @@ public class EtcdMetadataStore implements MetadataStore {
      * @return true if this node is the leader, false otherwise
      */
     public boolean isLeader() {
-        return isLeader.get();
+        return leaderElection.isLeader();
     }
     
     // =================================================================
