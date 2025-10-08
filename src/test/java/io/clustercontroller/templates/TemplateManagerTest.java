@@ -25,44 +25,12 @@ class TemplateManagerTest {
     }
 
     @Test
-    void testTemplateExists_NotImplemented() {
+    void testPutTemplate_MissingPattern() {
         String templateName = "test-template";
-        assertThatThrownBy(() -> templateManager.templateExists(testClusterId, templateName))
-            .isInstanceOf(UnsupportedOperationException.class)
-            .hasMessageContaining("Template existence check not yet implemented");
-    }
-
-    @Test
-    void testPutTemplate_NotImplemented() {
-        String templateName = "test-template";
-        String templateConfig = "{\"index_patterns\":[\"logs-*\"]}";
+        String templateConfig = "{\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\",\"index_template_name\":\"test-template\"}";
 
         assertThatThrownBy(() -> templateManager.putTemplate(testClusterId, templateName, templateConfig))
-            .isInstanceOf(UnsupportedOperationException.class)
-            .hasMessageContaining("Template creation not yet implemented");
-    }
-
-    @Test
-    void testDeleteTemplate_NotImplemented() {
-        String templateName = "test-template";
-
-        assertThatThrownBy(() -> templateManager.deleteTemplate(testClusterId, templateName))
-            .isInstanceOf(UnsupportedOperationException.class)
-            .hasMessageContaining("Template deletion not yet implemented");
-    }
-
-    @Test
-    void testGetTemplate_NotImplemented() {
-        String templateName = "test-template";
-        assertThatThrownBy(() -> templateManager.getTemplate(testClusterId, templateName))
-            .isInstanceOf(UnsupportedOperationException.class)
-            .hasMessageContaining("Get template not yet implemented");
-    }
-
-    @Test
-    void testGetAllTemplates_NotImplemented() {
-        assertThatThrownBy(() -> templateManager.getAllTemplates(testClusterId))
-            .isInstanceOf(UnsupportedOperationException.class)
-            .hasMessageContaining("Get all templates not yet implemented");
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Template must have an index pattern");
     }
 }

@@ -620,6 +620,119 @@ public class EtcdMetadataStore implements MetadataStore {
     }
     
     // =================================================================
+    // TEMPLATE OPERATIONS
+    // =================================================================
+    
+    @Override
+    public Optional<String> getTemplate(String clusterId, String templateName) throws Exception {
+        log.debug("Getting template {} from etcd", templateName);
+        
+        try {
+            String templatePath = pathResolver.getTemplateConfPath(clusterId, templateName);
+            GetResponse response = executeEtcdGet(templatePath);
+            
+            if (response.getCount() == 0) {
+                log.debug("Template {} not found in etcd", templateName);
+                return Optional.empty();
+            }
+            
+            String templateConfigJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+            
+            log.debug("Retrieved template {} from etcd", templateName);
+            return Optional.of(templateConfigJson);
+            
+        } catch (Exception e) {
+            log.error("Failed to get template {} from etcd: {}", templateName, e.getMessage(), e);
+            throw new Exception("Failed to retrieve template from etcd", e);
+        }
+    }
+    
+    @Override
+    public String createTemplate(String clusterId, String templateName, String templateConfig) throws Exception {
+        log.info("Creating template {} in etcd", templateName);
+        
+        try {
+            String templatePath = pathResolver.getTemplateConfPath(clusterId, templateName);
+            executeEtcdPut(templatePath, templateConfig);
+            
+            log.info("Successfully created template {} in etcd", templateName);
+            return templateName;
+            
+        } catch (Exception e) {
+            log.error("Failed to create template {} in etcd: {}", templateName, e.getMessage(), e);
+            throw new Exception("Failed to create template in etcd", e);
+        }
+    }
+    
+    @Override
+    public void updateTemplate(String clusterId, String templateName, String templateConfig) throws Exception {
+        log.debug("Updating template {} in etcd", templateName);
+        
+        try {
+            String templatePath = pathResolver.getTemplateConfPath(clusterId, templateName);
+            executeEtcdPut(templatePath, templateConfig);
+            
+            log.debug("Successfully updated template {} in etcd", templateName);
+            
+        } catch (Exception e) {
+            log.error("Failed to update template {} in etcd: {}", templateName, e.getMessage(), e);
+            throw new Exception("Failed to update template in etcd", e);
+        }
+    }
+    
+    @Override
+    public void deleteTemplate(String clusterId, String templateName) throws Exception {
+        log.info("Deleting template {} from etcd", templateName);
+        
+        try {
+            String templatePath = pathResolver.getTemplateConfPath(clusterId, templateName);
+            executeEtcdDelete(templatePath);
+            
+            log.info("Successfully deleted template {} from etcd", templateName);
+            
+        } catch (Exception e) {
+            log.error("Failed to delete template {} from etcd: {}", templateName, e.getMessage(), e);
+            throw new Exception("Failed to delete template from etcd", e);
+        }
+    }
+    
+    @Override
+    public List<String> getAllTemplates(String clusterId) throws Exception {
+        log.debug("Getting all templates from etcd for cluster {}", clusterId);
+        
+        try {
+            String templatesPrefix = pathResolver.getTemplatesPrefix(clusterId);
+            GetResponse response = executeEtcdPrefixQuery(templatesPrefix);
+            
+            List<String> templates = new ArrayList<>();
+            for (KeyValue kv : response.getKvs()) {
+                String key = kv.getKey().toString(StandardCharsets.UTF_8);
+                String templateJson = kv.getValue().toString(StandardCharsets.UTF_8);
+                
+                // Extract template name from key path
+                String[] pathParts = key.split("/");
+                if (pathParts.length >= 2) {
+                    String templateName = pathParts[pathParts.length - 2];
+                    
+                    // Add template_name temporarily for TemplateManager to extract
+                    Map<String, Object> templateMap = objectMapper.readValue(templateJson, new TypeReference<Map<String, Object>>() {});
+                    templateMap.put("template_name", templateName);
+                    templates.add(objectMapper.writeValueAsString(templateMap));
+                } else {
+                    templates.add(templateJson);
+                }
+            }
+            
+            log.debug("Retrieved {} templates from etcd for cluster {}", templates.size(), clusterId);
+            return templates;
+            
+        } catch (Exception e) {
+            log.error("Failed to get all templates from etcd for cluster {}: {}", clusterId, e.getMessage(), e);
+            throw new Exception("Failed to retrieve templates from etcd", e);
+        }
+    }
+    
+    // =================================================================
     // CLUSTER OPERATIONS
     // =================================================================
     

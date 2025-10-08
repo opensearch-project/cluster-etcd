@@ -158,6 +158,35 @@ public interface MetadataStore {
     void deletePrefix(String clusterId, String prefix) throws Exception;
     
     // =================================================================
+    // TEMPLATE OPERATIONS
+    // =================================================================
+    
+    /**
+     * Get template configuration by name
+     */
+    Optional<String> getTemplate(String clusterId, String templateName) throws Exception;
+    
+    /**
+     * Create new template configuration
+     */
+    String createTemplate(String clusterId, String templateName, String templateConfig) throws Exception;
+    
+    /**
+     * Update template configuration
+     */
+    void updateTemplate(String clusterId, String templateName, String templateConfig) throws Exception;
+    
+    /**
+     * Delete template configuration
+     */
+    void deleteTemplate(String clusterId, String templateName) throws Exception;
+    
+    /**
+     * Get all templates for a cluster
+     */
+    List<String> getAllTemplates(String clusterId) throws Exception;
+    
+    // =================================================================
     // SHARD ALLOCATION OPERATIONS
     // =================================================================
     
