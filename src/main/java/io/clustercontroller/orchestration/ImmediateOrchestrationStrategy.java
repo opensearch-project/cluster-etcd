@@ -36,7 +36,7 @@ public class ImmediateOrchestrationStrategy implements GoalStateOrchestrationStr
             // Outer loop: Iterate over indexes
             for (Index indexConfig : indexConfigs) {
                 String indexName = indexConfig.getIndexName();
-                int numberOfShards = indexConfig.getNumberOfShards();
+                int numberOfShards = indexConfig.getSettings().getNumberOfShards();
                 
                 log.debug("Processing index: {} with {} shards", indexName, numberOfShards);
                 

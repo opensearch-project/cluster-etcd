@@ -1,6 +1,7 @@
 package io.clustercontroller.orchestration;
 
 import io.clustercontroller.models.Index;
+import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.store.MetadataStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -105,7 +106,12 @@ class GoalStateOrchestratorTest {
         String clusterId = "test-cluster";
         Index index = new Index();
         index.setIndexName("test-index");
-        index.setNumberOfShards(2);
+        
+        // Initialize settings
+        IndexSettings settings = new IndexSettings();
+        settings.setNumberOfShards(2);
+        index.setSettings(settings);
+        
         List<Index> indexConfigs = List.of(index);
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(indexConfigs);

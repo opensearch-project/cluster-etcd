@@ -1,6 +1,7 @@
 package io.clustercontroller.store;
 
 import io.clustercontroller.models.Index;
+import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.ShardAllocation;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -546,6 +547,49 @@ public class EtcdMetadataStore implements MetadataStore {
         } catch (Exception e) {
             log.error("Failed to set index mappings for {} in etcd: {}", indexName, e.getMessage(), e);
             throw new Exception("Failed to set index mappings in etcd", e);
+        }
+    }
+    
+    @Override
+    public IndexSettings getIndexSettings(String clusterId, String indexName) throws Exception {
+        log.debug("Getting index settings for {} from etcd", indexName);
+        
+        try {
+            String settingsPath = pathResolver.getIndexSettingsPath(clusterId, indexName);
+            GetResponse response = executeEtcdGet(settingsPath);
+            
+            if (response.getCount() == 0) {
+                log.debug("Index settings {} not found in etcd", indexName);
+                return null;
+            }
+            
+            String settingsJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+            log.debug("Retrieved index settings JSON for {}: {}", indexName, settingsJson);
+            
+            // Parse the JSON to check if it has a "settings" wrapper
+            com.fasterxml.jackson.databind.JsonNode rootNode = objectMapper.readTree(settingsJson);
+            
+            IndexSettings settings;
+            if (rootNode.has("settings")) {
+                // Extract the inner "settings" object
+                com.fasterxml.jackson.databind.JsonNode settingsNode = rootNode.get("settings");
+                settings = objectMapper.treeToValue(settingsNode, IndexSettings.class);
+                log.debug("Extracted settings from nested 'settings' field for {}", indexName);
+            } else {
+                // Direct deserialization if no wrapper
+                settings = objectMapper.treeToValue(rootNode, IndexSettings.class);
+                log.debug("Parsed settings directly for {}", indexName);
+            }
+            
+            log.debug("Successfully parsed index settings for {}: {}", indexName, settings);
+            return settings;
+            
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            log.error("Failed to parse index settings JSON for {} from etcd: {}", indexName, e.getMessage(), e);
+            throw new Exception("Failed to parse index settings JSON from etcd", e);
+        } catch (Exception e) {
+            log.error("Failed to get index settings {} from etcd: {}", indexName, e.getMessage(), e);
+            throw new Exception("Failed to retrieve index settings from etcd", e);
         }
     }
     

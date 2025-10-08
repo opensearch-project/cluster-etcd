@@ -7,6 +7,7 @@ import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
+import io.clustercontroller.models.IndexSettings;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -69,9 +70,10 @@ public class IndexManager {
         // Create the new Index configuration
         Index newIndex = new Index();
         newIndex.setIndexName(indexName);
-        newIndex.setNumberOfShards(numberOfShards);
-        newIndex.setShardReplicaCount(shardReplicaCount);
-        newIndex.setNumShards(numberOfShards);
+
+        newIndex.setSettings(new IndexSettings());
+        newIndex.getSettings().setNumberOfShards(numberOfShards);
+        newIndex.getSettings().setShardReplicaCount(shardReplicaCount);
         
         // Store the index configuration
         String indexConfigJson = objectMapper.writeValueAsString(newIndex);
@@ -149,19 +151,86 @@ public class IndexManager {
     /**
      * Get index settings.
      */
-    public String getSettings(String clusterId, String indexName) {
+    public String getSettings(String clusterId, String indexName) throws Exception {
         log.info("Getting settings for index: {}", indexName);
-        // TODO: Implement get settings logic
-        throw new UnsupportedOperationException("Get settings not yet implemented");
+        
+        // Validate input parameters
+        if (clusterId == null || clusterId.trim().isEmpty()) {
+            throw new IllegalArgumentException("Cluster ID cannot be null or empty");
+        }
+        if (indexName == null || indexName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Index name cannot be null or empty");
+        }
+        
+        // Get settings from metadata store
+       IndexSettings settings = metadataStore.getIndexSettings(clusterId, indexName);
+        if (settings == null) {
+            throw new IllegalArgumentException("Index '" + indexName + "' does not exist in cluster '" + clusterId + "'");
+        }
+        
+        return objectMapper.writeValueAsString(settings);
     }
     
     /**
-     * Update index settings.
+     * Update index settings. This method merges the existing settings with the new settings.
      */
-    public void updateSettings(String clusterId, String indexName, String settingsJson) {
+    public void updateSettings(String clusterId, String indexName, String settingsJson) throws Exception {
         log.info("Updating settings for index '{}' with: {}", indexName, settingsJson);
-        // TODO: Implement update settings logic
-        throw new UnsupportedOperationException("Update settings not yet implemented");
+
+        // Validate input parameters
+        if (clusterId == null || clusterId.trim().isEmpty()) {
+            throw new IllegalArgumentException("Cluster ID cannot be null or empty");
+        }
+        if (indexName == null || indexName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Index name cannot be null or empty");
+        }
+        if (settingsJson == null || settingsJson.trim().isEmpty()) {
+            throw new IllegalArgumentException("Settings JSON cannot be null or empty");
+        }
+
+        // Check if index exists
+        if (!metadataStore.getIndexConfig(clusterId, indexName).isPresent()) {
+            throw new IllegalArgumentException("Index '" + indexName + "' does not exist in cluster '" + clusterId + "'");
+        }
+
+        // Parse and validate the new settings JSON
+        IndexSettings newSettings;
+        try {
+            newSettings = objectMapper.readValue(settingsJson, IndexSettings.class);
+            log.debug("Successfully parsed new settings JSON for index '{}': {}", indexName, newSettings);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid JSON format for settings: " + e.getMessage(), e);
+        }
+
+        // Validate that new settings is not empty
+        if (newSettings == null) {
+            throw new IllegalArgumentException("Settings cannot be empty");
+        }
+
+        // Get existing settings and merge with new settings
+        IndexSettings existingSettings = null;
+        try {
+            existingSettings = metadataStore.getIndexSettings(clusterId, indexName);
+            log.debug("Retrieved existing settings for index '{}': {}", indexName, existingSettings);
+        } catch (Exception e) {
+            log.warn("Failed to retrieve existing settings for index '{}', will create new settings: {}", indexName, e.getMessage());
+        }
+
+        // Merge existing settings with new settings (new settings override existing ones)
+        IndexSettings mergedSettings = mergeIndexSettings(existingSettings, newSettings);
+        
+        log.info("Merged settings for index '{}': existing={}, new={}, merged={}", 
+            indexName, existingSettings, newSettings, mergedSettings);
+
+        // Update the settings in the metadata store with merged settings
+        try {
+            String mergedSettingsJson = objectMapper.writeValueAsString(mergedSettings);
+            metadataStore.setIndexSettings(clusterId, indexName, mergedSettingsJson);
+            log.info("Successfully updated settings for index '{}' in cluster '{}'", indexName, clusterId);
+        } catch (Exception e) {
+            log.error("Failed to update settings for index '{}' in cluster '{}': {}", indexName, clusterId, e.getMessage());
+            throw new Exception("Failed to update settings for index '" + indexName + "': " + e.getMessage(), e);
+        }
     }
     
     /**
@@ -239,7 +308,46 @@ public class IndexManager {
         }
     }
 
-
+    /**
+     * Merge two IndexSettings objects, with the second object's values taking precedence.
+     * Only non-null fields from newSettings are applied to oldSettings.
+     */
+    private IndexSettings mergeIndexSettings(IndexSettings oldSettings, IndexSettings newSettings) {
+        // If both are null, return empty settings
+        if (oldSettings == null && newSettings == null) {
+            return new IndexSettings();
+        }
+        
+        // If old is null, return new
+        if (oldSettings == null) {
+            return newSettings;
+        }
+        
+        // If new is null, return old
+        if (newSettings == null) {
+            return oldSettings;
+        }
+        
+        // Update fields in oldSettings with non-null values from newSettings
+        if (newSettings.getNumberOfShards() != null) {
+            oldSettings.setNumberOfShards(newSettings.getNumberOfShards());
+            log.debug("Updating number_of_shards to {}", newSettings.getNumberOfShards());
+        }
+        
+        if (newSettings.getShardReplicaCount() != null) {
+            oldSettings.setShardReplicaCount(newSettings.getShardReplicaCount());
+            log.debug("Updating shard_replica_count");
+        }
+        
+        if (newSettings.getPausePullIngestion() != null) {
+            oldSettings.setPausePullIngestion(newSettings.getPausePullIngestion());
+            log.debug("Updating pause_pull_ingestion to {}", newSettings.getPausePullIngestion());
+        }
+        
+        log.debug("Merged IndexSettings: result={}", oldSettings);
+        
+        return oldSettings;
+    }
 
     /**
      * Data class to hold parsed create index request

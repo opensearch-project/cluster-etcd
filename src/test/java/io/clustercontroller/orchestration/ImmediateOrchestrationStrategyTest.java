@@ -1,6 +1,7 @@
 package io.clustercontroller.orchestration;
 
 import io.clustercontroller.models.Index;
+import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.store.MetadataStore;
@@ -39,9 +40,7 @@ class ImmediateOrchestrationStrategyTest {
         String indexName = "test-index";
         int numberOfShards = 1;
         
-        Index indexConfig = new Index();
-        indexConfig.setIndexName(indexName);
-        indexConfig.setNumberOfShards(numberOfShards);
+        Index indexConfig = createIndex(indexName, numberOfShards);
         
         ShardAllocation planned = new ShardAllocation();
         planned.setIngestSUs(Arrays.asList("node1"));
@@ -72,13 +71,8 @@ class ImmediateOrchestrationStrategyTest {
         // Given
         String clusterId = "test-cluster";
         
-        Index index1 = new Index();
-        index1.setIndexName("index1");
-        index1.setNumberOfShards(2);
-        
-        Index index2 = new Index();
-        index2.setIndexName("index2");
-        index2.setNumberOfShards(1);
+        Index index1 = createIndex("index1", 2);
+        Index index2 = createIndex("index2", 1);
         
         ShardAllocation planned1_0 = new ShardAllocation();
         planned1_0.setIngestSUs(Arrays.asList("node1"));
@@ -122,9 +116,7 @@ class ImmediateOrchestrationStrategyTest {
         String clusterId = "test-cluster";
         String indexName = "test-index";
         
-        Index indexConfig = new Index();
-        indexConfig.setIndexName(indexName);
-        indexConfig.setNumberOfShards(1);
+        Index indexConfig = createIndex(indexName, 1);
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(null);
@@ -159,9 +151,7 @@ class ImmediateOrchestrationStrategyTest {
         String clusterId = "test-cluster";
         String indexName = "test-index";
         
-        Index indexConfig = new Index();
-        indexConfig.setIndexName(indexName);
-        indexConfig.setNumberOfShards(1);
+        Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
         planned.setIngestSUs(Arrays.asList("node1"));
@@ -188,13 +178,8 @@ class ImmediateOrchestrationStrategyTest {
         // Given
         String clusterId = "test-cluster";
         
-        Index index1 = new Index();
-        index1.setIndexName("index1");
-        index1.setNumberOfShards(1);
-        
-        Index index2 = new Index();
-        index2.setIndexName("index2");
-        index2.setNumberOfShards(1);
+        Index index1 = createIndex("index1", 1);
+        Index index2 = createIndex("index2", 1);
         
         ShardAllocation planned2 = new ShardAllocation();
         planned2.setIngestSUs(Arrays.asList("node1"));
@@ -230,9 +215,7 @@ class ImmediateOrchestrationStrategyTest {
         String clusterId = "test-cluster";
         String indexName = "test-index";
         
-        Index indexConfig = new Index();
-        indexConfig.setIndexName(indexName);
-        indexConfig.setNumberOfShards(1);
+        Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
         planned.setIngestSUs(Arrays.asList("node1"));
@@ -297,9 +280,7 @@ class ImmediateOrchestrationStrategyTest {
         String clusterId = "test-cluster";
         String indexName = "test-index";
         
-        Index indexConfig = new Index();
-        indexConfig.setIndexName(indexName);
-        indexConfig.setNumberOfShards(1);
+        Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
         planned.setIngestSUs(Arrays.asList("node1"));
@@ -326,9 +307,7 @@ class ImmediateOrchestrationStrategyTest {
         String clusterId = "test-cluster";
         String indexName = "test-index";
         
-        Index indexConfig = new Index();
-        indexConfig.setIndexName(indexName);
-        indexConfig.setNumberOfShards(1);
+        Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
         planned.setIngestSUs(Arrays.asList("node1"));
@@ -361,9 +340,7 @@ class ImmediateOrchestrationStrategyTest {
         String clusterId = "test-cluster";
         String indexName = "test-index";
         
-        Index indexConfig = new Index();
-        indexConfig.setIndexName(indexName);
-        indexConfig.setNumberOfShards(1);
+        Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
         planned.setIngestSUs(Arrays.asList());
@@ -387,9 +364,7 @@ class ImmediateOrchestrationStrategyTest {
         String clusterId = "test-cluster";
         String indexName = "test-index";
         
-        Index indexConfig = new Index();
-        indexConfig.setIndexName(indexName);
-        indexConfig.setNumberOfShards(1);
+        Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
         planned.setIngestSUs(null);
@@ -405,5 +380,17 @@ class ImmediateOrchestrationStrategyTest {
         verify(metadataStore).getAllIndexConfigs(clusterId);
         verify(metadataStore).getPlannedAllocation(clusterId, indexName, "0");
         verify(metadataStore, never()).setSearchUnitGoalState(anyString(), anyString(), any(SearchUnitGoalState.class));
+    }
+
+    // Helper method to create Index with initialized settings
+    private Index createIndex(String indexName, int numberOfShards) {
+        Index index = new Index();
+        index.setIndexName(indexName);
+        
+        IndexSettings settings = new IndexSettings();
+        settings.setNumberOfShards(numberOfShards);
+        index.setSettings(settings);
+        
+        return index;
     }
 }

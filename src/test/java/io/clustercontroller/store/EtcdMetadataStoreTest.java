@@ -2,6 +2,7 @@ package io.clustercontroller.store;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.clustercontroller.models.Index;
+import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.models.ShardAllocation;
@@ -372,9 +373,9 @@ public class EtcdMetadataStoreTest {
 
         // Mock response with keys that end with /conf (index configs) and other keys (settings, mappings)
         GetResponse resp = mockGetResponse(Arrays.asList(
-                mockKvWithKey("/test-cluster/indices/index1/conf", "{\"index_name\":\"index1\",\"shard_replica_count\":[1,2]}"),
+                mockKvWithKey("/test-cluster/indices/index1/conf", "{\"index_name\":\"index1\",\"settings\":{\"shard_replica_count\":[1,2],\"number_of_shards\":2}}"),
                 mockKvWithKey("/test-cluster/indices/index1/settings", "{\"number_of_shards\":1,\"number_of_replicas\":2}"),
-                mockKvWithKey("/test-cluster/indices/index2/conf", "{\"index_name\":\"index2\",\"shard_replica_count\":[3]}"),
+                mockKvWithKey("/test-cluster/indices/index2/conf", "{\"index_name\":\"index2\",\"settings\":{\"shard_replica_count\":[3],\"number_of_shards\":1}}"),
                 mockKvWithKey("/test-cluster/indices/index2/mappings", "{\"properties\":{\"title\":{\"type\":\"text\"}}}")
         ));
         when(mockKv.get(any(ByteSequence.class), any(GetOption.class)))
@@ -546,6 +547,94 @@ public class EtcdMetadataStoreTest {
         assertThatThrownBy(() -> store.setIndexSettings("test-cluster", indexName, settings))
                 .isInstanceOf(Exception.class)
                 .hasMessageContaining("Failed to set index settings in etcd");
+    }
+
+    @Test
+    public void testGetIndexSettingsFound() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String indexName = "test-index";
+        String settingsJson = "{\"number_of_shards\": 3, \"shard_replica_count\": [2, 2, 2], \"pause_pull_ingestion\": false}";
+
+        // Mock successful get response
+        GetResponse resp = mockGetResponse(Collections.singletonList(mockKv(settingsJson)));
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(resp));
+
+        // Execute
+        IndexSettings result = store.getIndexSettings("test-cluster", indexName);
+
+        // Verify
+        assertThat(result).isNotNull();
+        assertThat(result.getNumberOfShards()).isEqualTo(3);
+        assertThat(result.getShardReplicaCount()).containsExactly(2, 2, 2);
+        assertThat(result.getPausePullIngestion()).isEqualTo(false);
+
+        // Verify the get call was made with correct key
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).get(keyCaptor.capture());
+
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        assertThat(capturedKey).contains("test-cluster/indices/test-index/settings");
+    }
+
+    @Test
+    public void testGetIndexSettingsNotFound() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String indexName = "non-existent-index";
+
+        // Mock empty response (index settings not found)
+        GetResponse resp = mockGetResponse(Collections.emptyList());
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(resp));
+
+        // Execute
+        IndexSettings result = store.getIndexSettings("test-cluster", indexName);
+
+        // Verify
+        assertThat(result).isNull();
+
+        // Verify the get call was made with correct key
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).get(keyCaptor.capture());
+
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        assertThat(capturedKey).contains("test-cluster/indices/non-existent-index/settings");
+    }
+
+    @Test
+    public void testGetIndexSettingsWithException() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String indexName = "test-index";
+
+        // Mock etcd failure
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd connection timeout")));
+
+        // Verify exception is propagated
+        assertThatThrownBy(() -> store.getIndexSettings("test-cluster", indexName))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("Failed to retrieve index settings from etcd");
+    }
+
+    @Test
+    public void testGetIndexSettingsWithEmptySettings() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String indexName = "empty-settings-index";
+        String emptySettings = "{}";
+
+        // Mock successful get response with empty settings
+        GetResponse resp = mockGetResponse(Collections.singletonList(mockKv(emptySettings)));
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(resp));
+
+        // Execute
+        IndexSettings result = store.getIndexSettings("test-cluster", indexName);
+
+        // Verify - empty JSON {} will parse to an IndexSettings object with all null fields
+        assertThat(result).isNotNull();
+        assertThat(result.getNumberOfShards()).isNull(); // No default value
+        assertThat(result.getShardReplicaCount()).isNull();
+        assertThat(result.getPausePullIngestion()).isNull();
     }
 
     // ------------------------- lifecycle -------------------------

@@ -1,5 +1,8 @@
 package io.clustercontroller.indices;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.clustercontroller.models.Index;
+import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.store.MetadataStore;
 import org.junit.jupiter.api.BeforeEach;
@@ -275,6 +278,303 @@ class IndexManagerTest {
         // Then - should still work with default shard count (1) even with invalid settings
         verify(metadataStore).createIndexConfig(eq(clusterId), eq(indexName), any(String.class));
         verify(metadataStore).setIndexSettings(clusterId, indexName, "{\"invalid_field\":\"invalid_value\"}");
+    }
+
+    // ========== getSettings Tests ==========
+
+    @Test
+    void testGetSettings_Success() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        
+        IndexSettings expectedSettings = new IndexSettings();
+        expectedSettings.setNumberOfShards(3);
+        expectedSettings.setShardReplicaCount(List.of(2, 2, 2));
+        expectedSettings.setPausePullIngestion(true);
+
+        // Mock dependencies
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(expectedSettings);
+
+        // When
+        String result = indexManager.getSettings(clusterId, indexName);
+
+        // Then
+        assertThat(result).contains("\"number_of_shards\":3");
+        assertThat(result).contains("\"pause_pull_ingestion\":true");
+        verify(metadataStore).getIndexSettings(clusterId, indexName);
+    }
+
+    @Test
+    void testGetSettings_EmptyClusterId() {
+        // Given
+        String clusterId = "";
+        String indexName = "test-index";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.getSettings(clusterId, indexName))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Cluster ID cannot be null or empty");
+    }
+
+    @Test
+    void testGetSettings_EmptyIndexName() {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.getSettings(clusterId, indexName))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Index name cannot be null or empty");
+    }
+
+    @Test
+    void testGetSettings_IndexDoesNotExist() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "non-existent-index";
+
+        // Mock dependencies - settings not found
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.getSettings(clusterId, indexName))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Index 'non-existent-index' does not exist in cluster 'test-cluster'");
+    }
+
+    // ========== updateSettings Tests ==========
+
+    @Test
+    void testUpdateSettings_Success() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String settingsJson = """
+            {
+                "pause_pull_ingestion": true
+            }
+            """;
+        
+        IndexSettings existingSettings = new IndexSettings();
+        existingSettings.setNumberOfShards(3);
+        existingSettings.setShardReplicaCount(List.of(2, 2, 2));
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(existingSettings);
+        doNothing().when(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When
+        indexManager.updateSettings(clusterId, indexName, settingsJson);
+
+        // Then
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).getIndexSettings(clusterId, indexName);
+        
+        ArgumentCaptor<String> settingsCaptor = ArgumentCaptor.forClass(String.class);
+        verify(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), settingsCaptor.capture());
+        
+        String mergedSettings = settingsCaptor.getValue();
+        assertThat(mergedSettings).contains("\"pause_pull_ingestion\":true");
+        assertThat(mergedSettings).contains("\"number_of_shards\":3");
+    }
+
+    @Test
+    void testUpdateSettings_NoExistingSettings() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "new-index";
+        String settingsJson = """
+            {
+                "number_of_shards": 5
+            }
+            """;
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        doNothing().when(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When
+        indexManager.updateSettings(clusterId, indexName, settingsJson);
+
+        // Then
+        ArgumentCaptor<String> settingsCaptor = ArgumentCaptor.forClass(String.class);
+        verify(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), settingsCaptor.capture());
+        
+        String mergedSettings = settingsCaptor.getValue();
+        assertThat(mergedSettings).contains("\"number_of_shards\":5");
+    }
+
+    @Test
+    void testUpdateSettings_EmptyClusterId() {
+        // Given
+        String clusterId = "";
+        String indexName = "test-index";
+        String settingsJson = "{\"number_of_shards\": 1}";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateSettings(clusterId, indexName, settingsJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Cluster ID cannot be null or empty");
+    }
+
+    @Test
+    void testUpdateSettings_EmptyIndexName() {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "";
+        String settingsJson = "{\"number_of_shards\": 1}";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateSettings(clusterId, indexName, settingsJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Index name cannot be null or empty");
+    }
+
+    @Test
+    void testUpdateSettings_EmptySettingsJson() {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String settingsJson = "";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateSettings(clusterId, indexName, settingsJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Settings JSON cannot be null or empty");
+    }
+
+    @Test
+    void testUpdateSettings_IndexDoesNotExist() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "non-existent-index";
+        String settingsJson = "{\"number_of_shards\": 1}";
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateSettings(clusterId, indexName, settingsJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Index 'non-existent-index' does not exist in cluster 'test-cluster'");
+    }
+
+    @Test
+    void testUpdateSettings_InvalidJsonFormat() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String settingsJson = "invalid json format";
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateSettings(clusterId, indexName, settingsJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Invalid JSON format for settings");
+    }
+
+    @Test
+    void testUpdateSettings_EmptyJsonObject() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String settingsJson = "{}";
+        
+        IndexSettings existingSettings = new IndexSettings();
+        existingSettings.setNumberOfShards(3);
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(existingSettings);
+        doNothing().when(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When - empty JSON object {} will have all fields as null, so nothing gets merged
+        indexManager.updateSettings(clusterId, indexName, settingsJson);
+
+        // Then - should succeed and preserve existing settings since no fields were provided
+        ArgumentCaptor<String> settingsCaptor = ArgumentCaptor.forClass(String.class);
+        verify(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), settingsCaptor.capture());
+        
+        String mergedSettings = settingsCaptor.getValue();
+        assertThat(mergedSettings).contains("\"number_of_shards\":3"); // Preserved from existing
+    }
+
+    @Test
+    void testUpdateSettings_MalformedJson() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String settingsJson = "{\"number_of_shards\": 1,}"; // Trailing comma
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateSettings(clusterId, indexName, settingsJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Invalid JSON format for settings");
+    }
+
+    @Test
+    void testUpdateSettings_MetadataStoreException() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String settingsJson = "{\"number_of_shards\": 1}";
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        doThrow(new RuntimeException("Database connection failed"))
+                .when(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateSettings(clusterId, indexName, settingsJson))
+                .isInstanceOf(Exception.class)
+                .hasMessage("Failed to update settings for index 'test-index': Database connection failed");
+    }
+
+    @Test
+    void testUpdateSettings_MergeWithExistingSettings() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String newSettings = """
+            {
+                "pause_pull_ingestion": true,
+                "number_of_shards": 5
+            }
+            """;
+        
+        IndexSettings existingSettings = new IndexSettings();
+        existingSettings.setNumberOfShards(3);
+        existingSettings.setShardReplicaCount(List.of(1, 1, 1));
+        existingSettings.setPausePullIngestion(false);
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(existingSettings);
+        doNothing().when(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When
+        indexManager.updateSettings(clusterId, indexName, newSettings);
+
+        // Then
+        ArgumentCaptor<String> settingsCaptor = ArgumentCaptor.forClass(String.class);
+        verify(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), settingsCaptor.capture());
+        
+        String mergedSettings = settingsCaptor.getValue();
+        // Should have updated values from newSettings
+        assertThat(mergedSettings).contains("\"pause_pull_ingestion\":true");
+        assertThat(mergedSettings).contains("\"number_of_shards\":5");
+        // Should preserve shard_replica_count from existing settings
+        assertThat(mergedSettings).contains("\"shard_replica_count\"");
     }
 
     private List<SearchUnit> createMockSearchUnits() {
