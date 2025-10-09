@@ -1,15 +1,18 @@
 package io.clustercontroller.election;
 
-import io.clustercontroller.store.EtcdMetadataStore;
-import io.clustercontroller.util.EnvironmentUtils;
+import io.etcd.jetcd.ByteSequence;
+import io.etcd.jetcd.Client;
+import io.etcd.jetcd.Election;
+import io.etcd.jetcd.lease.LeaseGrantResponse;
+import io.etcd.jetcd.lease.LeaseKeepAliveResponse;
+import io.grpc.stub.StreamObserver;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static io.clustercontroller.config.Constants.*;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * Handles leader election logic for the cluster controller.
@@ -18,76 +21,128 @@ import static io.clustercontroller.config.Constants.*;
 @Slf4j
 public class LeaderElection {
     
-    private static final long LEADER_ELECTION_POLL_INTERVAL_MS = 1000L; // 1 second
-    private static final long DEFAULT_LEADER_ELECTION_TIMEOUT_MS = 30_000L; // 30 seconds
+    private static final String CONTROLLER_ELECTION_KEY = "/controller-leader-election";
     
-    private final EtcdMetadataStore metadataStore;
-    private final String currentNodeName;
+    private final Client etcdClient;
+    private final String nodeId;
+    private final AtomicBoolean isLeader = new AtomicBoolean(false);
+    private final AtomicBoolean isShuttingDown = new AtomicBoolean(false);
     
-    public LeaderElection(EtcdMetadataStore metadataStore) {
-        this.metadataStore = metadataStore;
-        this.currentNodeName = EnvironmentUtils.getRequiredEnv("NODE_NAME");
+    /**
+     * Constructor for LeaderElection
+     * Leader election is at the controller level - the winning controller manages all clusters.
+     * 
+     * @param etcdClient the etcd client instance
+     * @param nodeId the unique identifier for this node
+     */
+    public LeaderElection(Client etcdClient, String nodeId) {
+        this.etcdClient = etcdClient;
+        this.nodeId = nodeId;
     }
     
     /**
-     * Wait until this node becomes the leader with default timeout.
+     * Start the leader election process asynchronously.
+     * This method initiates an etcd election campaign and returns immediately.
+     * The election runs in the background, and the CompletableFuture completes when leadership is acquired.
      * 
-     * @throws InterruptedException if the thread is interrupted
-     * @throws TimeoutException if leader election times out
+     * @return CompletableFuture that completes with true when this node becomes leader
      */
-    public void waitUntilLeader() throws InterruptedException, TimeoutException {
-        waitUntilLeader(DEFAULT_LEADER_ELECTION_TIMEOUT_MS);
-    }
-    
-    /**
-     * Wait until this node becomes the leader with specified timeout.
-     * Uses CountDownLatch for better concurrency handling instead of Thread.sleep.
-     * 
-     * @param timeoutMs maximum time to wait for leader election in milliseconds
-     * @throws InterruptedException if the thread is interrupted
-     * @throws TimeoutException if leader election times out
-     */
-    public void waitUntilLeader(long timeoutMs) throws InterruptedException, TimeoutException {
-        log.info("LeaderElection - Starting leader election process...");
-        log.info("LeaderElection - Current node: {}", currentNodeName);
+    public CompletableFuture<Boolean> startElection() {
+        log.info("LeaderElection - Starting leader election for node: {}", nodeId);
         
-        long startTime = System.currentTimeMillis();
-        CountDownLatch pollLatch = new CountDownLatch(1);
-        
-        // Use CompletableFuture to handle the polling logic
-        CompletableFuture<Void> leaderWaitFuture = CompletableFuture.runAsync(() -> {
+        Election election = etcdClient.getElectionClient();
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+
+        CompletableFuture.runAsync(() -> {
             try {
-                while (!metadataStore.isLeader()) {
-                    // Check timeout
-                    if (System.currentTimeMillis() - startTime > timeoutMs) {
-                        throw new RuntimeException("Leader election timeout exceeded: " + timeoutMs + "ms");
+                ByteSequence electionKeyBytes = ByteSequence.from(CONTROLLER_ELECTION_KEY, UTF_8);
+                ByteSequence nodeIdBytes = ByteSequence.from(nodeId, UTF_8);
+
+                // Create a lease for the election
+                long ttlSeconds = LEADER_ELECTION_TTL_SECONDS;
+                LeaseGrantResponse leaseGrant = etcdClient.getLeaseClient()
+                        .grant(ttlSeconds)
+                        .get();
+                long leaseId = leaseGrant.getID();
+
+                // Keep the lease alive - this continuously renews the lease while the node holds leadership.
+                // If renewal fails (node dies, network partition, etc.), the lease expires and leadership is lost.
+                etcdClient.getLeaseClient().keepAlive(leaseId, new StreamObserver<LeaseKeepAliveResponse>() {
+                    @Override
+                    public void onNext(LeaseKeepAliveResponse res) {
+                        // Keep-alive successful - no action needed, just continue renewing
                     }
                     
-                    // Wait for poll interval using CountDownLatch instead of Thread.sleep
-                    CountDownLatch sleepLatch = new CountDownLatch(1);
-                    sleepLatch.await(LEADER_ELECTION_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS);
-                }
-                pollLatch.countDown();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Leader election interrupted", e);
+                    @Override
+                    public void onError(Throwable t) {
+                        // Don't log errors if we're shutting down - this is expected
+                        if (!isShuttingDown.get()) {
+                            log.error("LeaderElection - Lease keep-alive error for node {}: {}", nodeId, t.getMessage());
+                        } else {
+                            log.debug("LeaderElection - Lease keep-alive error during shutdown for node {}: {}", nodeId, t.getMessage());
+                        }
+                        isLeader.set(false);
+                        if (!isShuttingDown.get()) {
+                            result.completeExceptionally(t);
+                        }
+                    }
+                    
+                    @Override
+                    public void onCompleted() {
+                        log.warn("LeaderElection - Lease keep-alive completed for node {}, stepping down from leadership", nodeId);
+                        isLeader.set(false);
+                    }
+                });
+                
+                // Campaign for leadership - this blocks until leadership is acquired
+                election.campaign(electionKeyBytes, leaseId, nodeIdBytes)
+                        .thenAccept(leaderKey -> {
+                            log.info("LeaderElection - ✓ SUCCESS: Node {} has WON the election and is now the LEADER!", nodeId);
+                            isLeader.set(true);
+                            result.complete(true);
+                        })
+                        .exceptionally(ex -> {
+                            // Don't log errors if we're shutting down - this is expected
+                            if (!isShuttingDown.get()) {
+                                log.error("LeaderElection - Node {} failed during campaign: {}", nodeId, ex.getMessage(), ex);
+                            } else {
+                                log.debug("LeaderElection - Node {} election cancelled during shutdown", nodeId);
+                            }
+                            isLeader.set(false);
+                            if (!isShuttingDown.get()) {
+                                result.completeExceptionally(ex);
+                            }
+                            return null;
+                        });
+
             } catch (Exception e) {
-                throw new RuntimeException("Leader election failed", e);
+                log.error("LeaderElection - Election error for node {}: {}", nodeId, e.getMessage(), e);
+                isLeader.set(false);
+                result.completeExceptionally(e);
             }
         });
         
-        try {
-            // Wait for either success or timeout
-            if (!pollLatch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
-                leaderWaitFuture.cancel(true);
-                throw new TimeoutException("Leader election timed out after " + timeoutMs + "ms");
-            }
-            
-            log.info("LeaderElection - SUCCESS: This node ({}) has become the leader!", currentNodeName);
-            
-        } catch (InterruptedException e) {
-            leaderWaitFuture.cancel(true);
-            throw e;
-        }
+        log.info("LeaderElection - Election initiated asynchronously for node: {}", nodeId);
+        return result;
+    }
+    
+    /**
+     * Check if this node is currently the leader
+     * 
+     * @return true if this node is the leader, false otherwise
+     */
+    public boolean isLeader() {
+        return isLeader.get();
+    }
+    
+    /**
+     * Gracefully shutdown the leader election process.
+     * This sets the shutting down flag to suppress error logging during shutdown.
+     * Should be called before closing the etcd client.
+     */
+    public void shutdown() {
+        log.info("LeaderElection - Shutting down leader election for node: {}", nodeId);
+        isShuttingDown.set(true);
+        isLeader.set(false);
     }
 }

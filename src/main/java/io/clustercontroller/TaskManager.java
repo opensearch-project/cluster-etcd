@@ -115,6 +115,12 @@ public class TaskManager {
     
     private void processTaskLoop() {
         try {
+            // Only process tasks if this node is the leader
+            if (!metadataStore.isLeader()) {
+                log.debug("Skipping task processing - not the leader");
+                return;
+            }
+            
             log.info("Running task processing loop - checking for tasks");
             
             List<TaskMetadata> taskMetadataList = getAllTasks();

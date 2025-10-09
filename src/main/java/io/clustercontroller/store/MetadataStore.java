@@ -186,6 +186,10 @@ public interface MetadataStore {
     void close() throws Exception;
     
     /**
-     * Get the cluster name this metadata store is connected to
+     * Check if this controller instance is the leader.
+     * Only the leader should perform active management operations.
+     * 
+     * @return true if this instance is the leader, false otherwise
      */
+    boolean isLeader();
 }
