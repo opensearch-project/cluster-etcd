@@ -1,9 +1,6 @@
 # Application Configuration
 cluster:
   name: default-cluster
-  lock:
-    ttl:
-      seconds: 60
 
 etcd:
   endpoints:

@@ -163,9 +163,9 @@ public class ClusterControllerApplication {
             MetadataStore metadataStore,
             TaskContext taskContext,
             @Value("${controller.id}") String controllerId,
-            @Value("${controller.ttl.seconds}") int controllerTtlSeconds,
-            @Value("${cluster.lock.ttl.seconds}") int clusterLockTtlSeconds,
-            @Value("${controller.keepalive.interval.seconds}") int keepAliveIntervalSeconds) {
+            @Value("${controller.ttl.seconds:60}") int controllerTtlSeconds,
+            @Value("${cluster.lock.ttl.seconds:60}") int clusterLockTtlSeconds,
+            @Value("${controller.keepalive.interval.seconds:10}") int keepAliveIntervalSeconds) {
         
         log.info("========================================");
         log.info("Initializing MultiClusterManager");
