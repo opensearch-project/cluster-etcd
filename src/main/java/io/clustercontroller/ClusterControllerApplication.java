@@ -89,12 +89,6 @@ public class ClusterControllerApplication {
     }
 
     @Bean
-    public Discovery discovery(MetadataStore metadataStore, ClusterControllerConfig config) {
-        log.info("Initializing Discovery for cluster: {}", config.getClusterName());
-        return new Discovery(metadataStore, config.getClusterName());
-    }
-
-    @Bean
     public ClusterHealthManager clusterHealthManager(MetadataStore metadataStore) {
         log.info("Initializing ClusterHealthManager for multi-cluster support");
         return new ClusterHealthManager(metadataStore);
@@ -140,69 +134,33 @@ public class ClusterControllerApplication {
     public TaskContext taskContext(
             ClusterControllerConfig config,
             IndexManager indexManager,
-            Discovery discovery,
             ShardAllocator shardAllocator,
             ActualAllocationUpdater actualAllocationUpdater,
-            GoalStateOrchestrator goalStateOrchestrator) {
-        // Actual constructor order: clusterName, indexManager, shardAllocator, actualAllocationUpdater, goalStateOrchestrator, discovery
-        return new TaskContext(
-            config.getClusterName(), 
-            indexManager, 
-            shardAllocator, 
-            actualAllocationUpdater, 
-            goalStateOrchestrator,
-            discovery
-        );
+            GoalStateOrchestrator goalStateOrchestrator,
+            MetadataStore metadataStore) {
+        // Create Discovery instance but don't expose as separate bean
+        Discovery discovery = new Discovery(metadataStore, config.getClusterName());
+        return new TaskContext(config.getClusterName(), indexManager, shardAllocator, actualAllocationUpdater, goalStateOrchestrator, discovery);
     }
 
     /**
-     * MultiClusterManager bean for managing multiple clusters with distributed locking.
-     * Replaces the single TaskManager with multi-cluster coordination.
+     * Expose etcd Client for components that need direct access (e.g., MultiClusterManager)
      */
     @Bean
-    public MultiClusterManager multiClusterManager(
-            Client etcdClient,
-            MetadataStore metadataStore,
-            TaskContext taskContext,
-            @Value("${controller.id}") String controllerId,
-            @Value("${controller.ttl.seconds:60}") int controllerTtlSeconds,
-            @Value("${cluster.lock.ttl.seconds:60}") int clusterLockTtlSeconds,
-            @Value("${controller.keepalive.interval.seconds:10}") int keepAliveIntervalSeconds) {
-        
-        log.info("========================================");
-        log.info("Initializing MultiClusterManager");
-        log.info("Controller ID: {}", controllerId);
-        log.info("Controller TTL: {} seconds", controllerTtlSeconds);
-        log.info("Cluster Lock TTL: {} seconds", clusterLockTtlSeconds);
-        log.info("KeepAlive Interval: {} seconds", keepAliveIntervalSeconds);
-        log.info("========================================");
-        
-        MultiClusterManager manager = new MultiClusterManager(
-            etcdClient,
-            (EtcdMetadataStore) metadataStore,
-            taskContext,
-            controllerId,
-            controllerTtlSeconds,
-            clusterLockTtlSeconds,
-            keepAliveIntervalSeconds
-        );
-        
-        try {
-            manager.start();
-            log.info("========================================");
-            log.info("MultiClusterManager started successfully!");
-            log.info("Controller '{}' is now managing {} cluster(s): {}", 
-                controllerId, 
-                manager.getManagedClusterCount(),
-                manager.getManagedClusters());
-            log.info("========================================");
-        } catch (Exception e) {
-            log.error("Failed to start MultiClusterManager", e);
-            throw new RuntimeException("MultiClusterManager startup failed", e);
-        }
-        
-        return manager;
+    public Client etcdClient(MetadataStore metadataStore) {
+        return ((EtcdMetadataStore) metadataStore).getEtcdClient();
     }
+    
+    /**
+     * MultiClusterManager bean for managing multiple clusters with distributed locking.
+     * Replaces the single TaskManager with multi-cluster coordination.
+     * 
+     * Note: MultiClusterManager now uses @Component and constructor injection,
+     * so it will be auto-created by Spring. We only need to ensure all its
+     * dependencies are available as beans (which they are via @ComponentScan).
+     * 
+     * The @PostConstruct method in MultiClusterManager will handle startup.
+     */
 
     // TODO: Old single-cluster TaskManager - disabled in favor of MultiClusterManager
     // Uncomment below if you need to revert to single-cluster mode
