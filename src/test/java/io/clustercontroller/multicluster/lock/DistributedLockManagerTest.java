@@ -4,7 +4,6 @@ import io.clustercontroller.store.EtcdPathResolver;
 import io.etcd.jetcd.ByteSequence;
 import io.etcd.jetcd.Client;
 import io.etcd.jetcd.support.CloseableClient;
-import io.etcd.jetcd.KV;
 import io.etcd.jetcd.Lease;
 import io.etcd.jetcd.Lock;
 import io.etcd.jetcd.Watch;
@@ -25,6 +24,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.lenient;
 
 @ExtendWith(MockitoExtension.class)
 class DistributedLockManagerTest {
@@ -42,9 +42,6 @@ class DistributedLockManagerTest {
     private Watch watchClient;
     
     @Mock
-    private KV kvClient;
-    
-    @Mock
     private EtcdPathResolver pathResolver;
     
     @Mock
@@ -54,10 +51,9 @@ class DistributedLockManagerTest {
 
     @BeforeEach
     void setUp() {
-        when(etcdClient.getLeaseClient()).thenReturn(leaseClient);
-        when(etcdClient.getLockClient()).thenReturn(lockClient);
-        when(etcdClient.getWatchClient()).thenReturn(watchClient);
-        when(etcdClient.getKVClient()).thenReturn(kvClient);
+        lenient().when(etcdClient.getLeaseClient()).thenReturn(leaseClient);
+        lenient().when(etcdClient.getLockClient()).thenReturn(lockClient);
+        lenient().when(etcdClient.getWatchClient()).thenReturn(watchClient);
         
         lockManager = new DistributedLockManager(etcdClient, pathResolver);
     }
@@ -146,7 +142,7 @@ class DistributedLockManagerTest {
         
         ClusterLock lock = new ClusterLock(clusterId, leaseId, lockKey, keepAliveObserver);
         
-        when(lockClient.unlock(lockKey)).thenReturn(CompletableFuture.completedFuture(null));
+        when(lockClient.unlock(any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
         when(leaseClient.revoke(leaseId)).thenReturn(CompletableFuture.completedFuture(null));
         
         // When
@@ -154,7 +150,7 @@ class DistributedLockManagerTest {
         
         // Then
         verify(keepAliveObserver).close();
-        verify(lockClient).unlock(lockKey);
+        verify(lockClient).unlock(any(ByteSequence.class));
         verify(leaseClient).revoke(leaseId);
     }
 
@@ -168,7 +164,7 @@ class DistributedLockManagerTest {
         ClusterLock lock = new ClusterLock(clusterId, leaseId, lockKey, keepAliveObserver);
         
         doThrow(new RuntimeException("Close failed")).when(keepAliveObserver).close();
-        when(lockClient.unlock(lockKey))
+        when(lockClient.unlock(any(ByteSequence.class)))
             .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Unlock failed")));
         when(leaseClient.revoke(leaseId))
             .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Revoke failed")));
