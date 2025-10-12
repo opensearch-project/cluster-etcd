@@ -84,7 +84,8 @@ public class MultiClusterManager {
      * Constructor for MultiClusterManager
      */
     public MultiClusterManager(
-            EtcdMetadataStore metadataStore,
+            Client etcdClient,
+            MetadataStore metadataStore,
             TaskContext taskContext,
             String controllerId,
             int controllerTtlSeconds,
@@ -102,19 +103,13 @@ public class MultiClusterManager {
         // Initialize Rendezvous Hash policy with capacity of 10 clusters, topK=1 for exclusive ownership
         this.assignmentPolicy = new RendezvousHashPolicy(10, 1);
         
-        // Access etcd clients via reflection from EtcdMetadataStore
-        try {
-            var etcdClientField = EtcdMetadataStore.class.getDeclaredField("etcdClient");
-            etcdClientField.setAccessible(true);
-            this.etcdClient = (Client) etcdClientField.get(metadataStore);
-            
-            this.kvClient = etcdClient.getKVClient();
-            this.leaseClient = etcdClient.getLeaseClient();
-            this.lockClient = etcdClient.getLockClient();
-            this.watchClient = etcdClient.getWatchClient();
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to access etcd client from EtcdMetadataStore", e);
-        }
+        
+        // Extract etcd clients from injected Client (clean DI, no reflection!)
+        this.etcdClient = etcdClient;
+        this.kvClient = etcdClient.getKVClient();
+        this.leaseClient = etcdClient.getLeaseClient();
+        this.lockClient = etcdClient.getLockClient();
+        this.watchClient = etcdClient.getWatchClient();
         
         // Pool size: 1 controller heartbeat + up to 10 cluster health checks + rebalancing tasks
         this.scheduler = Executors.newScheduledThreadPool(15, r -> {

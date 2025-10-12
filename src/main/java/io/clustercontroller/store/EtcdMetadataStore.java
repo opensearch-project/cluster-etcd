@@ -142,6 +142,14 @@ public class EtcdMetadataStore implements MetadataStore {
         instance = new EtcdMetadataStore(etcdEndpoints, nodeId, etcdClient, kvClient);
         return instance;
     }
+    
+    /**
+     * Get the etcd client for use by other components (e.g., MultiClusterManager)
+     * @return the etcd Client instance
+     */
+    public Client getEtcdClient() {
+        return etcdClient;
+    }
 
     
     // =================================================================

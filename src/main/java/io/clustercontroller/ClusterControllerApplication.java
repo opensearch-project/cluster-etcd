@@ -15,6 +15,7 @@ import io.clustercontroller.store.EtcdMetadataStore;
 import io.clustercontroller.tasks.TaskContext;
 import io.clustercontroller.TaskManager;
 import io.clustercontroller.util.EnvironmentUtils;
+import io.etcd.jetcd.Client;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -160,6 +161,7 @@ public class ClusterControllerApplication {
      */
     @Bean
     public MultiClusterManager multiClusterManager(
+            Client etcdClient,
             MetadataStore metadataStore,
             TaskContext taskContext,
             @Value("${controller.id}") String controllerId,
@@ -176,6 +178,7 @@ public class ClusterControllerApplication {
         log.info("========================================");
         
         MultiClusterManager manager = new MultiClusterManager(
+            etcdClient,
             (EtcdMetadataStore) metadataStore,
             taskContext,
             controllerId,
