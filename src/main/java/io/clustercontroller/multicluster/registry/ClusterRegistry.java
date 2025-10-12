@@ -70,7 +70,7 @@ public class ClusterRegistry {
     /**
      * Watch for cluster membership changes.
      */
-    public Watch.Watcher watchClusters(Consumer<Set<String>> onClusterChange) {
+    public Watch.Watcher watchClusters(Runnable onClusterChange) {
         String prefix = pathResolver.getClustersPrefix();
         return watchClient.watch(
             ByteSequence.from(prefix, UTF_8),
@@ -79,7 +79,7 @@ public class ClusterRegistry {
                 .build(),
             watchResponse -> {
                 log.debug("Cluster membership changed");
-                onClusterChange.accept(listClusters());
+                onClusterChange.run();  // Just notify, dont do blocking work here
             }
         );
     }

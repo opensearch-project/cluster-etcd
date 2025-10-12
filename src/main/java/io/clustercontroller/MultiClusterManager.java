@@ -208,19 +208,21 @@ public class MultiClusterManager {
      */
     private void setupWatchers() {
         // Watch cluster changes
-        clusterWatcher = clusterRegistry.watchClusters(clusters -> {
+        clusterWatcher = clusterRegistry.watchClusters(() -> {
             // Offload to reconcile scheduler to avoid blocking etcd event thread
             reconcileScheduler.execute(() -> {
+                Set<String> clusters = clusterRegistry.listClusters();
                 Set<String> controllers = controllerRegistry.listActiveControllers();
                 reconcile(clusters, controllers);
             });
         });
         
         // Watch controller changes
-        controllerWatcher = controllerRegistry.watchControllers(controllers -> {
+        controllerWatcher = controllerRegistry.watchControllers(() -> {
             // Offload to reconcile scheduler to avoid blocking etcd event thread
             reconcileScheduler.execute(() -> {
                 Set<String> clusters = clusterRegistry.listClusters();
+                Set<String> controllers = controllerRegistry.listActiveControllers();
                 reconcile(clusters, controllers);
             });
         });

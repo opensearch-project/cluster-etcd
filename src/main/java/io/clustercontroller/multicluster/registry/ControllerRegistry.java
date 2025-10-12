@@ -133,7 +133,7 @@ public class ControllerRegistry {
     /**
      * Watch for controller membership changes.
      */
-    public Watch.Watcher watchControllers(Consumer<Set<String>> onMembershipChange) {
+    public Watch.Watcher watchControllers(Runnable onMembershipChange) {
         String prefix = pathResolver.getControllersPrefix();
         return watchClient.watch(
             ByteSequence.from(prefix, UTF_8),
@@ -142,7 +142,7 @@ public class ControllerRegistry {
                 .build(),
             watchResponse -> {
                 log.info("Controller membership changed");
-                onMembershipChange.accept(listActiveControllers());
+                onMembershipChange.run();  // Just notify, dont do blocking work here
             }
         );
     }

@@ -1,6 +1,7 @@
 package io.clustercontroller.store;
 
 import java.nio.file.Paths;
+import org.springframework.stereotype.Component;
 
 import static io.clustercontroller.config.Constants.*;
 
@@ -10,6 +11,7 @@ import static io.clustercontroller.config.Constants.*;
  * All methods accept dynamic cluster names to support multi-cluster operations.
  * Stateless singleton - no cluster-specific state stored.
  */
+@Component
 public class EtcdPathResolver {
     
     private static final String PATH_DELIMITER = "/";
