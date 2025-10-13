@@ -22,10 +22,10 @@ public class TaskContext {
     
     private final String clusterName;  // TODO: Remove - legacy field, not used in multi-cluster
     private final IndexManager indexManager;
-    private final Discovery discovery;
     private final ShardAllocator shardAllocator;
     private final ActualAllocationUpdater actualAllocationUpdater;
     private final GoalStateOrchestrator goalStateOrchestrator;
+    private final Discovery discovery;
 }
 
 

@@ -23,6 +23,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 @Slf4j
 public class ClusterRegistry {
     
+    private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 5;
     private final KV kvClient;
     private final Watch watchClient;
     private final EtcdPathResolver pathResolver;

@@ -95,7 +95,7 @@ class ControllerRegistryTest {
         verify(leaseClient).keepAlive(eq(leaseId), any());
         verify(kvClient).put(
             eq(ByteSequence.from(heartbeatPath, UTF_8)),
-            eq(ByteSequence.from("1", UTF_8)),
+            any(ByteSequence.class),  // Heartbeat value is a timestamp, not a constant
             any(PutOption.class)
         );
     }
@@ -173,7 +173,7 @@ class ControllerRegistryTest {
         Consumer<WatchResponse>[] callbackCaptor = new Consumer[1];
         
         Watch.Watcher mockWatcher = mock(Watch.Watcher.class);
-        when(watchClient.watch(any(ByteSequence.class), any(WatchOption.class), any(Consumer.class)))
+        when(watchClient.watch(any(ByteSequence.class), any(WatchOption.class), (Consumer<WatchResponse>) any()))
             .thenAnswer(invocation -> {
                 callbackCaptor[0] = invocation.getArgument(2);
                 return mockWatcher;
@@ -193,7 +193,7 @@ class ControllerRegistryTest {
         verify(watchClient).watch(
             eq(ByteSequence.from(prefix, UTF_8)),
             any(WatchOption.class),
-            any(Consumer.class)
+            (Consumer<WatchResponse>) any()
         );
         verify(onMembershipChange).run();
     }
