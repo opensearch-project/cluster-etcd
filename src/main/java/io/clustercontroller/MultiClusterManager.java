@@ -43,6 +43,9 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class MultiClusterManager {
     
+    private static final int RECONCILE_POOL_SIZE = 5;
+    private static final int SHUTDOWN_TIMEOUT_SECONDS = 30;
+    
     // Configuration
     private final String controllerId;
     private final int controllerTtlSeconds;
@@ -86,7 +89,7 @@ public class MultiClusterManager {
         this.assignmentPolicy = new RendezvousHashPolicy(10, 1);
         
         // Scheduler for async reconciliation
-        this.reconcileScheduler = Executors.newScheduledThreadPool(5, r -> {
+        this.reconcileScheduler = Executors.newScheduledThreadPool(RECONCILE_POOL_SIZE, r -> {
             Thread t = new Thread(r);
             t.setName("mcm-reconcile-" + t.getId());
             t.setDaemon(true);
@@ -258,7 +261,7 @@ public class MultiClusterManager {
             
             // Shutdown scheduler
             reconcileScheduler.shutdown();
-            if (!reconcileScheduler.awaitTermination(30, TimeUnit.SECONDS)) {
+            if (!reconcileScheduler.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 log.warn("Reconcile scheduler did not terminate in time, forcing shutdown");
                 reconcileScheduler.shutdownNow();
             }
