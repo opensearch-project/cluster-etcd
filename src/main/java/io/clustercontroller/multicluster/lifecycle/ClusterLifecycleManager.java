@@ -79,7 +79,8 @@ public class ClusterLifecycleManager {
             );
             taskManager.start();
             
-            // Watch the lock for failures
+            // Watch for unexpected lock loss (split-brain prevention)
+            // If lock is lost while we think we still own it, stop immediately
             var lockWatcher = lockManager.watchLock(lock, () -> {
                 log.warn("Lock lost for cluster {}, stopping", clusterId);
                 stopCluster(clusterId);
