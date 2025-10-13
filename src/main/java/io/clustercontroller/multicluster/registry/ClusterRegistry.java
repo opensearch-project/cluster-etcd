@@ -47,7 +47,7 @@ public class ClusterRegistry {
                 GetOption.newBuilder()
                     .withPrefix(ByteSequence.from(prefix, UTF_8))
                     .build()
-            ).get(5, TimeUnit.SECONDS);
+            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             
             Set<String> clusters = new HashSet<>();
             for (KeyValue kv : response.getKvs()) {
