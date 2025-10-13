@@ -154,16 +154,16 @@ public class ClusterLifecycleManager {
     }
     
     /**
-     * Check if a cluster is currently being managed.
+     * Check if a cluster is currently being managed by this controller.
      */
-    public boolean isClusterRunning(String clusterId) {
+    public boolean isClusterManaged(String clusterId) {
         return clusters.containsKey(clusterId);
     }
     
     /**
-     * Get set of all running cluster IDs.
+     * Get set of all cluster IDs currently managed by this controller.
      */
-    public Set<String> getRunningClusters() {
+    public Set<String> getManagedClusters() {
         return new HashSet<>(clusters.keySet());
     }
     

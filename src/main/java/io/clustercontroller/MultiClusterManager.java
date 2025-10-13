@@ -127,8 +127,8 @@ public class MultiClusterManager {
             log.info("MultiClusterManager STARTUP COMPLETE");
             log.info("Controller ID: {}", controllerId);
             log.info("Managing {} cluster(s): {}", 
-                lifecycleManager.getRunningClusters().size(),
-                lifecycleManager.getRunningClusters());
+                lifecycleManager.getManagedClusters().size(),
+                lifecycleManager.getManagedClusters());
             log.info("========================================");
             
         } catch (Exception e) {
@@ -148,11 +148,11 @@ public class MultiClusterManager {
             controllerId,
             controllers,
             clusters,
-            lifecycleManager.getRunningClusters()
+            lifecycleManager.getManagedClusters()
         );
         
         // Step 1: Release clusters we shouldn't own anymore
-        for (String clusterId : lifecycleManager.getRunningClusters()) {
+        for (String clusterId : lifecycleManager.getManagedClusters()) {
             if (!clusters.contains(clusterId)) {
                 log.info("Cluster {} no longer exists, releasing", clusterId);
                 lifecycleManager.stopCluster(clusterId);
@@ -164,8 +164,8 @@ public class MultiClusterManager {
         
         // Step 2: Acquire clusters we should own
         for (String clusterId : clusters) {
-            if (!lifecycleManager.isClusterRunning(clusterId)) {
-                int currentCount = lifecycleManager.getRunningClusters().size();
+            if (!lifecycleManager.isClusterManaged(clusterId)) {
+                int currentCount = lifecycleManager.getManagedClusters().size();
                 if (assignmentPolicy.shouldAttempt(clusterId, currentCount)) {
                     log.info("Policy says attempt cluster {}", clusterId);
                     tryAcquireCluster(clusterId);
@@ -174,8 +174,8 @@ public class MultiClusterManager {
         }
         
         log.info("Reconciliation complete. Managing {} clusters: {}",
-            lifecycleManager.getRunningClusters().size(),
-            lifecycleManager.getRunningClusters());
+            lifecycleManager.getManagedClusters().size(),
+            lifecycleManager.getManagedClusters());
     }
     
     /**
@@ -193,7 +193,7 @@ public class MultiClusterManager {
             log.info("✓ CLUSTER ACQUIRED AND STARTED");
             log.info("  Cluster ID: {}", clusterId);
             log.info("  Controller: {}", controllerId);
-            log.info("  Total Managed: {}", lifecycleManager.getRunningClusters().size());
+            log.info("  Total Managed: {}", lifecycleManager.getManagedClusters().size());
             log.info("========================================");
             
         } catch (LockException e) {
