@@ -53,6 +53,11 @@ public class RendezvousHashPolicy implements AssignmentPolicy {
     
     @Override
     public boolean shouldAttempt(String clusterId, int myRunningCount) {
+        // Don't attempt if no controllers or clusters in the system
+        if (controllers.isEmpty() || !clusters.contains(clusterId)) {
+            return false;
+        }
+        
         // Don't exceed capacity
         if (myRunningCount >= capacity) {
             log.debug("At capacity ({}/{}), not attempting cluster: {}", myRunningCount, capacity, clusterId);
@@ -101,11 +106,35 @@ public class RendezvousHashPolicy implements AssignmentPolicy {
         }
         
         // If I'm no longer in topK, I should release
-        boolean shouldRelease = myRank > topK;
-        if (shouldRelease) {
+        if (myRank > topK) {
             log.info("Rank {} > topK {}, SHOULD release cluster: {}", myRank, topK, clusterId);
+            return true;
         }
-        return shouldRelease;
+        
+        // If I'm over capacity, release clusters where I have the lowest affinity
+        // (This handles the case where a single controller is over capacity)
+        if (myAssignments.size() > capacity) {
+            // Count how many of my assignments have a higher score than this one
+            int betterAssignments = 0;
+            for (String otherCluster : myAssignments) {
+                if (!otherCluster.equals(clusterId)) {
+                    long otherScore = score(otherCluster, myId);
+                    if (unsignedGreater(otherScore, myScore)) {
+                        betterAssignments++;
+                    }
+                }
+            }
+            
+            // Keep the top 'capacity' clusters, release the rest
+            boolean shouldRelease = betterAssignments >= capacity;
+            if (shouldRelease) {
+                log.info("Over capacity ({}/{}), releasing lower-affinity cluster: {}", 
+                    myAssignments.size(), capacity, clusterId);
+            }
+            return shouldRelease;
+        }
+        
+        return false;
     }
     
     /**

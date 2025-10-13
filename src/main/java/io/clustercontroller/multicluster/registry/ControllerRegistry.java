@@ -116,9 +116,12 @@ public class ControllerRegistry {
             for (KeyValue kv : response.getKvs()) {
                 String path = kv.getKey().toString(UTF_8);
                 // Extract controller ID from path: /multi-cluster/controllers/{id}/heartbeat
-                String[] parts = path.split("/");
-                if (parts.length >= 4) {
-                    controllers.add(parts[3]);
+                // Only include paths that end with /heartbeat
+                if (path.endsWith("/heartbeat")) {
+                    String[] parts = path.split("/");
+                    if (parts.length >= 4) {
+                        controllers.add(parts[3]);
+                    }
                 }
             }
             
@@ -132,6 +135,7 @@ public class ControllerRegistry {
     
     /**
      * Watch for controller membership changes.
+     * Note: Callback should NOT do blocking operations - offload to another thread!
      */
     public Watch.Watcher watchControllers(Runnable onMembershipChange) {
         String prefix = pathResolver.getControllersPrefix();
@@ -142,7 +146,7 @@ public class ControllerRegistry {
                 .build(),
             watchResponse -> {
                 log.info("Controller membership changed");
-                onMembershipChange.run();  // Just notify, dont do blocking work here
+                onMembershipChange.run();  // Just notify, don't do blocking work here
             }
         );
     }
