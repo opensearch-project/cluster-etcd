@@ -23,6 +23,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 @Slf4j
 public class DistributedLockManager {
     
+    private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 5;
+    
     private final Lock lockClient;
     private final Lease leaseClient;
     private final Watch watchClient;
@@ -52,7 +54,7 @@ public class DistributedLockManager {
             
             // Step 1: Create lease
             long leaseId = leaseClient.grant(ttlSeconds)
-                .get(5, TimeUnit.SECONDS)
+                .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .getID();
             
             log.debug("Created lease {} for cluster {}", leaseId, clusterId);
@@ -72,7 +74,7 @@ public class DistributedLockManager {
             LockResponse lockResponse = lockClient.lock(
                 ByteSequence.from(lockPath, UTF_8),
                 leaseId
-            ).get(5, TimeUnit.SECONDS);
+            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             
             ByteSequence lockKey = lockResponse.getKey();
             
@@ -110,7 +112,7 @@ public class DistributedLockManager {
             
             // Step 2: Revoke lease (fast unlock)
             leaseClient.revoke(lock.getLeaseId())
-                .get(5, TimeUnit.SECONDS);
+                .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             
             log.info("✓ Lock released for cluster: {}", lock.getClusterId());
             
@@ -122,6 +124,9 @@ public class DistributedLockManager {
     /**
      * Watch a lock key for changes (deletion/modification indicates lock lost).
      * 
+     * Primary case: DELETE - lease expired, lock automatically released by etcd
+     * Defensive case: PUT - manual intervention or unexpected key modification
+     * 
      * @param lock The lock to watch
      * @param onLockLost Callback to invoke when lock is lost
      * @return Watcher that can be closed to stop watching
@@ -129,6 +134,8 @@ public class DistributedLockManager {
     public Watch.Watcher watchLock(ClusterLock lock, Runnable onLockLost) {
         return watchClient.watch(lock.getLockKey(), watchResponse -> {
             for (WatchEvent event : watchResponse.getEvents()) {
+                // DELETE is the expected event when lease expires
+                // PUT is a safety net for unexpected modifications
                 if (event.getEventType() == WatchEvent.EventType.DELETE ||
                     event.getEventType() == WatchEvent.EventType.PUT) {
                     log.warn("Lock lost for cluster: {} (event: {})", 
