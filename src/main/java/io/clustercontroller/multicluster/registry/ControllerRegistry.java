@@ -26,6 +26,9 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 @Slf4j
 public class ControllerRegistry {
     
+    private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 5;
+    private static final String HEARTBEAT_SUFFIX = "/heartbeat";
+    
     private final KV kvClient;
     private final Lease leaseClient;
     private final Watch watchClient;
@@ -50,7 +53,7 @@ public class ControllerRegistry {
             
             // Create lease with keep-alive
             long leaseId = leaseClient.grant(ttlSeconds)
-                .get(5, TimeUnit.SECONDS)
+                .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .getID();
             
             CloseableClient keepAlive = leaseClient.keepAlive(
@@ -60,13 +63,15 @@ public class ControllerRegistry {
                 })
             );
             
-            // Put heartbeat key
+            // Put heartbeat key with timestamp for debugging/monitoring
+            // TODO: If etcd payload size is a concern, use constant "1" instead of timestamp
             String heartbeatPath = pathResolver.getControllerHeartbeatPath(controllerId);
+            String heartbeatValue = String.valueOf(System.currentTimeMillis());
             kvClient.put(
                 ByteSequence.from(heartbeatPath, UTF_8),
-                ByteSequence.from("1", UTF_8),
+                ByteSequence.from(heartbeatValue, UTF_8),
                 PutOption.newBuilder().withLeaseId(leaseId).build()
-            ).get(5, TimeUnit.SECONDS);
+            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             
             log.info("✓ Controller registered: {} (leaseId: {})", controllerId, leaseId);
             
@@ -90,7 +95,7 @@ public class ControllerRegistry {
             }
             
             leaseClient.revoke(registration.getLeaseId())
-                .get(5, TimeUnit.SECONDS);
+                .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             
             log.info("✓ Controller deregistered: {}", registration.getControllerId());
             
@@ -110,14 +115,14 @@ public class ControllerRegistry {
                 GetOption.newBuilder()
                     .withPrefix(ByteSequence.from(prefix, UTF_8))
                     .build()
-            ).get(5, TimeUnit.SECONDS);
+            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             
             Set<String> controllers = new HashSet<>();
             for (KeyValue kv : response.getKvs()) {
                 String path = kv.getKey().toString(UTF_8);
                 // Extract controller ID from path: /multi-cluster/controllers/{id}/heartbeat
                 // Only include paths that end with /heartbeat
-                if (path.endsWith("/heartbeat")) {
+                if (path.endsWith(HEARTBEAT_SUFFIX)) {
                     String[] parts = path.split("/");
                     if (parts.length >= 4) {
                         controllers.add(parts[3]);
