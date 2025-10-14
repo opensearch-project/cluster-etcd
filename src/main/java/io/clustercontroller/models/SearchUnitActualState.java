@@ -140,8 +140,8 @@ public class SearchUnitActualState {
         @JsonProperty("shardId")
         private int shardId;
         
-        @JsonProperty("primary")
-        private boolean primary;
+        @JsonProperty("role")
+        private String role; // "primary", "search_replica", "replica"
         
         @JsonProperty("state")
         private ShardState state; // e.g., STARTED, INITIALIZING, RELOCATING
@@ -149,17 +149,23 @@ public class SearchUnitActualState {
         @JsonProperty("relocating")
         private boolean relocating;
         
+        @JsonProperty("relocatingNodeId")
+        private String relocatingNodeId; // Target node ID when relocating
+        
         @JsonProperty("allocationId")
         private String allocationId;
         
         @JsonProperty("currentNodeId")
         private String currentNodeId;
         
+        @JsonProperty("currentNodeName")
+        private String currentNodeName;
+        
         public ShardRoutingInfo() {}
         
-        public ShardRoutingInfo(int shardId, boolean primary, ShardState state) {
+        public ShardRoutingInfo(int shardId, String role, ShardState state) {
             this.shardId = shardId;
-            this.primary = primary;
+            this.role = role;
             this.state = state;
             this.relocating = false;
         }
