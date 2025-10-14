@@ -1,6 +1,7 @@
 package io.clustercontroller.store;
 
 import java.nio.file.Paths;
+import org.springframework.stereotype.Component;
 
 import static io.clustercontroller.config.Constants.*;
 
@@ -10,6 +11,7 @@ import static io.clustercontroller.config.Constants.*;
  * All methods accept dynamic cluster names to support multi-cluster operations.
  * Stateless singleton - no cluster-specific state stored.
  */
+@Component
 public class EtcdPathResolver {
     
     private static final String PATH_DELIMITER = "/";
@@ -195,5 +197,65 @@ public class EtcdPathResolver {
      */
     public String getClusterRoot(String clusterName) {
         return Paths.get(PATH_DELIMITER, clusterName).toString();
+    }
+    
+    // =================================================================
+    // MULTI-CLUSTER COORDINATION PATHS
+    // =================================================================
+    
+    /**
+     * Get multi-cluster root path
+     * Pattern: /multi-cluster
+     */
+    public String getMultiClusterRoot() {
+        return Paths.get(PATH_DELIMITER, PATH_MULTI_CLUSTER).toString();
+    }
+    
+    /**
+     * Get controller heartbeat path
+     * Pattern: /multi-cluster/controllers/<controller-id>/heartbeat
+     */
+    public String getControllerHeartbeatPath(String controllerId) {
+        return Paths.get(PATH_DELIMITER, PATH_MULTI_CLUSTER, PATH_CONTROLLERS, controllerId, PATH_HEARTBEAT).toString();
+    }
+    
+    /**
+     * Get controller assignment path
+     * Pattern: /multi-cluster/controllers/<controller-id>/assigned/<cluster-id>
+     */
+    public String getControllerAssignmentPath(String controllerId, String clusterId) {
+        return Paths.get(PATH_DELIMITER, PATH_MULTI_CLUSTER, PATH_CONTROLLERS, controllerId, PATH_ASSIGNED, clusterId).toString();
+    }
+    
+    /**
+     * Get cluster lock path
+     * Pattern: /multi-cluster/locks/clusters/<cluster-id>
+     */
+    public String getClusterLockPath(String clusterId) {
+        return Paths.get(PATH_DELIMITER, PATH_MULTI_CLUSTER, PATH_LOCKS, PATH_CLUSTERS, clusterId).toString();
+    }
+    
+    /**
+     * Get cluster registry path
+     * Pattern: /multi-cluster/clusters/<cluster-id>/metadata
+     */
+    public String getClusterRegistryPath(String clusterId) {
+        return Paths.get(PATH_DELIMITER, PATH_MULTI_CLUSTER, PATH_CLUSTERS, clusterId, PATH_METADATA).toString();
+    }
+    
+    /**
+     * Get controllers prefix for listing
+     * Pattern: /multi-cluster/controllers/
+     */
+    public String getControllersPrefix() {
+        return Paths.get(PATH_DELIMITER, PATH_MULTI_CLUSTER, PATH_CONTROLLERS, "").toString();
+    }
+    
+    /**
+     * Get clusters prefix for listing
+     * Pattern: /multi-cluster/clusters/
+     */
+    public String getClustersPrefix() {
+        return Paths.get(PATH_DELIMITER, PATH_MULTI_CLUSTER, PATH_CLUSTERS, "").toString();
     }
 }

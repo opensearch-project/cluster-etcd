@@ -15,6 +15,9 @@ import static io.clustercontroller.config.Constants.*;
 /**
  * Configuration for cluster controller.
  * Loads configuration from application.yml with fallbacks to constants.
+ * 
+ * TODO: Refactor to use Spring's @ConfigurationProperties instead of manual SnakeYAML parsing
+ * This would allow Spring to handle all property resolution including environment variables.
  */
 @Slf4j
 @Getter
@@ -108,6 +111,7 @@ public class ClusterControllerConfig {
         private Cluster cluster;
         private Etcd etcd;
         private Task task;
+        private Controller controller; // Multi-cluster controller config (used by Spring @Value)
     }
     
     @Data
@@ -123,5 +127,27 @@ public class ClusterControllerConfig {
     @Data
     public static class Task {
         private Long intervalSeconds;
+    }
+    
+    @Data
+    public static class Controller {
+        private String id;
+        private Ttl ttl;
+        private Keepalive keepalive;
+    }
+    
+    @Data
+    public static class Ttl {
+        private Integer seconds;
+    }
+    
+    @Data
+    public static class Keepalive {
+        private Interval interval;
+    }
+    
+    @Data
+    public static class Interval {
+        private Integer seconds;
     }
 }

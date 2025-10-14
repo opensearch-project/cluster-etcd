@@ -142,6 +142,14 @@ public class EtcdMetadataStore implements MetadataStore {
         instance = new EtcdMetadataStore(etcdEndpoints, nodeId, etcdClient, kvClient);
         return instance;
     }
+    
+    /**
+     * Get the etcd client for use by other components (e.g., MultiClusterManager)
+     * @return the etcd Client instance
+     */
+    public Client getEtcdClient() {
+        return etcdClient;
+    }
 
     
     // =================================================================
@@ -617,8 +625,13 @@ public class EtcdMetadataStore implements MetadataStore {
     
     public void initialize() throws Exception {
         log.info("Initialize called - already done in constructor");
-        // Start leader election process
-        leaderElection.startElection();
+        
+        // TODO: Single-cluster leader election temporarily disabled
+        // Multi-cluster coordination is now handled by MultiClusterManager using distributed locks
+        // Each cluster is locked by exactly one controller via etcd's Lock API
+        // leaderElection.startElection();
+        
+        log.info("Skipping single-cluster leader election - using MultiClusterManager for distributed coordination");
     }
     
     @PreDestroy

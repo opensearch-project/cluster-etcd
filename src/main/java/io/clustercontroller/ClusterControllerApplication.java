@@ -14,13 +14,18 @@ import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
 import io.clustercontroller.tasks.TaskContext;
 import io.clustercontroller.TaskManager;
+import io.clustercontroller.util.EnvironmentUtils;
+import io.etcd.jetcd.Client;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Primary;
+
+import static io.clustercontroller.config.Constants.*;
 
 /**
  * Main Spring Boot application class for the Cluster Controller with multi-cluster support.
@@ -52,7 +57,9 @@ public class ClusterControllerApplication {
     @Bean
     @Primary
     public ClusterControllerConfig config() {
-        return new ClusterControllerConfig();
+        ClusterControllerConfig config = new ClusterControllerConfig();
+        log.info("Loaded configuration with cluster: {}", config.getClusterName());
+        return config;
     }
     
     /**
@@ -121,18 +128,6 @@ public class ClusterControllerApplication {
     }
 
     /**
-     * TaskManager bean for scheduling and executing background tasks.
-     */
-    @Bean
-    public TaskManager taskManager(MetadataStore metadataStore, TaskContext taskContext, ClusterControllerConfig config) {
-        log.info("Initializing TaskManager for cluster: {}", config.getClusterName());
-        TaskManager taskManager = new TaskManager(metadataStore, taskContext, config.getClusterName(), config.getTaskIntervalSeconds());
-        taskManager.start();
-        log.info("TaskManager started with background processing for cluster: {}", config.getClusterName());
-        return taskManager;
-    }
-
-    /**
      * TaskContext bean to provide dependencies to tasks.
      */
     @Bean
@@ -147,4 +142,36 @@ public class ClusterControllerApplication {
         Discovery discovery = new Discovery(metadataStore, config.getClusterName());
         return new TaskContext(config.getClusterName(), indexManager, shardAllocator, actualAllocationUpdater, goalStateOrchestrator, discovery);
     }
+
+    /**
+     * Expose etcd Client for components that need direct access (e.g., MultiClusterManager)
+     */
+    @Bean
+    public Client etcdClient(MetadataStore metadataStore) {
+        return ((EtcdMetadataStore) metadataStore).getEtcdClient();
+    }
+    
+    /**
+     * MultiClusterManager bean for managing multiple clusters with distributed locking.
+     * Replaces the single TaskManager with multi-cluster coordination.
+     * 
+     * Note: MultiClusterManager now uses @Component and constructor injection,
+     * so it will be auto-created by Spring. We only need to ensure all its
+     * dependencies are available as beans (which they are via @ComponentScan).
+     * 
+     * The @PostConstruct method in MultiClusterManager will handle startup.
+     */
+
+    // TODO: Old single-cluster TaskManager - disabled in favor of MultiClusterManager
+    // Uncomment below if you need to revert to single-cluster mode
+    /*
+    @Bean
+    public TaskManager taskManager(MetadataStore metadataStore, TaskContext taskContext, ClusterControllerConfig config) {
+        log.info("Initializing TaskManager for cluster: {}", config.getClusterName());
+        TaskManager taskManager = new TaskManager(metadataStore, taskContext, config.getClusterName(), config.getTaskIntervalSeconds());
+        taskManager.start();
+        log.info("TaskManager started with background processing for cluster: {}", config.getClusterName());
+        return taskManager;
+    }
+    */
 }
