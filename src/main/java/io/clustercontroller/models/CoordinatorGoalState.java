@@ -66,24 +66,8 @@ public class CoordinatorGoalState {
         @JsonProperty("indices")
         private Map<String, IndexShardRouting> indices;
         
-        /**
-         * Map of aliases to their target indices
-         * alias-name -> single index string OR array of index strings
-         */
-        @JsonProperty("aliases")
-        private Map<String, Object> aliases;
-        
-        /**
-         * Remote cluster configurations
-         * cluster-alias -> config map with "seeds" list
-         */
-        @JsonProperty("remote_clusters")
-        private Map<String, Object> remoteClusters;
-        
         public RemoteShards() {
             this.indices = new HashMap<>();
-            this.aliases = new HashMap<>();
-            this.remoteClusters = new HashMap<>();
         }
     }
     
