@@ -59,13 +59,11 @@ public class TemplateManager {
         Template template = new Template();
         template.setInstanceName(request.getInstanceName());
         template.setRegion(request.getRegion());
-        template.setIndexTemplateName(request.getIndexTemplateName());
+        template.setIndexTemplateName(templateName);  
         template.setIndexTemplatePattern(request.getIndexTemplatePattern());
         
-        // Serialize template
         String templateJson = objectMapper.writeValueAsString(template);
         
-        // Check if template exists and create or update accordingly
         if (templateExists(clusterId, templateName)) {
             log.info("Template '{}' already exists, updating", templateName);
             metadataStore.updateTemplate(clusterId, templateName, templateJson);
@@ -80,7 +78,6 @@ public class TemplateManager {
     public void deleteTemplate(String clusterId, String templateName) throws Exception {
         log.info("Deleting template '{}' from cluster '{}'", templateName, clusterId);
         
-        // Check if template exists
         if (!templateExists(clusterId, templateName)) {
             throw new IllegalArgumentException("Template '" + templateName + "' does not exist");
         }
@@ -104,24 +101,16 @@ public class TemplateManager {
     public String getAllTemplates(String clusterId) throws Exception {
         log.info("Getting all templates from cluster '{}'", clusterId);
         
-        List<String> templates = metadataStore.getAllTemplates(clusterId);
+        List<Template> templates = metadataStore.getAllTemplates(clusterId);
         
         // Build response map
         Map<String, Object> response = new HashMap<>();
         Map<String, Object> templatesMap = new HashMap<>();
         
-        for (String templateWithNameJson : templates) {
-            // Parse as map to extract both template data and name
-            Map<String, Object> templateMap = objectMapper.readValue(templateWithNameJson, 
-                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
-            
-            // Extract and remove template_name from the map
-            String templateName = (String) templateMap.remove("template_name");
-            
+        for (Template template : templates) {
+            // Use index_template_name as the key (which is set to the path name)
+            String templateName = template.getIndexTemplateName();
             if (templateName != null) {
-                // Convert remaining map back to Template object
-                String templateJson = objectMapper.writeValueAsString(templateMap);
-                Template template = objectMapper.readValue(templateJson, Template.class);
                 templatesMap.put(templateName, template);
             }
         }

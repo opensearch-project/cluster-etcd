@@ -4,6 +4,7 @@ import io.clustercontroller.election.LeaderElection;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.ShardAllocation;
+import io.clustercontroller.models.Template;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -698,29 +699,25 @@ public class EtcdMetadataStore implements MetadataStore {
     }
     
     @Override
-    public List<String> getAllTemplates(String clusterId) throws Exception {
+    public List<Template> getAllTemplates(String clusterId) throws Exception {
         log.debug("Getting all templates from etcd for cluster {}", clusterId);
         
         try {
             String templatesPrefix = pathResolver.getTemplatesPrefix(clusterId);
             GetResponse response = executeEtcdPrefixQuery(templatesPrefix);
             
-            List<String> templates = new ArrayList<>();
+            List<Template> templates = new ArrayList<>();
             for (KeyValue kv : response.getKvs()) {
                 String key = kv.getKey().toString(StandardCharsets.UTF_8);
-                String templateJson = kv.getValue().toString(StandardCharsets.UTF_8);
-                
-                // Extract template name from key path
-                String[] pathParts = key.split("/");
-                if (pathParts.length >= 2) {
-                    String templateName = pathParts[pathParts.length - 2];
-                    
-                    // Add template_name temporarily for TemplateManager to extract
-                    Map<String, Object> templateMap = objectMapper.readValue(templateJson, new TypeReference<Map<String, Object>>() {});
-                    templateMap.put("template_name", templateName);
-                    templates.add(objectMapper.writeValueAsString(templateMap));
-                } else {
-                    templates.add(templateJson);
+
+                if (key.endsWith("/conf")) {
+                    String templateJson = kv.getValue().toString(StandardCharsets.UTF_8);
+                    try {
+                        Template template = objectMapper.readValue(templateJson, Template.class);
+                        templates.add(template);
+                    } catch (Exception parseException) {
+                        log.warn("Failed to parse template JSON: {}, skipping", templateJson);
+                    }
                 }
             }
             

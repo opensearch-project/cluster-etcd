@@ -7,6 +7,7 @@ import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
+import io.clustercontroller.models.Template;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -184,7 +185,7 @@ public interface MetadataStore {
     /**
      * Get all templates for a cluster
      */
-    List<String> getAllTemplates(String clusterId) throws Exception;
+    List<Template> getAllTemplates(String clusterId) throws Exception;
     
     // =================================================================
     // SHARD ALLOCATION OPERATIONS
