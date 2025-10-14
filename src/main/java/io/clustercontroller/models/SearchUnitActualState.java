@@ -70,10 +70,10 @@ public class SearchUnitActualState {
     private Map<String, List<ShardRoutingInfo>> nodeRouting; // index-name -> list of shard routing info
     
     // Node role and shard information (populated by worker)
-    @JsonProperty("role")
+    @JsonProperty("clusterlessRole")
     private String role; // "PRIMARY", "SEARCH_REPLICA", "COORDINATOR"
     
-        @JsonProperty("shard_id")
+    @JsonProperty("clusterlessShardId")
     private String shardId; // "shard-1", "shard-2", etc.
     
     @JsonProperty("cluster_name")

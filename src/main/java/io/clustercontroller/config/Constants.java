@@ -35,7 +35,7 @@ public final class Constants {
     // etcd path segments
     public static final String PATH_DELIMITER = "/";
     public static final String PATH_CTL_TASKS = "ctl-tasks";
-    public static final String PATH_SEARCH_UNITS = "search-units";
+    public static final String PATH_SEARCH_UNITS = "search-unit";
     public static final String PATH_INDICES = "indices";
     public static final String PATH_COORDINATORS = "coordinators";
     public static final String PATH_LEADER_ELECTION = "leader-election";

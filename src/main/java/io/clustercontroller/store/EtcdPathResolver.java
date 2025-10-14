@@ -53,7 +53,7 @@ public class EtcdPathResolver {
     
     /**
      * Get prefix for all search units
-     * Pattern: /<cluster-name>/search-units
+     * Pattern: /<cluster-name>/search-unit
      */
     public String getSearchUnitsPrefix(String clusterName) {
         return Paths.get(PATH_DELIMITER, clusterName, PATH_SEARCH_UNITS).toString();
@@ -61,7 +61,7 @@ public class EtcdPathResolver {
     
     /**
      * Get search unit configuration path
-     * Pattern: /<cluster-name>/search-units/<unit-name>/conf
+     * Pattern: /<cluster-name>/search-unit/<unit-name>/conf
      */
     public String getSearchUnitConfPath(String clusterName, String unitName) {
         return Paths.get(getSearchUnitsPrefix(clusterName), unitName, SUFFIX_CONF).toString();
@@ -69,7 +69,7 @@ public class EtcdPathResolver {
     
     /**
      * Get search unit goal state path
-     * Pattern: /<cluster-name>/search-units/<unit-name>/goal-state
+     * Pattern: /<cluster-name>/search-unit/<unit-name>/goal-state
      */
     public String getSearchUnitGoalStatePath(String clusterName, String unitName) {
         return Paths.get(getSearchUnitsPrefix(clusterName), unitName, SUFFIX_GOAL_STATE).toString();
@@ -77,7 +77,7 @@ public class EtcdPathResolver {
     
     /**
      * Get search unit actual state path
-     * Pattern: /<cluster-name>/search-units/<unit-name>/actual-state
+     * Pattern: /<cluster-name>/search-unit/<unit-name>/actual-state
      */
     public String getSearchUnitActualStatePath(String clusterName, String unitName) {
         return Paths.get(getSearchUnitsPrefix(clusterName), unitName, SUFFIX_ACTUAL_STATE).toString();
