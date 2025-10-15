@@ -638,7 +638,8 @@ class RollingUpdateOrchestrationStrategyTest {
         Map<String, List<SearchUnitActualState.ShardRoutingInfo>> nodeRouting = new HashMap<>();
         SearchUnitActualState.ShardRoutingInfo shardInfo = new SearchUnitActualState.ShardRoutingInfo();
         shardInfo.setShardId(Integer.parseInt(shardId));
-        shardInfo.setPrimary("PRIMARY".equals(role));
+        // Convert role to lowercase format matching worker output ("primary", "search_replica", "replica")
+        shardInfo.setRole("PRIMARY".equals(role) ? "primary" : "replica");
         shardInfo.setState(io.clustercontroller.enums.ShardState.STARTED);
         nodeRouting.put(indexName, Arrays.asList(shardInfo));
         actualState.setNodeRouting(nodeRouting);

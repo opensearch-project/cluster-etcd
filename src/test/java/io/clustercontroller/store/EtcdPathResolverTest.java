@@ -43,25 +43,25 @@ class EtcdPathResolverTest {
     @Test
     void testGetSearchUnitsPrefix() {
         String path = pathResolver.getSearchUnitsPrefix(testClusterName);
-        assertThat(path).isEqualTo("/test-cluster/search-units");
+        assertThat(path).isEqualTo("/test-cluster/search-unit");
     }
 
     @Test
     void testGetSearchUnitConfPath() {
         String path = pathResolver.getSearchUnitConfPath(testClusterName, "unit1");
-        assertThat(path).isEqualTo("/test-cluster/search-units/unit1/conf");
+        assertThat(path).isEqualTo("/test-cluster/search-unit/unit1/conf");
     }
 
     @Test
     void testGetSearchUnitGoalStatePath() {
         String path = pathResolver.getSearchUnitGoalStatePath(testClusterName, "unit1");
-        assertThat(path).isEqualTo("/test-cluster/search-units/unit1/goal-state");
+        assertThat(path).isEqualTo("/test-cluster/search-unit/unit1/goal-state");
     }
 
     @Test
     void testGetSearchUnitActualStatePath() {
         String path = pathResolver.getSearchUnitActualStatePath(testClusterName, "unit1");
-        assertThat(path).isEqualTo("/test-cluster/search-units/unit1/actual-state");
+        assertThat(path).isEqualTo("/test-cluster/search-unit/unit1/actual-state");
     }
 
     @Test
