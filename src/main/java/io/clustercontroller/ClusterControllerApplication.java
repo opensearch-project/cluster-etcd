@@ -123,20 +123,17 @@ public class ClusterControllerApplication {
     }
 
     /**
-     * TaskContext bean to provide dependencies to tasks.
+     * Discovery bean for cluster topology discovery.
+     * Stateless singleton - accepts clusterName as method parameter.
      */
     @Bean
-    public TaskContext taskContext(
-            ClusterControllerConfig config,
-            IndexManager indexManager,
-            ShardAllocator shardAllocator,
-            ActualAllocationUpdater actualAllocationUpdater,
-            GoalStateOrchestrator goalStateOrchestrator,
-            MetadataStore metadataStore) {
-        // Create Discovery instance but don't expose as separate bean
-        Discovery discovery = new Discovery(metadataStore, config.getClusterName());
-        return new TaskContext(config.getClusterName(), indexManager, shardAllocator, actualAllocationUpdater, goalStateOrchestrator, discovery);
+    public Discovery discovery(MetadataStore metadataStore) {
+        log.info("Initializing Discovery for multi-cluster support");
+        return new Discovery(metadataStore);
     }
+
+    // Multi-cluster mode: no default TaskContext bean.
+    // TaskContexts are created dynamically per cluster in ClusterLifecycleManager.
 
     /**
      * Expose etcd Client for components that need direct access (e.g., MultiClusterManager)

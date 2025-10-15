@@ -1,5 +1,7 @@
 package io.clustercontroller.tasks.impl;
 
+import io.clustercontroller.allocation.AllocationStrategy;
+import io.clustercontroller.allocation.ShardAllocator;
 import io.clustercontroller.tasks.TaskContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -9,16 +11,28 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import static io.clustercontroller.config.Constants.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class PlanShardAllocationTaskTest {
 
-    @Mock
+    @Mock(lenient = true)
     private TaskContext taskContext;
+    
+    @Mock(lenient = true)
+    private ShardAllocator shardAllocator;
     
     @BeforeEach
     void setUp() {
-        // No setup needed for this simplified test
+        // Mock the TaskContext to return a cluster name and shard allocator (lenient for tests that don't use it)
+        when(taskContext.getClusterName()).thenReturn("test-cluster");
+        when(taskContext.getShardAllocator()).thenReturn(shardAllocator);
+        
+        // Mock the shardAllocator to do nothing (successful execution)
+        doNothing().when(shardAllocator).planShardAllocation(anyString(), any(AllocationStrategy.class));
     }
     
     @Test
@@ -33,7 +47,6 @@ class PlanShardAllocationTaskTest {
         
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_COMPLETED);
-        // Note: Task currently just logs and returns success (TODO implementation)
     }
     
     @Test

@@ -16,38 +16,39 @@ import java.util.Map;
 /**
  * Handles cluster topology discovery.
  * Internal component used by TaskManager.
+ * 
+ * Note: This is a shared component across all clusters in multi-cluster mode.
+ * Methods accept clusterName as a parameter instead of storing it as a field.
  */
 @Slf4j
 public class Discovery {
     
     private final MetadataStore metadataStore;
-    private final String clusterName;
     
-    public Discovery(MetadataStore metadataStore, String clusterName) {
+    public Discovery(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
-        this.clusterName = clusterName;
     }
     
 
-    public void discoverSearchUnits() throws Exception {
-        log.info("Discovery - Starting search unit discovery process");
+    public void discoverSearchUnits(String clusterName) throws Exception {
+        log.info("Discovery - Starting search unit discovery process for cluster: {}", clusterName);
         
         // Discover and update search units from Etcd actual-states
-        discoverSearchUnitsFromEtcd();
+        discoverSearchUnitsFromEtcd(clusterName);
         
         // Clean up stale search units before processing
-        cleanupStaleSearchUnits();
+        cleanupStaleSearchUnits(clusterName);
         
         // Process all search units to ensure they're up-to-date
-        processAllSearchUnits();
+        processAllSearchUnits(clusterName);
         
-        log.info("Discovery - Completed search unit discovery process");
+        log.info("Discovery - Completed search unit discovery process for cluster: {}", clusterName);
     }
     
     /**
      * Process all search units to ensure they're current
      */
-    private void processAllSearchUnits() {
+    private void processAllSearchUnits(String clusterName) {
         try {
             List<SearchUnit> allSearchUnits = metadataStore.getAllSearchUnits(clusterName);
             log.info("Discovery - Processing {} total search units for updates", allSearchUnits.size());
@@ -72,11 +73,11 @@ public class Discovery {
     /**
      * Dynamically discover search units from Etcd actual-states
      */
-    private void discoverSearchUnitsFromEtcd() {
+    private void discoverSearchUnitsFromEtcd(String clusterName) {
         try {
             log.info("Discovery - Discovering search units from Etcd...");
             // fetch search units from actual-state paths
-            List<SearchUnit> etcdSearchUnits = fetchSearchUnitsFromEtcd(); 
+            List<SearchUnit> etcdSearchUnits = fetchSearchUnitsFromEtcd(clusterName); 
             log.info("Discovery - Found {} search units from Etcd", etcdSearchUnits.size());
             
             // Update/create search units in metadata store
@@ -103,7 +104,7 @@ public class Discovery {
      * Fetch search units from Etcd using actual-state paths
      * Public method to allow reuse by SearchUnitLoader for bootstrapping
      */
-    public List<SearchUnit> fetchSearchUnitsFromEtcd() {
+    public List<SearchUnit> fetchSearchUnitsFromEtcd(String clusterName) {
         log.info("Discovery - Fetching search units from Etcd...");
         
         try {
@@ -172,7 +173,7 @@ public class Discovery {
     /**
      * Clean up search units with missing or stale actual state timestamp (older than configured timeout)
      */
-    private void cleanupStaleSearchUnits() {
+    private void cleanupStaleSearchUnits(String clusterName) {
         try {
             log.info("Discovery - Starting cleanup of stale search units...");
             

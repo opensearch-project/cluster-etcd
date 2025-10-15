@@ -27,10 +27,11 @@ class DiscoveryTest {
     private MetadataStore metadataStore;
     
     private Discovery discovery;
+    private static final String TEST_CLUSTER = "test-cluster";
     
     @BeforeEach
     void setUp() {
-        discovery = new Discovery(metadataStore, "test-cluster");
+        discovery = new Discovery(metadataStore);
     }
     
     // =================================================================
@@ -48,7 +49,7 @@ class DiscoveryTest {
         when(metadataStore.getSearchUnit(anyString(), anyString())).thenReturn(Optional.empty());
         
         // When
-        discovery.discoverSearchUnits();
+        discovery.discoverSearchUnits(TEST_CLUSTER);
         
         // Then
         verify(metadataStore).getAllSearchUnitActualStates(anyString());
@@ -71,7 +72,7 @@ class DiscoveryTest {
         when(metadataStore.getSearchUnit(anyString(), eq("replica-node-1"))).thenReturn(Optional.empty());
         
         // When
-        discovery.discoverSearchUnits();
+        discovery.discoverSearchUnits(TEST_CLUSTER);
         
         // Then
         // Verify discovery from etcd: 1 update + 2 creates
@@ -87,7 +88,7 @@ class DiscoveryTest {
         when(metadataStore.getAllSearchUnits(anyString())).thenReturn(new ArrayList<>());
         
         // When & Then - should not throw exception
-        assertThatCode(() -> discovery.discoverSearchUnits()).doesNotThrowAnyException();
+        assertThatCode(() -> discovery.discoverSearchUnits(TEST_CLUSTER)).doesNotThrowAnyException();
         
         verify(metadataStore).getAllSearchUnitActualStates(anyString());
         verify(metadataStore, times(2)).getAllSearchUnits(anyString()); // Called in processAllSearchUnits and cleanupStaleSearchUnits
@@ -104,7 +105,7 @@ class DiscoveryTest {
         when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(actualStates);
         
         // When
-        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
+        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd(TEST_CLUSTER);
         
         // Then
         assertThat(result).hasSize(3);
@@ -154,7 +155,7 @@ class DiscoveryTest {
         when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(new HashMap<>());
         
         // When
-        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
+        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd(TEST_CLUSTER);
         
         // Then
         assertThat(result).isEmpty();
@@ -167,7 +168,7 @@ class DiscoveryTest {
         when(metadataStore.getAllSearchUnitActualStates(anyString())).thenThrow(new RuntimeException("Connection error"));
         
         // When
-        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
+        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd(TEST_CLUSTER);
         
         // Then
         assertThat(result).isEmpty();
@@ -185,7 +186,7 @@ class DiscoveryTest {
         when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(actualStates);
         
         // When
-        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
+        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd(TEST_CLUSTER);
         
         // Then
         assertThat(result).hasSize(1);
@@ -210,7 +211,7 @@ class DiscoveryTest {
         when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(Map.of("coordinator-node-1", actualState));
         
         // When
-        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
+        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd(TEST_CLUSTER);
         
         // Then
         assertThat(result).hasSize(1);
@@ -235,7 +236,7 @@ class DiscoveryTest {
         when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(Map.of("primary-node-1", actualState));
         
         // When
-        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
+        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd(TEST_CLUSTER);
         
         // Then
         assertThat(result).hasSize(1);
@@ -258,7 +259,7 @@ class DiscoveryTest {
         when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(Map.of("replica-node-1", actualState));
         
         // When
-        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
+        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd(TEST_CLUSTER);
         
         // Then
         assertThat(result).hasSize(1);
@@ -281,7 +282,7 @@ class DiscoveryTest {
         when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(Map.of("unhealthy-node-1", actualState));
         
         // When
-        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd();
+        List<SearchUnit> result = discovery.fetchSearchUnitsFromEtcd(TEST_CLUSTER);
         
         // Then
         assertThat(result).hasSize(1);

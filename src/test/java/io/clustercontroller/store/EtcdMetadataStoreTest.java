@@ -266,7 +266,8 @@ public class EtcdMetadataStoreTest {
         String u2 = "{\"name\":\"node2\"}";
 
         GetResponse resp = mockGetResponse(Arrays.asList(
-                mockKv(u1), mockKv(u2)
+                mockKvWithKey("/test-cluster/search-unit/node1/conf", u1),
+                mockKvWithKey("/test-cluster/search-unit/node2/conf", u2)
         ));
         when(mockKv.get(any(ByteSequence.class), any(GetOption.class)))
                 .thenReturn(CompletableFuture.completedFuture(resp));
@@ -364,6 +365,39 @@ public class EtcdMetadataStoreTest {
         assertThatThrownBy(() -> store.deleteSearchUnit(CLUSTER, "node7"))
                 .isInstanceOf(Exception.class)
                 .hasMessageContaining("Failed to delete search unit from etcd");
+    }
+
+    @Test
+    public void testGetAllSearchUnitActualStates() throws Exception {
+        EtcdMetadataStore store = newStore();
+
+        // Mock actual-state entries with realistic etcd key paths
+        // Path format: /<cluster>/search-unit/<unit-name>/actual-state
+        String actualState1 = "{\"nodeName\":\"node1\",\"address\":\"10.0.1.1\",\"port\":9200}";
+        String actualState2 = "{\"nodeName\":\"node2\",\"address\":\"10.0.1.2\",\"port\":9200}";
+        String confEntry = "{\"name\":\"node3\"}"; // This should be ignored (not actual-state)
+
+        GetResponse resp = mockGetResponse(Arrays.asList(
+                mockKvWithKey("/test-cluster/search-unit/node1/actual-state", actualState1),
+                mockKvWithKey("/test-cluster/search-unit/node2/actual-state", actualState2),
+                mockKvWithKey("/test-cluster/search-unit/node3/conf", confEntry) // Should be skipped
+        ));
+        when(mockKv.get(any(ByteSequence.class), any(GetOption.class)))
+                .thenReturn(CompletableFuture.completedFuture(resp));
+
+        Map<String, io.clustercontroller.models.SearchUnitActualState> actualStates = 
+            store.getAllSearchUnitActualStates(CLUSTER);
+        
+        // Should only include the 2 actual-state entries, not the conf entry
+        assertThat(actualStates).hasSize(2);
+        assertThat(actualStates).containsKey("node1");
+        assertThat(actualStates).containsKey("node2");
+        assertThat(actualStates).doesNotContainKey("node3");
+        
+        // Verify the parsed data
+        assertThat(actualStates.get("node1").getNodeName()).isEqualTo("node1");
+        assertThat(actualStates.get("node1").getAddress()).isEqualTo("10.0.1.1");
+        assertThat(actualStates.get("node2").getNodeName()).isEqualTo("node2");
     }
 
     // ------------------------- index configs -------------------------
