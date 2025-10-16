@@ -609,8 +609,7 @@ public final class ETCDStateDeserializer {
             try (XContentBuilder mappingsBuilder = new XContentBuilder(JsonXContent.jsonXContent, byteArrayOutputStream)) {
                 mappingsBuilder.startObject();
                 mappingsBuilder.field("_doc");
-                // mappingsBuilder.map(sortedMappingsMap);
-                mappingsBuilder.map(mappingsMap);
+                mappingsBuilder.map(sortedMappingsMap);
                 mappingsBuilder.endObject();
             }
             CompressedXContent mappingsXContent = new CompressedXContent(new BytesArray(byteArrayOutputStream.toByteArray()));
