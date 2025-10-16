@@ -164,8 +164,9 @@ public interface MetadataStore {
     
     /**
      * Get template configuration by name
+     * @throws IllegalArgumentException if template not found
      */
-    Optional<String> getTemplate(String clusterId, String templateName) throws Exception;
+    Template getTemplate(String clusterId, String templateName) throws Exception;
     
     /**
      * Create new template configuration

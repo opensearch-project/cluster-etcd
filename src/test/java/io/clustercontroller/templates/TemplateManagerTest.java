@@ -9,7 +9,6 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.util.Arrays;
-import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -48,7 +47,7 @@ class TemplateManagerTest {
         String templateName = "logs-template";
         String templateConfig = "{\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\",\"index_template_name\":\"logs-template\",\"index_template_pattern\":\"logs-*\"}";
         
-        when(metadataStore.getTemplate(testClusterId, templateName)).thenReturn(Optional.empty());
+        when(metadataStore.getTemplate(testClusterId, templateName)).thenThrow(new IllegalArgumentException("Template not found"));
         when(metadataStore.createTemplate(eq(testClusterId), eq(templateName), anyString())).thenReturn(templateName);
 
         templateManager.putTemplate(testClusterId, templateName, templateConfig);
@@ -59,9 +58,13 @@ class TemplateManagerTest {
     @Test
     void testGetTemplate() throws Exception {
         String templateName = "logs-template";
-        String templateJson = "{\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\",\"index_template_name\":\"logs-template\",\"index_template_pattern\":\"logs-*\"}";
+        Template template = new Template();
+        template.setIndexTemplateName(templateName);
+        template.setIndexTemplatePattern("logs-*");
+        template.setInstanceName("prod-cluster");
+        template.setRegion("us-west-2");
         
-        when(metadataStore.getTemplate(testClusterId, templateName)).thenReturn(Optional.of(templateJson));
+        when(metadataStore.getTemplate(testClusterId, templateName)).thenReturn(template);
 
         String result = templateManager.getTemplate(testClusterId, templateName);
 
@@ -97,9 +100,13 @@ class TemplateManagerTest {
     @Test
     void testDeleteTemplate() throws Exception {
         String templateName = "logs-template";
-        String templateJson = "{\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\",\"index_template_name\":\"logs-template\",\"index_template_pattern\":\"logs-*\"}";
+        Template template = new Template();
+        template.setIndexTemplateName(templateName);
+        template.setIndexTemplatePattern("logs-*");
+        template.setInstanceName("prod-cluster");
+        template.setRegion("us-west-2");
         
-        when(metadataStore.getTemplate(testClusterId, templateName)).thenReturn(Optional.of(templateJson));
+        when(metadataStore.getTemplate(testClusterId, templateName)).thenReturn(template);
 
         templateManager.deleteTemplate(testClusterId, templateName);
 

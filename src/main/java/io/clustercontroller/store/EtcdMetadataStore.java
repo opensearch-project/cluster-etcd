@@ -626,7 +626,7 @@ public class EtcdMetadataStore implements MetadataStore {
     // =================================================================
     
     @Override
-    public Optional<String> getTemplate(String clusterId, String templateName) throws Exception {
+    public Template getTemplate(String clusterId, String templateName) throws Exception {
         log.debug("Getting template {} from etcd", templateName);
         
         try {
@@ -635,14 +635,17 @@ public class EtcdMetadataStore implements MetadataStore {
             
             if (response.getCount() == 0) {
                 log.debug("Template {} not found in etcd", templateName);
-                return Optional.empty();
+                throw new IllegalArgumentException("Template '" + templateName + "' not found");
             }
             
             String templateConfigJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+            Template template = objectMapper.readValue(templateConfigJson, Template.class);
             
             log.debug("Retrieved template {} from etcd", templateName);
-            return Optional.of(templateConfigJson);
+            return template;
             
+        } catch (IllegalArgumentException e) {
+            throw e;
         } catch (Exception e) {
             log.error("Failed to get template {} from etcd: {}", templateName, e.getMessage(), e);
             throw new Exception("Failed to retrieve template from etcd", e);

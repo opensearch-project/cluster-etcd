@@ -11,7 +11,6 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * Manages index template operations with multi-cluster support.
@@ -36,8 +35,10 @@ public class TemplateManager {
         log.info("Checking if template '{}' exists in cluster '{}'", templateName, clusterId);
         
         try {
-            Optional<String> templateOpt = metadataStore.getTemplate(clusterId, templateName);
-            return templateOpt.isPresent();
+            metadataStore.getTemplate(clusterId, templateName);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;  // Template not found
         } catch (Exception e) {
             log.error("Error checking if template '{}' exists in cluster '{}': {}", 
                 templateName, clusterId, e.getMessage(), e);
@@ -89,13 +90,8 @@ public class TemplateManager {
     public String getTemplate(String clusterId, String templateName) throws Exception {
         log.info("Getting template '{}' from cluster '{}'", templateName, clusterId);
         
-        Optional<String> templateOpt = metadataStore.getTemplate(clusterId, templateName);
-        
-        if (templateOpt.isEmpty()) {
-            throw new IllegalArgumentException("Template '" + templateName + "' not found");
-        }
-        
-        return templateOpt.get();
+        Template template = metadataStore.getTemplate(clusterId, templateName);
+        return objectMapper.writeValueAsString(template);
     }
 
     public String getAllTemplates(String clusterId) throws Exception {
@@ -108,7 +104,6 @@ public class TemplateManager {
         Map<String, Object> templatesMap = new HashMap<>();
         
         for (Template template : templates) {
-            // Use index_template_name as the key (which is set to the path name)
             String templateName = template.getIndexTemplateName();
             if (templateName != null) {
                 templatesMap.put(templateName, template);
