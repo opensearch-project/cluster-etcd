@@ -19,6 +19,7 @@ import org.opensearch.cluster.etcd.changeapplier.NodeShardAssignment;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
 import org.opensearch.cluster.etcd.changeapplier.RemoteNode;
 import org.opensearch.cluster.etcd.changeapplier.ShardRole;
+import org.opensearch.cluster.metadata.IngestionStatus;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -124,6 +125,26 @@ public final class ETCDStateDeserializer {
     private ETCDStateDeserializer() {}
 
     private static final Logger LOGGER = LogManager.getLogger(ETCDStateDeserializer.class);
+    private static final String INDEX_SETTINGS_PAUSE_PULL_INGESTION = "index.pause_pull_ingestion";
+    
+    /**
+     * Cleans index settings by removing fields that should not be included
+     * in the final IndexMetadata or are handled separately.
+     * 
+     * @param indexSettings the settings to clean up
+     * @return cleaned settings with unnecessary fields removed
+     */
+    private static Settings cleanIndexSettings(Settings indexSettings) {
+        if (indexSettings == null) {
+            return Settings.EMPTY;
+        }
+        
+        Settings.Builder cleanedBuilder = Settings.builder().put(indexSettings);
+
+        // Remove pause_pull_ingestion as it's handled separately via IngestionStatus
+        cleanedBuilder.remove(INDEX_SETTINGS_PAUSE_PULL_INGESTION);
+        return cleanedBuilder.build();
+    }
 
     /**
      * Deserializes the node configuration stored in ETCD. Will also read the k/v pairs for each index
@@ -624,8 +645,17 @@ public final class ETCDStateDeserializer {
         Settings indexSettings,
         MappingMetadata mappingMetadata
     ) {
-        // Start with etcd-sourced settings
-        Settings.Builder settingsBuilder = indexSettings != null ? Settings.builder().put(indexSettings) : Settings.builder();
+        // Extract pause_pull_ingestion first before building settings
+        boolean pausePullIngestion = false;
+        if (indexSettings != null) {
+            pausePullIngestion = indexSettings.getAsBoolean(INDEX_SETTINGS_PAUSE_PULL_INGESTION, false);
+        }
+
+         // Clean the settings by removing unnecessary fields
+         Settings cleanedSettings = cleanIndexSettings(indexSettings);
+         
+         // Start with cleaned etcd-sourced settings
+         Settings.Builder settingsBuilder = Settings.builder().put(cleanedSettings);
 
         // Add required system constants that must be present for IndexMetadata
         // Use index name as UUID for simplicity and consistency
@@ -655,6 +685,9 @@ public final class ETCDStateDeserializer {
         for (int i = 0; i < numberOfShards; i++) {
             metadataBuilder.primaryTerm(i, 1);
         }
+
+        // Set ingestion status using the extracted pausePullIngestion variable
+        metadataBuilder.ingestionStatus(new IngestionStatus(pausePullIngestion));
 
         return metadataBuilder.build();
     }
