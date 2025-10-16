@@ -3,8 +3,13 @@ package io.clustercontroller.multicluster.lifecycle;
 import io.clustercontroller.TaskManager;
 import io.clustercontroller.multicluster.lock.ClusterLock;
 import io.clustercontroller.multicluster.lock.DistributedLockManager;
+import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.tasks.TaskContext;
+import io.etcd.jetcd.ByteSequence;
+import io.etcd.jetcd.Client;
+import io.etcd.jetcd.KV;
+import io.etcd.jetcd.options.PutOption;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,6 +26,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 /**
  * Manages TaskManager lifecycle and health monitoring for clusters.
  */
@@ -28,9 +35,14 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class ClusterLifecycleManager {
     
+    private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 5;
+    
     private final MetadataStore metadataStore;
     private final TaskContext taskContext;
     private final DistributedLockManager lockManager;
+    private final KV kvClient;
+    private final EtcdPathResolver pathResolver;
+    private final String controllerId;
     private final ScheduledExecutorService healthCheckScheduler;
     private final Duration healthCheckInterval;
     
@@ -41,11 +53,17 @@ public class ClusterLifecycleManager {
             MetadataStore metadataStore,
             TaskContext taskContext,
             DistributedLockManager lockManager,
+            Client etcdClient,
+            EtcdPathResolver pathResolver,
+            @Value("${controller.id}") String controllerId,
             @Value("${multi-cluster.health-check-interval:10}") int healthCheckIntervalSeconds) {
         
         this.metadataStore = metadataStore;
         this.taskContext = taskContext;
         this.lockManager = lockManager;
+        this.kvClient = etcdClient.getKVClient();
+        this.pathResolver = pathResolver;
+        this.controllerId = controllerId;
         this.healthCheckInterval = Duration.ofSeconds(healthCheckIntervalSeconds);
         
         this.healthCheckScheduler = Executors.newScheduledThreadPool(10, r -> {
@@ -55,7 +73,8 @@ public class ClusterLifecycleManager {
             return t;
         });
         
-        log.info("ClusterLifecycleManager initialized (health check interval: {}s)", healthCheckIntervalSeconds);
+        log.info("ClusterLifecycleManager initialized (controller: {}, health check interval: {}s)", 
+            controllerId, healthCheckIntervalSeconds);
     }
     
     /**
@@ -99,6 +118,9 @@ public class ClusterLifecycleManager {
             );
             clusters.put(clusterId, managed);
             
+            // Write assignment key for observability
+            writeAssignmentKey(clusterId, lock.getLeaseId());
+            
             log.info("✓ Started managing cluster: {} (total: {})", clusterId, clusters.size());
             
         } catch (Exception e) {
@@ -137,6 +159,9 @@ public class ClusterLifecycleManager {
             // Release lock
             lockManager.releaseLock(managed.getLock());
             
+            // Delete assignment key for observability
+            deleteAssignmentKey(clusterId);
+            
             log.info("✓ Stopped managing cluster: {} (remaining: {})", clusterId, clusters.size());
             
         } catch (Exception e) {
@@ -174,6 +199,50 @@ public class ClusterLifecycleManager {
     public void stopAll() {
         log.info("Stopping all managed clusters");
         new ArrayList<>(clusters.keySet()).forEach(this::stopCluster);
+    }
+    
+    /**
+     * Write assignment key to etcd for observability.
+     * Key: /multi-cluster/controllers/{controller-id}/assigned/{cluster-id}
+     * Value: JSON with assignment metadata
+     */
+    private void writeAssignmentKey(String clusterId, long leaseId) {
+        try {
+            String assignmentPath = pathResolver.getControllerAssignmentPath(controllerId, clusterId);
+            String assignmentValue = String.format(
+                "{\"controller\":\"%s\",\"cluster\":\"%s\",\"timestamp\":%d,\"lease\":\"%x\"}",
+                controllerId, clusterId, System.currentTimeMillis(), leaseId
+            );
+            
+            kvClient.put(
+                ByteSequence.from(assignmentPath, UTF_8),
+                ByteSequence.from(assignmentValue, UTF_8),
+                PutOption.newBuilder().withLeaseId(leaseId).build()
+            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            log.debug("Wrote assignment key: {} → {}", controllerId, clusterId);
+            
+        } catch (Exception e) {
+            log.warn("Failed to write assignment key for cluster {}: {}", clusterId, e.getMessage());
+            // Non-critical - don't fail cluster acquisition if observability write fails
+        }
+    }
+    
+    /**
+     * Delete assignment key from etcd.
+     */
+    private void deleteAssignmentKey(String clusterId) {
+        try {
+            String assignmentPath = pathResolver.getControllerAssignmentPath(controllerId, clusterId);
+            kvClient.delete(ByteSequence.from(assignmentPath, UTF_8))
+                .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            log.debug("Deleted assignment key: {} → {}", controllerId, clusterId);
+            
+        } catch (Exception e) {
+            log.warn("Failed to delete assignment key for cluster {}: {}", clusterId, e.getMessage());
+            // Non-critical - assignment key will expire with lease anyway
+        }
     }
 }
 

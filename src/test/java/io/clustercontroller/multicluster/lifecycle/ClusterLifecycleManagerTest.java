@@ -3,9 +3,12 @@ package io.clustercontroller.multicluster.lifecycle;
 import io.clustercontroller.TaskManager;
 import io.clustercontroller.multicluster.lock.ClusterLock;
 import io.clustercontroller.multicluster.lock.DistributedLockManager;
+import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.tasks.TaskContext;
 import io.etcd.jetcd.ByteSequence;
+import io.etcd.jetcd.Client;
+import io.etcd.jetcd.KV;
 import io.etcd.jetcd.Watch;
 import io.etcd.jetcd.support.CloseableClient;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,6 +36,15 @@ class ClusterLifecycleManagerTest {
     private DistributedLockManager lockManager;
 
     @Mock
+    private Client etcdClient;
+
+    @Mock
+    private KV kvClient;
+
+    @Mock
+    private EtcdPathResolver pathResolver;
+
+    @Mock
     private Watch.Watcher mockWatcher;
 
     @Mock
@@ -42,10 +54,23 @@ class ClusterLifecycleManagerTest {
 
     @BeforeEach
     void setUp() {
+        when(etcdClient.getKVClient()).thenReturn(kvClient);
+        lenient().when(pathResolver.getControllerAssignmentPath(anyString(), anyString()))
+            .thenReturn("/multi-cluster/controllers/test-controller/assigned/test-cluster");
+        
+        // Mock kvClient operations (lenient since not all tests will call these)
+        lenient().when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class), any()))
+            .thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
+        lenient().when(kvClient.delete(any(ByteSequence.class)))
+            .thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
+        
         lifecycleManager = new ClusterLifecycleManager(
             metadataStore,
             taskContext,
             lockManager,
+            etcdClient,
+            pathResolver,
+            "test-controller",
             30
         );
     }
