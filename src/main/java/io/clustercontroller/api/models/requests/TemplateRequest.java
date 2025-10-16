@@ -9,26 +9,19 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
-import java.util.Map;
 
 /**
- * Request model for index template creation and update operations.
- *
- * Allows specifying template patterns, settings, mappings, and aliases that will be
- * automatically applied to new indices matching the specified patterns.
- * Uses Jackson annotations for automatic JSON serialization/deserialization
- * with snake_case property naming for compatibility.
+ * Request model for index template creation.
+ * Based on createOrUpdateIndexTemplate signature with 4 fields:
+ * instanceName, region, indexTemplateName, indexTemplatePattern
  *
  * Example usage:
  * <pre>
  * {
- *   "index_patterns": ["logs-*", "metrics-*"],
- *   "priority": 100,
- *   "template": {
- *     "settings": {"number_of_shards": 1},
- *     "mappings": {"properties": {"timestamp": {"type": "date"}}},
- *     "aliases": {"current": {}}
- *   }
+ *   "instance_name": "prod-cluster",
+ *   "region": "us-west-2",
+ *   "index_template_name": "my-template",
+ *   "index_template_pattern": "logs-*"
  * }
  * </pre>
  */
@@ -39,19 +32,8 @@ import java.util.Map;
 @JsonInclude(JsonInclude.Include.NON_EMPTY)
 @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public class TemplateRequest {
-    private List<String> indexPatterns;
-    private Integer priority;
-    private TemplateDefinition template;
-
-    @Data
-    @Builder
-    @NoArgsConstructor
-    @AllArgsConstructor
-    @JsonInclude(JsonInclude.Include.NON_EMPTY)
-    @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
-    public static class TemplateDefinition {
-        private Map<String, Object> settings;
-        private Map<String, Object> mappings;
-        private Map<String, Object> aliases;
-    }
+    private String instanceName;
+    private String region;
+    private String indexTemplateName;
+    private String indexTemplatePattern;
 }

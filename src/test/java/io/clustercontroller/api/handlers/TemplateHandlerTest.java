@@ -13,11 +13,10 @@ import org.mockito.MockitoAnnotations;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
-import java.util.List;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class TemplateHandlerTest {
@@ -43,11 +42,13 @@ class TemplateHandlerTest {
         // Given
         String templateName = "test-template";
         TemplateRequest request = TemplateRequest.builder()
-            .indexPatterns(List.of("logs-*"))
-            .priority(100)
+            .instanceName("prod-cluster")
+            .region("us-west-2")
+            .indexTemplateName("test-template")
+            .indexTemplatePattern("logs-*")
             .build();
 
-        when(objectMapper.writeValueAsString(any())).thenReturn("{\"index_patterns\":[\"logs-*\"],\"priority\":100}");
+        when(objectMapper.writeValueAsString(any())).thenReturn("{\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\",\"index_template_name\":\"test-template\",\"index_template_pattern\":\"logs-*\"}");
         doNothing().when(templateManager).putTemplate(anyString(), anyString(), anyString());
 
         // When
@@ -61,53 +62,50 @@ class TemplateHandlerTest {
         assertThat(templateResponse.isAcknowledged()).isTrue();
         assertThat(templateResponse.getTemplate()).isEqualTo(templateName);
 
-        verify(templateManager).putTemplate(testClusterId, templateName, "{\"index_patterns\":[\"logs-*\"],\"priority\":100}");
+        verify(templateManager).putTemplate(eq(testClusterId), eq(templateName), anyString());
     }
 
     @Test
-    void testCreateTemplate_UnsupportedOperation() throws Exception {
+    void testCreateTemplate_InvalidRequest() throws Exception {
         // Given
         String templateName = "test-template";
         TemplateRequest request = TemplateRequest.builder().build();
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doThrow(new UnsupportedOperationException("Not implemented"))
+        doThrow(new IllegalArgumentException("Template must have an index pattern"))
             .when(templateManager).putTemplate(anyString(), anyString(), anyString());
 
         // When
         ResponseEntity<Object> response = templateHandler.createTemplate(testClusterId, templateName, request);
 
         // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
 
         ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
-        assertThat(errorResponse.getStatus()).isEqualTo(501);
+        assertThat(errorResponse.getError()).isEqualTo("bad_request");
     }
 
     @Test
-    void testGetTemplate_NotImplemented() {
+    void testGetTemplate_NotFound() throws Exception {
         // Given
         String templateName = "test-template";
         when(templateManager.getTemplate(anyString(), anyString()))
-            .thenThrow(new UnsupportedOperationException("Not implemented"));
+            .thenThrow(new IllegalArgumentException("Template 'test-template' not found"));
 
         // When
         ResponseEntity<Object> response = templateHandler.getTemplate(testClusterId, templateName);
 
         // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
 
         ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
-        assertThat(errorResponse.getReason()).contains("Get template is not yet implemented");
-        assertThat(errorResponse.getStatus()).isEqualTo(501);
+        assertThat(errorResponse.getError()).isEqualTo("resource_not_found_exception");
     }
 
     @Test
-    void testDeleteTemplate_Success() {
+    void testDeleteTemplate_Success() throws Exception {
         // Given
         String templateName = "test-template";
         doNothing().when(templateManager).deleteTemplate(anyString(), anyString());
@@ -127,21 +125,18 @@ class TemplateHandlerTest {
     }
 
     @Test
-    void testGetAllTemplates_NotImplemented() {
+    void testGetAllTemplates_Success() throws Exception {
         // Given
-        when(templateManager.getAllTemplates(anyString()))
-            .thenThrow(new UnsupportedOperationException("Not implemented"));
+        String templatesJson = "{\"index_templates\":{}}";
+        when(templateManager.getAllTemplates(anyString())).thenReturn(templatesJson);
 
         // When
         ResponseEntity<Object> response = templateHandler.getAllTemplates(testClusterId);
 
         // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
-        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isEqualTo(templatesJson);
 
-        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
-        assertThat(errorResponse.getReason()).contains("Get all templates is not yet implemented");
-        assertThat(errorResponse.getStatus()).isEqualTo(501);
+        verify(templateManager).getAllTemplates(testClusterId);
     }
 }

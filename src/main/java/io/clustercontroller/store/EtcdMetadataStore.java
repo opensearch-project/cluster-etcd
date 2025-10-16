@@ -4,7 +4,9 @@ import io.clustercontroller.election.LeaderElection;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.ShardAllocation;
+import io.clustercontroller.models.Template;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -616,6 +618,118 @@ public class EtcdMetadataStore implements MetadataStore {
         } catch (Exception e) {
             log.error("Failed to set index settings for {} in etcd: {}", indexName, e.getMessage(), e);
             throw new Exception("Failed to set index settings in etcd", e);
+        }
+    }
+    
+    // =================================================================
+    // TEMPLATE OPERATIONS
+    // =================================================================
+    
+    @Override
+    public Template getTemplate(String clusterId, String templateName) throws Exception {
+        log.debug("Getting template {} from etcd", templateName);
+        
+        try {
+            String templatePath = pathResolver.getTemplateConfPath(clusterId, templateName);
+            GetResponse response = executeEtcdGet(templatePath);
+            
+            if (response.getCount() == 0) {
+                log.debug("Template {} not found in etcd", templateName);
+                throw new IllegalArgumentException("Template '" + templateName + "' not found");
+            }
+            
+            String templateConfigJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+            Template template = objectMapper.readValue(templateConfigJson, Template.class);
+            
+            log.debug("Retrieved template {} from etcd", templateName);
+            return template;
+            
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Failed to get template {} from etcd: {}", templateName, e.getMessage(), e);
+            throw new Exception("Failed to retrieve template from etcd", e);
+        }
+    }
+    
+    @Override
+    public String createTemplate(String clusterId, String templateName, String templateConfig) throws Exception {
+        log.info("Creating template {} in etcd", templateName);
+        
+        try {
+            String templatePath = pathResolver.getTemplateConfPath(clusterId, templateName);
+            executeEtcdPut(templatePath, templateConfig);
+            
+            log.info("Successfully created template {} in etcd", templateName);
+            return templateName;
+            
+        } catch (Exception e) {
+            log.error("Failed to create template {} in etcd: {}", templateName, e.getMessage(), e);
+            throw new Exception("Failed to create template in etcd", e);
+        }
+    }
+    
+    @Override
+    public void updateTemplate(String clusterId, String templateName, String templateConfig) throws Exception {
+        log.debug("Updating template {} in etcd", templateName);
+        
+        try {
+            String templatePath = pathResolver.getTemplateConfPath(clusterId, templateName);
+            executeEtcdPut(templatePath, templateConfig);
+            
+            log.debug("Successfully updated template {} in etcd", templateName);
+            
+        } catch (Exception e) {
+            log.error("Failed to update template {} in etcd: {}", templateName, e.getMessage(), e);
+            throw new Exception("Failed to update template in etcd", e);
+        }
+    }
+    
+    @Override
+    public void deleteTemplate(String clusterId, String templateName) throws Exception {
+        log.info("Deleting template {} from etcd", templateName);
+        
+        try {
+            String templatePath = pathResolver.getTemplateConfPath(clusterId, templateName);
+            executeEtcdDelete(templatePath);
+            
+            log.info("Successfully deleted template {} from etcd", templateName);
+            
+        } catch (Exception e) {
+            log.error("Failed to delete template {} from etcd: {}", templateName, e.getMessage(), e);
+            throw new Exception("Failed to delete template from etcd", e);
+        }
+    }
+    
+    @Override
+    public List<Template> getAllTemplates(String clusterId) throws Exception {
+        log.debug("Getting all templates from etcd for cluster {}", clusterId);
+        
+        try {
+            String templatesPrefix = pathResolver.getTemplatesPrefix(clusterId);
+            GetResponse response = executeEtcdPrefixQuery(templatesPrefix);
+            
+            List<Template> templates = new ArrayList<>();
+            for (KeyValue kv : response.getKvs()) {
+                String key = kv.getKey().toString(StandardCharsets.UTF_8);
+
+                if (key.endsWith("/conf")) {
+                    String templateJson = kv.getValue().toString(StandardCharsets.UTF_8);
+                    try {
+                        Template template = objectMapper.readValue(templateJson, Template.class);
+                        templates.add(template);
+                    } catch (Exception parseException) {
+                        log.warn("Failed to parse template JSON: {}, skipping", templateJson);
+                    }
+                }
+            }
+            
+            log.debug("Retrieved {} templates from etcd for cluster {}", templates.size(), clusterId);
+            return templates;
+            
+        } catch (Exception e) {
+            log.error("Failed to get all templates from etcd for cluster {}: {}", clusterId, e.getMessage(), e);
+            throw new Exception("Failed to retrieve templates from etcd", e);
         }
     }
     

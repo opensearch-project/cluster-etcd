@@ -53,9 +53,9 @@ public class TemplateHandler {
                 .acknowledged(true)
                 .template(name)
                 .build());
-        } catch (UnsupportedOperationException e) {
-            log.error("Error creating template '{}' in cluster '{}': {}", name, clusterId, e.getMessage());
-            return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Template creation"));
+        } catch (IllegalArgumentException e) {
+            log.error("Invalid request for template '{}' in cluster '{}': {}", name, clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.badRequest(e.getMessage()));
         } catch (Exception e) {
             log.error("Error creating template '{}' in cluster '{}': {}", name, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
@@ -74,9 +74,9 @@ public class TemplateHandler {
             log.info("Getting index template '{}' from cluster '{}'", name, clusterId);
             String templateInfo = templateManager.getTemplate(clusterId, name);
             return ResponseEntity.ok(templateInfo);
-        } catch (UnsupportedOperationException e) {
-            log.error("Error getting template '{}' from cluster '{}': {}", name, clusterId, e.getMessage());
-            return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Get template"));
+        } catch (IllegalArgumentException e) {
+            log.error("Template '{}' not found in cluster '{}': {}", name, clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorResponse.notFound(e.getMessage()));
         } catch (Exception e) {
             log.error("Error getting template '{}' from cluster '{}': {}", name, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
@@ -98,9 +98,9 @@ public class TemplateHandler {
                 .acknowledged(true)
                 .template(name)
                 .build());
-        } catch (UnsupportedOperationException e) {
-            log.error("Error deleting template '{}' from cluster '{}': {}", name, clusterId, e.getMessage());
-            return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Template deletion"));
+        } catch (IllegalArgumentException e) {
+            log.error("Template '{}' not found in cluster '{}': {}", name, clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorResponse.notFound(e.getMessage()));
         } catch (Exception e) {
             log.error("Error deleting template '{}' from cluster '{}': {}", name, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
@@ -117,9 +117,9 @@ public class TemplateHandler {
             log.info("Getting all index templates from cluster '{}'", clusterId);
             String templatesInfo = templateManager.getAllTemplates(clusterId);
             return ResponseEntity.ok(templatesInfo);
-        } catch (UnsupportedOperationException e) {
-            log.error("Error getting all templates from cluster '{}': {}", clusterId, e.getMessage());
-            return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Get all templates"));
+        } catch (IllegalArgumentException e) {
+            log.error("Invalid request for cluster '{}': {}", clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.badRequest(e.getMessage()));
         } catch (Exception e) {
             log.error("Error getting all templates from cluster '{}': {}", clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));

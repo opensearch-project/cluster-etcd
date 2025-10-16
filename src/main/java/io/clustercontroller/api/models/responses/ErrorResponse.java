@@ -48,4 +48,12 @@ public class ErrorResponse {
             .status(500)
             .build();
     }
+    
+    public static ErrorResponse badRequest(String message) {
+        return ErrorResponse.builder()
+            .error("bad_request")
+            .reason(message)
+            .status(400)
+            .build();
+    }
 }

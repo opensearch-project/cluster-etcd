@@ -128,6 +128,26 @@ public class EtcdPathResolver {
     }
     
     // =================================================================
+    // TEMPLATE PATHS
+    // =================================================================
+    
+    /**
+     * Get prefix for all templates
+     * Pattern: /<cluster-name>/templates
+     */
+    public String getTemplatesPrefix(String clusterName) {
+        return Paths.get(PATH_DELIMITER, clusterName, PATH_TEMPLATES).toString();
+    }
+    
+    /**
+     * Get template configuration path
+     * Pattern: /<cluster-name>/templates/<template-name>/conf
+     */
+    public String getTemplateConfPath(String clusterName, String templateName) {
+        return Paths.get(getTemplatesPrefix(clusterName), templateName, SUFFIX_CONF).toString();
+    }
+    
+    // =================================================================
     // SHARD ALLOCATION PATHS
     // =================================================================
     

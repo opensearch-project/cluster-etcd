@@ -7,6 +7,7 @@ import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
+import io.clustercontroller.models.Template;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -156,6 +157,36 @@ public interface MetadataStore {
      * Delete all keys with the given prefix
      */
     void deletePrefix(String clusterId, String prefix) throws Exception;
+    
+    // =================================================================
+    // TEMPLATE OPERATIONS
+    // =================================================================
+    
+    /**
+     * Get template configuration by name
+     * @throws IllegalArgumentException if template not found
+     */
+    Template getTemplate(String clusterId, String templateName) throws Exception;
+    
+    /**
+     * Create new template configuration
+     */
+    String createTemplate(String clusterId, String templateName, String templateConfig) throws Exception;
+    
+    /**
+     * Update template configuration
+     */
+    void updateTemplate(String clusterId, String templateName, String templateConfig) throws Exception;
+    
+    /**
+     * Delete template configuration
+     */
+    void deleteTemplate(String clusterId, String templateName) throws Exception;
+    
+    /**
+     * Get all templates for a cluster
+     */
+    List<Template> getAllTemplates(String clusterId) throws Exception;
     
     // =================================================================
     // SHARD ALLOCATION OPERATIONS
