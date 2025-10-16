@@ -12,6 +12,9 @@ import org.opensearch.cluster.etcd.changeapplier.ChangeApplierService;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.inject.Inject;
+import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
+import org.opensearch.common.lifecycle.LifecycleComponent;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.Strings;
@@ -19,6 +22,7 @@ import org.opensearch.core.common.io.stream.NamedWriteableRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
+import org.opensearch.indices.IndicesService;
 import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.ClusterPlugin;
 import org.opensearch.plugins.Plugin;
@@ -34,13 +38,13 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPlugin {
-
+    private static final AtomicReference<GuiceHolder> GUICE_HOLDER_REF = new AtomicReference<>();
     private ClusterService clusterService;
     private ETCDWatcher etcdWatcher;
-    private ETCDHeartbeat etcdHeartbeat;
     private Client etcdClient;
     private NodeEnvironment nodeEnvironment;
     private ThreadPool threadPool;
@@ -82,14 +86,13 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
             etcdWatcher = new ETCDWatcher(
                 localNode,
                 getNodeGoalStateKey(localNode, clusterName),
-                new ChangeApplierService(clusterService.getClusterApplierService()),
+                new ChangeApplierService(clusterService.getClusterApplierService(), GUICE_HOLDER_REF.get().indicesService),
                 etcdClient,
                 threadPool,
                 clusterName
             );
 
-            etcdHeartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool);
-            etcdHeartbeat.start();
+            new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool).start();
         } catch (IOException | ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
         }
@@ -130,5 +133,34 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
     @Override
     public List<ActionFilter> getActionFilters() {
         return List.of(new ClusterManagerActionFilter(clusterService));
+    }
+
+    @Override
+    public Collection<Class<? extends LifecycleComponent>> getGuiceServiceClasses() {
+        return List.of(GuiceHolder.class);
+    }
+
+    public static class GuiceHolder extends AbstractLifecycleComponent {
+        private final IndicesService indicesService;
+
+        @Inject
+        public GuiceHolder(IndicesService indicesService) {
+            this.indicesService = indicesService;
+        }
+
+        @Override
+        protected void doStart() {
+            GUICE_HOLDER_REF.set(this);
+        }
+
+        @Override
+        protected void doStop() {
+            GUICE_HOLDER_REF.set(null);
+        }
+
+        @Override
+        protected void doClose() throws IOException {
+
+        }
     }
 }

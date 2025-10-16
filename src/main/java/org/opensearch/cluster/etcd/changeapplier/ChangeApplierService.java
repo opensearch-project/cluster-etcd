@@ -10,18 +10,21 @@ import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.service.ClusterApplierService;
+import org.opensearch.indices.IndicesService;
 
 public class ChangeApplierService implements NodeStateApplier {
     private final Logger logger = LogManager.getLogger(getClass());
     private final ClusterApplierService clusterApplierService;
+    private final IndicesService indicesService;
 
-    public ChangeApplierService(ClusterApplierService clusterApplierService) {
+    public ChangeApplierService(ClusterApplierService clusterApplierService, IndicesService indicesService) {
         this.clusterApplierService = clusterApplierService;
+        this.indicesService = indicesService;
     }
 
     @Override
     public void applyNodeState(String source, NodeState nodeState) {
-        clusterApplierService.onNewClusterState(source, () -> nodeState.buildClusterState(clusterApplierService.state()), this::logError);
+        clusterApplierService.updateClusterState(source, s -> nodeState.buildClusterState(s, indicesService), this::logError);
     }
 
     @Override
