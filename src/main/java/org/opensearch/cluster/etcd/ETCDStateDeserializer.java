@@ -11,30 +11,23 @@ import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.kv.GetResponse;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.Version;
 import org.opensearch.cluster.etcd.changeapplier.CoordinatorNodeState;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeShard;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeState;
+import org.opensearch.cluster.etcd.changeapplier.IndexMetadataComponents;
 import org.opensearch.cluster.etcd.changeapplier.NodeShardAssignment;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
 import org.opensearch.cluster.etcd.changeapplier.RemoteNode;
 import org.opensearch.cluster.etcd.changeapplier.ShardRole;
-import org.opensearch.cluster.metadata.IndexMetadata;
-import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
-import org.opensearch.common.compress.CompressedXContent;
-import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.common.xcontent.json.JsonXContent;
 import org.opensearch.core.common.bytes.BytesArray;
-import org.opensearch.core.index.Index;
 import org.opensearch.core.xcontent.DeprecationHandler;
 import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
-import org.opensearch.core.xcontent.XContentBuilder;
 import org.opensearch.core.xcontent.XContentParser;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -116,6 +109,14 @@ import java.util.concurrent.ExecutionException;
  *   "heartbeatIntervalSeconds": 5
  * }
  * </pre>
+ *
+ * <b>Developer note:</b> This class should not depend on any OpenSearch-internal classes. We can depend on XContent
+ * classes for basic JSON deserialization. The OpenSearch-specific classes should be in the changeapplier package, which
+ * should not have any dependency on ETCD classes. The basic premise is that one package is ETCD-specific, and the other
+ * is OpenSearch-specific, and they should communicate only via the NodeState implementations.
+ * <p>
+ * TODO: We currently depend on DiscoveryNode, which is OpenSearch-specific. We could replace it with node name and
+ * pass the DiscoveryNode instance to buildClusterState.
  */
 public final class ETCDStateDeserializer {
     public record NodeStateResult(NodeState nodeState, Collection<String> keysToWatch) {
@@ -204,27 +205,24 @@ public final class ETCDStateDeserializer {
 
         Map<String, NodeHealthInfo> remoteNodeHealthMap = fetchNodeHealthInfo(etcdClient, remoteNodeNames, clusterName);
 
-        Map<String, Settings> remoteClusters = new HashMap<>();
+        Map<String, Map<String, Object>> remoteClusters = new HashMap<>();
         for (Map.Entry<String, Object> entry : remoteClustersConfig.entrySet()) {
             String alias = entry.getKey();
             Map<String, Object> config = (Map<String, Object>) entry.getValue();
             if (config.containsKey("seeds")) {
                 List<String> seeds = (List<String>) config.get("seeds");
                 String settingKey = "cluster.remote." + alias + ".seeds";
-                Settings remoteSettings = Settings.builder().putList(settingKey, seeds).build();
+                Map<String, Object> remoteSettings = new HashMap<>();
+                remoteSettings.put(settingKey, seeds);
                 remoteClusters.put(alias, remoteSettings);
             }
         }
 
         List<String> keysToWatch = new ArrayList<>();
-        boolean converged = true;
-        Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignment = new HashMap<>();
+        Map<String, List<List<NodeShardAssignment>>> remoteShardAssignment = new HashMap<>();
         Set<RemoteNode> remoteNodes = new HashSet<>();
         for (Map.Entry<String, Object> indexEntry : indices.entrySet()) {
             Map<String, Object> indexConfig = (Map<String, Object>) indexEntry.getValue();
-            // Use index name as UUID if not explicitly provided in etcd
-            // This ensures consistency across all nodes while keeping it simple
-            String uuid = (String) indexConfig.getOrDefault("uuid", indexEntry.getKey());
             List<List<Map<String, Object>>> shardRouting = (List<List<Map<String, Object>>>) indexConfig.get("shard_routing");
             List<List<NodeShardAssignment>> shardAssignments = new ArrayList<>(shardRouting.size());
 
@@ -255,7 +253,7 @@ public final class ETCDStateDeserializer {
                 }
                 shardAssignments.add(nodeShardAssignments);
             }
-            remoteShardAssignment.put(new Index(indexEntry.getKey(), uuid), shardAssignments);
+            remoteShardAssignment.put(indexEntry.getKey(), shardAssignments);
         }
 
         CoordinatorNodeState coordinatorNodeState = new CoordinatorNodeState(
@@ -278,7 +276,7 @@ public final class ETCDStateDeserializer {
         boolean converged = true;
         Set<String> pathsToWatch = new HashSet<>();
         Map<String, Set<DataNodeShard>> localShardAssignment = new HashMap<>();
-        Map<String, IndexMetadata> indexMetadataMap = new HashMap<>();
+        Map<String, IndexMetadataComponents> indexMetadataMap = new HashMap<>();
 
         // Fetch allocation ID information on initial load
         Map<String, Map<Integer, String>> allocationInfoMap = new HashMap<>();
@@ -342,11 +340,7 @@ public final class ETCDStateDeserializer {
             // Process the results
             for (int i = 0; i < indexNames.size(); i++) {
                 String indexName = indexNames.get(i);
-                IndexMetadata indexMetadata = buildIndexMetadataFromSeparateParts(
-                    indexName,
-                    settingsFutures.get(i),
-                    mappingsFutures.get(i)
-                );
+                IndexMetadataComponents indexMetadata = buildIndexMetadataFromSeparateParts(settingsFutures.get(i), mappingsFutures.get(i));
                 indexMetadataMap.put(indexName, indexMetadata);
             }
         }
@@ -545,16 +539,11 @@ public final class ETCDStateDeserializer {
 
     /**
      * Builds IndexMetadata from separate settings and mappings etcd responses.
-     * Also populates constant values that don't need to be stored in etcd.
      */
-    private static IndexMetadata buildIndexMetadataFromSeparateParts(
-        String indexName,
+    private static IndexMetadataComponents buildIndexMetadataFromSeparateParts(
         CompletableFuture<GetResponse> settingsFuture,
         CompletableFuture<GetResponse> mappingsFuture
-    ) throws IOException {
-        Settings indexSettings;
-        MappingMetadata mappingMetadata;
-
+    ) {
         try {
             // Fetch and parse settings
             GetResponse settingsResponse = settingsFuture.get();
@@ -562,15 +551,11 @@ public final class ETCDStateDeserializer {
                 throw new IllegalStateException("Settings response is empty");
             }
             KeyValue settingsKv = settingsResponse.getKvs().getFirst();
-            try (
-                XContentParser parser = JsonXContent.jsonXContent.createParser(
-                    NamedXContentRegistry.EMPTY,
-                    DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
-                    settingsKv.getValue().getBytes()
-                )
-            ) {
-                indexSettings = Settings.fromXContent(parser);
-            }
+            Map<String, Object> settingsMap = XContentHelper.convertToMap(
+                new BytesArray(settingsKv.getValue().getBytes()),
+                true,
+                MediaTypeRegistry.JSON
+            ).v2();
 
             // Fetch and parse mappings
             GetResponse mappingsResponse = mappingsFuture.get();
@@ -583,23 +568,10 @@ public final class ETCDStateDeserializer {
                 true,
                 MediaTypeRegistry.JSON
             ).v2();
-            SortedMap<String, Object> sortedMappingsMap = sortMapRecursively(mappingsMap);
-            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-            try (XContentBuilder mappingsBuilder = new XContentBuilder(JsonXContent.jsonXContent, byteArrayOutputStream)) {
-                mappingsBuilder.startObject();
-                mappingsBuilder.field("_doc");
-                mappingsBuilder.map(sortedMappingsMap);
-                mappingsBuilder.endObject();
-            }
-            CompressedXContent mappingsXContent = new CompressedXContent(new BytesArray(byteArrayOutputStream.toByteArray()));
-            mappingMetadata = new MappingMetadata(mappingsXContent);
-
+            return new IndexMetadataComponents(settingsMap, mappingsMap, Collections.emptyMap());
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException("Failed to fetch index metadata parts from etcd", e);
         }
-
-        // Build IndexMetadata with both etcd-sourced and constant values
-        return buildIndexMetadataWithConstants(indexName, indexSettings, mappingMetadata);
     }
 
     @SuppressWarnings("unchecked")
@@ -613,50 +585,6 @@ public final class ETCDStateDeserializer {
             sortedMap.put(entry.getKey(), value);
         }
         return sortedMap;
-    }
-
-    /**
-     * Builds IndexMetadata with settings and mappings from etcd, plus constant values
-     * that are populated in the plugin rather than stored in etcd.
-     */
-    private static IndexMetadata buildIndexMetadataWithConstants(
-        String indexName,
-        Settings indexSettings,
-        MappingMetadata mappingMetadata
-    ) {
-        // Start with etcd-sourced settings
-        Settings.Builder settingsBuilder = indexSettings != null ? Settings.builder().put(indexSettings) : Settings.builder();
-
-        // Add required system constants that must be present for IndexMetadata
-        // Use index name as UUID for simplicity and consistency
-        settingsBuilder.put(IndexMetadata.SETTING_INDEX_UUID, indexName);
-
-        // Set version to current OpenSearch version
-        settingsBuilder.put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT);
-
-        // Set creation date deterministically if not already present (for stateless operation)
-        if (!settingsBuilder.keys().contains(IndexMetadata.SETTING_CREATION_DATE)) {
-            // Use a deterministic timestamp based on index name to ensure all nodes generate the same value
-            settingsBuilder.put(IndexMetadata.SETTING_CREATION_DATE, generateDeterministicCreationDate(indexName));
-        }
-
-        // Build IndexMetadata
-        Settings finalSettings = settingsBuilder.build();
-        IndexMetadata.Builder metadataBuilder = IndexMetadata.builder(indexName).settings(finalSettings);
-
-        // Add mapping if present
-        if (mappingMetadata != null) {
-            metadataBuilder.putMapping(mappingMetadata);
-        }
-
-        // Set primary terms for each shard (these are constants that don't need to be in etcd)
-        // Get number of shards from settings
-        int numberOfShards = finalSettings.getAsInt(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1);
-        for (int i = 0; i < numberOfShards; i++) {
-            metadataBuilder.primaryTerm(i, 1);
-        }
-
-        return metadataBuilder.build();
     }
 
     private static Map<String, NodeHealthInfo> fetchNodeHealthInfo(Client etcdClient, Collection<String> nodeNames, String clusterName)
@@ -728,22 +656,6 @@ public final class ETCDStateDeserializer {
             }
             return new NodeHealthInfo(nodeId, ephemeralId, address, port, replicaAllocations, primaryAllocations);
         }
-    }
-
-    /**
-     * Generates a deterministic creation date based on the index name.
-     * This ensures all nodes generate the same creation date for the same index.
-     */
-    private static long generateDeterministicCreationDate(String indexName) {
-        // Generate a deterministic timestamp based on index name
-        // This ensures all nodes generate the same creation date for the same index
-        // Use a fixed epoch time (e.g., 2024-01-01) plus a hash of the index name
-        long baseEpoch = 1704067200000L; // 2024-01-01 00:00:00 UTC
-
-        // Generate a deterministic offset based on index name hash
-        int hashOffset = (indexName.hashCode() & Integer.MAX_VALUE) % (24 * 60 * 60 * 1000);
-
-        return baseEpoch + hashOffset;
     }
 
     private record NodeHealthInfo(String nodeId, String ephemeralId, String address, int port, List<NodeShardAllocation> replicaAllocations,

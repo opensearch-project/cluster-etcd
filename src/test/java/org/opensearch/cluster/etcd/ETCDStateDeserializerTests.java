@@ -19,6 +19,7 @@ import org.opensearch.cluster.routing.IndexRoutingTable;
 import org.opensearch.cluster.routing.IndexShardRoutingTable;
 import org.opensearch.cluster.routing.RoutingTable;
 import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.indices.IndicesService;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.io.IOException;
@@ -30,6 +31,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 public class ETCDStateDeserializerTests extends OpenSearchTestCase {
+    private final IndicesService indicesService = mock(IndicesService.class);
 
     public void testDeserializeDataNodeState() throws IOException {
         String nodeConfiguration = """
@@ -92,8 +94,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
 
         assertTrue(nodeState instanceof DataNodeState);
         DataNodeState dataNodeState = (DataNodeState) nodeState;
-        ClusterState emptyClusterState = ClusterState.EMPTY_STATE;
-        ClusterState clusterState = dataNodeState.buildClusterState(emptyClusterState);
+        ClusterState clusterState = dataNodeState.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
         assertEquals(1, clusterState.getMetadata().indices().size());
         assertTrue(clusterState.getMetadata().hasIndex("idx1"));
         assertEquals(2, nodeStateResult.keysToWatch().size());
@@ -141,7 +142,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         DataNodeState dataNode1State = (DataNodeState) node1State;
 
         // Step 2: Verify cluster state has primary shard in INITIALIZING state
-        ClusterState node1ClusterState = dataNode1State.buildClusterState(ClusterState.EMPTY_STATE);
+        ClusterState node1ClusterState = dataNode1State.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
         assertEquals(1, node1ClusterState.getMetadata().indices().size());
         assertTrue(node1ClusterState.getMetadata().hasIndex("idx1"));
         assertTrue(node1ClusterState.getRoutingTable().index("idx1").shard(0).primaryShard().initializing());
@@ -201,7 +202,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         DataNodeState dataNode2State = (DataNodeState) node2State;
 
         // Step 5: Verify cluster state for node2 has two shards
-        ClusterState node2ClusterState = dataNode2State.buildClusterState(ClusterState.EMPTY_STATE);
+        ClusterState node2ClusterState = dataNode2State.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
         assertEquals(1, node2ClusterState.getMetadata().indices().size());
         assertTrue(node2ClusterState.getMetadata().hasIndex("idx1"));
 
@@ -298,7 +299,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             )
             .build();
 
-        ClusterState node1UpdatedClusterState = dataNode1UpdatedState.buildClusterState(previousStateWithStartedPrimary);
+        ClusterState node1UpdatedClusterState = dataNode1UpdatedState.buildClusterState(previousStateWithStartedPrimary, indicesService);
         assertEquals(1, node1UpdatedClusterState.getMetadata().indices().size());
         assertTrue(node1UpdatedClusterState.getMetadata().hasIndex("idx1"));
 

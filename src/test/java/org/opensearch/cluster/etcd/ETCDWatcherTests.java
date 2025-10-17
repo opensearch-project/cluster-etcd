@@ -18,6 +18,7 @@ import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.transport.TransportAddress;
+import org.opensearch.indices.IndicesService;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.threadpool.TestThreadPool;
 import org.opensearch.threadpool.ThreadPool;
@@ -28,10 +29,12 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import static org.mockito.Mockito.mock;
 import static org.testcontainers.shaded.org.awaitility.Awaitility.await;
 
 @ThreadLeakFilters(filters = { TestContainerThreadLeakFilter.class })
 public class ETCDWatcherTests extends OpenSearchTestCase {
+    private final IndicesService indicesService = mock(IndicesService.class);
 
     private static class MockNodeStateApplier implements NodeStateApplier {
         private NodeState appliedNodeState = null;
@@ -104,7 +107,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     assertNotNull(mockNodeStateApplier.appliedNodeState);
                     assertTrue(mockNodeStateApplier.appliedNodeState instanceof DataNodeState);
                     DataNodeState dataNodeState = (DataNodeState) mockNodeStateApplier.appliedNodeState;
-                    ClusterState clusterState = dataNodeState.buildClusterState(ClusterState.EMPTY_STATE);
+                    ClusterState clusterState = dataNodeState.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
                     assertTrue(clusterState.metadata().hasIndex(indexName));
                     assertEquals(2, clusterState.metadata().index(indexName).getNumberOfShards());
                     assertEquals(1, clusterState.routingTable().index(indexName).shards().size());
@@ -212,7 +215,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     assertNotNull(mockNodeStateApplier.appliedNodeState);
                     assertTrue(mockNodeStateApplier.appliedNodeState instanceof CoordinatorNodeState);
                     CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) mockNodeStateApplier.appliedNodeState;
-                    ClusterState clusterState = coordinatorNodeState.buildClusterState(ClusterState.EMPTY_STATE);
+                    ClusterState clusterState = coordinatorNodeState.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
 
                     // Verify the coordinator node sees the index
                     assertTrue(clusterState.metadata().hasIndex(indexName));
@@ -309,7 +312,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     assertNotNull(mockNodeStateApplier.appliedNodeState);
                     assertTrue(mockNodeStateApplier.appliedNodeState instanceof CoordinatorNodeState);
                     CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) mockNodeStateApplier.appliedNodeState;
-                    ClusterState clusterState = coordinatorNodeState.buildClusterState(ClusterState.EMPTY_STATE);
+                    ClusterState clusterState = coordinatorNodeState.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
 
                     // Verify persistent settings contain the remote cluster configurations
                     Settings persistentSettings = clusterState.metadata().persistentSettings();
