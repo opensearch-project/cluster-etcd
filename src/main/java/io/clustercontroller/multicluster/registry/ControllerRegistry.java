@@ -99,6 +99,17 @@ public class ControllerRegistry {
             
             log.info("✓ Controller deregistered: {}", registration.getControllerId());
             
+        } catch (java.util.concurrent.ExecutionException e) {
+            // Check if this is a NOT_FOUND error (lease already revoked)
+            if (e.getCause() instanceof io.grpc.StatusRuntimeException) {
+                io.grpc.StatusRuntimeException grpcEx = (io.grpc.StatusRuntimeException) e.getCause();
+                if (grpcEx.getStatus().getCode() == io.grpc.Status.Code.NOT_FOUND) {
+                    log.debug("Lease already revoked for controller: {} (this is normal during shutdown)", 
+                        registration.getControllerId());
+                    return;
+                }
+            }
+            log.error("Error deregistering controller: {}", registration.getControllerId(), e);
         } catch (Exception e) {
             log.error("Error deregistering controller: {}", registration.getControllerId(), e);
         }
