@@ -15,7 +15,7 @@ import java.util.Map;
  * Request model for index template creation.
  * Mirrors OpenSearch PUT _index_template API format.
  *
- * Example usage matching OpenSearch:
+ * Example usage:
  * <pre>
  * {
  *   "index_patterns": ["logs-*", "metrics-*"],

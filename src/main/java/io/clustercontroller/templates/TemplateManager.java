@@ -55,7 +55,7 @@ public class TemplateManager {
             throw new IllegalArgumentException("Template must have at least one index pattern");
         }
         
-        // Convert to Template model (mirrors OpenSearch structure)
+        // Convert to Template model 
         Template template = new Template();
         template.setIndexPatterns(request.getIndexPatterns());
         template.setPriority(request.getPriority() != null ? request.getPriority() : 0);
@@ -109,7 +109,6 @@ public class TemplateManager {
         
         List<Template> templates = metadataStore.getAllTemplates(clusterId);
         
-        // Build response similar to OpenSearch GET _index_template API
         // Returns a list of templates with their patterns and configurations
         Map<String, Object> response = new HashMap<>();
         response.put("index_templates", templates);
@@ -154,48 +153,48 @@ public class TemplateManager {
     }
     
     /**
-     * Merge multiple templates' settings and mappings according to priority.
-     * Higher priority templates override lower priority ones.
+     * Select the highest priority template to use for index creation.
+     * Only the highest priority template is used
      * 
      * @param templates List of templates sorted by priority (highest first)
-     * @return Merged template definition with combined settings, mappings, and aliases
+     * @return Template definition from the highest priority template
      */
     public Template.TemplateDefinition mergeTemplates(List<Template> templates) {
-        log.debug("Merging {} templates", templates.size());
+        log.debug("Finding highest priority template from {} templates", templates.size());
         
-        Template.TemplateDefinition merged = new Template.TemplateDefinition();
-        merged.setSettings(new HashMap<>());
-        merged.setMappings(new HashMap<>());
-        merged.setAliases(new HashMap<>());
-        
-        // Apply templates in reverse order (lowest priority first) so higher priority overrides
-        for (int i = templates.size() - 1; i >= 0; i--) {
-            Template template = templates.get(i);
-            if (template.getTemplate() == null) {
-                continue;
-            }
-            
-            Template.TemplateDefinition templateDef = template.getTemplate();
-            
-            // Merge settings (deep merge)
-            if (templateDef.getSettings() != null) {
-                mergeMaps(merged.getSettings(), templateDef.getSettings());
-            }
-            
-            // Merge mappings (deep merge)
-            if (templateDef.getMappings() != null) {
-                mergeMaps(merged.getMappings(), templateDef.getMappings());
-            }
-            
-            // Merge aliases (simple override)
-            if (templateDef.getAliases() != null) {
-                merged.getAliases().putAll(templateDef.getAliases());
-            }
-            
-            log.debug("Applied template with priority {}", template.getPriority());
+        if (templates.isEmpty()) {
+            log.debug("No templates provided, returning empty template definition");
+            Template.TemplateDefinition empty = new Template.TemplateDefinition();
+            empty.setSettings(new HashMap<>());
+            empty.setMappings(new HashMap<>());
+            empty.setAliases(new HashMap<>());
+            return empty;
         }
         
-        return merged;
+        // Take the first template (highest priority)
+        Template highestPriorityTemplate = templates.get(0);
+        log.info("Using highest priority template with patterns {} (priority: {})", 
+            highestPriorityTemplate.getIndexPatterns(), 
+            highestPriorityTemplate.getPriority());
+        
+        if (highestPriorityTemplate.getTemplate() == null) {
+            log.warn("Highest priority template has no template definition, returning empty");
+            Template.TemplateDefinition empty = new Template.TemplateDefinition();
+            empty.setSettings(new HashMap<>());
+            empty.setMappings(new HashMap<>());
+            empty.setAliases(new HashMap<>());
+            return empty;
+        }
+        
+        // Return a copy to avoid mutation issues
+        Template.TemplateDefinition result = new Template.TemplateDefinition();
+        Template.TemplateDefinition source = highestPriorityTemplate.getTemplate();
+        
+        result.setSettings(source.getSettings() != null ? new HashMap<>(source.getSettings()) : new HashMap<>());
+        result.setMappings(source.getMappings() != null ? new HashMap<>(source.getMappings()) : new HashMap<>());
+        result.setAliases(source.getAliases() != null ? new HashMap<>(source.getAliases()) : new HashMap<>());
+        
+        return result;
     }
     
     /**
@@ -226,26 +225,6 @@ public class TemplateManager {
             .replace("*", ".*");  // Convert * to .* for regex
         
         return indexName.matches(regex);
-    }
-    
-    /**
-     * Deep merge source map into target map.
-     * For nested maps, recursively merge. For other values, source overrides target.
-     */
-    @SuppressWarnings("unchecked")
-    private void mergeMaps(Map<String, Object> target, Map<String, Object> source) {
-        for (Map.Entry<String, Object> entry : source.entrySet()) {
-            String key = entry.getKey();
-            Object sourceValue = entry.getValue();
-            
-            if (sourceValue instanceof Map && target.get(key) instanceof Map) {
-                // Both are maps, recursively merge
-                mergeMaps((Map<String, Object>) target.get(key), (Map<String, Object>) sourceValue);
-            } else {
-                // Override with source value
-                target.put(key, sourceValue);
-            }
-        }
     }
     
     private TemplateRequest parseTemplateRequest(String templateConfig) throws Exception {

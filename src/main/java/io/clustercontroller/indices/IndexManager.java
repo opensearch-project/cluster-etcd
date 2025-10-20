@@ -21,8 +21,7 @@ import java.util.Map;
  * Manages index lifecycle operations.
  * Internal component used by TaskManager.
  * 
- * Automatically applies matching index templates during index creation,
- * mirroring OpenSearch behavior where templates are matched by pattern
+ * Automatically applies matching index templates during index creation, matched by pattern
  * and applied based on priority.
  */
 @Slf4j
