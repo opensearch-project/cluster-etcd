@@ -3,23 +3,27 @@ package io.clustercontroller.indices;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.clustercontroller.models.Index;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.clustercontroller.models.SearchUnit;
-import io.clustercontroller.models.SearchUnitGoalState;
+import io.clustercontroller.models.Template;
 import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.models.IndexSettings;
+import io.clustercontroller.templates.TemplateManager;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * Manages index lifecycle operations.
  * Internal component used by TaskManager.
+ * 
+ * Automatically applies matching index templates during index creation,
+ * mirroring OpenSearch behavior where templates are matched by pattern
+ * and applied based on priority.
  */
 @Slf4j
 public class IndexManager {
@@ -27,9 +31,11 @@ public class IndexManager {
     private final MetadataStore metadataStore;
     private final ObjectMapper objectMapper;
     private final EtcdPathResolver pathResolver;
+    private final TemplateManager templateManager;
     
-    public IndexManager(MetadataStore metadataStore) {
+    public IndexManager(MetadataStore metadataStore, TemplateManager templateManager) {
         this.metadataStore = metadataStore;
+        this.templateManager = templateManager;
         this.objectMapper = new ObjectMapper();
         this.pathResolver = EtcdPathResolver.getInstance();
     }
@@ -53,11 +59,65 @@ public class IndexManager {
             return;
         }
         
-        // Extract number of shards from settings, defaulting to 1 if not specified
-        int numberOfShards = extractNumberOfShards(request.getSettings());
+        // Step 1: Find and apply matching templates (mirrors OpenSearch behavior)
+        Map<String, Object> finalSettings = new HashMap<>();
+        Map<String, Object> finalMappings = new HashMap<>();
+        Map<String, Object> finalAliases = new HashMap<>();
         
-        // Extract number of replicas from settings, defaulting to 1 if not specified
-        int numberOfReplicas = extractNumberOfReplicas(request.getSettings());
+        try {
+            List<Template> matchingTemplates = templateManager.findMatchingTemplates(clusterId, indexName);
+            if (!matchingTemplates.isEmpty()) {
+                log.info("CreateIndex - Applying {} matching template(s) to index '{}'", 
+                    matchingTemplates.size(), indexName);
+                
+                // Merge all matching templates according to priority
+                Template.TemplateDefinition mergedTemplate = templateManager.mergeTemplates(matchingTemplates);
+                
+                // Apply template settings, mappings, and aliases
+                if (mergedTemplate.getSettings() != null) {
+                    finalSettings.putAll(mergedTemplate.getSettings());
+                }
+                if (mergedTemplate.getMappings() != null) {
+                    finalMappings.putAll(mergedTemplate.getMappings());
+                }
+                if (mergedTemplate.getAliases() != null) {
+                    finalAliases.putAll(mergedTemplate.getAliases());
+                }
+                
+                log.info("CreateIndex - Template settings: {}", finalSettings);
+                log.info("CreateIndex - Template mappings: {}", finalMappings);
+                log.info("CreateIndex - Template aliases: {}", finalAliases);
+            } else {
+                log.info("CreateIndex - No matching templates found for index '{}'", indexName);
+            }
+        } catch (Exception e) {
+            log.warn("CreateIndex - Failed to apply templates for index '{}': {}. Continuing with user-provided config.", 
+                indexName, e.getMessage());
+        }
+        
+        // Step 2: Merge user-provided settings (user settings override template settings)
+        if (request.getSettings() != null && !request.getSettings().isEmpty()) {
+            log.info("CreateIndex - Merging user-provided settings with template settings");
+            deepMerge(finalSettings, request.getSettings());
+        }
+        
+        // Step 3: Merge user-provided mappings (user mappings override template mappings)
+        if (request.getMappings() != null && !request.getMappings().isEmpty()) {
+            log.info("CreateIndex - Merging user-provided mappings with template mappings");
+            deepMerge(finalMappings, request.getMappings());
+        }
+        
+        // Step 4: Merge user-provided aliases (user aliases override template aliases)
+        if (request.getAliases() != null && !request.getAliases().isEmpty()) {
+            log.info("CreateIndex - Merging user-provided aliases with template aliases");
+            finalAliases.putAll(request.getAliases());
+        }
+        
+        // Extract number of shards from final merged settings, defaulting to 1 if not specified
+        int numberOfShards = extractNumberOfShards(finalSettings);
+        
+        // Extract number of replicas from final merged settings, defaulting to 1 if not specified
+        int numberOfReplicas = extractNumberOfReplicas(finalSettings);
         
         // Create shard replica count list based on actual settings
         List<Integer> shardReplicaCount = new ArrayList<>();
@@ -81,18 +141,24 @@ public class IndexManager {
         log.info("CreateIndex - Successfully created index configuration for '{}' with document ID: {}", 
             newIndex.getIndexName(), documentId);
         
-        // Store mappings if provided
-        if (request.getMappings() != null && !request.getMappings().isEmpty()) {
-            String mappingsJson = objectMapper.writeValueAsString(request.getMappings());
+        // Store mappings (merged from templates and user request)
+        if (!finalMappings.isEmpty()) {
+            String mappingsJson = objectMapper.writeValueAsString(finalMappings);
             metadataStore.setIndexMappings(clusterId, indexName, mappingsJson);
             log.info("CreateIndex - Set mappings for index '{}'", indexName);
         }
         
-        // Store settings if provided
-        if (request.getSettings() != null && !request.getSettings().isEmpty()) {
-            String settingsJson = objectMapper.writeValueAsString(request.getSettings());
+        // Store settings (merged from templates and user request)
+        if (!finalSettings.isEmpty()) {
+            String settingsJson = objectMapper.writeValueAsString(finalSettings);
             metadataStore.setIndexSettings(clusterId, indexName, settingsJson);
             log.info("CreateIndex - Set settings for index '{}'", indexName);
+        }
+        
+        // TODO: Handle aliases when alias support is implemented
+        if (!finalAliases.isEmpty()) {
+            log.info("CreateIndex - Aliases defined for index '{}': {} (alias creation not yet implemented)", 
+                indexName, finalAliases.keySet());
         }
     }
     
@@ -350,6 +416,27 @@ public class IndexManager {
     }
 
     /**
+     * Deep merge source map into target map.
+     * For nested maps, recursively merge. For other values, source overrides target.
+     * This allows user-provided settings to override template settings.
+     */
+    @SuppressWarnings("unchecked")
+    private void deepMerge(Map<String, Object> target, Map<String, Object> source) {
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            String key = entry.getKey();
+            Object sourceValue = entry.getValue();
+            
+            if (sourceValue instanceof Map && target.get(key) instanceof Map) {
+                // Both are maps, recursively merge
+                deepMerge((Map<String, Object>) target.get(key), (Map<String, Object>) sourceValue);
+            } else {
+                // Override with source value
+                target.put(key, sourceValue);
+            }
+        }
+    }
+    
+    /**
      * Data class to hold parsed create index request
      */
     @Data
@@ -360,5 +447,8 @@ public class IndexManager {
         
         @JsonProperty("settings")
         private Map<String, Object> settings; // Optional settings JSON
+        
+        @JsonProperty("aliases")
+        private Map<String, Object> aliases; // Optional aliases JSON
     }
 }

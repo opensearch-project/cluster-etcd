@@ -1,10 +1,8 @@
 package io.clustercontroller.indices;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
-import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.store.MetadataStore;
+import io.clustercontroller.templates.TemplateManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,11 +26,17 @@ class IndexManagerTest {
     @Mock
     private MetadataStore metadataStore;
 
+    @Mock
+    private TemplateManager templateManager;
+
     private IndexManager indexManager;
 
     @BeforeEach
-    void setUp() {
-        indexManager = new IndexManager(metadataStore);
+    void setUp() throws Exception {
+        // Mock template manager to return empty list by default (no matching templates)
+        // Use lenient() to avoid UnnecessaryStubbingException in tests that don't create indices
+        lenient().when(templateManager.findMatchingTemplates(any(), any())).thenReturn(new ArrayList<>());
+        indexManager = new IndexManager(metadataStore, templateManager);
     }
 
     @Test
@@ -40,7 +44,6 @@ class IndexManagerTest {
         // Given
         String clusterId = "test-cluster";
         String indexName = "test-index";
-        List<SearchUnit> availableSearchUnits = createMockSearchUnits();
         String createIndexRequestJson = """
             {
                 "mappings": {"properties": {"field1": {"type": "text"}}},
@@ -63,8 +66,6 @@ class IndexManagerTest {
         assertThat(capturedIndexConfig).isNotNull();
         assertThat(capturedIndexConfig).contains(indexName);
 
-        // getAllSearchUnits is no longer called since the check was removed
-        
         // Verify that setIndexMappings and setIndexSettings are called with correct values
         verify(metadataStore).setIndexMappings(clusterId, indexName, "{\"properties\":{\"field1\":{\"type\":\"text\"}}}");
         verify(metadataStore).setIndexSettings(clusterId, indexName, "{\"number_of_shards\":1}");
@@ -575,13 +576,5 @@ class IndexManagerTest {
         assertThat(mergedSettings).contains("\"number_of_shards\":5");
         // Should preserve shard_replica_count from existing settings
         assertThat(mergedSettings).contains("\"shard_replica_count\"");
-    }
-
-    private List<SearchUnit> createMockSearchUnits() {
-        List<SearchUnit> searchUnits = new ArrayList<>();
-        SearchUnit unit = new SearchUnit();
-        unit.setName("test-unit-1");
-        searchUnits.add(unit);
-        return searchUnits;
     }
 }
