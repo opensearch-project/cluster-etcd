@@ -13,7 +13,6 @@ import java.util.Map;
 
 /**
  * Request model for index template creation.
- * Mirrors OpenSearch PUT _index_template API format.
  *
  * Example usage:
  * <pre>

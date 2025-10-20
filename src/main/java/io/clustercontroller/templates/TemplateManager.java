@@ -154,12 +154,11 @@ public class TemplateManager {
     
     /**
      * Select the highest priority template to use for index creation.
-     * Only the highest priority template is used
      * 
      * @param templates List of templates sorted by priority (highest first)
      * @return Template definition from the highest priority template
      */
-    public Template.TemplateDefinition mergeTemplates(List<Template> templates) {
+    public Template.TemplateDefinition selectHighestPriorityTemplate(List<Template> templates) {
         log.debug("Finding highest priority template from {} templates", templates.size());
         
         if (templates.isEmpty()) {

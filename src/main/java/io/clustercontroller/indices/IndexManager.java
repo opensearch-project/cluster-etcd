@@ -58,7 +58,7 @@ public class IndexManager {
             return;
         }
         
-        // Step 1: Find and apply matching templates (mirrors OpenSearch behavior)
+        // Step 1: Find and apply matching templates
         Map<String, Object> finalSettings = new HashMap<>();
         Map<String, Object> finalMappings = new HashMap<>();
         Map<String, Object> finalAliases = new HashMap<>();
@@ -69,18 +69,18 @@ public class IndexManager {
                 log.info("CreateIndex - Applying {} matching template(s) to index '{}'", 
                     matchingTemplates.size(), indexName);
                 
-                // Merge all matching templates according to priority
-                Template.TemplateDefinition mergedTemplate = templateManager.mergeTemplates(matchingTemplates);
+                // Select highest priority template
+                Template.TemplateDefinition selectedTemplate = templateManager.selectHighestPriorityTemplate(matchingTemplates);
                 
                 // Apply template settings, mappings, and aliases
-                if (mergedTemplate.getSettings() != null) {
-                    finalSettings.putAll(mergedTemplate.getSettings());
+                if (selectedTemplate.getSettings() != null) {
+                    finalSettings.putAll(selectedTemplate.getSettings());
                 }
-                if (mergedTemplate.getMappings() != null) {
-                    finalMappings.putAll(mergedTemplate.getMappings());
+                if (selectedTemplate.getMappings() != null) {
+                    finalMappings.putAll(selectedTemplate.getMappings());
                 }
-                if (mergedTemplate.getAliases() != null) {
-                    finalAliases.putAll(mergedTemplate.getAliases());
+                if (selectedTemplate.getAliases() != null) {
+                    finalAliases.putAll(selectedTemplate.getAliases());
                 }
                 
                 log.info("CreateIndex - Template settings: {}", finalSettings);
@@ -140,14 +140,14 @@ public class IndexManager {
         log.info("CreateIndex - Successfully created index configuration for '{}' with document ID: {}", 
             newIndex.getIndexName(), documentId);
         
-        // Store mappings (merged from templates and user request)
+        // Store mappings (from templates and user request)
         if (!finalMappings.isEmpty()) {
             String mappingsJson = objectMapper.writeValueAsString(finalMappings);
             metadataStore.setIndexMappings(clusterId, indexName, mappingsJson);
             log.info("CreateIndex - Set mappings for index '{}'", indexName);
         }
         
-        // Store settings (merged from templates and user request)
+        // Store settings (from templates and user request)
         if (!finalSettings.isEmpty()) {
             String settingsJson = objectMapper.writeValueAsString(finalSettings);
             metadataStore.setIndexSettings(clusterId, indexName, settingsJson);

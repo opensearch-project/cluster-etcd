@@ -11,7 +11,7 @@ import java.util.Map;
  * Index template model stored in etcd at:
  * <cluster-name>/templates/<template-name>/conf
  * 
- * Mirrors OpenSearch index template structure:
+ * Template structure:
  * - index_patterns: Array of patterns to match index names (e.g., ["logs-*", "metrics-*"])
  * - priority: Higher priority templates override lower priority ones (default: 0)
  * - template: Contains settings, mappings, and aliases to apply to matching indices
@@ -42,7 +42,6 @@ public class Template {
     
     /**
      * The template definition containing settings, mappings, and aliases.
-     * This mirrors OpenSearch's template object structure.
      */
     @Data
     @NoArgsConstructor
