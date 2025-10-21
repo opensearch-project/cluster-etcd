@@ -75,7 +75,7 @@ class RoleDeciderTest {
         unit.setRole(role);
         unit.setStateAdmin("NORMAL");
         unit.setStatePulled(HealthState.GREEN);
-        unit.setShardId("0");
+        unit.setShardId("00");
         return unit;
     }
 }

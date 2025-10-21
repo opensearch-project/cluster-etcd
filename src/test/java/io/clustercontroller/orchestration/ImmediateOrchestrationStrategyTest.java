@@ -50,7 +50,7 @@ class ImmediateOrchestrationStrategyTest {
         existingGoalState.setLocalShards(new HashMap<>());
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
-        when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, "00")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(eq(clusterId), anyString())).thenReturn(existingGoalState);
 
         // When
@@ -58,7 +58,7 @@ class ImmediateOrchestrationStrategyTest {
 
         // Then
         verify(metadataStore).getAllIndexConfigs(clusterId);
-        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "00");
         
         // Verify goal states are set for all nodes
         verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq("node1"), any(SearchUnitGoalState.class));
@@ -90,9 +90,9 @@ class ImmediateOrchestrationStrategyTest {
         existingGoalState.setLocalShards(new HashMap<>());
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(index1, index2));
-        when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(planned1_0);
-        when(metadataStore.getPlannedAllocation(clusterId, "index1", "1")).thenReturn(planned1_1);
-        when(metadataStore.getPlannedAllocation(clusterId, "index2", "0")).thenReturn(planned2_0);
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "00")).thenReturn(planned1_0);
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "01")).thenReturn(planned1_1);
+        when(metadataStore.getPlannedAllocation(clusterId, "index2", "00")).thenReturn(planned2_0);
         when(metadataStore.getSearchUnitGoalState(eq(clusterId), anyString())).thenReturn(existingGoalState);
 
         // When
@@ -102,9 +102,9 @@ class ImmediateOrchestrationStrategyTest {
         verify(metadataStore).getAllIndexConfigs(clusterId);
         
         // Verify all planned allocations are fetched
-        verify(metadataStore).getPlannedAllocation(clusterId, "index1", "0");
-        verify(metadataStore).getPlannedAllocation(clusterId, "index1", "1");
-        verify(metadataStore).getPlannedAllocation(clusterId, "index2", "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, "index1", "00");
+        verify(metadataStore).getPlannedAllocation(clusterId, "index1", "01");
+        verify(metadataStore).getPlannedAllocation(clusterId, "index2", "00");
         
         // Verify goal states are set for all nodes (7 total calls due to duplicate nodes across shards)
         verify(metadataStore, times(7)).setSearchUnitGoalState(eq(clusterId), anyString(), any(SearchUnitGoalState.class));
@@ -119,14 +119,14 @@ class ImmediateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
-        when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(null);
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, "00")).thenReturn(null);
 
         // When
         strategy.orchestrate(clusterId);
 
         // Then
         verify(metadataStore).getAllIndexConfigs(clusterId);
-        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "00");
         verify(metadataStore, never()).setSearchUnitGoalState(anyString(), anyString(), any(SearchUnitGoalState.class));
     }
 
@@ -158,7 +158,7 @@ class ImmediateOrchestrationStrategyTest {
         planned.setSearchSUs(Arrays.asList("node2"));
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
-        when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, "00")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(eq(clusterId), anyString())).thenReturn(null);
 
         // When
@@ -166,7 +166,7 @@ class ImmediateOrchestrationStrategyTest {
 
         // Then
         verify(metadataStore).getAllIndexConfigs(clusterId);
-        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "00");
         
         // Verify goal states are still set (new ones created for null existing states)
         verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq("node1"), any(SearchUnitGoalState.class));
@@ -189,9 +189,9 @@ class ImmediateOrchestrationStrategyTest {
         existingGoalState.setLocalShards(new HashMap<>());
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(index1, index2));
-        when(metadataStore.getPlannedAllocation(clusterId, "index1", "0"))
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "00"))
                 .thenThrow(new RuntimeException("Database error"));
-        when(metadataStore.getPlannedAllocation(clusterId, "index2", "0")).thenReturn(planned2);
+        when(metadataStore.getPlannedAllocation(clusterId, "index2", "00")).thenReturn(planned2);
         when(metadataStore.getSearchUnitGoalState(eq(clusterId), anyString())).thenReturn(existingGoalState);
 
         // When
@@ -201,8 +201,8 @@ class ImmediateOrchestrationStrategyTest {
         verify(metadataStore).getAllIndexConfigs(clusterId);
         
         // Verify that index1 fails but index2 still processes
-        verify(metadataStore).getPlannedAllocation(clusterId, "index1", "0");
-        verify(metadataStore).getPlannedAllocation(clusterId, "index2", "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, "index1", "00");
+        verify(metadataStore).getPlannedAllocation(clusterId, "index2", "00");
         
         // Verify goal states are set for index2 nodes despite index1 failure
         verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq("node1"), any(SearchUnitGoalState.class));
@@ -225,7 +225,7 @@ class ImmediateOrchestrationStrategyTest {
         existingGoalState.setLocalShards(new HashMap<>());
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
-        when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, "00")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node1")).thenReturn(existingGoalState);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node2"))
                 .thenThrow(new RuntimeException("Goal state error"));
@@ -237,7 +237,7 @@ class ImmediateOrchestrationStrategyTest {
 
         // Then
         verify(metadataStore).getAllIndexConfigs(clusterId);
-        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "00");
         
         // Verify that exceptions in goal state updates are handled gracefully
         verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq("node1"), any(SearchUnitGoalState.class));
@@ -287,7 +287,7 @@ class ImmediateOrchestrationStrategyTest {
         planned.setSearchSUs(Arrays.asList("node2"));
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
-        when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, "00")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node1"))
                 .thenThrow(new RuntimeException("Goal state retrieval failed"));
 
@@ -296,7 +296,7 @@ class ImmediateOrchestrationStrategyTest {
         
         // Then - verify the method was called and exception was handled
         verify(metadataStore).getAllIndexConfigs(clusterId);
-        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "00");
         // The orchestration should complete without throwing (resilient behavior)
         verify(metadataStore).getSearchUnitGoalState(clusterId, "node1");
     }
@@ -317,7 +317,7 @@ class ImmediateOrchestrationStrategyTest {
         existingGoalState.setLocalShards(new HashMap<>());
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
-        when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, "00")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(eq(clusterId), anyString())).thenReturn(existingGoalState);
         doThrow(new RuntimeException("Goal state update failed"))
                 .when(metadataStore).setSearchUnitGoalState(eq(clusterId), eq("node1"), any(SearchUnitGoalState.class));
@@ -329,7 +329,7 @@ class ImmediateOrchestrationStrategyTest {
         // The orchestration should complete without throwing (resilient behavior)
         
         verify(metadataStore).getAllIndexConfigs(clusterId);
-        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "00");
         verify(metadataStore).getSearchUnitGoalState(clusterId, "node1");
         verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq("node1"), any(SearchUnitGoalState.class));
     }
@@ -347,14 +347,14 @@ class ImmediateOrchestrationStrategyTest {
         planned.setSearchSUs(Arrays.asList());
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
-        when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, "00")).thenReturn(planned);
 
         // When
         strategy.orchestrate(clusterId);
 
         // Then
         verify(metadataStore).getAllIndexConfigs(clusterId);
-        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "00");
         verify(metadataStore, never()).setSearchUnitGoalState(anyString(), anyString(), any(SearchUnitGoalState.class));
     }
 
@@ -371,14 +371,14 @@ class ImmediateOrchestrationStrategyTest {
         planned.setSearchSUs(null);
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
-        when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, "00")).thenReturn(planned);
 
         // When
         strategy.orchestrate(clusterId);
 
         // Then
         verify(metadataStore).getAllIndexConfigs(clusterId);
-        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, indexName, "00");
         verify(metadataStore, never()).setSearchUnitGoalState(anyString(), anyString(), any(SearchUnitGoalState.class));
     }
 

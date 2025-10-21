@@ -47,7 +47,7 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
                 
                 // Inner loop: Iterate over shards
                 for (int shardIndex = 0; shardIndex < numberOfShards; shardIndex++) {
-                    String shardId = String.valueOf(shardIndex);
+                    String shardId = String.format("%02d", shardIndex);
                     
                     try {
                         log.debug("Processing shard: {}/{}", indexName, shardId);
@@ -198,7 +198,7 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
             
             List<SearchUnitActualState.ShardRoutingInfo> shards = nodeRouting.get(indexName);
             return shards.stream()
-                    .anyMatch(shard -> String.valueOf(shard.getShardId()).equals(shardId));
+                    .anyMatch(shard -> String.format("%02d", shard.getShardId()).equals(shardId));
         } catch (Exception e) {
             log.error("Failed to check actual state for node {}: {}", nodeId, e.getMessage(), e);
             return false;

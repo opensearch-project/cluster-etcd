@@ -53,7 +53,7 @@ class AllNodesDeciderTest {
         unit.setRole(role);
         unit.setStateAdmin("NORMAL");
         unit.setStatePulled(healthState);
-        unit.setShardId("0");
+        unit.setShardId("00");
         return unit;
     }
 }

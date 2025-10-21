@@ -67,7 +67,7 @@ public class ShardAllocator {
                 
                 // For each shard in the index
                 for (int shardIndex = 0; shardIndex < numberOfShards; shardIndex++) {
-                    String shardId = String.valueOf(shardIndex);
+                    String shardId = String.format("%02d", shardIndex);
                     
                     // Validate and get replica count for RESPECT_REPLICA_COUNT strategy
                     int replicaCount = 0; // Default for USE_ALL_AVAILABLE_NODES

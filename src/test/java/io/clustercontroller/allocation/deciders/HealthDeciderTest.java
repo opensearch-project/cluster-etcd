@@ -55,7 +55,7 @@ class HealthDeciderTest {
         unit.setRole(role);
         unit.setStateAdmin(stateAdmin);
         unit.setStatePulled(statePulled);
-        unit.setShardId("0");
+        unit.setShardId("00");
         return unit;
     }
 }
