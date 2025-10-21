@@ -1,14 +1,9 @@
 package io.clustercontroller.multicluster.lifecycle;
 
 import io.clustercontroller.TaskManager;
-import io.clustercontroller.allocation.ActualAllocationUpdater;
-import io.clustercontroller.allocation.ShardAllocator;
-import io.clustercontroller.discovery.Discovery;
-import io.clustercontroller.indices.IndexManager;
 import io.clustercontroller.multicluster.lock.ClusterLock;
 import io.clustercontroller.multicluster.lock.DistributedLockManager;
 import io.clustercontroller.store.EtcdPathResolver;
-import io.clustercontroller.orchestration.GoalStateOrchestrator;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.tasks.TaskContext;
 import io.etcd.jetcd.ByteSequence;
@@ -43,11 +38,7 @@ public class ClusterLifecycleManager {
     private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 5;
     
     private final MetadataStore metadataStore;
-    private final IndexManager indexManager;
-    private final ShardAllocator shardAllocator;
-    private final ActualAllocationUpdater actualAllocationUpdater;
-    private final GoalStateOrchestrator goalStateOrchestrator;
-    private final Discovery discovery;
+    private final TaskContext taskContext;  // Shared singleton
     private final DistributedLockManager lockManager;
     private final KV kvClient;
     private final EtcdPathResolver pathResolver;
@@ -60,11 +51,7 @@ public class ClusterLifecycleManager {
     @Autowired
     public ClusterLifecycleManager(
             MetadataStore metadataStore,
-            IndexManager indexManager,
-            ShardAllocator shardAllocator,
-            ActualAllocationUpdater actualAllocationUpdater,
-            GoalStateOrchestrator goalStateOrchestrator,
-            Discovery discovery,
+            TaskContext taskContext,
             DistributedLockManager lockManager,
             Client etcdClient,
             EtcdPathResolver pathResolver,
@@ -72,11 +59,7 @@ public class ClusterLifecycleManager {
             @Value("${multi-cluster.health-check-interval:10}") int healthCheckIntervalSeconds) {
         
         this.metadataStore = metadataStore;
-        this.indexManager = indexManager;
-        this.shardAllocator = shardAllocator;
-        this.actualAllocationUpdater = actualAllocationUpdater;
-        this.goalStateOrchestrator = goalStateOrchestrator;
-        this.discovery = discovery;
+        this.taskContext = taskContext;
         this.lockManager = lockManager;
         this.kvClient = etcdClient.getKVClient();
         this.pathResolver = pathResolver;
@@ -105,16 +88,6 @@ public class ClusterLifecycleManager {
         
         try {
             log.info("Starting management of cluster: {}", clusterId);
-            
-            // Build a per-cluster TaskContext with the shared singleton Discovery
-            TaskContext taskContext = new TaskContext(
-                clusterId,                      // dynamic cluster name
-                indexManager,
-                shardAllocator,
-                actualAllocationUpdater,
-                goalStateOrchestrator,
-                discovery                       // shared stateless singleton
-            );
             
             // Create and start TaskManager for this cluster
             // TaskManager will automatically bootstrap recurring tasks on start()

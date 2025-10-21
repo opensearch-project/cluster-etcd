@@ -27,8 +27,7 @@ class PlanShardAllocationTaskTest {
     
     @BeforeEach
     void setUp() {
-        // Mock the TaskContext to return a cluster name and shard allocator (lenient for tests that don't use it)
-        when(taskContext.getClusterName()).thenReturn("test-cluster");
+        // Mock the TaskContext to return shard allocator (lenient for tests that don't use it)
         when(taskContext.getShardAllocator()).thenReturn(shardAllocator);
         
         // Mock the shardAllocator to do nothing (successful execution)
@@ -43,7 +42,7 @@ class PlanShardAllocationTaskTest {
         PlanShardAllocationTask task = new PlanShardAllocationTask(taskName, 1, input, TASK_SCHEDULE_REPEAT);
         
         // When
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, "test-cluster");
         
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_COMPLETED);

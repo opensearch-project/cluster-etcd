@@ -28,7 +28,7 @@ class UnknownTaskTest {
         String input = "some-input";
         UnknownTask task = new UnknownTask(taskName, 1, input, TASK_SCHEDULE_ONCE);
         
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, "test-cluster");
         
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
         // No component interactions for unknown tasks

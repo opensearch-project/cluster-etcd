@@ -33,15 +33,13 @@ class GoalStateOrchestratorTaskTest {
     void testExecuteSuccess() throws Exception {
         // Given
         String clusterId = "test-cluster";
-        when(taskContext.getClusterName()).thenReturn(clusterId);
         when(taskContext.getGoalStateOrchestrator()).thenReturn(goalStateOrchestrator);
 
         // When
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, clusterId);
 
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_COMPLETED);
-        verify(taskContext).getClusterName();
         verify(taskContext).getGoalStateOrchestrator();
         verify(goalStateOrchestrator).orchestrateGoalStates(clusterId);
     }
@@ -50,16 +48,14 @@ class GoalStateOrchestratorTaskTest {
     void testExecuteWithOrchestratorException() throws Exception {
         // Given
         String clusterId = "test-cluster";
-        when(taskContext.getClusterName()).thenReturn(clusterId);
         when(taskContext.getGoalStateOrchestrator()).thenReturn(goalStateOrchestrator);
         doThrow(new RuntimeException("Orchestration error")).when(goalStateOrchestrator).orchestrateGoalStates(clusterId);
 
         // When
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, clusterId);
 
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
-        verify(taskContext).getClusterName();
         verify(taskContext).getGoalStateOrchestrator();
         verify(goalStateOrchestrator).orchestrateGoalStates(clusterId);
     }
@@ -67,30 +63,28 @@ class GoalStateOrchestratorTaskTest {
     @Test
     void testExecuteWithContextException() {
         // Given
-        when(taskContext.getClusterName()).thenThrow(new RuntimeException("Context error"));
+        String clusterId = "test-cluster";
+        when(taskContext.getGoalStateOrchestrator()).thenThrow(new RuntimeException("Context error"));
 
         // When
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, clusterId);
 
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
-        verify(taskContext).getClusterName();
-        verify(taskContext, never()).getGoalStateOrchestrator();
+        verify(taskContext).getGoalStateOrchestrator();
         verify(goalStateOrchestrator, never()).orchestrateGoalStates(anyString());
     }
 
     @Test
     void testExecuteWithNullClusterName() throws Exception {
         // Given
-        when(taskContext.getClusterName()).thenReturn(null);
         when(taskContext.getGoalStateOrchestrator()).thenReturn(goalStateOrchestrator);
 
         // When
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, null);
 
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_COMPLETED);
-        verify(taskContext).getClusterName();
         verify(taskContext).getGoalStateOrchestrator();
         verify(goalStateOrchestrator).orchestrateGoalStates(null);
     }
@@ -98,15 +92,13 @@ class GoalStateOrchestratorTaskTest {
     @Test
     void testExecuteWithEmptyClusterName() throws Exception {
         // Given
-        when(taskContext.getClusterName()).thenReturn("");
         when(taskContext.getGoalStateOrchestrator()).thenReturn(goalStateOrchestrator);
 
         // When
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, "");
 
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_COMPLETED);
-        verify(taskContext).getClusterName();
         verify(taskContext).getGoalStateOrchestrator();
         verify(goalStateOrchestrator).orchestrateGoalStates("");
     }
@@ -115,16 +107,14 @@ class GoalStateOrchestratorTaskTest {
     void testExecuteWithInterruptedException() throws Exception {
         // Given
         String clusterId = "test-cluster";
-        when(taskContext.getClusterName()).thenReturn(clusterId);
         when(taskContext.getGoalStateOrchestrator()).thenReturn(goalStateOrchestrator);
         doThrow(new RuntimeException("Interrupted")).when(goalStateOrchestrator).orchestrateGoalStates(clusterId);
 
         // When
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, clusterId);
 
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
-        verify(taskContext).getClusterName();
         verify(taskContext).getGoalStateOrchestrator();
         verify(goalStateOrchestrator).orchestrateGoalStates(clusterId);
     }
@@ -133,16 +123,14 @@ class GoalStateOrchestratorTaskTest {
     void testExecuteWithCheckedException() throws Exception {
         // Given
         String clusterId = "test-cluster";
-        when(taskContext.getClusterName()).thenReturn(clusterId);
         when(taskContext.getGoalStateOrchestrator()).thenReturn(goalStateOrchestrator);
         doThrow(new RuntimeException("Checked exception")).when(goalStateOrchestrator).orchestrateGoalStates(clusterId);
 
         // When
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, clusterId);
 
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
-        verify(taskContext).getClusterName();
         verify(taskContext).getGoalStateOrchestrator();
         verify(goalStateOrchestrator).orchestrateGoalStates(clusterId);
     }
@@ -151,17 +139,15 @@ class GoalStateOrchestratorTaskTest {
     void testExecuteWithError() throws Exception {
         // Given
         String clusterId = "test-cluster";
-        when(taskContext.getClusterName()).thenReturn(clusterId);
         when(taskContext.getGoalStateOrchestrator()).thenReturn(goalStateOrchestrator);
         doThrow(new Error("Fatal error")).when(goalStateOrchestrator).orchestrateGoalStates(clusterId);
 
         // When & Then
         // Error should propagate up (not caught by Exception handler)
-        assertThatThrownBy(() -> task.execute(taskContext))
+        assertThatThrownBy(() -> task.execute(taskContext, clusterId))
                 .isInstanceOf(Error.class)
                 .hasMessage("Fatal error");
         
-        verify(taskContext).getClusterName();
         verify(taskContext).getGoalStateOrchestrator();
         verify(goalStateOrchestrator).orchestrateGoalStates(clusterId);
     }
@@ -172,7 +158,7 @@ class GoalStateOrchestratorTaskTest {
         TaskContext nullContext = null;
 
         // When
-        String result = task.execute(nullContext);
+        String result = task.execute(nullContext, "test-cluster");
 
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
@@ -183,15 +169,13 @@ class GoalStateOrchestratorTaskTest {
     void testExecuteWithNullGoalStateOrchestrator() {
         // Given
         String clusterId = "test-cluster";
-        when(taskContext.getClusterName()).thenReturn(clusterId);
         when(taskContext.getGoalStateOrchestrator()).thenReturn(null);
 
         // When
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, clusterId);
 
         // Then
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
-        verify(taskContext).getClusterName();
         verify(taskContext).getGoalStateOrchestrator();
     }
 
@@ -235,20 +219,18 @@ class GoalStateOrchestratorTaskTest {
     void testExecuteMultipleTimes() throws Exception {
         // Given
         String clusterId = "test-cluster";
-        when(taskContext.getClusterName()).thenReturn(clusterId);
         when(taskContext.getGoalStateOrchestrator()).thenReturn(goalStateOrchestrator);
 
         // When
-        String result1 = task.execute(taskContext);
-        String result2 = task.execute(taskContext);
-        String result3 = task.execute(taskContext);
+        String result1 = task.execute(taskContext, clusterId);
+        String result2 = task.execute(taskContext, clusterId);
+        String result3 = task.execute(taskContext, clusterId);
 
         // Then
         assertThat(result1).isEqualTo(TASK_STATUS_COMPLETED);
         assertThat(result2).isEqualTo(TASK_STATUS_COMPLETED);
         assertThat(result3).isEqualTo(TASK_STATUS_COMPLETED);
         
-        verify(taskContext, times(3)).getClusterName();
         verify(taskContext, times(3)).getGoalStateOrchestrator();
         verify(goalStateOrchestrator, times(3)).orchestrateGoalStates(clusterId);
     }
@@ -259,18 +241,16 @@ class GoalStateOrchestratorTaskTest {
         String clusterId1 = "cluster1";
         String clusterId2 = "cluster2";
         
-        when(taskContext.getClusterName()).thenReturn(clusterId1).thenReturn(clusterId2);
         when(taskContext.getGoalStateOrchestrator()).thenReturn(goalStateOrchestrator);
 
         // When
-        String result1 = task.execute(taskContext);
-        String result2 = task.execute(taskContext);
+        String result1 = task.execute(taskContext, clusterId1);
+        String result2 = task.execute(taskContext, clusterId2);
 
         // Then
         assertThat(result1).isEqualTo(TASK_STATUS_COMPLETED);
         assertThat(result2).isEqualTo(TASK_STATUS_COMPLETED);
         
-        verify(taskContext, times(2)).getClusterName();
         verify(taskContext, times(2)).getGoalStateOrchestrator();
         verify(goalStateOrchestrator).orchestrateGoalStates(clusterId1);
         verify(goalStateOrchestrator).orchestrateGoalStates(clusterId2);

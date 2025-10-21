@@ -9,17 +9,15 @@ import lombok.AllArgsConstructor;
 import lombok.Getter;
 
 /**
- * Context object providing access to components for task execution.
+ * Context object providing access to shared components for task execution.
  * 
- * In multi-cluster mode, each cluster gets its own TaskContext instance with
- * the appropriate clusterId. This ensures tasks always operate on the correct
- * cluster data paths.
+ * This is a singleton that contains stateless or cluster-agnostic services.
+ * The cluster-specific context (clusterId) is passed separately to task execution.
  */
 @Getter
 @AllArgsConstructor
 public class TaskContext {
     
-    private final String clusterName;  // Cluster identifier for this context
     private final IndexManager indexManager;
     private final ShardAllocator shardAllocator;
     private final ActualAllocationUpdater actualAllocationUpdater;

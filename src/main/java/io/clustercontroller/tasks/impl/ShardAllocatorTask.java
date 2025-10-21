@@ -23,16 +23,15 @@ public class ShardAllocatorTask implements Task {
     private final String schedule;
     
     @Override
-    public String execute(TaskContext context) {
-        log.info("Executing shard allocator task: {}", name);
+    public String execute(TaskContext context, String clusterId) {
+        log.info("Executing shard allocator task: {} for cluster: {}", name, clusterId);
         
         try {
-            String clusterId = context.getClusterName();
             AllocationStrategy strategy = AllocationStrategy.USE_ALL_AVAILABLE_NODES; // TODO: Pick from config later
             context.getShardAllocator().planShardAllocation(clusterId, strategy);
             return TASK_STATUS_COMPLETED;
         } catch (Exception e) {
-            log.error("Failed to execute shard allocator task: {}", e.getMessage(), e);
+            log.error("Failed to execute shard allocator task for cluster {}: {}", clusterId, e.getMessage(), e);
             return TASK_STATUS_FAILED;
         }
     }

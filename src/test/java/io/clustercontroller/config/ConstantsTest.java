@@ -11,7 +11,6 @@ class ConstantsTest {
     
     @Test
     void testDefaultConfigurationConstants() {
-        assertThat(DEFAULT_CLUSTER_NAME).isEqualTo("default-cluster");
         assertThat(DEFAULT_ETCD_ENDPOINT).isEqualTo("http://localhost:2379");
         assertThat(DEFAULT_TASK_INTERVAL_SECONDS).isEqualTo(30L);
     }

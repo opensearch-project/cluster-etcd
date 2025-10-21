@@ -1,6 +1,5 @@
 package io.clustercontroller.multicluster.lifecycle;
 
-import io.clustercontroller.TaskManager;
 import io.clustercontroller.allocation.ActualAllocationUpdater;
 import io.clustercontroller.allocation.ShardAllocator;
 import io.clustercontroller.discovery.Discovery;
@@ -10,6 +9,7 @@ import io.clustercontroller.multicluster.lock.DistributedLockManager;
 import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.orchestration.GoalStateOrchestrator;
 import io.clustercontroller.store.MetadataStore;
+import io.clustercontroller.tasks.TaskContext;
 import io.etcd.jetcd.ByteSequence;
 import io.etcd.jetcd.Client;
 import io.etcd.jetcd.KV;
@@ -66,6 +66,7 @@ class ClusterLifecycleManagerTest {
     @Mock
     private CloseableClient mockKeepAlive;
 
+    private TaskContext taskContext;
     private ClusterLifecycleManager lifecycleManager;
 
     @BeforeEach
@@ -80,13 +81,18 @@ class ClusterLifecycleManagerTest {
         lenient().when(kvClient.delete(any(ByteSequence.class)))
             .thenReturn(java.util.concurrent.CompletableFuture.completedFuture(null));
         
-        lifecycleManager = new ClusterLifecycleManager(
-            metadataStore,
+        // Create shared TaskContext (no clusterName - it's passed separately to tasks)
+        taskContext = new TaskContext(
             indexManager,
             shardAllocator,
             actualAllocationUpdater,
             goalStateOrchestrator,
-            discovery,
+            discovery
+        );
+        
+        lifecycleManager = new ClusterLifecycleManager(
+            metadataStore,
+            taskContext,
             lockManager,
             etcdClient,
             pathResolver,

@@ -23,15 +23,14 @@ public class GoalStateOrchestratorTask implements Task {
     private final String schedule;
     
     @Override
-    public String execute(TaskContext context) {
-        log.info("Executing goal state orchestrator task: {}", name);
+    public String execute(TaskContext context, String clusterId) {
+        log.info("Executing goal state orchestrator task: {} for cluster: {}", name, clusterId);
         
         try {
-            String clusterId = context.getClusterName();
             context.getGoalStateOrchestrator().orchestrateGoalStates(clusterId);
             return TASK_STATUS_COMPLETED;
         } catch (Exception e) {
-            log.error("Failed to execute goal state orchestrator task: {}", e.getMessage(), e);
+            log.error("Failed to execute goal state orchestrator task for cluster {}: {}", clusterId, e.getMessage(), e);
             return TASK_STATUS_FAILED;
         }
     }

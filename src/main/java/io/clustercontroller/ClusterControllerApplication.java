@@ -52,7 +52,7 @@ public class ClusterControllerApplication {
     @Primary
     public ClusterControllerConfig config() {
         ClusterControllerConfig config = new ClusterControllerConfig();
-        log.info("Loaded configuration with cluster: {}", config.getClusterName());
+        log.info("Loaded configuration");
         return config;
     }
     
@@ -123,8 +123,7 @@ public class ClusterControllerApplication {
     }
 
     /**
-     * Discovery bean for cluster topology discovery.
-     * Stateless singleton - accepts clusterName as method parameter.
+     * Discovery bean for node discovery
      */
     @Bean
     public Discovery discovery(MetadataStore metadataStore) {
@@ -132,8 +131,27 @@ public class ClusterControllerApplication {
         return new Discovery(metadataStore);
     }
 
-    // Multi-cluster mode: no default TaskContext bean.
-    // TaskContexts are created dynamically per cluster in ClusterLifecycleManager.
+    /**
+     * TaskContext bean - shared singleton providing access to cluster-agnostic services.
+     * In multi-cluster mode, this single instance is shared across all clusters.
+     * Cluster-specific context (clusterId) is passed separately to task execution.
+     */
+    @Bean
+    public io.clustercontroller.tasks.TaskContext taskContext(
+            IndexManager indexManager,
+            ShardAllocator shardAllocator,
+            ActualAllocationUpdater actualAllocationUpdater,
+            GoalStateOrchestrator goalStateOrchestrator,
+            Discovery discovery) {
+        log.info("Initializing shared TaskContext for multi-cluster support");
+        return new io.clustercontroller.tasks.TaskContext(
+            indexManager,
+            shardAllocator,
+            actualAllocationUpdater,
+            goalStateOrchestrator,
+            discovery
+        );
+    }
 
     /**
      * Expose etcd Client for components that need direct access (e.g., MultiClusterManager)
@@ -155,14 +173,18 @@ public class ClusterControllerApplication {
      */
 
     // TODO: Old single-cluster TaskManager - disabled in favor of MultiClusterManager
-    // Uncomment below if you need to revert to single-cluster mode
+    // If reverting to single-cluster mode, you'll need to:
+    // 1. Add cluster.name back to application.yml
+    // 2. Add clusterName field back to ClusterControllerConfig
+    // 3. Uncomment and adjust the TaskManager bean below
     /*
     @Bean
     public TaskManager taskManager(MetadataStore metadataStore, TaskContext taskContext, ClusterControllerConfig config) {
-        log.info("Initializing TaskManager for cluster: {}", config.getClusterName());
-        TaskManager taskManager = new TaskManager(metadataStore, taskContext, config.getClusterName(), config.getTaskIntervalSeconds());
+        String clusterName = "default-cluster"; // TODO: restore config.getClusterName()
+        log.info("Initializing TaskManager for cluster: {}", clusterName);
+        TaskManager taskManager = new TaskManager(metadataStore, taskContext, clusterName, config.getTaskIntervalSeconds());
         taskManager.start();
-        log.info("TaskManager started with background processing for cluster: {}", config.getClusterName());
+        log.info("TaskManager started with background processing for cluster: {}", clusterName);
         return taskManager;
     }
     */

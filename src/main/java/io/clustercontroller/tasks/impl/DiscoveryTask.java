@@ -23,15 +23,15 @@ public class DiscoveryTask implements Task {
     private final String schedule;
     
     @Override
-    public String execute(TaskContext context) {
-        log.info("Executing discovery task: {} for cluster: {}", name, context.getClusterName());
+    public String execute(TaskContext context, String clusterId) {
+        log.info("Executing discovery task: {} for cluster: {}", name, clusterId);
         
         try {
-            context.getDiscovery().discoverSearchUnits(context.getClusterName());
-            log.info("Discovery task completed successfully for cluster: {}", context.getClusterName());
+            context.getDiscovery().discoverSearchUnits(clusterId);
+            log.info("Discovery task completed successfully for cluster: {}", clusterId);
             return TASK_STATUS_COMPLETED;
         } catch (Exception e) {
-            log.error("Failed to execute discovery task for cluster {}: {}", context.getClusterName(), e.getMessage(), e);
+            log.error("Failed to execute discovery task for cluster {}: {}", clusterId, e.getMessage(), e);
             return TASK_STATUS_FAILED;
         }
     }

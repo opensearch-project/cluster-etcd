@@ -27,7 +27,6 @@ class ShardAllocatorTaskTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         when(taskContext.getShardAllocator()).thenReturn(shardAllocator);
-        when(taskContext.getClusterName()).thenReturn("test-cluster");
     }
     
     @Test
@@ -36,7 +35,7 @@ class ShardAllocatorTaskTest {
         String input = "";
         ShardAllocatorTask task = new ShardAllocatorTask(taskName, 1, input, TASK_SCHEDULE_REPEAT);
         
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, "test-cluster");
         
         assertThat(result).isEqualTo(TASK_STATUS_COMPLETED);
         verify(shardAllocator).planShardAllocation("test-cluster", AllocationStrategy.USE_ALL_AVAILABLE_NODES);
@@ -65,7 +64,7 @@ class ShardAllocatorTaskTest {
         
         doThrow(new RuntimeException("Shard allocation failed")).when(shardAllocator).planShardAllocation("test-cluster", AllocationStrategy.USE_ALL_AVAILABLE_NODES);
         
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, "test-cluster");
         
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
         verify(shardAllocator).planShardAllocation("test-cluster", AllocationStrategy.USE_ALL_AVAILABLE_NODES);

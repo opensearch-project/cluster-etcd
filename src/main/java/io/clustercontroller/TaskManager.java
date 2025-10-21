@@ -126,7 +126,7 @@ public class TaskManager {
             log.info("[Cluster: {}] Successfully bootstrapped recurring tasks", clusterName);
         } catch (Exception e) {
             log.error("[Cluster: {}] Failed to bootstrap recurring tasks: {}", clusterName, e.getMessage(), e);
-            // Don't throw - allow TaskManager to start even if bootstrap fails
+            throw new RuntimeException("Failed to bootstrap recurring tasks", e);
         }
     }
     
@@ -206,7 +206,7 @@ public class TaskManager {
             
             // Create Task implementation from metadata and execute
             Task task = TaskFactory.createTask(taskMetadata);
-            String result = task.execute(taskContext);
+            String result = task.execute(taskContext, clusterName);
             
             // Make repeat tasks eligible again by resetting status to pending
             if (TASK_SCHEDULE_REPEAT.equalsIgnoreCase(taskMetadata.getSchedule())) {
@@ -233,6 +233,8 @@ public class TaskManager {
     }
     
     private TaskMetadata selectNextTask(List<TaskMetadata> tasks) {
+        //TODO: Implement advanced task selection logic based on priority and lastUpdated
+        
         // Select tasks based on "effective time" = lastUpdated + priority weight
         // This allows repeat tasks to alternate naturally based on priority + age
         // Lower effective time = higher priority (should run sooner)
