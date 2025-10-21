@@ -6,6 +6,7 @@ package org.opensearch.cluster.etcd.changeapplier;
 
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.node.DiscoveryNode;
+import org.opensearch.indices.IndicesService;
 
 public abstract class NodeState {
     protected final DiscoveryNode localNode;
@@ -15,6 +16,6 @@ public abstract class NodeState {
         this.localNode = localNode;
     }
 
-    public abstract ClusterState buildClusterState(ClusterState previous);
+    public abstract ClusterState buildClusterState(ClusterState previous, IndicesService indicesService);
 
 }

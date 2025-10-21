@@ -20,6 +20,7 @@ import org.opensearch.cluster.routing.UnassignedInfo;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.indices.IndicesService;
 
 import java.util.Collection;
 import java.util.List;
@@ -28,16 +29,16 @@ import java.util.Map;
 public class CoordinatorNodeState extends NodeState {
 
     private final Collection<RemoteNode> remoteNodes;
-    private final Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments;
+    private final Map<String, List<List<NodeShardAssignment>>> remoteShardAssignments;
     private final Map<String, Object> aliases;
-    private final Map<String, Settings> remoteClusters;
+    private final Map<String, Map<String, Object>> remoteClusters;
 
     public CoordinatorNodeState(
         DiscoveryNode localNode,
         Collection<RemoteNode> remoteNodes,
-        Map<Index, List<List<NodeShardAssignment>>> remoteShardAssignments,
+        Map<String, List<List<NodeShardAssignment>>> remoteShardAssignments,
         Map<String, Object> aliases,
-        Map<String, Settings> remoteClusters
+        Map<String, Map<String, Object>> remoteClusters
     ) {
         super(localNode);
         this.remoteNodes = remoteNodes;
@@ -47,19 +48,20 @@ public class CoordinatorNodeState extends NodeState {
     }
 
     @Override
-    public ClusterState buildClusterState(ClusterState previous) {
+    public ClusterState buildClusterState(ClusterState previous, IndicesService indicesService) {
         DiscoveryNodes.Builder nodesBuilder = DiscoveryNodes.builder().localNodeId(localNode.getId()).add(localNode);
 
         Metadata.Builder metadataBuilder = Metadata.builder();
         RoutingTable.Builder routingTableBuilder = RoutingTable.builder();
 
-        for (Map.Entry<Index, List<List<NodeShardAssignment>>> indexEntry : remoteShardAssignments.entrySet()) {
+        for (Map.Entry<String, List<List<NodeShardAssignment>>> indexEntry : remoteShardAssignments.entrySet()) {
+            Index index = new Index(indexEntry.getKey(), indexEntry.getKey());
             int shardNum = 0;
 
             boolean indexHasPrimary = false;
-            IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(indexEntry.getKey());
+            IndexRoutingTable.Builder indexRoutingTableBuilder = IndexRoutingTable.builder(index);
             for (List<NodeShardAssignment> shardRouting : indexEntry.getValue()) {
-                ShardId shardId = new ShardId(indexEntry.getKey(), shardNum);
+                ShardId shardId = new ShardId(index, shardNum);
                 IndexShardRoutingTable.Builder shardRoutingTableBuilder = new IndexShardRoutingTable.Builder(shardId);
                 boolean shardHasPrimary = false;
                 for (NodeShardAssignment shardAssignment : shardRouting) {
@@ -69,7 +71,7 @@ public class CoordinatorNodeState extends NodeState {
                             // If the index has primary shards, we need to figure it out from the first shard.
                             throw new IllegalStateException(
                                 "Index "
-                                    + indexEntry.getKey().getName()
+                                    + indexEntry.getKey()
                                     + " has at least one primary shard, but the first shard has no primary assigned."
                             );
                         }
@@ -89,26 +91,22 @@ public class CoordinatorNodeState extends NodeState {
                 }
                 if (indexHasPrimary == true && shardHasPrimary == false) {
                     throw new IllegalStateException(
-                        "Index "
-                            + indexEntry.getKey().getName()
-                            + " has a primary shard, but shard "
-                            + shardNum
-                            + " has no primary assigned."
+                        "Index " + indexEntry.getKey() + " has a primary shard, but shard " + shardNum + " has no primary assigned."
                     );
                 }
                 indexRoutingTableBuilder.addIndexShard(shardRoutingTableBuilder.build());
                 shardNum++;
             }
             Settings.Builder indexSettings = Settings.builder()
-                .put(IndexMetadata.SETTING_INDEX_UUID, indexEntry.getKey().getUUID())
+                .put(IndexMetadata.SETTING_INDEX_UUID, index.getUUID())
                 .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
                 .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, indexEntry.getValue().size())
                 .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0);
             if (indexHasPrimary == false) {
                 indexSettings.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
             }
-            IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexEntry.getKey().getName()).settings(indexSettings);
-            addAliasesToIndexMetadata(indexMetadataBuilder, indexEntry.getKey().getName());
+            IndexMetadata.Builder indexMetadataBuilder = IndexMetadata.builder(indexEntry.getKey()).settings(indexSettings);
+            addAliasesToIndexMetadata(indexMetadataBuilder, indexEntry.getKey());
             IndexMetadata indexMetadata = indexMetadataBuilder.build();
             routingTableBuilder.add(indexRoutingTableBuilder);
             metadataBuilder.put(indexMetadata, false);
@@ -119,8 +117,8 @@ public class CoordinatorNodeState extends NodeState {
 
         if (this.remoteClusters != null && !this.remoteClusters.isEmpty()) {
             Settings.Builder persistentSettingsBuilder = Settings.builder();
-            for (Settings remoteSetting : this.remoteClusters.values()) {
-                persistentSettingsBuilder.put(remoteSetting);
+            for (Map<String, Object> remoteSettingMap : this.remoteClusters.values()) {
+                persistentSettingsBuilder.loadFromMap(remoteSettingMap);
             }
             metadataBuilder.persistentSettings(persistentSettingsBuilder.build());
         }
