@@ -123,6 +123,9 @@ public class TaskManager {
             // 2. Plan Shard Allocation - plans shard allocation based on discovered nodes
             ensureRecurringTask(TASK_ACTION_PLAN_SHARD_ALLOCATION, 2, "Plan shard allocation");
             
+            // 3. Goal State Orchestrator - orchestrates goal states to search units
+            ensureRecurringTask(TASK_ACTION_GOAL_STATE_ORCHESTRATOR, 3, "Orchestrate goal states to search units");
+            
             log.info("[Cluster: {}] Successfully bootstrapped recurring tasks", clusterName);
         } catch (Exception e) {
             log.error("[Cluster: {}] Failed to bootstrap recurring tasks: {}", clusterName, e.getMessage(), e);
