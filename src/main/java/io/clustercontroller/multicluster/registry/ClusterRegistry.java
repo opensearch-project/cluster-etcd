@@ -24,6 +24,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 public class ClusterRegistry {
     
     private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 5;
+    
     private final KV kvClient;
     private final Watch watchClient;
     private final EtcdPathResolver pathResolver;
@@ -54,9 +55,12 @@ public class ClusterRegistry {
             for (KeyValue kv : response.getKvs()) {
                 String path = kv.getKey().toString(UTF_8);
                 // Extract cluster ID from path: /multi-cluster/clusters/{id}/metadata
-                String[] parts = path.split("/");
-                if (parts.length >= 4) {
-                    clusters.add(parts[3]);
+                // Only include clusters that have metadata key (ignore assignment keys)
+                if (path.endsWith("/metadata")) {
+                    String[] parts = path.split("/");
+                    if (parts.length >= 4) {
+                        clusters.add(parts[3]);
+                    }
                 }
             }
             
@@ -70,6 +74,7 @@ public class ClusterRegistry {
     
     /**
      * Watch for cluster membership changes.
+     * Note: Callback should NOT do blocking operations - offload to another thread!
      */
     public Watch.Watcher watchClusters(Runnable onClusterChange) {
         String prefix = pathResolver.getClustersPrefix();
@@ -80,7 +85,7 @@ public class ClusterRegistry {
                 .build(),
             watchResponse -> {
                 log.debug("Cluster membership changed");
-                onClusterChange.run();  // Just notify, dont do blocking work here
+                onClusterChange.run();  // Just notify, don't do blocking work here
             }
         );
     }

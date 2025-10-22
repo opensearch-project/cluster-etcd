@@ -235,6 +235,12 @@ public class MultiClusterManager {
     
     /**
      * Graceful shutdown.
+     * 
+     * Shutdown order is critical to avoid race conditions:
+     * 1. Stop reconcile scheduler first (prevent new lock attempts)
+     * 2. Close watchers (stop receiving etcd events)
+     * 3. Stop managing clusters and release locks
+     * 4. Deregister controller
      */
     @PreDestroy
     public void shutdown() {
@@ -243,10 +249,17 @@ public class MultiClusterManager {
         log.info("========================================");
         
         try {
-            // Stop all clusters
-            lifecycleManager.stopAll();
+            // Step 1: Stop reconcile scheduler FIRST to prevent new reconciliation loops
+            // This prevents race conditions where reconcile tries to acquire locks during shutdown
+            log.debug("Stopping reconcile scheduler...");
+            reconcileScheduler.shutdown();
+            if (!reconcileScheduler.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                log.warn("Reconcile scheduler did not terminate in time, forcing shutdown");
+                reconcileScheduler.shutdownNow();
+            }
             
-            // Close watchers
+            // Step 2: Close watchers to stop receiving etcd events
+            log.debug("Closing watchers...");
             if (clusterWatcher != null) {
                 clusterWatcher.close();
             }
@@ -254,16 +267,14 @@ public class MultiClusterManager {
                 controllerWatcher.close();
             }
             
-            // Deregister controller
+            // Step 3: Stop all managed clusters and release their locks
+            log.debug("Stopping managed clusters...");
+            lifecycleManager.stopAll();
+            
+            // Step 4: Deregister controller (this may fail if lease already revoked, which is fine)
+            log.debug("Deregistering controller...");
             if (registration != null) {
                 controllerRegistry.deregister(registration);
-            }
-            
-            // Shutdown scheduler
-            reconcileScheduler.shutdown();
-            if (!reconcileScheduler.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                log.warn("Reconcile scheduler did not terminate in time, forcing shutdown");
-                reconcileScheduler.shutdownNow();
             }
             
             log.info("✓ MultiClusterManager shutdown complete");

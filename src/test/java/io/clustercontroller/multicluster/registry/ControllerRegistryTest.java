@@ -118,6 +118,30 @@ class ControllerRegistryTest {
     }
 
     @Test
+    void testDeregister_HandlesNotFoundGracefully() {
+        // Given
+        String controllerId = "controller-1";
+        long leaseId = 12345L;
+        ControllerRegistration registration = new ControllerRegistration(controllerId, leaseId, keepAliveObserver);
+        
+        // Simulate NOT_FOUND error (lease already revoked during shutdown)
+        // This happens when: lock release revokes the lease, then deregister tries to revoke it again
+        io.grpc.StatusRuntimeException notFoundException = 
+            new io.grpc.StatusRuntimeException(io.grpc.Status.NOT_FOUND);
+        
+        when(leaseClient.revoke(leaseId))
+            .thenReturn(CompletableFuture.failedFuture(notFoundException));
+        
+        // When - should not throw
+        registry.deregister(registration);
+        
+        // Then
+        verify(keepAliveObserver).close();
+        verify(leaseClient).revoke(leaseId);
+        // Should log at debug level, not error (verified by no exception thrown)
+    }
+
+    @Test
     void testListActiveControllers_ReturnsControllerIds() throws Exception {
         // Given
         String prefix = "/multi-cluster/controllers/";
