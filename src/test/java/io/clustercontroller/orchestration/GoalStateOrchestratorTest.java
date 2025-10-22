@@ -115,15 +115,15 @@ class GoalStateOrchestratorTest {
         List<Index> indexConfigs = List.of(index);
         
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(indexConfigs);
-        when(metadataStore.getPlannedAllocation(clusterId, "test-index", "00")).thenReturn(null);
-        when(metadataStore.getPlannedAllocation(clusterId, "test-index", "01")).thenReturn(null);
+        when(metadataStore.getPlannedAllocation(clusterId, "test-index", "0")).thenReturn(null);
+        when(metadataStore.getPlannedAllocation(clusterId, "test-index", "1")).thenReturn(null);
 
         // When
         orchestrator.orchestrateGoalStates(clusterId);
 
         // Then
         verify(metadataStore).getAllIndexConfigs(clusterId);
-        verify(metadataStore).getPlannedAllocation(clusterId, "test-index", "00");
-        verify(metadataStore).getPlannedAllocation(clusterId, "test-index", "01");
+        verify(metadataStore).getPlannedAllocation(clusterId, "test-index", "0");
+        verify(metadataStore).getPlannedAllocation(clusterId, "test-index", "1");
     }
 }

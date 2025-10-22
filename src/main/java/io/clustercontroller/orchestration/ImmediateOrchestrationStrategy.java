@@ -42,7 +42,7 @@ public class ImmediateOrchestrationStrategy implements GoalStateOrchestrationStr
                 
                 // Inner loop: Iterate over shards
                 for (int shardIndex = 0; shardIndex < numberOfShards; shardIndex++) {
-                    String shardId = String.format("%02d", shardIndex);
+                    String shardId = String.valueOf(shardIndex);
                     
                     try {
                         log.debug("Processing shard: {}/{}", indexName, shardId);

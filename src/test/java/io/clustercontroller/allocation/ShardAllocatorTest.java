@@ -36,7 +36,7 @@ class ShardAllocatorTest {
 
     private final String testClusterId = "test-cluster";
     private final String testIndexName = "test-index";
-    private final String testShardId = "00";
+    private final String testShardId = "0";
 
     @BeforeEach
     void setUp() {
@@ -95,7 +95,7 @@ class ShardAllocatorTest {
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         
         // Mock recent planned allocation (within 5 minutes)
-        ShardAllocation recentAllocation = new ShardAllocation("00", "index1");
+        ShardAllocation recentAllocation = new ShardAllocation("0", "index1");
         recentAllocation.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(2).toMillis());
         recentAllocation.setIngestSUs(Arrays.asList("node1"));
         recentAllocation.setSearchSUs(Arrays.asList("node2", "node3"));
@@ -161,7 +161,7 @@ class ShardAllocatorTest {
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         
         // Mock existing planned allocation with multiple IngestSUs (should cause error)
-        ShardAllocation currentAllocation = new ShardAllocation("00", "index1");
+        ShardAllocation currentAllocation = new ShardAllocation("0", "index1");
         currentAllocation.setIngestSUs(Arrays.asList("node1", "node2")); // Multiple IngestSUs!
         currentAllocation.setSearchSUs(Arrays.asList("node3"));
         when(metadataStore.getPlannedAllocation(anyString(), anyString(), anyString())).thenReturn(currentAllocation);
@@ -310,12 +310,12 @@ class ShardAllocatorTest {
         verify(metadataStore, times(6)).setPlannedAllocation(anyString(), anyString(), anyString(), any(ShardAllocation.class));
         
         // Verify specific index/shard combinations were processed (each called twice: main loop + isRecentAllocation)
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index1", "00");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index1", "01");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index2", "00");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index3", "00");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index3", "01");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index3", "02");
+        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index1", "0");
+        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index1", "1");
+        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index2", "0");
+        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index3", "0");
+        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index3", "1");
+        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index3", "2");
     }
 
     private SearchUnit createSearchUnit(String nodeId, String role) {
