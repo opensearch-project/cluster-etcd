@@ -15,7 +15,8 @@ RUN apt-get update && apt-get install -y git vim
 # These can be overridden during the build:
 #   --build-arg REPO_URL="http://your-git-repo.com"
 #   --build-arg GIT_HASH="your-commit-sha"
-ARG REPO_URL="https://github.com/GeorgeZhai/cluster-controller.git"
+# TODO - update this default REPO_URL after moving the repo
+ARG REPO_URL="https://github.com/TejasNaikk/cluster-controller.git"
 ARG GIT_HASH="main"
 
 WORKDIR /build
