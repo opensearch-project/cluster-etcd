@@ -41,14 +41,21 @@ class TemplateHandlerTest {
     void testCreateTemplate_Success() throws Exception {
         // Given
         String templateName = "test-template";
+        
+        TemplateRequest.TemplateDefinition templateDef = TemplateRequest.TemplateDefinition.builder()
+            .settings(java.util.Map.of("number_of_shards", 3))
+            .mappings(java.util.Map.of("properties", java.util.Map.of("field1", java.util.Map.of("type", "text"))))
+            .build();
+        
         TemplateRequest request = TemplateRequest.builder()
+            .indexPatterns(java.util.List.of("logs-*"))
+            .priority(100)
+            .template(templateDef)
             .instanceName("prod-cluster")
             .region("us-west-2")
-            .indexTemplateName("test-template")
-            .indexTemplatePattern("logs-*")
             .build();
 
-        when(objectMapper.writeValueAsString(any())).thenReturn("{\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\",\"index_template_name\":\"test-template\",\"index_template_pattern\":\"logs-*\"}");
+        when(objectMapper.writeValueAsString(any())).thenReturn("{\"index_patterns\":[\"logs-*\"],\"priority\":100,\"template\":{\"settings\":{\"number_of_shards\":3}}}");
         doNothing().when(templateManager).putTemplate(anyString(), anyString(), anyString());
 
         // When
@@ -72,7 +79,7 @@ class TemplateHandlerTest {
         TemplateRequest request = TemplateRequest.builder().build();
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doThrow(new IllegalArgumentException("Template must have an index pattern"))
+        doThrow(new IllegalArgumentException("Template must have at least one index pattern"))
             .when(templateManager).putTemplate(anyString(), anyString(), anyString());
 
         // When

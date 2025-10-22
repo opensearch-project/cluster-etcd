@@ -35,17 +35,17 @@ class TemplateManagerTest {
     @Test
     void testPutTemplate_MissingPattern() {
         String templateName = "test-template";
-        String templateConfig = "{\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\",\"index_template_name\":\"test-template\"}";
+        String templateConfig = "{\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\"}";
 
         assertThatThrownBy(() -> templateManager.putTemplate(testClusterId, templateName, templateConfig))
             .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("Template must have an index pattern");
+            .hasMessageContaining("Template must have at least one index pattern");
     }
 
     @Test
     void testPutTemplate() throws Exception {
         String templateName = "logs-template";
-        String templateConfig = "{\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\",\"index_template_name\":\"logs-template\",\"index_template_pattern\":\"logs-*\"}";
+        String templateConfig = "{\"index_patterns\":[\"logs-*\"],\"priority\":100,\"template\":{\"settings\":{\"number_of_shards\":3}},\"instance_name\":\"prod-cluster\",\"region\":\"us-west-2\"}";
         
         when(metadataStore.getTemplate(testClusterId, templateName)).thenThrow(new IllegalArgumentException("Template not found"));
         when(metadataStore.createTemplate(eq(testClusterId), eq(templateName), anyString())).thenReturn(templateName);
@@ -59,10 +59,14 @@ class TemplateManagerTest {
     void testGetTemplate() throws Exception {
         String templateName = "logs-template";
         Template template = new Template();
-        template.setIndexTemplateName(templateName);
-        template.setIndexTemplatePattern("logs-*");
+        template.setIndexPatterns(Arrays.asList("logs-*"));
+        template.setPriority(100);
         template.setInstanceName("prod-cluster");
         template.setRegion("us-west-2");
+        
+        Template.TemplateDefinition templateDef = new Template.TemplateDefinition();
+        templateDef.setSettings(java.util.Map.of("number_of_shards", 3));
+        template.setTemplate(templateDef);
         
         when(metadataStore.getTemplate(testClusterId, templateName)).thenReturn(template);
 
@@ -70,20 +74,21 @@ class TemplateManagerTest {
 
         assertThat(result).contains("instance_name");
         assertThat(result).contains("logs-*");
+        assertThat(result).contains("index_patterns");
         verify(metadataStore).getTemplate(testClusterId, templateName);
     }
 
     @Test
     void testGetAllTemplates() throws Exception {
         Template template1 = new Template();
-        template1.setIndexTemplateName("logs-template");
-        template1.setIndexTemplatePattern("logs-*");
+        template1.setIndexPatterns(Arrays.asList("logs-*"));
+        template1.setPriority(100);
         template1.setInstanceName("prod-cluster");
         template1.setRegion("us-west-2");
         
         Template template2 = new Template();
-        template2.setIndexTemplateName("metrics-template");
-        template2.setIndexTemplatePattern("metrics-*");
+        template2.setIndexPatterns(Arrays.asList("metrics-*"));
+        template2.setPriority(50);
         template2.setInstanceName("prod-cluster");
         template2.setRegion("us-east-1");
         
@@ -92,8 +97,8 @@ class TemplateManagerTest {
         String result = templateManager.getAllTemplates(testClusterId);
 
         assertThat(result).contains("index_templates");
-        assertThat(result).contains("logs-template");
-        assertThat(result).contains("metrics-template");
+        assertThat(result).contains("logs-*");
+        assertThat(result).contains("metrics-*");
         verify(metadataStore).getAllTemplates(testClusterId);
     }
 
@@ -101,8 +106,8 @@ class TemplateManagerTest {
     void testDeleteTemplate() throws Exception {
         String templateName = "logs-template";
         Template template = new Template();
-        template.setIndexTemplateName(templateName);
-        template.setIndexTemplatePattern("logs-*");
+        template.setIndexPatterns(Arrays.asList("logs-*"));
+        template.setPriority(100);
         template.setInstanceName("prod-cluster");
         template.setRegion("us-west-2");
         
