@@ -641,10 +641,17 @@ public class EtcdMetadataStore implements MetadataStore {
         log.debug("Setting index settings for {} in etcd", indexName);
         
         try {
-            String settingsPath = pathResolver.getIndexSettingsPath(clusterId, indexName);
-            executeEtcdPut(settingsPath, settings);
+            // Wrap settings in "index" key to match Elasticsearch convention
+            // Parse the incoming settings JSON and wrap it
+            com.fasterxml.jackson.databind.JsonNode settingsNode = objectMapper.readTree(settings);
+            java.util.Map<String, com.fasterxml.jackson.databind.JsonNode> wrappedSettings = new java.util.HashMap<>();
+            wrappedSettings.put("index", settingsNode);
+            String wrappedSettingsJson = objectMapper.writeValueAsString(wrappedSettings);
             
-            log.debug("Successfully set index settings for {} in etcd", indexName);
+            String settingsPath = pathResolver.getIndexSettingsPath(clusterId, indexName);
+            executeEtcdPut(settingsPath, wrappedSettingsJson);
+            
+            log.debug("Successfully set index settings for {} in etcd (wrapped in 'index' key)", indexName);
             
         } catch (Exception e) {
             log.error("Failed to set index settings for {} in etcd: {}", indexName, e.getMessage(), e);

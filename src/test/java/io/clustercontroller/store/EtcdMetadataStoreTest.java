@@ -556,7 +556,7 @@ public class EtcdMetadataStoreTest {
         // Execute
         store.setIndexSettings("test-cluster", indexName, settings);
 
-        // Verify the put call was made with correct key and value
+        // Verify the put call was made with correct key and value (wrapped in "index" key)
         ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
         ArgumentCaptor<ByteSequence> valueCaptor = ArgumentCaptor.forClass(ByteSequence.class);
         verify(mockKv).put(keyCaptor.capture(), valueCaptor.capture());
@@ -565,7 +565,10 @@ public class EtcdMetadataStoreTest {
         String capturedValue = valueCaptor.getValue().toString(UTF_8);
 
         assertThat(capturedKey).contains("test-cluster/indices/test-index/settings");
-        assertThat(capturedValue).isEqualTo(settings);
+        // Settings should be wrapped in "index" key
+        assertThat(capturedValue).contains("\"index\"");
+        assertThat(capturedValue).contains("\"number_of_shards\"");
+        assertThat(capturedValue).contains("\"number_of_replicas\"");
     }
 
     @Test
