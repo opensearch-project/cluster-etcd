@@ -262,6 +262,14 @@ public class EtcdPathResolver {
     public String getClusterRegistryPath(String clusterId) {
         return Paths.get(PATH_DELIMITER, PATH_MULTI_CLUSTER, PATH_CLUSTERS, clusterId, PATH_METADATA).toString();
     }
+
+    /**
+     * Get cluster's assigned controller path (for observability at cluster level)
+     * Pattern: /multi-cluster/clusters/<cluster-id>/assigned-to
+     */
+    public String getClusterAssignedControllerPath(String clusterId) {
+        return Paths.get(PATH_DELIMITER, PATH_MULTI_CLUSTER, PATH_CLUSTERS, clusterId, "assigned-to").toString();
+    }
     
     /**
      * Get controllers prefix for listing
