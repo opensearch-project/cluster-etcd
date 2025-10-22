@@ -8,6 +8,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.metadata.IngestionStatus;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -42,6 +43,7 @@ import java.util.stream.Collectors;
 
 public class DataNodeState extends NodeState {
     private static final Logger logger = LogManager.getLogger(DataNodeState.class);
+    private static final String PAUSE_PULL_INGESTION_KEY = "pause_pull_ingestion";
 
     private final Map<String, IndexMetadataComponents> indices;
     private final Map<String, Set<DataNodeShard>> assignedShards;
@@ -145,6 +147,9 @@ public class DataNodeState extends NodeState {
             indexMetadataBuilder.putMapping(new MappingMetadata(canonicalMapping(index, entry.getValue().mappings(), indicesService)));
             Settings.Builder settingsBuilder = ClusterStateUtils.initializeSettingsBuilder(entry.getKey(), entry.getValue().settings());
             indexMetadataBuilder.settings(settingsBuilder);
+
+            // Set ingestion status based on pause_pull_ingestion from additionalMetadata
+            setIngestionStatus(indexMetadataBuilder, entry.getValue().additionalMetadata(), entry.getKey());
 
             if (oldIndexMetadata != null) {
                 indexMetadataBuilder.version(oldIndexMetadata.getVersion())
@@ -319,4 +324,26 @@ public class DataNodeState extends NodeState {
         return clusterStateBuilder.build();
     }
 
+    /**
+     * Sets the ingestion status on the index metadata builder based on the pause_pull_ingestion value
+     * from additional metadata.
+     */
+    private static void setIngestionStatus(
+        IndexMetadata.Builder indexMetadataBuilder,
+        Map<String, Object> additionalMetadata,
+        String indexName
+    ) {
+        if (additionalMetadata == null) {
+            return;
+        }
+
+        Object pausePullIngestionValue = additionalMetadata.get(PAUSE_PULL_INGESTION_KEY);
+        if (pausePullIngestionValue != null) {
+            boolean pausePullIngestion = pausePullIngestionValue instanceof Boolean
+                ? (Boolean) pausePullIngestionValue
+                : Boolean.parseBoolean(String.valueOf(pausePullIngestionValue));
+            indexMetadataBuilder.ingestionStatus(new IngestionStatus(pausePullIngestion));
+            logger.debug("Set ingestion status for index {}: pause_pull_ingestion={}", indexName, pausePullIngestion);
+        }
+    }
 }

@@ -425,7 +425,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             true
         );
         
-        ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE);
+        ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
         
         assertTrue(clusterState.getMetadata().hasIndex("idx1"));
         IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
@@ -491,7 +491,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             true
         );
         
-        ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE);
+        ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
         
         assertTrue(clusterState.getMetadata().hasIndex("idx1"));
         IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
@@ -556,12 +556,11 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             true
         );
         
-        ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE);
+        ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
         
         assertTrue(clusterState.getMetadata().hasIndex("idx1"));
         IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
         assertNotNull(indexMetadata.getIngestionStatus());
         assertFalse(indexMetadata.getIngestionStatus().isPaused());
     }
-
 }
