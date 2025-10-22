@@ -8,24 +8,18 @@ import io.clustercontroller.health.ClusterHealthManager;
 import io.clustercontroller.indices.AliasManager;
 import io.clustercontroller.indices.IndexManager;
 import io.clustercontroller.orchestration.GoalStateOrchestrator;
-import io.clustercontroller.orchestration.GoalStateOrchestrationStrategy;
 import io.clustercontroller.templates.TemplateManager;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
 import io.clustercontroller.tasks.TaskContext;
-import io.clustercontroller.TaskManager;
-import io.clustercontroller.util.EnvironmentUtils;
 import io.etcd.jetcd.Client;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Primary;
-
-import static io.clustercontroller.config.Constants.*;
 
 /**
  * Main Spring Boot application class for the Cluster Controller with multi-cluster support.
@@ -81,11 +75,12 @@ public class ClusterControllerApplication {
     
     /**
      * IndexManager bean for multi-cluster index lifecycle operations.
+     * Includes template support for automatic application of matching templates during index creation.
      */
     @Bean
-    public IndexManager indexManager(MetadataStore metadataStore) {
-        log.info("Initializing IndexManager for multi-cluster support");
-        return new IndexManager(metadataStore);
+    public IndexManager indexManager(MetadataStore metadataStore, TemplateManager templateManager) {
+        log.info("Initializing IndexManager for multi-cluster support with template support");
+        return new IndexManager(metadataStore, templateManager);
     }
 
     @Bean

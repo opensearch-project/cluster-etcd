@@ -202,46 +202,66 @@ public class ClusterLifecycleManager {
     }
     
     /**
-     * Write assignment key to etcd for observability.
-     * Key: /multi-cluster/controllers/{controller-id}/assigned/{cluster-id}
+     * Write assignment keys to etcd for observability.
+     * - Controller-level: /multi-cluster/controllers/{controller-id}/assigned/{cluster-id}
+     * - Cluster-level: /multi-cluster/clusters/{cluster-id}/assigned-to
      * Value: JSON with assignment metadata
      */
     private void writeAssignmentKey(String clusterId, long leaseId) {
+        String assignmentValue = String.format(
+            "{\"controller\":\"%s\",\"cluster\":\"%s\",\"timestamp\":%d,\"lease\":\"%x\"}",
+            controllerId, clusterId, System.currentTimeMillis(), leaseId
+        );
+        
+        // Write controller-level assignment key (for controller-centric view)
         try {
-            String assignmentPath = pathResolver.getControllerAssignmentPath(controllerId, clusterId);
-            String assignmentValue = String.format(
-                "{\"controller\":\"%s\",\"cluster\":\"%s\",\"timestamp\":%d,\"lease\":\"%x\"}",
-                controllerId, clusterId, System.currentTimeMillis(), leaseId
-            );
-            
+            String controllerAssignmentPath = pathResolver.getControllerAssignmentPath(controllerId, clusterId);
             kvClient.put(
-                ByteSequence.from(assignmentPath, UTF_8),
+                ByteSequence.from(controllerAssignmentPath, UTF_8),
                 ByteSequence.from(assignmentValue, UTF_8),
                 PutOption.newBuilder().withLeaseId(leaseId).build()
             ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            
-            log.debug("Wrote assignment key: {} → {}", controllerId, clusterId);
-            
+            log.debug("Wrote controller assignment key: {} → {}", controllerId, clusterId);
         } catch (Exception e) {
-            log.warn("Failed to write assignment key for cluster {}: {}", clusterId, e.getMessage());
-            // Non-critical - don't fail cluster acquisition if observability write fails
+            log.warn("Failed to write controller assignment key for cluster {}: {}", clusterId, e.getMessage());
+        }
+        
+        // Write cluster-level assignment key (for cluster-centric view)
+        try {
+            String clusterAssignmentPath = pathResolver.getClusterAssignedControllerPath(clusterId);
+            kvClient.put(
+                ByteSequence.from(clusterAssignmentPath, UTF_8),
+                ByteSequence.from(assignmentValue, UTF_8),
+                PutOption.newBuilder().withLeaseId(leaseId).build()
+            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            log.debug("Wrote cluster assignment key: {} ← {}", clusterId, controllerId);
+        } catch (Exception e) {
+            log.warn("Failed to write cluster assignment key for cluster {}: {}", clusterId, e.getMessage());
         }
     }
     
     /**
-     * Delete assignment key from etcd.
+     * Delete assignment keys from etcd (both controller-level and cluster-level).
      */
     private void deleteAssignmentKey(String clusterId) {
+        // Delete controller-level assignment key
         try {
-            String assignmentPath = pathResolver.getControllerAssignmentPath(controllerId, clusterId);
-            kvClient.delete(ByteSequence.from(assignmentPath, UTF_8))
+            String controllerAssignmentPath = pathResolver.getControllerAssignmentPath(controllerId, clusterId);
+            kvClient.delete(ByteSequence.from(controllerAssignmentPath, UTF_8))
                 .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            
-            log.debug("Deleted assignment key: {} → {}", controllerId, clusterId);
-            
+            log.debug("Deleted controller assignment key: {} → {}", controllerId, clusterId);
         } catch (Exception e) {
-            log.warn("Failed to delete assignment key for cluster {}: {}", clusterId, e.getMessage());
-            // Non-critical - assignment key will expire with lease anyway
+            log.warn("Failed to delete controller assignment key for cluster {}: {}", clusterId, e.getMessage());
+        }
+        
+        // Delete cluster-level assignment key
+        try {
+            String clusterAssignmentPath = pathResolver.getClusterAssignedControllerPath(clusterId);
+            kvClient.delete(ByteSequence.from(clusterAssignmentPath, UTF_8))
+                .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            log.debug("Deleted cluster assignment key: {} ← {}", clusterId, controllerId);
+        } catch (Exception e) {
+            log.warn("Failed to delete cluster assignment key for cluster {}: {}", clusterId, e.getMessage());
         }
     }
 }
