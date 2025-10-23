@@ -14,6 +14,7 @@ import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.models.TaskMetadata;
+import io.clustercontroller.models.ClusterControllerAssignment;
 import io.clustercontroller.util.EnvironmentUtils;
 import io.etcd.jetcd.*;
 import io.etcd.jetcd.kv.GetResponse;
@@ -33,6 +34,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static io.clustercontroller.config.Constants.PATH_DELIMITER;
+import static io.clustercontroller.config.Constants.SUFFIX_ACTUAL_STATE;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
@@ -340,6 +342,8 @@ public class EtcdMetadataStore implements MetadataStore {
     // =================================================================
     
     public Map<String, SearchUnitActualState> getAllSearchUnitActualStates(String clusterId) throws Exception {
+        log.info("Getting all search unit actual states from etcd for cluster '{}' in getAllSearchUnitActualStates", clusterId);
+
         String prefix = pathResolver.getSearchUnitsPrefix(clusterId);
         GetOption option = GetOption.newBuilder()
                 .withPrefix(ByteSequence.from(prefix, UTF_8))
@@ -354,12 +358,13 @@ public class EtcdMetadataStore implements MetadataStore {
         for (KeyValue kv : response.getKvs()) {
             String key = kv.getKey().toString(UTF_8);
             String json = kv.getValue().toString(UTF_8);
-            
+
             // Parse key to get unit name and check if it's an actual-state key
             String relativePath = key.substring(prefix.length());
             String[] parts = relativePath.split("/");
-            if (parts.length >= 2 && "actual-state".equals(parts[1])) {
-                String unitName = parts[0];
+
+            if (parts.length >= 2 && SUFFIX_ACTUAL_STATE.equals(parts[2])) {
+                String unitName = parts[1];
                 try {
                     SearchUnitActualState actualState = objectMapper.readValue(json, SearchUnitActualState.class);
                     actualStates.put(unitName, actualState);
@@ -368,8 +373,7 @@ public class EtcdMetadataStore implements MetadataStore {
                 }
             }
         }
-        
-        log.debug("Retrieved {} search unit actual states from etcd", actualStates.size());
+
         return actualStates;
     }
     
@@ -530,7 +534,7 @@ public class EtcdMetadataStore implements MetadataStore {
             throw new Exception("Failed to update index config in etcd", e);
         }
     }
-    
+
     public void deleteIndexConfig(String clusterId, String indexName) throws Exception {
         log.info("Deleting index config {} from etcd", indexName);
         
@@ -954,4 +958,29 @@ public class EtcdMetadataStore implements MetadataStore {
         }
     }
     
+    /**
+     * Get the controller ID assigned to a cluster.
+     */
+    @Override
+    public ClusterControllerAssignment getAssignedController(String clusterId) throws Exception {
+        try {
+            String assignmentPath = pathResolver.getClusterAssignedControllerPath(clusterId);
+            GetResponse getResponse = kvClient.get(
+                ByteSequence.from(assignmentPath, UTF_8)
+            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            if (getResponse.getKvs().isEmpty()) {
+                log.debug("No controller assigned to cluster '{}'", clusterId);
+                return null;
+            }
+            
+            String json = getResponse.getKvs().get(0).getValue().toString(UTF_8);
+            ClusterControllerAssignment clusterControllerAssignment = objectMapper.readValue(json, ClusterControllerAssignment.class);
+            log.debug("Cluster '{}' is assigned to controller '{}'", clusterId, clusterControllerAssignment.getController());
+            return clusterControllerAssignment;
+        } catch (Exception e) {
+            log.error("Failed to get assigned controller for cluster '{}': {}", clusterId, e.getMessage(), e);
+            throw new Exception("Failed to get assigned controller: " + e.getMessage(), e);
+        }
+    }
 }

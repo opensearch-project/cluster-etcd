@@ -8,6 +8,7 @@ import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.Template;
+import io.clustercontroller.models.ClusterControllerAssignment;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -223,4 +224,9 @@ public interface MetadataStore {
      * @return true if this instance is the leader, false otherwise
      */
     boolean isLeader();
+    
+    /**
+     * Get the controller ID assigned to a cluster.
+     */
+    ClusterControllerAssignment getAssignedController(String clusterId) throws Exception;
 }

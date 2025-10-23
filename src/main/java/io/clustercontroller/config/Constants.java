@@ -73,4 +73,9 @@ public final class Constants {
     public static final String PATH_HEARTBEAT = "heartbeat";
     public static final String PATH_ASSIGNED = "assigned";
     public static final String PATH_METADATA = "metadata";
+
+    // Health API level constants
+    public static final String LEVEL_INDICES = "indices";
+    public static final String LEVEL_SHARDS = "shards";
+    public static final String LEVEL_CLUSTER = "cluster";
 }

@@ -1,6 +1,7 @@
 package io.clustercontroller.store;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.clustercontroller.models.ClusterControllerAssignment;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.SearchUnit;
@@ -893,6 +894,147 @@ public class EtcdMetadataStoreTest {
         verify(mockTxn).Then(any());
         verify(mockTxn).Else(any());
         verify(mockTxn).commit();
+    }
+
+    // ------------------------- getAssignedController tests -------------------------
+
+    @Test
+    public void testGetAssignedController_ControllerAssigned() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String controllerName = "controller-1";
+        String leaseId = "694d9a0d5e11fca4";
+        long timestamp = 1761162295265L;
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getClusterAssignedControllerPath(clusterId))
+            .thenReturn("/test-cluster/assigned-controller");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        // Create ClusterControllerAssignment JSON
+        ClusterControllerAssignment assignment = new ClusterControllerAssignment();
+        assignment.setController(controllerName);
+        assignment.setCluster(clusterId);
+        assignment.setTimestamp(timestamp);
+        assignment.setLease(leaseId);
+        
+        String metadataJson = new ObjectMapper().writeValueAsString(assignment);
+
+        // Mock GetResponse with controller metadata
+        KeyValue mockKeyValue = mock(KeyValue.class);
+        when(mockKeyValue.getValue()).thenReturn(ByteSequence.from(metadataJson, UTF_8));
+        
+        GetResponse mockResponse = mock(GetResponse.class);
+        when(mockResponse.getKvs()).thenReturn(List.of(mockKeyValue));
+
+        when(mockKv.get(any(ByteSequence.class)))
+            .thenReturn(CompletableFuture.completedFuture(mockResponse));
+
+        // Execute
+        ClusterControllerAssignment result = store.getAssignedController(clusterId);
+
+        // Verify
+        assertThat(result).isNotNull();
+        assertThat(result.getController()).isEqualTo(controllerName);
+        assertThat(result.getCluster()).isEqualTo(clusterId);
+        assertThat(result.getTimestamp()).isEqualTo(timestamp);
+        assertThat(result.getLease()).isEqualTo(leaseId);
+        
+        // Verify the get call was made with correct key
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).get(keyCaptor.capture());
+        
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        assertThat(capturedKey).isEqualTo("/test-cluster/assigned-controller");
+    }
+
+    @Test
+    public void testGetAssignedController_NoControllerAssigned() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getClusterAssignedControllerPath(clusterId))
+            .thenReturn("/test-cluster/assigned-controller");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        // Mock GetResponse with empty key-value pairs (no controller assigned)
+        GetResponse mockResponse = mock(GetResponse.class);
+        when(mockResponse.getKvs()).thenReturn(Collections.emptyList());
+
+        when(mockKv.get(any(ByteSequence.class)))
+            .thenReturn(CompletableFuture.completedFuture(mockResponse));
+
+        // Execute
+        ClusterControllerAssignment result = store.getAssignedController(clusterId);
+
+        // Verify - should return null when no controller is assigned
+        assertThat(result).isNull();
+        
+        // Verify the get call was made with correct key
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).get(keyCaptor.capture());
+        
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        assertThat(capturedKey).isEqualTo("/test-cluster/assigned-controller");
+    }
+
+    @Test
+    public void testGetAssignedController_EtcdException() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getClusterAssignedControllerPath(clusterId))
+            .thenReturn("/test-cluster/assigned-controller");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        // Mock etcd failure
+        when(mockKv.get(any(ByteSequence.class)))
+            .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd connection timeout")));
+
+        // Verify exception is thrown
+        assertThatThrownBy(() -> store.getAssignedController(clusterId))
+            .isInstanceOf(Exception.class)
+            .hasMessageContaining("Failed to get assigned controller")
+            .hasMessageContaining("etcd connection timeout");
+        
+        // Verify the get call was attempted
+        verify(mockKv).get(any(ByteSequence.class));
+    }
+
+    @Test
+    public void testGetAssignedController_InvalidJson() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getClusterAssignedControllerPath(clusterId))
+            .thenReturn("/test-cluster/assigned-controller");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        // Mock GetResponse with invalid JSON
+        String invalidJson = "{invalid json}";
+        KeyValue mockKeyValue = mock(KeyValue.class);
+        when(mockKeyValue.getValue()).thenReturn(ByteSequence.from(invalidJson, UTF_8));
+        
+        GetResponse mockResponse = mock(GetResponse.class);
+        when(mockResponse.getKvs()).thenReturn(List.of(mockKeyValue));
+
+        when(mockKv.get(any(ByteSequence.class)))
+            .thenReturn(CompletableFuture.completedFuture(mockResponse));
+
+        // Verify exception is thrown due to JSON parsing error
+        assertThatThrownBy(() -> store.getAssignedController(clusterId))
+            .isInstanceOf(Exception.class)
+            .hasMessageContaining("Failed to get assigned controller");
+        
+        // Verify the get call was made
+        verify(mockKv).get(any(ByteSequence.class));
     }
 
     // ------------------------- reflection util -------------------------
