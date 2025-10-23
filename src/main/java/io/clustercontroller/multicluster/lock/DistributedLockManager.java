@@ -23,7 +23,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 @Slf4j
 public class DistributedLockManager {
     
-    private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 5;
+    private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 30;
     
     private final Lock lockClient;
     private final Lease leaseClient;

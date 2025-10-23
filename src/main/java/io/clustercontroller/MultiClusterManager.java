@@ -43,7 +43,7 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class MultiClusterManager {
     
-    private static final int RECONCILE_POOL_SIZE = 5;
+    private static final int RECONCILE_POOL_SIZE = 1;
     private static final int SHUTDOWN_TIMEOUT_SECONDS = 30;
     
     // Configuration
@@ -126,6 +126,12 @@ public class MultiClusterManager {
             // Step 4: Watch for changes
             setupWatchers();
             
+            // Step 5: Schedule periodic reconciliation
+            reconcileScheduler.scheduleWithFixedDelay(
+                this::periodicReconcile,
+                60, 60, TimeUnit.SECONDS
+            );
+            
             log.info("========================================");
             log.info("MultiClusterManager STARTUP COMPLETE");
             log.info("Controller ID: {}", controllerId);
@@ -137,6 +143,19 @@ public class MultiClusterManager {
         } catch (Exception e) {
             log.error("Failed to start MultiClusterManager", e);
             throw new RuntimeException("MultiClusterManager startup failed", e);
+        }
+    }
+    
+    /**
+     * Periodic reconciliation runs every 60 seconds.
+     */
+    private void periodicReconcile() {
+        try {
+            Set<String> clusters = clusterRegistry.listClusters();
+            Set<String> controllers = controllerRegistry.listActiveControllers();
+            reconcile(clusters, controllers);
+        } catch (Exception e) {
+            log.error("Error during periodic reconciliation", e);
         }
     }
     
