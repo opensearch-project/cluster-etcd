@@ -11,7 +11,6 @@ import lombok.NoArgsConstructor;
 /**
  * Response model for proxied requests to coordinator nodes.
  * Wraps the actual response from the coordinator along with metadata.
- * Uses snake_case for JSON property names.
  */
 @Data
 @Builder

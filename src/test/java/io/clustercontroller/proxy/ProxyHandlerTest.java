@@ -40,8 +40,7 @@ class ProxyHandlerTest {
 
     @Test
     void testProxyGetRequest_Success() {
-        // Given
-        String indexName = "logs-2024";
+        String indexName = "my-index";
         String queryString = "size=10&from=0";
 
         ProxyResponse proxyResponse = ProxyResponse.builder()
@@ -57,15 +56,13 @@ class ProxyHandlerTest {
         when(coordinatorProxy.forwardRequest(
             eq(testClusterId),
             eq("GET"),
-            eq("/logs-2024/_search?size=10&from=0"),
+            eq("/my-index/_search?size=10&from=0"),
             isNull(),
             any(Map.class)
         )).thenReturn(proxyResponse);
 
-        // When
         ResponseEntity<Object> response = proxyHandler.proxyGetRequest(testClusterId, indexName, httpServletRequest);
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isInstanceOf(ProxyResponse.class);
@@ -78,7 +75,7 @@ class ProxyHandlerTest {
         verify(coordinatorProxy).forwardRequest(
             eq(testClusterId),
             eq("GET"),
-            eq("/logs-2024/_search?size=10&from=0"),
+            eq("/my-index/_search?size=10&from=0"),
             isNull(),
             any(Map.class)
         );
@@ -86,8 +83,7 @@ class ProxyHandlerTest {
 
     @Test
     void testProxyPostRequest_Success() {
-        // Given
-        String indexName = "logs-2024";
+        String indexName = "my-index";
         String body = "{\"query\": {\"match_all\": {}}}";
 
         ProxyResponse proxyResponse = ProxyResponse.builder()
@@ -103,15 +99,13 @@ class ProxyHandlerTest {
         when(coordinatorProxy.forwardRequest(
             eq(testClusterId),
             eq("POST"),
-            eq("/logs-2024/_search"),
+            eq("/my-index/_search"),
             eq(body),
             any(Map.class)
         )).thenReturn(proxyResponse);
 
-        // When
         ResponseEntity<Object> response = proxyHandler.proxyPostRequest(testClusterId, indexName, body, httpServletRequest);
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isInstanceOf(ProxyResponse.class);
@@ -123,7 +117,7 @@ class ProxyHandlerTest {
         verify(coordinatorProxy).forwardRequest(
             eq(testClusterId),
             eq("POST"),
-            eq("/logs-2024/_search"),
+            eq("/my-index/_search"),
             eq(body),
             any(Map.class)
         );
@@ -131,8 +125,7 @@ class ProxyHandlerTest {
 
     @Test
     void testProxyGetRequest_WithoutQueryString() {
-        // Given
-        String indexName = "logs-2024";
+        String indexName = "my-index";
 
         ProxyResponse proxyResponse = ProxyResponse.builder()
             .status(200)
@@ -146,22 +139,20 @@ class ProxyHandlerTest {
         when(coordinatorProxy.forwardRequest(
             eq(testClusterId),
             eq("GET"),
-            eq("/logs-2024/_search"),
+            eq("/my-index/_search"),
             isNull(),
             any(Map.class)
         )).thenReturn(proxyResponse);
 
-        // When
         ResponseEntity<Object> response = proxyHandler.proxyGetRequest(testClusterId, indexName, httpServletRequest);
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         
         verify(coordinatorProxy).forwardRequest(
             eq(testClusterId),
             eq("GET"),
-            eq("/logs-2024/_search"),
+            eq("/my-index/_search"),
             isNull(),
             any(Map.class)
         );
@@ -169,8 +160,7 @@ class ProxyHandlerTest {
 
     @Test
     void testProxyGetRequest_ProxyError() {
-        // Given
-        String indexName = "logs-2024";
+        String indexName = "my-index";
 
         ProxyResponse proxyResponse = ProxyResponse.builder()
             .status(500)
@@ -182,15 +172,13 @@ class ProxyHandlerTest {
         when(coordinatorProxy.forwardRequest(
             eq(testClusterId),
             eq("GET"),
-            eq("/logs-2024/_search"),
+            eq("/my-index/_search"),
             isNull(),
             any(Map.class)
         )).thenReturn(proxyResponse);
 
-        // When
         ResponseEntity<Object> response = proxyHandler.proxyGetRequest(testClusterId, indexName, httpServletRequest);
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         
@@ -201,8 +189,7 @@ class ProxyHandlerTest {
 
     @Test
     void testProxyPostRequest_ProxyThrowsException() {
-        // Given
-        String indexName = "logs-2024";
+        String indexName = "my-index";
         String body = "{\"query\": {}}";
 
         when(httpServletRequest.getHeaderNames()).thenReturn(createHeaderNames());
@@ -210,15 +197,13 @@ class ProxyHandlerTest {
         when(coordinatorProxy.forwardRequest(
             eq(testClusterId),
             eq("POST"),
-            eq("/logs-2024/_search"),
+            eq("/my-index/_search"),
             eq(body),
             any(Map.class)
         )).thenThrow(new RuntimeException("Connection timeout"));
 
-        // When
         ResponseEntity<Object> response = proxyHandler.proxyPostRequest(testClusterId, indexName, body, httpServletRequest);
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
     }

@@ -37,21 +37,19 @@ class CoordinatorSelectorTest {
         // Given: Two healthy coordinators
         SearchUnit coord1 = createSearchUnit("coord-1", "COORDINATOR", "10.0.0.1", testClusterId);
         SearchUnit coord2 = createSearchUnit("coord-2", "COORDINATOR", "10.0.0.2", testClusterId);
-        SearchUnit dataNode = createSearchUnit("data-1", "PRIMARY", "10.0.0.3", testClusterId);
 
-        List<SearchUnit> allUnits = Arrays.asList(coord1, coord2, dataNode);
+        List<SearchUnit> coordinators = Arrays.asList(coord1, coord2);
 
-        SearchUnitActualState coord1State = createHealthyState("coord-1", System.currentTimeMillis());
-        SearchUnitActualState coord2State = createHealthyState("coord-2", System.currentTimeMillis());
+        when(metadataStore.getAllCoordinators(testClusterId)).thenReturn(coordinators);
+        
+        // Mock healthy actual states for both coordinators
+        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-1"))
+            .thenReturn(createHealthyState("coord-1", System.currentTimeMillis()));
+        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-2"))
+            .thenReturn(createHealthyState("coord-2", System.currentTimeMillis()));
 
-        when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allUnits);
-        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-1")).thenReturn(coord1State);
-        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-2")).thenReturn(coord2State);
-
-        // When
         SearchUnit selected = coordinatorSelector.selectCoordinator(testClusterId);
 
-        // Then
         assertThat(selected).isNotNull();
         assertThat(selected.getRole()).isEqualTo("COORDINATOR");
         assertThat(selected.getName()).isIn("coord-1", "coord-2");
@@ -59,25 +57,22 @@ class CoordinatorSelectorTest {
 
     @Test
     void testSelectCoordinator_RoundRobin() throws Exception {
-        // Given: Two healthy coordinators
         SearchUnit coord1 = createSearchUnit("coord-1", "COORDINATOR", "10.0.0.1", testClusterId);
         SearchUnit coord2 = createSearchUnit("coord-2", "COORDINATOR", "10.0.0.2", testClusterId);
 
-        List<SearchUnit> allUnits = Arrays.asList(coord1, coord2);
+        List<SearchUnit> coordinators = Arrays.asList(coord1, coord2);
 
-        SearchUnitActualState coord1State = createHealthyState("coord-1", System.currentTimeMillis());
-        SearchUnitActualState coord2State = createHealthyState("coord-2", System.currentTimeMillis());
+        when(metadataStore.getAllCoordinators(testClusterId)).thenReturn(coordinators);
+        
+        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-1"))
+            .thenReturn(createHealthyState("coord-1", System.currentTimeMillis()));
+        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-2"))
+            .thenReturn(createHealthyState("coord-2", System.currentTimeMillis()));
 
-        when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allUnits);
-        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-1")).thenReturn(coord1State);
-        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-2")).thenReturn(coord2State);
-
-        // When: Select multiple times
         SearchUnit first = coordinatorSelector.selectCoordinator(testClusterId);
         SearchUnit second = coordinatorSelector.selectCoordinator(testClusterId);
         SearchUnit third = coordinatorSelector.selectCoordinator(testClusterId);
 
-        // Then: Should round-robin between coordinators
         assertThat(first.getName()).isEqualTo("coord-1");
         assertThat(second.getName()).isEqualTo("coord-2");
         assertThat(third.getName()).isEqualTo("coord-1"); // Back to first
@@ -85,38 +80,28 @@ class CoordinatorSelectorTest {
 
     @Test
     void testSelectCoordinator_FiltersUnhealthyCoordinators() throws Exception {
-        // Given: One healthy, one unhealthy coordinator
+        // Given: One healthy coordinator (with valid host/port), one unhealthy (missing host)
         SearchUnit coord1 = createSearchUnit("coord-1", "COORDINATOR", "10.0.0.1", testClusterId);
-        SearchUnit coord2 = createSearchUnit("coord-2", "COORDINATOR", "10.0.0.2", testClusterId);
+        SearchUnit coord2 = createSearchUnit("coord-2", "COORDINATOR", null, testClusterId); // No host - unhealthy
 
-        List<SearchUnit> allUnits = Arrays.asList(coord1, coord2);
+        List<SearchUnit> coordinators = Arrays.asList(coord1, coord2);
 
-        // coord-1 is healthy (recent heartbeat)
-        SearchUnitActualState coord1State = createHealthyState("coord-1", System.currentTimeMillis());
+        when(metadataStore.getAllCoordinators(testClusterId)).thenReturn(coordinators);
         
-        // coord-2 is unhealthy (stale heartbeat - 60 seconds old)
-        SearchUnitActualState coord2State = createHealthyState("coord-2", System.currentTimeMillis() - 60000);
+        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-1"))
+            .thenReturn(createHealthyState("coord-1", System.currentTimeMillis()));
 
-        when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allUnits);
-        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-1")).thenReturn(coord1State);
-        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-2")).thenReturn(coord2State);
-
-        // When
         SearchUnit selected = coordinatorSelector.selectCoordinator(testClusterId);
 
-        // Then: Should only select healthy coordinator
         assertThat(selected).isNotNull();
         assertThat(selected.getName()).isEqualTo("coord-1");
     }
 
     @Test
     void testSelectCoordinator_NoCoordinatorsFound() throws Exception {
-        // Given: Only data nodes, no coordinators
-        SearchUnit dataNode = createSearchUnit("data-1", "PRIMARY", "10.0.0.3", testClusterId);
+        // Given: No coordinators returned
+        when(metadataStore.getAllCoordinators(testClusterId)).thenReturn(Collections.emptyList());
 
-        when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(Collections.singletonList(dataNode));
-
-        // When & Then
         assertThatThrownBy(() -> coordinatorSelector.selectCoordinator(testClusterId))
             .isInstanceOf(Exception.class)
             .hasMessageContaining("No coordinator nodes found");
@@ -124,33 +109,69 @@ class CoordinatorSelectorTest {
 
     @Test
     void testSelectCoordinator_NoHealthyCoordinators() throws Exception {
-        // Given: Coordinators exist but all are unhealthy
+        // Given: Coordinators exist but all are unhealthy (invalid port)
         SearchUnit coord1 = createSearchUnit("coord-1", "COORDINATOR", "10.0.0.1", testClusterId);
+        coord1.setPortHttp(0); // Invalid port - unhealthy
 
-        List<SearchUnit> allUnits = Collections.singletonList(coord1);
+        List<SearchUnit> coordinators = Collections.singletonList(coord1);
 
-        // Unhealthy state (stale heartbeat)
-        SearchUnitActualState coord1State = createHealthyState("coord-1", System.currentTimeMillis() - 60000);
+        when(metadataStore.getAllCoordinators(testClusterId)).thenReturn(coordinators);
 
-        when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allUnits);
-        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-1")).thenReturn(coord1State);
-
-        // When & Then
         assertThatThrownBy(() -> coordinatorSelector.selectCoordinator(testClusterId))
             .isInstanceOf(Exception.class)
             .hasMessageContaining("No healthy coordinator nodes found");
     }
 
     @Test
+    void testSelectCoordinator_FiltersCoordinatorsWithNoActualState() throws Exception {
+        // Given: One healthy coordinator, one with no actual state (no heartbeat)
+        SearchUnit coord1 = createSearchUnit("coord-1", "COORDINATOR", "10.0.0.1", testClusterId);
+        SearchUnit coord2 = createSearchUnit("coord-2", "COORDINATOR", "10.0.0.2", testClusterId);
+
+        List<SearchUnit> coordinators = Arrays.asList(coord1, coord2);
+
+        when(metadataStore.getAllCoordinators(testClusterId)).thenReturn(coordinators);
+        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-1"))
+            .thenReturn(createHealthyState("coord-1", System.currentTimeMillis()));
+        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-2"))
+            .thenReturn(null); // No actual state - no heartbeat
+
+        SearchUnit selected = coordinatorSelector.selectCoordinator(testClusterId);
+
+        assertThat(selected).isNotNull();
+        assertThat(selected.getName()).isEqualTo("coord-1");
+    }
+
+    @Test
+    void testSelectCoordinator_FiltersREDCoordinators() throws Exception {
+        // Given: One GREEN coordinator, one RED (high memory usage)
+        SearchUnit coord1 = createSearchUnit("coord-1", "COORDINATOR", "10.0.0.1", testClusterId);
+        SearchUnit coord2 = createSearchUnit("coord-2", "COORDINATOR", "10.0.0.2", testClusterId);
+
+        List<SearchUnit> coordinators = Arrays.asList(coord1, coord2);
+
+        when(metadataStore.getAllCoordinators(testClusterId)).thenReturn(coordinators);
+        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-1"))
+            .thenReturn(createHealthyState("coord-1", System.currentTimeMillis()));
+        
+        SearchUnitActualState redState = createHealthyState("coord-2", System.currentTimeMillis());
+        redState.setMemoryUsedPercent(95); // Above threshold - will be RED
+        when(metadataStore.getSearchUnitActualState(testClusterId, "coord-2"))
+            .thenReturn(redState);
+
+        SearchUnit selected = coordinatorSelector.selectCoordinator(testClusterId);
+
+        assertThat(selected).isNotNull();
+        assertThat(selected.getName()).isEqualTo("coord-1");
+    }
+
+    @Test
     void testBuildCoordinatorUrl() {
-        // Given
         SearchUnit coordinator = createSearchUnit("coord-1", "COORDINATOR", "10.0.0.1", testClusterId);
         coordinator.setPortHttp(9200);
 
-        // When
         String url = coordinatorSelector.buildCoordinatorUrl(coordinator);
 
-        // Then
         assertThat(url).isEqualTo("http://10.0.0.1:9200");
     }
 
@@ -171,8 +192,8 @@ class CoordinatorSelectorTest {
         SearchUnitActualState state = new SearchUnitActualState();
         state.setNodeName(nodeName);
         state.setTimestamp(timestamp);
-        state.setMemoryUsedPercent(50); // Below threshold
-        state.setDiskAvailableMB(10000); // Above threshold
+        state.setMemoryUsedPercent(50); 
+        state.setDiskAvailableMB(10000);
         return state;
     }
 }

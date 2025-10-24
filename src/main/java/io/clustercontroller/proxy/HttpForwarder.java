@@ -24,7 +24,7 @@ public class HttpForwarder {
      *
      * @param coordinatorUrl Full URL of coordinator (e.g., "http://10.0.0.5:9200")
      * @param method HTTP method (GET, POST, etc.)
-     * @param path Target path (e.g., "/logs-2024/_search?size=10")
+     * @param path Target path (e.g., "/index/_search?size=10")
      * @param body Request body (can be null for GET)
      * @param headers HTTP headers to forward
      * @return ResponseEntity with status code and body

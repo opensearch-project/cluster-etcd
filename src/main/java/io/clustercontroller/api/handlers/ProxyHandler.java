@@ -18,11 +18,7 @@ import java.util.Map;
  *
  * Provides endpoints for forwarding client search requests to healthy coordinator nodes
  * in the cluster. The proxy automatically selects a healthy coordinator using round-robin
- * load balancing and forwards the request with all original headers and body.
- *
- * Multi-cluster supported operations:
- * - GET /{clusterId}/{indexName}/_search - Proxy search queries
- * - POST /{clusterId}/{indexName}/_search - Proxy search queries with request body
+ * algorithm and forwards the request with all original headers and body.
  */
 @Slf4j
 @RestController

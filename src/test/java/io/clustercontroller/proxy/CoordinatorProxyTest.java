@@ -37,9 +37,8 @@ class CoordinatorProxyTest {
 
     @Test
     void testForwardRequest_Success() throws Exception {
-        // Given
         String method = "POST";
-        String path = "/logs-2024/_search?size=10";
+        String path = "/my-index/_search?size=10";
         String body = "{\"query\": {\"match_all\": {}}}";
         Map<String, String> headers = new HashMap<>();
         headers.put("Content-Type", "application/json");
@@ -54,10 +53,8 @@ class CoordinatorProxyTest {
         when(coordinatorSelector.buildCoordinatorUrl(coordinator)).thenReturn(coordinatorUrl);
         when(httpForwarder.forward(coordinatorUrl, method, path, body, headers)).thenReturn(httpResponse);
 
-        // When
         ProxyResponse response = coordinatorProxy.forwardRequest(testClusterId, method, path, body, headers);
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(response.getBody()).isEqualTo("{\"took\": 15, \"hits\": {}}");
@@ -70,16 +67,13 @@ class CoordinatorProxyTest {
 
     @Test
     void testForwardRequest_CoordinatorSelectionFails() throws Exception {
-        // Given
         when(coordinatorSelector.selectCoordinator(testClusterId))
             .thenThrow(new Exception("No healthy coordinators found"));
 
-        // When
         ProxyResponse response = coordinatorProxy.forwardRequest(
-            testClusterId, "GET", "/logs/_search", null, new HashMap<>()
+            testClusterId, "GET", "/my-index/_search", null, new HashMap<>()
         );
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatus()).isEqualTo(500);
         assertThat(response.getError()).contains("No healthy coordinators found");
@@ -98,12 +92,10 @@ class CoordinatorProxyTest {
         when(httpForwarder.forward(anyString(), anyString(), anyString(), any(), any()))
             .thenThrow(new RuntimeException("Connection refused"));
 
-        // When
         ProxyResponse response = coordinatorProxy.forwardRequest(
-            testClusterId, "GET", "/logs/_search", null, new HashMap<>()
+            testClusterId, "GET", "/my-index/_search", null, new HashMap<>()
         );
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatus()).isEqualTo(500);
         assertThat(response.getError()).contains("Connection refused");
@@ -111,9 +103,8 @@ class CoordinatorProxyTest {
 
     @Test
     void testForwardRequest_GetRequest() throws Exception {
-        // Given
         String method = "GET";
-        String path = "/logs-2024/_search?q=error";
+        String path = "/my-index/_search?q=error";
         Map<String, String> headers = new HashMap<>();
 
         SearchUnit coordinator = createSearchUnit("coord-2", "10.0.0.2");
@@ -125,10 +116,8 @@ class CoordinatorProxyTest {
         when(coordinatorSelector.buildCoordinatorUrl(coordinator)).thenReturn(coordinatorUrl);
         when(httpForwarder.forward(coordinatorUrl, method, path, null, headers)).thenReturn(httpResponse);
 
-        // When
         ProxyResponse response = coordinatorProxy.forwardRequest(testClusterId, method, path, null, headers);
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatus()).isEqualTo(200);
         assertThat(response.getBody()).isEqualTo("{\"results\": []}");
@@ -137,7 +126,6 @@ class CoordinatorProxyTest {
 
     @Test
     void testForwardRequest_NonOkStatus() throws Exception {
-        // Given
         SearchUnit coordinator = createSearchUnit("coord-1", "10.0.0.1");
         String coordinatorUrl = "http://10.0.0.1:9200";
 
@@ -149,12 +137,10 @@ class CoordinatorProxyTest {
         when(httpForwarder.forward(anyString(), anyString(), anyString(), any(), any()))
             .thenReturn(httpResponse);
 
-        // When
         ProxyResponse response = coordinatorProxy.forwardRequest(
-            testClusterId, "GET", "/nonexistent/_search", null, new HashMap<>()
+            testClusterId, "GET", "/my-index/_search", null, new HashMap<>()
         );
 
-        // Then
         assertThat(response).isNotNull();
         assertThat(response.getStatus()).isEqualTo(404);
         assertThat(response.getBody()).isEqualTo("{\"error\": \"Index not found\"}");
