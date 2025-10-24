@@ -221,9 +221,9 @@ public class ClusterLifecycleManager {
                 ByteSequence.from(assignmentValue, UTF_8),
                 PutOption.newBuilder().withLeaseId(leaseId).build()
             ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            log.debug("Wrote controller assignment key: {} → {}", controllerId, clusterId);
+            log.info("✓ Wrote controller assignment key: {} → {}", controllerId, clusterId);
         } catch (Exception e) {
-            log.warn("Failed to write controller assignment key for cluster {}: {}", clusterId, e.getMessage());
+            log.error("✗ Failed to write controller assignment key for cluster {}", clusterId, e);
         }
         
         // Write cluster-level assignment key (for cluster-centric view)
@@ -234,9 +234,9 @@ public class ClusterLifecycleManager {
                 ByteSequence.from(assignmentValue, UTF_8),
                 PutOption.newBuilder().withLeaseId(leaseId).build()
             ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            log.debug("Wrote cluster assignment key: {} ← {}", clusterId, controllerId);
+            log.info("✓ Wrote cluster assignment key: {} ← {}", clusterId, controllerId);
         } catch (Exception e) {
-            log.warn("Failed to write cluster assignment key for cluster {}: {}", clusterId, e.getMessage());
+            log.error("✗ Failed to write cluster assignment key for cluster {}", clusterId, e);
         }
     }
     
@@ -249,9 +249,9 @@ public class ClusterLifecycleManager {
             String controllerAssignmentPath = pathResolver.getControllerAssignmentPath(controllerId, clusterId);
             kvClient.delete(ByteSequence.from(controllerAssignmentPath, UTF_8))
                 .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            log.debug("Deleted controller assignment key: {} → {}", controllerId, clusterId);
+            log.info("✓ Deleted controller assignment key: {} → {}", controllerId, clusterId);
         } catch (Exception e) {
-            log.warn("Failed to delete controller assignment key for cluster {}: {}", clusterId, e.getMessage());
+            log.error("✗ Failed to delete controller assignment key for cluster {}", clusterId, e);
         }
         
         // Delete cluster-level assignment key
@@ -259,9 +259,9 @@ public class ClusterLifecycleManager {
             String clusterAssignmentPath = pathResolver.getClusterAssignedControllerPath(clusterId);
             kvClient.delete(ByteSequence.from(clusterAssignmentPath, UTF_8))
                 .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            log.debug("Deleted cluster assignment key: {} ← {}", clusterId, controllerId);
+            log.info("✓ Deleted cluster assignment key: {} ← {}", controllerId, clusterId);
         } catch (Exception e) {
-            log.warn("Failed to delete cluster assignment key for cluster {}: {}", clusterId, e.getMessage());
+            log.error("✗ Failed to delete cluster assignment key for cluster {}", clusterId, e);
         }
     }
 }
