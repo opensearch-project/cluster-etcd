@@ -125,6 +125,7 @@ class DistributedLockManagerTest {
         lenient().when(leaseResponse.getID()).thenReturn(leaseId);
         lenient().when(leaseClient.grant(ttl)).thenReturn(CompletableFuture.completedFuture(leaseResponse));
         lenient().when(leaseClient.keepAlive(eq(leaseId), any())).thenReturn(keepAliveObserver);
+        lenient().when(leaseClient.revoke(leaseId)).thenReturn(CompletableFuture.completedFuture(null));
         
         when(lockClient.lock(any(ByteSequence.class), eq(leaseId)))
             .thenReturn(CompletableFuture.failedFuture(new RuntimeException("Lock failed")));
@@ -133,6 +134,38 @@ class DistributedLockManagerTest {
         assertThatThrownBy(() -> lockManager.acquireLock(clusterId, ttl))
             .isInstanceOf(LockException.class)
             .hasMessageContaining("Failed to acquire lock");
+        
+        // Verify cleanup happens (key fix: prevent orphaned locks)
+        verify(keepAliveObserver).close();
+        verify(leaseClient).revoke(leaseId);
+    }
+
+    @Test
+    void testAcquireLock_TimeoutTriggersCleanup() {
+        // Given
+        String clusterId = "cluster-1";
+        int ttl = 60;
+        long leaseId = 12345L;
+        
+        lenient().when(pathResolver.getClusterLockPath(clusterId)).thenReturn("/lock/path");
+        
+        LeaseGrantResponse leaseResponse = mock(LeaseGrantResponse.class);
+        lenient().when(leaseResponse.getID()).thenReturn(leaseId);
+        lenient().when(leaseClient.grant(ttl)).thenReturn(CompletableFuture.completedFuture(leaseResponse));
+        lenient().when(leaseClient.keepAlive(eq(leaseId), any())).thenReturn(keepAliveObserver);
+        lenient().when(leaseClient.revoke(leaseId)).thenReturn(CompletableFuture.completedFuture(null));
+        
+        when(lockClient.lock(any(ByteSequence.class), eq(leaseId)))
+            .thenReturn(CompletableFuture.failedFuture(new java.util.concurrent.TimeoutException("Lock timeout")));
+        
+        // When/Then
+        assertThatThrownBy(() -> lockManager.acquireLock(clusterId, ttl))
+            .isInstanceOf(LockException.class)
+            .hasMessageContaining("Failed to acquire lock");
+        
+        // Verify cleanup happens on timeout (critical for preventing orphaned locks during startup races)
+        verify(keepAliveObserver).close();
+        verify(leaseClient).revoke(leaseId);
     }
 
     @Test

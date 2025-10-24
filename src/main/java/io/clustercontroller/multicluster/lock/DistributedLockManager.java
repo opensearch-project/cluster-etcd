@@ -23,7 +23,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 @Slf4j
 public class DistributedLockManager {
     
-    private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 5;
+    private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 30;
     
     private final Lock lockClient;
     private final Lease leaseClient;
@@ -49,18 +49,21 @@ public class DistributedLockManager {
      * @throws LockException if acquisition fails or times out
      */
     public ClusterLock acquireLock(String clusterId, int ttlSeconds) throws LockException {
+        long leaseId = 0;
+        CloseableClient keepAlive = null;
+        
         try {
             log.debug("Attempting to acquire lock for cluster: {}", clusterId);
             
             // Step 1: Create lease
-            long leaseId = leaseClient.grant(ttlSeconds)
+            leaseId = leaseClient.grant(ttlSeconds)
                 .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .getID();
             
             log.debug("Created lease {} for cluster {}", leaseId, clusterId);
             
             // Step 2: Start keep-alive BEFORE acquiring lock (critical for etcd Lock API!)
-            CloseableClient keepAlive = leaseClient.keepAlive(
+            keepAlive = leaseClient.keepAlive(
                 leaseId,
                 Observers.observer(response -> {
                     // Keep-alive response received
@@ -85,10 +88,35 @@ public class DistributedLockManager {
             
         } catch (TimeoutException e) {
             log.debug("Timeout acquiring lock for cluster: {}", clusterId);
+            cleanupFailedLockAttempt(leaseId, keepAlive, clusterId);
             throw new LockException("Timeout acquiring lock for cluster: " + clusterId, e);
         } catch (Exception e) {
             log.warn("Failed to acquire lock for cluster: {}", clusterId, e);
+            cleanupFailedLockAttempt(leaseId, keepAlive, clusterId);
             throw new LockException("Failed to acquire lock for cluster: " + clusterId, e);
+        }
+    }
+    
+    /**
+     * Cleanup lease and keep-alive when lock acquisition fails.
+     * This prevents orphaned lock entries from accumulating in etcd.
+     */
+    private void cleanupFailedLockAttempt(long leaseId, CloseableClient keepAlive, String clusterId) {
+        try {
+            // Close keep-alive first to stop lease renewal
+            if (keepAlive != null) {
+                keepAlive.close();
+                log.debug("Closed keep-alive for failed lock attempt on cluster: {}", clusterId);
+            }
+            
+            // Revoke the lease to immediately remove lock entry
+            if (leaseId != 0) {
+                leaseClient.revoke(leaseId).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                log.debug("Revoked lease {} for failed lock attempt on cluster: {}", leaseId, clusterId);
+            }
+        } catch (Exception cleanupEx) {
+            log.warn("Failed to cleanup lease {} after lock failure for cluster: {}", 
+                leaseId, clusterId, cleanupEx);
         }
     }
     
