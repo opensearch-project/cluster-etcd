@@ -9,6 +9,10 @@ import io.clustercontroller.indices.AliasManager;
 import io.clustercontroller.indices.IndexManager;
 import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.orchestration.GoalStateOrchestrator;
+import io.clustercontroller.orchestration.GoalStateOrchestrationStrategy;
+import io.clustercontroller.proxy.CoordinatorProxy;
+import io.clustercontroller.proxy.CoordinatorSelector;
+import io.clustercontroller.proxy.HttpForwarder;
 import io.clustercontroller.templates.TemplateManager;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
@@ -194,4 +198,25 @@ public class ClusterControllerApplication {
         return taskManager;
     }
     */
+     * Proxy support beans for forwarding requests to coordinator nodes.
+     */
+    
+    @Bean
+    public HttpForwarder httpForwarder() {
+        log.info("Initializing HttpForwarder for proxy support");
+        return new HttpForwarder();
+    }
+
+    @Bean
+    public CoordinatorSelector coordinatorSelector(MetadataStore metadataStore) {
+        log.info("Initializing CoordinatorSelector for proxy support");
+        return new CoordinatorSelector(metadataStore);
+    }
+
+    @Bean
+    public CoordinatorProxy coordinatorProxy(CoordinatorSelector coordinatorSelector, 
+                                             HttpForwarder httpForwarder) {
+        log.info("Initializing CoordinatorProxy for proxy support");
+        return new CoordinatorProxy(coordinatorSelector, httpForwarder);
+    }
 }
