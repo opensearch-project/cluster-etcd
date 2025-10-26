@@ -370,7 +370,7 @@ Start local environment
 ```
 # Add -PuseDocker to create full integration test local environment, use -Pgit-hash to specify controler branch
 # can we use main branch after https://github.com/TejasNaikk/cluster-controller/pull/28 merged
-% ./gradlew run -PnumNodes=3 -PuseDocker -Pgit-hash=dc/schedule-tasks 
+% ./gradlew run -PnumNodes=3 -PuseDocker -Pgit-hash=dc/schedule-tasks
 ```
 
 Add initial config key for the controller
@@ -387,7 +387,7 @@ Create a test index via controller API
 
 Check controller logs
 ```
-% docker logs -f clusteretcdtest-controller-1 
+% docker logs -f clusteretcdtest-controller-1
 ```
 
 Optionally start a etcd-workbench to monitor the etcd keys

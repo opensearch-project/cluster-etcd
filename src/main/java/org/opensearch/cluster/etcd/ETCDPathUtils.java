@@ -27,7 +27,7 @@ public class ETCDPathUtils {
     }
 
     public static String buildSearchUnitActualStatePath(String clusterName, String nodeName) {
-        //TODO - Decide ActualStatePath for coordinators
+        // TODO - Decide ActualStatePath for coordinators
         return String.join("/", "", clusterName, DEFAULT_SEARCH_UNIT_GROUP, nodeName, "actual-state");
     }
 
@@ -73,16 +73,20 @@ public class ETCDPathUtils {
     }
 
     private static String getSearchUnitGroup(DiscoveryNode discoveryNode, String clusterName) {
-        return discoveryNode.getAttributes().getOrDefault(
-                discoveryNode.getName() +"."+ SEARCH_UNIT_GROUP_ATTRIBUTE, // Key: Try node-specific first
-                discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_GROUP_ATTRIBUTE, DEFAULT_SEARCH_UNIT_GROUP)// DefaultValue: Fall back to generic key
-        );
+        return discoveryNode.getAttributes()
+            .getOrDefault(
+                discoveryNode.getName() + "." + SEARCH_UNIT_GROUP_ATTRIBUTE, // Key: Try node-specific first
+                discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_GROUP_ATTRIBUTE, DEFAULT_SEARCH_UNIT_GROUP)// DefaultValue: Fall back
+                                                                                                                  // to generic key
+            );
     }
 
     private static String getSearchUnit(DiscoveryNode discoveryNode, String clusterName) {
-        return discoveryNode.getAttributes().getOrDefault(
-                discoveryNode.getName() +"."+ SEARCH_UNIT_NAME_ATTRIBUTE, // Key: Try node-specific first
-                discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_NAME_ATTRIBUTE, discoveryNode.getName())// DefaultValue: Fall back to generic key
-        );
+        return discoveryNode.getAttributes()
+            .getOrDefault(
+                discoveryNode.getName() + "." + SEARCH_UNIT_NAME_ATTRIBUTE, // Key: Try node-specific first
+                discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_NAME_ATTRIBUTE, discoveryNode.getName())// DefaultValue: Fall back to
+                                                                                                               // generic key
+            );
     }
 }
