@@ -364,6 +364,49 @@ remote store segment replication.
 ```
 
 
+### Set up full integration test with etcd and controller in docker locally
+
+Start local environment
+```
+# Add -PuseDocker to create full integration test local environment, use -Pgit-hash to specify controler branch
+# can we use main branch after https://github.com/TejasNaikk/cluster-controller/pull/28 merged
+% ./gradlew run -PnumNodes=3 -PuseDocker -Pgit-hash=dc/schedule-tasks 
+```
+
+Add initial config key for the controller
+```
+# Register a cluster name for controller to start the managing the test cluster
+% docker exec etcd-local etcdctl put '/multi-cluster/clusters/integTest/metadata' '{"cluster":"integTest"}'
+```
+
+Create a test index via controller API
+
+```
+% curl -X PUT "http://localhost:8080/integTest/test-index-1" -H "Content-Type: application/json"  -d '{ "settings": { "number_of_shards": 1, "number_of_replicas": 1 }, "mappings": { "properties": { "custom_field": {"type": "keyword"} } } }'
+```
+
+Check controller logs
+```
+% docker logs -f clusteretcdtest-controller-1 
+```
+
+Optionally start a etcd-workbench to monitor the etcd keys
+```
+% docker run --name my-etcd-workbench -p 8002:8002 -d tzfun/etcd-workbench:latest
+```
+
+Clean up the environment
+```
+# stop all the containers and remove images
+% ./gradlew composeDown
+
+# To ensure next run can picked updated controler code, we can clear the docker cache before running
+% docker builder prune --all
+
+```
+
+
+
 ## Code of Conduct
 
 The project's [Code of Conduct](CODE_OF_CONDUCT.md) outlines our expectations for all participants in our community, based on the [OpenSearch Code of Conduct](https://opensearch.org/code-of-conduct/). Please contact [conduct@opensearch.foundation](mailto:conduct@opensearch.foundation) with any additional questions or comments.
