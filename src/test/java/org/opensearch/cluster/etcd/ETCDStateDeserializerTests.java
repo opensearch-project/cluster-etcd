@@ -384,7 +384,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         Client client = mock(Client.class);
         KV kvClient = mock(KV.class);
         when(client.getKVClient()).thenReturn(kvClient);
-        
+
         ByteSequence idx1SettingsPath = ByteSequence.from(
             ETCDPathUtils.buildIndexSettingsPath("test-cluster", "idx1"),
             StandardCharsets.UTF_8
@@ -403,7 +403,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
               }
             }
             """, StandardCharsets.UTF_8)).build()).build();
-        
+
         RangeResponse idx1MappingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
             {
               "properties": {
@@ -424,9 +424,9 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             "test-cluster",
             true
         );
-        
+
         ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
-        
+
         assertTrue(clusterState.getMetadata().hasIndex("idx1"));
         IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
         assertNotNull(indexMetadata.getIngestionStatus());
@@ -450,7 +450,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         Client client = mock(Client.class);
         KV kvClient = mock(KV.class);
         when(client.getKVClient()).thenReturn(kvClient);
-        
+
         ByteSequence idx1SettingsPath = ByteSequence.from(
             ETCDPathUtils.buildIndexSettingsPath("test-cluster", "idx1"),
             StandardCharsets.UTF_8
@@ -469,7 +469,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
               }
             }
             """, StandardCharsets.UTF_8)).build()).build();
-        
+
         RangeResponse idx1MappingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
             {
               "properties": {
@@ -490,9 +490,9 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             "test-cluster",
             true
         );
-        
+
         ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
-        
+
         assertTrue(clusterState.getMetadata().hasIndex("idx1"));
         IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
         assertNotNull(indexMetadata.getIngestionStatus());
@@ -516,7 +516,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         Client client = mock(Client.class);
         KV kvClient = mock(KV.class);
         when(client.getKVClient()).thenReturn(kvClient);
-        
+
         ByteSequence idx1SettingsPath = ByteSequence.from(
             ETCDPathUtils.buildIndexSettingsPath("test-cluster", "idx1"),
             StandardCharsets.UTF_8
@@ -534,7 +534,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
               }
             }
             """, StandardCharsets.UTF_8)).build()).build();
-        
+
         RangeResponse idx1MappingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
             {
               "properties": {
@@ -555,9 +555,9 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
             "test-cluster",
             true
         );
-        
+
         ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
-        
+
         assertTrue(clusterState.getMetadata().hasIndex("idx1"));
         IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
         assertNotNull(indexMetadata.getIngestionStatus());

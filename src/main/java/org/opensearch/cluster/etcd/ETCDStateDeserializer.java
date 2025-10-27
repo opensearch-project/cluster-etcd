@@ -125,7 +125,7 @@ public final class ETCDStateDeserializer {
     private ETCDStateDeserializer() {}
 
     private static final Logger LOGGER = LogManager.getLogger(ETCDStateDeserializer.class);
-    
+
     // Index settings keys
     private static final String INDEX_SETTINGS_KEY = "index";
     private static final String PAUSE_PULL_INGESTION_METADATA_KEY = "pause_pull_ingestion";
@@ -556,11 +556,9 @@ public final class ETCDStateDeserializer {
             }
             KeyValue settingsKv = settingsResponse.getKvs().getFirst();
             // Convert to mutable map to allow modification
-            Map<String, Object> settingsMap = new HashMap<>(XContentHelper.convertToMap(
-                new BytesArray(settingsKv.getValue().getBytes()),
-                true,
-                MediaTypeRegistry.JSON
-            ).v2());
+            Map<String, Object> settingsMap = new HashMap<>(
+                XContentHelper.convertToMap(new BytesArray(settingsKv.getValue().getBytes()), true, MediaTypeRegistry.JSON).v2()
+            );
 
             // Extract additional metadata from settings
             Map<String, Object> additionalMetadata = extractAdditionalMetadata(settingsMap);
@@ -590,24 +588,24 @@ public final class ETCDStateDeserializer {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> extractAdditionalMetadata(Map<String, Object> settingsMap) {
         Map<String, Object> additionalMetadata = new HashMap<>();
-        
+
         // Early return if no index settings
         Object indexSettingsObj = settingsMap.get(INDEX_SETTINGS_KEY);
         if (!(indexSettingsObj instanceof Map)) {
             return additionalMetadata;
         }
-        
+
         Map<String, Object> indexSettings = (Map<String, Object>) indexSettingsObj;
         Object pausePullIngestion = indexSettings.get(PAUSE_PULL_INGESTION_METADATA_KEY);
         if (pausePullIngestion == null) {
             return additionalMetadata;
         }
-        
+
         // Create mutable copy and remove the metadata field
         Map<String, Object> mutableIndexSettings = new HashMap<>(indexSettings);
         mutableIndexSettings.remove(PAUSE_PULL_INGESTION_METADATA_KEY);
         settingsMap.put(INDEX_SETTINGS_KEY, mutableIndexSettings);
-        
+
         additionalMetadata.put(PAUSE_PULL_INGESTION_METADATA_KEY, pausePullIngestion);
         return additionalMetadata;
     }
