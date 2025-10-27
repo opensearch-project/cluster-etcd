@@ -5,6 +5,7 @@ import io.clustercontroller.enums.Decision;
 import io.clustercontroller.enums.NodeRole;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.models.ShardAllocation;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
@@ -37,8 +38,12 @@ public class StandardAllocationEngine implements AllocationDecisionEngine {
         String indexName,
         Index indexConfig,
         List<SearchUnit> allNodes,
-        NodeRole targetRole
+        NodeRole targetRole,
+        ShardAllocation currentPlanned
     ) {
+        // StandardAllocationEngine doesn't use currentPlanned - it always recomputes
+        // (This is the existing behavior - no stable allocation logic)
+        
         List<SearchUnit> selectedNodes = new ArrayList<>();
         
         // Convert shardId to String for deciders

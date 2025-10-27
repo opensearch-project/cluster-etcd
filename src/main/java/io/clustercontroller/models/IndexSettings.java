@@ -17,6 +17,9 @@ public class IndexSettings {
     
     @JsonProperty("shard_replica_count")
     private List<Integer> shardReplicaCount;
+    
+    @JsonProperty("shard_groups_allocate_count")
+    private List<Integer> shardGroupsAllocateCount;
 
     @JsonProperty("pause_pull_ingestion")
     private Boolean pausePullIngestion;

@@ -43,13 +43,15 @@ public class GroupManager {
      * 
      * Current implementation: Returns node.getShardId()
      * 
-     * TODO: If GROUP ID source changes in the future (e.g., from a different node attribute),
-     * modify this method. The rest of the code will automatically adapt.
+     * TODO: GROUP ID currently uses node.getShardId() (clusterless shard ID from node config).
+     * In the future, this will be replaced by a dedicated group identifier attribute.
+     * When that happens, modify this method and the rest of the code will automatically adapt.
      * 
      * @param node SearchUnit node
      * @return GROUP ID for this node
      */
     private String getGroupId(SearchUnit node) {
+        // TODO: Replace shardId with dedicated group identifier in the future
         // GROUP ID = shardId (clusterless shard ID reported by node)
         return node.getShardId();
     }

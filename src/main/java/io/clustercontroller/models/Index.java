@@ -19,34 +19,10 @@ public class Index {
     
     @JsonProperty("index_name")
     private String indexName;
-    
-    @JsonProperty("number_of_shards")
-    private int numberOfShards;
-    
-    @JsonProperty("shard_replica_count")
-    private List<Integer> shardReplicaCount = new ArrayList<>();
-    
-    @JsonProperty("shard_groups_allocate_count")
-    private List<Integer> shardGroupsAllocateCount = new ArrayList<>();
-    
-    @JsonProperty("num_shards")
-    private Integer numShards = 1; // default to 1 shard
-    
+   
     @JsonProperty("created_at")
     private String createdAt = java.time.OffsetDateTime.now().toString(); // ISO timestamp for proper ordering
     
-    public Index(String indexName, List<Integer> shardReplicaCount) {
-        this.indexName = indexName;
-        this.shardReplicaCount = shardReplicaCount != null ? shardReplicaCount : new ArrayList<>();
-        this.numberOfShards = this.shardReplicaCount.size();
-    }
-    
-    // Custom setters to maintain null safety
-    public void setShardReplicaCount(List<Integer> shardReplicaCount) { 
-        this.shardReplicaCount = shardReplicaCount != null ? shardReplicaCount : new ArrayList<>(); 
-    }
-    
-    public void setShardGroupsAllocateCount(List<Integer> shardGroupsAllocateCount) {
-        this.shardGroupsAllocateCount = shardGroupsAllocateCount != null ? shardGroupsAllocateCount : new ArrayList<>();
-    }
+    @JsonProperty("settings")
+    private IndexSettings settings;
 } 

@@ -25,7 +25,11 @@ class StandardAllocationEngineTest {
     @BeforeEach
     void setUp() {
         engine = new StandardAllocationEngine();
-        testIndex = new Index("test-index", Arrays.asList(1));
+        testIndex = new Index();
+        testIndex.setIndexName("test-index");
+        testIndex.setSettings(new io.clustercontroller.models.IndexSettings());
+        testIndex.getSettings().setShardReplicaCount(Arrays.asList(1));
+        testIndex.getSettings().setNumberOfShards(1);
         
         // Create test nodes
         healthyPrimary = createSearchUnit("node1", "PRIMARY", "NORMAL", HealthState.GREEN, "0");
@@ -37,7 +41,7 @@ class StandardAllocationEngineTest {
     @Test
     void testDeciderChain() {
         List<SearchUnit> candidates = Arrays.asList(healthyPrimary, unhealthyNode, coordinatorNode);
-        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY, null);
         
         // Only healthy primary should pass (HealthDecider, RoleDecider, ShardPoolDecider)
         assertThat(selected).hasSize(1);
@@ -47,7 +51,7 @@ class StandardAllocationEngineTest {
     @Test
     void testHealthDecider() {
         List<SearchUnit> candidates = Arrays.asList(unhealthyNode);
-        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY, null);
         
         // Unhealthy node should be rejected
         assertThat(selected).isEmpty();
@@ -56,7 +60,7 @@ class StandardAllocationEngineTest {
     @Test
     void testRoleDecider() {
         List<SearchUnit> candidates = Arrays.asList(coordinatorNode);
-        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY, null);
         
         // Coordinator node should be rejected for PRIMARY role
         assertThat(selected).isEmpty();
@@ -67,7 +71,7 @@ class StandardAllocationEngineTest {
         SearchUnit wrongShardNode = createSearchUnit("wrong1", "PRIMARY", "NORMAL", HealthState.GREEN, "1");
         
         List<SearchUnit> candidates = Arrays.asList(healthyPrimary, wrongShardNode);
-        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY, null);
         
         // Should only include nodes from shard 0
         assertThat(selected).hasSize(1);
@@ -86,7 +90,7 @@ class StandardAllocationEngineTest {
             perfectNode, wrongShardNode, wrongRoleNode, unhealthyNode, drainedNode
         );
         
-        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY, null);
         
         // Only perfect node should pass all deciders
         assertThat(selected).hasSize(1);

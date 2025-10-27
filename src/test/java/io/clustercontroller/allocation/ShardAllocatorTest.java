@@ -62,8 +62,8 @@ class ShardAllocatorTest {
     void testPlanShardAllocationWithIndexConfigs() throws Exception {
         // Given
         List<Index> indexConfigs = Arrays.asList(
-            new Index("index1", Arrays.asList(1)),
-            new Index("index2", Arrays.asList(1))
+            createIndex("index1", Arrays.asList(1)),
+            createIndex("index2", Arrays.asList(1))
         );
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         
@@ -76,7 +76,7 @@ class ShardAllocatorTest {
             createSearchUnit("node2", "REPLICA"), 
             createSearchUnit("node3", "REPLICA")
         );
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes);
 
         // When
@@ -91,7 +91,7 @@ class ShardAllocatorTest {
     @Test
     void testPlanShardAllocationWithRecentAllocation() throws Exception {
         // Given
-        List<Index> indexConfigs = Arrays.asList(new Index("index1", Arrays.asList(1)));
+        List<Index> indexConfigs = Arrays.asList(createIndex("index1", Arrays.asList(1)));
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         
         // Mock recent planned allocation (within 5 minutes)
@@ -106,7 +106,7 @@ class ShardAllocatorTest {
             createSearchUnit("node4", "REPLICA"), 
             createSearchUnit("node5", "REPLICA")
         );
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any(), any()))
             .thenReturn(eligibleSearchNodes);
 
         // When
@@ -125,7 +125,7 @@ class ShardAllocatorTest {
     @Test
     void testPlanShardAllocationWithMultipleIngestSUsError() throws Exception {
         // Given
-        List<Index> indexConfigs = Arrays.asList(new Index("index1", Arrays.asList(1)));
+        List<Index> indexConfigs = Arrays.asList(createIndex("index1", Arrays.asList(1)));
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         
         // Mock no existing planned allocation
@@ -137,7 +137,7 @@ class ShardAllocatorTest {
             createSearchUnit("node2", "PRIMARY")
         );
         List<SearchUnit> eligibleSearchNodes = Arrays.asList(createSearchUnit("node3", "REPLICA"));
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes);
 
         // When
@@ -157,7 +157,7 @@ class ShardAllocatorTest {
     @Test
     void testPlanShardAllocationWithCurrentMultipleIngestSUsError() throws Exception {
         // Given
-        List<Index> indexConfigs = Arrays.asList(new Index("index1", Arrays.asList(1)));
+        List<Index> indexConfigs = Arrays.asList(createIndex("index1", Arrays.asList(1)));
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         
         // Mock existing planned allocation with multiple IngestSUs (should cause error)
@@ -168,7 +168,7 @@ class ShardAllocatorTest {
 
         // Mock valid search nodes for SearchSU allocation
         List<SearchUnit> eligibleSearchNodes = Arrays.asList(createSearchUnit("node4", "REPLICA"));
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any(), any()))
             .thenReturn(eligibleSearchNodes);
 
         // When
@@ -188,7 +188,7 @@ class ShardAllocatorTest {
     @Test
     void testPlanShardAllocationWithValidIngestAllocation() throws Exception {
         // Given
-        List<Index> indexConfigs = Arrays.asList(new Index("index1", Arrays.asList(1)));
+        List<Index> indexConfigs = Arrays.asList(createIndex("index1", Arrays.asList(1)));
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         
         // Mock no existing planned allocation
@@ -200,7 +200,7 @@ class ShardAllocatorTest {
             createSearchUnit("node2", "REPLICA"), 
             createSearchUnit("node3", "REPLICA")
         );
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes);
 
         // When
@@ -243,7 +243,7 @@ class ShardAllocatorTest {
     @Test
     void testPlanShardAllocationWithDifferentStrategies() throws Exception {
         // Given
-        List<Index> indexConfigs = Arrays.asList(new Index("index1", Arrays.asList(1)));
+        List<Index> indexConfigs = Arrays.asList(createIndex("index1", Arrays.asList(1)));
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         when(metadataStore.getPlannedAllocation(anyString(), anyString(), anyString())).thenReturn(null);
         
@@ -252,7 +252,7 @@ class ShardAllocatorTest {
             createSearchUnit("node2", "REPLICA"), 
             createSearchUnit("node3", "REPLICA")
         );
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes);
 
         // When - Test both strategies
@@ -268,9 +268,9 @@ class ShardAllocatorTest {
     void testPlanShardAllocationWithMultipleIndexesAndShards() throws Exception {
         // Given - Multiple indexes with different shard counts
         List<Index> indexConfigs = Arrays.asList(
-            new Index("index1", Arrays.asList(2, 1)), // 2 shards: shard0 with 2 replicas, shard1 with 1 replica
-            new Index("index2", Arrays.asList(1)),    // 1 shard: shard0 with 1 replica
-            new Index("index3", Arrays.asList(3, 2, 1)) // 3 shards: shard0 with 3 replicas, shard1 with 2 replicas, shard2 with 1 replica
+            createIndex("index1", Arrays.asList(2, 1)), // 2 shards: shard0 with 2 replicas, shard1 with 1 replica
+            createIndex("index2", Arrays.asList(1)),    // 1 shard: shard0 with 1 replica
+            createIndex("index3", Arrays.asList(3, 2, 1)) // 3 shards: shard0 with 3 replicas, shard1 with 2 replicas, shard2 with 1 replica
         );
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         
@@ -288,7 +288,7 @@ class ShardAllocatorTest {
         
         // Return different node sets for different calls to simulate different shard allocations
         // Total shards: index1(2) + index2(1) + index3(3) = 6 shards
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes, // index1/shard0
                        eligibleIngestNodes, eligibleSearchNodes, // index1/shard1
                        eligibleIngestNodes, eligibleSearchNodes, // index2/shard0
@@ -325,5 +325,14 @@ class ShardAllocatorTest {
         searchUnit.setRole(role);
         searchUnit.setStatePulled(HealthState.GREEN);
         return searchUnit;
+    }
+    
+    private Index createIndex(String indexName, List<Integer> shardReplicaCount) {
+        Index index = new Index();
+        index.setIndexName(indexName);
+        index.setSettings(new io.clustercontroller.models.IndexSettings());
+        index.getSettings().setShardReplicaCount(shardReplicaCount);
+        index.getSettings().setNumberOfShards(shardReplicaCount.size());
+        return index;
     }
 }

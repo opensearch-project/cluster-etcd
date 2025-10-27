@@ -9,10 +9,14 @@ import io.clustercontroller.enums.NodeRole;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.NodesGroup;
 import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.models.ShardAllocation;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Group-aware bin-packing allocation engine.
@@ -69,15 +73,16 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
         String indexName,
         Index indexConfig,
         List<SearchUnit> allNodes,
-        NodeRole targetRole
+        NodeRole targetRole,
+        ShardAllocation currentPlanned
     ) {
         
         if (targetRole == NodeRole.PRIMARY) {
             // PRIMARY allocation: use standard decider-based approach
             return getPrimaryNodesForAllocation(shardId, indexName, allNodes);
         } else {
-            // REPLICA allocation: use group-based bin-packing
-            return getReplicaNodesForAllocation(shardId, indexName, indexConfig, allNodes, targetRole);
+            // REPLICA allocation: use group-based bin-packing with stable allocation
+            return getReplicaNodesForAllocation(shardId, indexName, indexConfig, allNodes, targetRole, currentPlanned);
         }
     }
     
@@ -115,25 +120,72 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
     }
     
     /**
-     * Get eligible nodes for REPLICA allocation using group-based bin-packing.
+     * Get eligible nodes for REPLICA allocation using group-based bin-packing with stable allocation.
      * 
-     * Flow:
-     * 1. Discover ALL groups from all nodes (no filtering yet)
+     * Flow (Stable Allocation):
+     * 0. Get current groups from planned allocation (if exists)
+     * 1. Calculate desired number of groups (from index config)
+     * 2. If current == desired → return nodes from current groups (stable!)
+     * 3. If current < desired → select additional groups (scale up)
+     * 4. If current > desired → log warning, not supported yet (scale down)
+     * 
+     * Traditional Flow (when selecting groups):
+     * 1. Discover ALL groups from all nodes
      * 2. Filter groups to get only replica groups (based on node role)
-     * 3. Calculate number of groups needed (from index config)
-     * 4. Select N least loaded replica groups (bin-packing policy)
-     * 5. Apply deciders (HealthDecider) to filter nodes within ALL selected groups
-     * 6. Return eligible nodes from ALL selected groups
+     * 3. Select N groups using strategy (excluding current groups if scale-up)
+     * 4. Apply deciders (HealthDecider) to filter nodes within selected groups
+     * 5. Return eligible nodes from selected groups
      */
     private List<SearchUnit> getReplicaNodesForAllocation(
         int shardId,
         String indexName,
         Index indexConfig,
         List<SearchUnit> allNodes,
-        NodeRole targetRole
+        NodeRole targetRole,
+        ShardAllocation currentPlanned
     ) {
+        // Step 0: Get current groups from planned allocation (stable allocation check)
+        Set<String> currentGroupIds = getCurrentGroupsFromPlannedAllocation(currentPlanned, allNodes);
         
-        // Step 1: Discover ALL groups from all nodes (GROUP ID = node.getShardId())
+        // Step 1: Calculate desired number of groups from index config
+        int desiredGroupCount = 1; // default
+        if (indexConfig != null && indexConfig.getSettings() != null 
+            && indexConfig.getSettings().getShardGroupsAllocateCount() != null 
+            && shardId < indexConfig.getSettings().getShardGroupsAllocateCount().size()) {
+            desiredGroupCount = indexConfig.getSettings().getShardGroupsAllocateCount().get(shardId);
+        }
+        
+        int currentGroupCount = currentGroupIds.size();
+        
+        log.debug("REPLICA allocation for shard {}/{}: current groups = {}, desired groups = {}", 
+                 indexName, shardId, currentGroupCount, desiredGroupCount);
+        
+        // Step 2: Stable allocation check
+        if (currentGroupCount == desiredGroupCount && !currentGroupIds.isEmpty()) {
+            // Already correctly allocated → return nodes from current groups (stable!)
+            log.info("Shard {}/{} already allocated to {} groups - stable allocation, returning current nodes", 
+                    indexName, shardId, currentGroupCount);
+            return getNodesFromGroupIds(currentGroupIds, allNodes, shardId, indexName, targetRole);
+        }
+        
+        // Step 3: Handle downscaling (not supported yet)
+        if (currentGroupCount > desiredGroupCount) {
+            log.warn("Shard {}/{} currently allocated to {} groups but config requires {} groups. " +
+                    "Downscaling not supported yet - keeping current allocation.", 
+                    indexName, shardId, currentGroupCount, desiredGroupCount);
+            // TODO: Implement downscaling - need to:
+            // 1. Select which groups to remove (least loaded? most loaded? last N?)
+            // 2. Remove nodes from planned allocation in etcd
+            // 3. Remove shard from goal-states of those nodes
+            // 4. Create a cleanup task to handle removal
+            return getNodesFromGroupIds(currentGroupIds, allNodes, shardId, indexName, targetRole);
+        }
+        
+        // Step 4: Scale up - need more groups
+        log.info("Shard {}/{} needs scale-up: current = {} groups, desired = {} groups", 
+                indexName, shardId, currentGroupCount, desiredGroupCount);
+        
+        // Discover ALL groups from all nodes
         List<NodesGroup> allGroups = groupManager.discoverGroups(allNodes);
         
         if (allGroups.isEmpty()) {
@@ -142,7 +194,7 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
             return List.of();
         }
         
-        // Step 2: Filter to get only REPLICA groups (exclude PRIMARY/ingest groups)
+        // Filter to get only REPLICA groups
         List<NodesGroup> replicaGroups = groupManager.filterGroupsByRole(allGroups, NodeRole.REPLICA);
         
         if (replicaGroups.isEmpty()) {
@@ -151,57 +203,126 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
             return List.of();
         }
         
-        // Step 3: Calculate number of groups needed from index config
-        int numGroupsNeeded = 1; // default
-        if (indexConfig != null && indexConfig.getShardGroupsAllocateCount() != null 
-            && shardId < indexConfig.getShardGroupsAllocateCount().size()) {
-            numGroupsNeeded = indexConfig.getShardGroupsAllocateCount().get(shardId);
+        // Exclude current groups from selection (don't reselect them!)
+        List<NodesGroup> availableGroups = replicaGroups.stream()
+            .filter(group -> !currentGroupIds.contains(group.getGroupId()))
+            .collect(Collectors.toList());
+        
+        if (availableGroups.isEmpty()) {
+            log.warn("No available REPLICA groups for scale-up of shard {}/{} (all groups already allocated)", 
+                    indexName, shardId);
+            // Return nodes from current groups (better than nothing)
+            return getNodesFromGroupIds(currentGroupIds, allNodes, shardId, indexName, targetRole);
         }
         
-        // Step 4: Select REPLICA groups using GroupManager's configured strategy
-        List<NodesGroup> selectedGroups = groupManager.selectGroups(replicaGroups, targetRole, numGroupsNeeded);
+        // Calculate how many additional groups we need
+        int additionalGroupsNeeded = desiredGroupCount - currentGroupCount;
         
-        if (selectedGroups.isEmpty()) {
-            log.warn("No replica groups selected for shard {}/{}.", 
+        // Select additional groups using GroupManager's configured strategy
+        List<NodesGroup> additionalGroups = groupManager.selectGroups(availableGroups, targetRole, additionalGroupsNeeded);
+        
+        if (additionalGroups.isEmpty()) {
+            log.warn("No additional groups selected for shard {}/{} scale-up", 
                     indexName, shardId);
+            // Return nodes from current groups
+            return getNodesFromGroupIds(currentGroupIds, allNodes, shardId, indexName, targetRole);
+        }
+        
+        log.info("REPLICA scale-up for shard {}/{}: Adding {} new group(s) to existing {} group(s)", 
+                indexName, shardId, additionalGroups.size(), currentGroupCount);
+        
+        // Combine current groups + new groups
+        Set<String> allSelectedGroupIds = new HashSet<>(currentGroupIds);
+        additionalGroups.forEach(group -> allSelectedGroupIds.add(group.getGroupId()));
+        
+        // Return nodes from all groups (current + new)
+        return getNodesFromGroupIds(allSelectedGroupIds, allNodes, shardId, indexName, targetRole);
+    }
+    
+    /**
+     * Get current group IDs from planned allocation.
+     * 
+     * Extracts node names from planned allocation, finds those nodes in allNodes,
+     * and gets their group IDs (node.getShardId()).
+     * 
+     * @param currentPlanned Current planned allocation (may be null)
+     * @param allNodes All nodes in the cluster
+     * @return Set of current group IDs (empty if no planned allocation)
+     */
+    private Set<String> getCurrentGroupsFromPlannedAllocation(ShardAllocation currentPlanned, List<SearchUnit> allNodes) {
+        Set<String> currentGroupIds = new HashSet<>();
+        
+        if (currentPlanned == null || currentPlanned.getSearchSUs() == null || currentPlanned.getSearchSUs().isEmpty()) {
+            return currentGroupIds; // No current allocation
+        }
+        
+        List<String> allocatedNodeNames = currentPlanned.getSearchSUs();
+        
+        // For each allocated node, find it in allNodes and get its group ID
+        for (String nodeName : allocatedNodeNames) {
+            SearchUnit node = allNodes.stream()
+                .filter(n -> n.getName().equals(nodeName))
+                .findFirst()
+                .orElse(null);
+            
+            if (node != null && node.getShardId() != null) {
+                // TODO: Replace shardId with dedicated group identifier in the future
+                currentGroupIds.add(node.getShardId()); // Group ID from SearchUnit.shardId
+            } else {
+                log.debug("Node {} from planned allocation not found in allNodes or has no shardId", nodeName);
+            }
+        }
+        
+        return currentGroupIds;
+    }
+    
+    /**
+     * Get eligible nodes from specific group IDs.
+     * 
+     * Finds all nodes belonging to the specified groups and applies HealthDecider.
+     * 
+     * @param groupIds Set of group IDs to get nodes from
+     * @param allNodes All nodes in the cluster
+     * @param shardId Shard ID
+     * @param indexName Index name
+     * @param targetRole Target role
+     * @return List of eligible nodes from the specified groups
+     */
+    private List<SearchUnit> getNodesFromGroupIds(Set<String> groupIds, List<SearchUnit> allNodes, 
+                                                   int shardId, String indexName, NodeRole targetRole) {
+        if (groupIds.isEmpty()) {
             return List.of();
         }
         
-        log.info("REPLICA allocation for shard {}/{}: Selected {} group(s)", 
-                indexName, shardId, selectedGroups.size());
-        
-        // Step 5: Apply deciders to filter nodes within ALL selected groups
-        // (Only HealthDecider - role/pool already handled by group filtering)
         String shardIdStr = String.valueOf(shardId);
-        
         List<SearchUnit> eligibleNodes = new ArrayList<>();
-        for (NodesGroup group : selectedGroups) {
-            log.debug("Processing group {} with {} nodes (load: {})", 
-                     group.getGroupId(), group.size(), group.getCurrentLoad());
+        
+        // Find all nodes that belong to the specified groups
+        for (SearchUnit node : allNodes) {
+            if (node.getShardId() == null || !groupIds.contains(node.getShardId())) {
+                continue; // Node doesn't belong to any of the selected groups
+            }
             
-            for (SearchUnit node : group.getNodes()) {
-                boolean canAllocate = true;
-                
-                for (AllocationDecider decider : replicaDeciders) {
-                    Decision decision = decider.canAllocate(shardIdStr, node, indexName, targetRole);
-                    if (decision == Decision.NO) {
-                        canAllocate = false;
-                        break;
-                    }
+            // Apply deciders (HealthDecider)
+            boolean canAllocate = true;
+            for (AllocationDecider decider : replicaDeciders) {
+                Decision decision = decider.canAllocate(shardIdStr, node, indexName, targetRole);
+                if (decision == Decision.NO) {
+                    canAllocate = false;
+                    break;
                 }
-                
-                if (canAllocate) {
-                    eligibleNodes.add(node);
-                }
+            }
+            
+            if (canAllocate) {
+                eligibleNodes.add(node);
             }
         }
         
         if (eligibleNodes.isEmpty()) {
-            log.warn("No eligible nodes in selected groups after applying deciders for shard {}/{}", 
-                    indexName, shardId);
+            log.warn("No eligible nodes found in groups {} after applying deciders for shard {}/{}", 
+                    groupIds, indexName, shardId);
         }
         
-        // Step 6: Return eligible nodes from ALL selected groups
         return eligibleNodes;
     }
 }

@@ -157,7 +157,7 @@ public class ShardAllocator {
             
             // Get eligible ingest nodes
             List<SearchUnit> eligibleIngestNodes = allocationDecisionEngine
-                .getAvailableNodesForAllocation(shardId, indexName, indexConfig, allNodes, NodeRole.PRIMARY);
+                .getAvailableNodesForAllocation(shardId, indexName, indexConfig, allNodes, NodeRole.PRIMARY, currentPlanned);
             
             // Validate single writer constraint - fatal if current OR eligible has more than 1
             if (currentIngestSUs.size() > 1 || eligibleIngestNodes.size() > 1) {
@@ -200,7 +200,7 @@ public class ShardAllocator {
             
             // Get eligible search nodes
             List<SearchUnit> eligibleSearchNodes = allocationDecisionEngine
-                .getAvailableNodesForAllocation(shardId, indexName, indexConfig, allNodes, NodeRole.REPLICA);
+                .getAvailableNodesForAllocation(shardId, indexName, indexConfig, allNodes, NodeRole.REPLICA, currentPlanned);
             
             if (eligibleSearchNodes.isEmpty()) {
                 log.warn("No eligible search nodes found for shard {}/{}", indexName, shardId);
