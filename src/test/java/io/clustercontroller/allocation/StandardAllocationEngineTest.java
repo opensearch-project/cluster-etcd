@@ -4,6 +4,7 @@ import io.clustercontroller.allocation.deciders.*;
 import io.clustercontroller.enums.Decision;
 import io.clustercontroller.enums.HealthState;
 import io.clustercontroller.enums.NodeRole;
+import io.clustercontroller.models.Index;
 import io.clustercontroller.models.SearchUnit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -13,22 +14,18 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class AllocationDecisionEngineTest {
+class StandardAllocationEngineTest {
     
-    private AllocationDecisionEngine engine;
+    private StandardAllocationEngine engine;
+    private Index testIndex;
     private SearchUnit healthyPrimary;
     private SearchUnit unhealthyNode;
     private SearchUnit coordinatorNode;
     
     @BeforeEach
     void setUp() {
-        engine = new AllocationDecisionEngine();
-        
-        // Register deciders
-        engine.registerDecider(AllNodesDecider.class, new AllNodesDecider());
-        engine.registerDecider(HealthDecider.class, new HealthDecider());
-        engine.registerDecider(RoleDecider.class, new RoleDecider());
-        engine.registerDecider(ShardPoolDecider.class, new ShardPoolDecider());
+        engine = new StandardAllocationEngine();
+        testIndex = new Index("test-index", Arrays.asList(1));
         
         // Create test nodes
         healthyPrimary = createSearchUnit("node1", "PRIMARY", "NORMAL", HealthState.GREEN, "0");
@@ -39,58 +36,38 @@ class AllocationDecisionEngineTest {
     
     @Test
     void testDeciderChain() {
-        engine.enableDecider(HealthDecider.class);
-        engine.enableDecider(RoleDecider.class);
-        
         List<SearchUnit> candidates = Arrays.asList(healthyPrimary, unhealthyNode, coordinatorNode);
-        List<SearchUnit> selected = engine.getAvailableNodesForAllocation("0", "test-index", candidates, NodeRole.PRIMARY);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
         
-        // Only healthy primary should pass
+        // Only healthy primary should pass (HealthDecider, RoleDecider, ShardPoolDecider)
         assertThat(selected).hasSize(1);
         assertThat(selected).containsExactly(healthyPrimary);
     }
     
     @Test
-    void testNoDecidersEnabled() {
-        // With no deciders enabled, should return empty list
-        List<SearchUnit> candidates = Arrays.asList(healthyPrimary);
-        List<SearchUnit> selected = engine.getAvailableNodesForAllocation("0", "test-index", candidates, NodeRole.PRIMARY);
+    void testHealthDecider() {
+        List<SearchUnit> candidates = Arrays.asList(unhealthyNode);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
         
+        // Unhealthy node should be rejected
         assertThat(selected).isEmpty();
     }
     
     @Test
-    void testEnableDisableDeciders() {
-        engine.enableDecider(HealthDecider.class);
+    void testRoleDecider() {
+        List<SearchUnit> candidates = Arrays.asList(coordinatorNode);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
         
-        List<SearchUnit> candidates = Arrays.asList(unhealthyNode);
-        
-        // With HealthDecider enabled, unhealthy node rejected
-        List<SearchUnit> selected1 = engine.getAvailableNodesForAllocation("0", "test-index", candidates, NodeRole.PRIMARY);
-        assertThat(selected1).isEmpty();
-        
-        // Disable HealthDecider
-        engine.disableDecider(HealthDecider.class);
-        
-        // Still empty because no deciders enabled
-        List<SearchUnit> selected2 = engine.getAvailableNodesForAllocation("0", "test-index", candidates, NodeRole.PRIMARY);
-        assertThat(selected2).isEmpty();
-        
-        // Enable AllNodesDecider
-        engine.enableDecider(AllNodesDecider.class);
-        List<SearchUnit> selected3 = engine.getAvailableNodesForAllocation("0", "test-index", candidates, NodeRole.PRIMARY);
-        assertThat(selected3).hasSize(1);
-        assertThat(selected3).containsExactly(unhealthyNode);
+        // Coordinator node should be rejected for PRIMARY role
+        assertThat(selected).isEmpty();
     }
     
     @Test
     void testShardPoolFiltering() {
         SearchUnit wrongShardNode = createSearchUnit("wrong1", "PRIMARY", "NORMAL", HealthState.GREEN, "1");
         
-        engine.enableDecider(ShardPoolDecider.class);
-        
         List<SearchUnit> candidates = Arrays.asList(healthyPrimary, wrongShardNode);
-        List<SearchUnit> selected = engine.getAvailableNodesForAllocation("0", "test-index", candidates, NodeRole.PRIMARY);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
         
         // Should only include nodes from shard 0
         assertThat(selected).hasSize(1);
@@ -99,11 +76,6 @@ class AllocationDecisionEngineTest {
     
     @Test
     void testComplexDeciderChain() {
-        // Enable all deciders
-        engine.enableDecider(HealthDecider.class);
-        engine.enableDecider(RoleDecider.class);
-        engine.enableDecider(ShardPoolDecider.class);
-        
         SearchUnit perfectNode = createSearchUnit("perfect", "PRIMARY", "NORMAL", HealthState.GREEN, "0");
         SearchUnit wrongShardNode = createSearchUnit("wrong-shard", "PRIMARY", "NORMAL", HealthState.GREEN, "1");
         SearchUnit wrongRoleNode = createSearchUnit("wrong-role", "SEARCH_REPLICA", "NORMAL", HealthState.GREEN, "0");
@@ -114,7 +86,7 @@ class AllocationDecisionEngineTest {
             perfectNode, wrongShardNode, wrongRoleNode, unhealthyNode, drainedNode
         );
         
-        List<SearchUnit> selected = engine.getAvailableNodesForAllocation("0", "test-index", candidates, NodeRole.PRIMARY);
+        List<SearchUnit> selected = engine.getAvailableNodesForAllocation(0, "test-index", testIndex, candidates, NodeRole.PRIMARY);
         
         // Only perfect node should pass all deciders
         assertThat(selected).hasSize(1);

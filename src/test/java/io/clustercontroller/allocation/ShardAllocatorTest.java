@@ -76,7 +76,7 @@ class ShardAllocatorTest {
             createSearchUnit("node2", "REPLICA"), 
             createSearchUnit("node3", "REPLICA")
         );
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyString(), anyString(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes);
 
         // When
@@ -106,7 +106,7 @@ class ShardAllocatorTest {
             createSearchUnit("node4", "REPLICA"), 
             createSearchUnit("node5", "REPLICA")
         );
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyString(), anyString(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
             .thenReturn(eligibleSearchNodes);
 
         // When
@@ -137,7 +137,7 @@ class ShardAllocatorTest {
             createSearchUnit("node2", "PRIMARY")
         );
         List<SearchUnit> eligibleSearchNodes = Arrays.asList(createSearchUnit("node3", "REPLICA"));
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyString(), anyString(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes);
 
         // When
@@ -168,7 +168,7 @@ class ShardAllocatorTest {
 
         // Mock valid search nodes for SearchSU allocation
         List<SearchUnit> eligibleSearchNodes = Arrays.asList(createSearchUnit("node4", "REPLICA"));
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyString(), anyString(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
             .thenReturn(eligibleSearchNodes);
 
         // When
@@ -200,7 +200,7 @@ class ShardAllocatorTest {
             createSearchUnit("node2", "REPLICA"), 
             createSearchUnit("node3", "REPLICA")
         );
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyString(), anyString(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes);
 
         // When
@@ -252,7 +252,7 @@ class ShardAllocatorTest {
             createSearchUnit("node2", "REPLICA"), 
             createSearchUnit("node3", "REPLICA")
         );
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyString(), anyString(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes);
 
         // When - Test both strategies
@@ -288,7 +288,7 @@ class ShardAllocatorTest {
         
         // Return different node sets for different calls to simulate different shard allocations
         // Total shards: index1(2) + index2(1) + index3(3) = 6 shards
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyString(), anyString(), anyList(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any()))
             .thenReturn(eligibleIngestNodes, eligibleSearchNodes, // index1/shard0
                        eligibleIngestNodes, eligibleSearchNodes, // index1/shard1
                        eligibleIngestNodes, eligibleSearchNodes, // index2/shard0
