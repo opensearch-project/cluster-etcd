@@ -32,9 +32,8 @@ public class LoadBasedGroupSelectionStrategy implements GroupSelectionStrategy {
         // log.debug("LoadBased strategy selected {} groups for role={}", selected.size(), targetRole);
         // return selected;
         
-        throw new UnsupportedOperationException(
-            "Load-based group selection is not yet implemented."
-        );
+        log.error("Load-based group selection is not yet implemented. Returning empty list to avoid blocking allocation thread.");
+        return List.of();
     }
     
     @Override
