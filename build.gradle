@@ -169,6 +169,13 @@ testClusters.integTest {
     setting 'node.attr.integTest-1.clusterless_role', "primary"
     // Other nodes cn role to default `replica`
     setting 'node.attr.clusterless_role', "replica"
+
+    // fs remote storage
+    setting 'path.repo', '/tmp/os_store'
+    setting 'node.attr.remote_store.mode', 'segments_only'
+    setting 'node.attr.remote_store.segment.repository', 'fs-repo'
+    setting 'node.attr.remote_store.repository.fs-repo.type', 'fs'
+    setting 'node.attr.remote_store.repository.fs-repo.settings.location', '/tmp/os_store'
 }
 
 run {
