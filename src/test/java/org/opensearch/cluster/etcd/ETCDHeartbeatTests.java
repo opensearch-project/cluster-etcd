@@ -45,8 +45,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.testcontainers.shaded.org.awaitility.Awaitility.await;
@@ -77,9 +77,9 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             Thread.sleep(100);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            threadPool.shutdown();
         }
-        threadPool.shutdownNow();
-        threadPool.awaitTermination(1, TimeUnit.SECONDS);
 
         // The test should complete without hanging, indicating proper scheduler management
         assertTrue("Test completed successfully", true);
@@ -114,7 +114,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         // Verify that some interaction happened with the KV client (heartbeat was attempted)
         // Note: We don't verify the exact number of calls since it depends on timing
-        verify(etcdClient, times(1)).getKVClient();
+        verify(etcdClient, atLeastOnce()).getKVClient();
     }
 
     public void testETCDHeartbeatWithClusterServiceRouting() throws IOException, InterruptedException {
@@ -145,7 +145,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         }
 
         // Verify that ETCD client was accessed (indicates heartbeat execution attempted)
-        verify(etcdClient, times(1)).getKVClient();
+        verify(etcdClient, atLeastOnce()).getKVClient();
     }
 
     public void testETCDHeartbeatErrorHandling() throws InterruptedException {
@@ -213,7 +213,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         // Test that the heartbeat handles cluster service errors gracefully
         // The heartbeat should still attempt to publish (without routing info) despite the cluster service error
-        verify(etcdClient, times(1)).getKVClient();
+        verify(etcdClient, atLeastOnce()).getKVClient();
     }
 
     private DiscoveryNode createMockDiscoveryNode() {
@@ -401,8 +401,6 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertTrue("currentNodeId should be present", shardInfo.containsKey("currentNodeId"));
                     assertTrue("currentNodeName should be present", shardInfo.containsKey("currentNodeName"));
                 });
-
-                threadPool.shutdown();
             } finally {
                 threadPool.shutdown();
             }
@@ -455,7 +453,6 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
                     assertTrue("Timestamp should be updated", currentTimestamp > firstTimestamp);
                 });
-                threadPool.shutdown();
             } finally {
                 threadPool.shutdown();
             }
