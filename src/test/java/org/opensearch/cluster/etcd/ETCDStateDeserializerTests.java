@@ -14,6 +14,7 @@ import io.etcd.jetcd.kv.GetResponse;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeState;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
+import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.IndexRoutingTable;
 import org.opensearch.cluster.routing.IndexShardRoutingTable;
@@ -367,4 +368,199 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
         when(kvClient.get(eq(healthKey))).thenReturn(CompletableFuture.completedFuture(new GetResponse(healthResponse, null)));
     }
 
+    public void testClusterStateUpdatedWithIngestionStatusTrue() throws IOException {
+        String nodeConfiguration = """
+            {
+                "local_shards": {
+                    "idx1": {
+                        "0" : "PRIMARY"
+                    }
+                }
+            }
+            """;
+
+        DiscoveryNode localNode = mock(DiscoveryNode.class);
+        when(localNode.getId()).thenReturn("local-node-id");
+        Client client = mock(Client.class);
+        KV kvClient = mock(KV.class);
+        when(client.getKVClient()).thenReturn(kvClient);
+
+        ByteSequence idx1SettingsPath = ByteSequence.from(
+            ETCDPathUtils.buildIndexSettingsPath("test-cluster", "idx1"),
+            StandardCharsets.UTF_8
+        );
+        ByteSequence idx1MappingsPath = ByteSequence.from(
+            ETCDPathUtils.buildIndexMappingsPath("test-cluster", "idx1"),
+            StandardCharsets.UTF_8
+        );
+
+        RangeResponse idx1SettingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
+            {
+              "index": {
+                "number_of_shards": "1",
+                "number_of_replicas": "0",
+                "pause_pull_ingestion": "true"
+              }
+            }
+            """, StandardCharsets.UTF_8)).build()).build();
+
+        RangeResponse idx1MappingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
+            {
+              "properties": {
+                "field1": {
+                  "type": "text"
+                }
+              }
+            }
+            """, StandardCharsets.UTF_8)).build()).build();
+
+        when(kvClient.get(eq(idx1SettingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1SettingsResponse, null)));
+        when(kvClient.get(eq(idx1MappingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1MappingsResponse, null)));
+
+        ETCDStateDeserializer.NodeStateResult nodeStateResult = ETCDStateDeserializer.deserializeNodeState(
+            localNode,
+            ByteSequence.from(nodeConfiguration, StandardCharsets.UTF_8),
+            client,
+            "test-cluster",
+            true
+        );
+
+        ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
+
+        assertTrue(clusterState.getMetadata().hasIndex("idx1"));
+        IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
+        assertNotNull(indexMetadata.getIngestionStatus());
+        assertTrue(indexMetadata.getIngestionStatus().isPaused());
+        assertFalse(indexMetadata.getSettings().hasValue("index.pause_pull_ingestion"));
+    }
+
+    public void testClusterStateUpdatedWithIngestionStatusFalse() throws IOException {
+        String nodeConfiguration = """
+            {
+                "local_shards": {
+                    "idx1": {
+                        "0" : "PRIMARY"
+                    }
+                }
+            }
+            """;
+
+        DiscoveryNode localNode = mock(DiscoveryNode.class);
+        when(localNode.getId()).thenReturn("local-node-id");
+        Client client = mock(Client.class);
+        KV kvClient = mock(KV.class);
+        when(client.getKVClient()).thenReturn(kvClient);
+
+        ByteSequence idx1SettingsPath = ByteSequence.from(
+            ETCDPathUtils.buildIndexSettingsPath("test-cluster", "idx1"),
+            StandardCharsets.UTF_8
+        );
+        ByteSequence idx1MappingsPath = ByteSequence.from(
+            ETCDPathUtils.buildIndexMappingsPath("test-cluster", "idx1"),
+            StandardCharsets.UTF_8
+        );
+
+        RangeResponse idx1SettingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
+            {
+              "index": {
+                "number_of_shards": "1",
+                "number_of_replicas": "0",
+                "pause_pull_ingestion": "false"
+              }
+            }
+            """, StandardCharsets.UTF_8)).build()).build();
+
+        RangeResponse idx1MappingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
+            {
+              "properties": {
+                "field1": {
+                  "type": "text"
+                }
+              }
+            }
+            """, StandardCharsets.UTF_8)).build()).build();
+
+        when(kvClient.get(eq(idx1SettingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1SettingsResponse, null)));
+        when(kvClient.get(eq(idx1MappingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1MappingsResponse, null)));
+
+        ETCDStateDeserializer.NodeStateResult nodeStateResult = ETCDStateDeserializer.deserializeNodeState(
+            localNode,
+            ByteSequence.from(nodeConfiguration, StandardCharsets.UTF_8),
+            client,
+            "test-cluster",
+            true
+        );
+
+        ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
+
+        assertTrue(clusterState.getMetadata().hasIndex("idx1"));
+        IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
+        assertNotNull(indexMetadata.getIngestionStatus());
+        assertFalse(indexMetadata.getIngestionStatus().isPaused());
+        assertFalse(indexMetadata.getSettings().hasValue("index.pause_pull_ingestion"));
+    }
+
+    public void testClusterStateUpdatedWithDefaultIngestionStatus() throws IOException {
+        String nodeConfiguration = """
+            {
+                "local_shards": {
+                    "idx1": {
+                        "0" : "PRIMARY"
+                    }
+                }
+            }
+            """;
+
+        DiscoveryNode localNode = mock(DiscoveryNode.class);
+        when(localNode.getId()).thenReturn("local-node-id");
+        Client client = mock(Client.class);
+        KV kvClient = mock(KV.class);
+        when(client.getKVClient()).thenReturn(kvClient);
+
+        ByteSequence idx1SettingsPath = ByteSequence.from(
+            ETCDPathUtils.buildIndexSettingsPath("test-cluster", "idx1"),
+            StandardCharsets.UTF_8
+        );
+        ByteSequence idx1MappingsPath = ByteSequence.from(
+            ETCDPathUtils.buildIndexMappingsPath("test-cluster", "idx1"),
+            StandardCharsets.UTF_8
+        );
+
+        RangeResponse idx1SettingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
+            {
+              "index": {
+                "number_of_shards": "1",
+                "number_of_replicas": "0"
+              }
+            }
+            """, StandardCharsets.UTF_8)).build()).build();
+
+        RangeResponse idx1MappingsResponse = RangeResponse.newBuilder().addKvs(KeyValue.newBuilder().setValue(ByteString.copyFrom("""
+            {
+              "properties": {
+                "field1": {
+                  "type": "text"
+                }
+              }
+            }
+            """, StandardCharsets.UTF_8)).build()).build();
+
+        when(kvClient.get(eq(idx1SettingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1SettingsResponse, null)));
+        when(kvClient.get(eq(idx1MappingsPath))).thenReturn(CompletableFuture.completedFuture(new GetResponse(idx1MappingsResponse, null)));
+
+        ETCDStateDeserializer.NodeStateResult nodeStateResult = ETCDStateDeserializer.deserializeNodeState(
+            localNode,
+            ByteSequence.from(nodeConfiguration, StandardCharsets.UTF_8),
+            client,
+            "test-cluster",
+            true
+        );
+
+        ClusterState clusterState = nodeStateResult.nodeState().buildClusterState(ClusterState.EMPTY_STATE, indicesService);
+
+        assertTrue(clusterState.getMetadata().hasIndex("idx1"));
+        IndexMetadata indexMetadata = clusterState.getMetadata().index("idx1");
+        assertNotNull(indexMetadata.getIngestionStatus());
+        assertFalse(indexMetadata.getIngestionStatus().isPaused());
+    }
 }

@@ -126,6 +126,10 @@ public final class ETCDStateDeserializer {
 
     private static final Logger LOGGER = LogManager.getLogger(ETCDStateDeserializer.class);
 
+    // Index settings keys
+    private static final String INDEX_SETTINGS_KEY = "index";
+    private static final String PAUSE_PULL_INGESTION_METADATA_KEY = "pause_pull_ingestion";
+
     /**
      * Deserializes the node configuration stored in ETCD. Will also read the k/v pairs for each index
      * referenced from a data node.
@@ -551,11 +555,13 @@ public final class ETCDStateDeserializer {
                 throw new IllegalStateException("Settings response is empty");
             }
             KeyValue settingsKv = settingsResponse.getKvs().getFirst();
-            Map<String, Object> settingsMap = XContentHelper.convertToMap(
-                new BytesArray(settingsKv.getValue().getBytes()),
-                true,
-                MediaTypeRegistry.JSON
-            ).v2();
+            // Convert to mutable map to allow modification
+            Map<String, Object> settingsMap = new HashMap<>(
+                XContentHelper.convertToMap(new BytesArray(settingsKv.getValue().getBytes()), true, MediaTypeRegistry.JSON).v2()
+            );
+
+            // Extract additional metadata from settings
+            Map<String, Object> additionalMetadata = extractAdditionalMetadata(settingsMap);
 
             // Fetch and parse mappings
             GetResponse mappingsResponse = mappingsFuture.get();
@@ -568,10 +574,40 @@ public final class ETCDStateDeserializer {
                 true,
                 MediaTypeRegistry.JSON
             ).v2();
-            return new IndexMetadataComponents(settingsMap, mappingsMap, Collections.emptyMap());
+
+            return new IndexMetadataComponents(settingsMap, mappingsMap, additionalMetadata);
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException("Failed to fetch index metadata parts from etcd", e);
         }
+    }
+
+    /**
+     * Extracts additional metadata fields from index settings and removes them from the settings map.
+     * Currently extracts pause_pull_ingestion which controls whether data ingestion should be paused for the index
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> extractAdditionalMetadata(Map<String, Object> settingsMap) {
+        Map<String, Object> additionalMetadata = new HashMap<>();
+
+        // Early return if no index settings
+        Object indexSettingsObj = settingsMap.get(INDEX_SETTINGS_KEY);
+        if (!(indexSettingsObj instanceof Map)) {
+            return additionalMetadata;
+        }
+
+        Map<String, Object> indexSettings = (Map<String, Object>) indexSettingsObj;
+        Object pausePullIngestion = indexSettings.get(PAUSE_PULL_INGESTION_METADATA_KEY);
+        if (pausePullIngestion == null) {
+            return additionalMetadata;
+        }
+
+        // Create mutable copy and remove the metadata field
+        Map<String, Object> mutableIndexSettings = new HashMap<>(indexSettings);
+        mutableIndexSettings.remove(PAUSE_PULL_INGESTION_METADATA_KEY);
+        settingsMap.put(INDEX_SETTINGS_KEY, mutableIndexSettings);
+
+        additionalMetadata.put(PAUSE_PULL_INGESTION_METADATA_KEY, pausePullIngestion);
+        return additionalMetadata;
     }
 
     @SuppressWarnings("unchecked")
