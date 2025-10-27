@@ -55,6 +55,41 @@ public class SearchUnitGoalState {
         this.version = version;
     }
     
+    // ========== UTILITY METHODS ==========
+    
+    /**
+     * Check if this goal state contains a specific index
+     */
+    public boolean hasIndex(String indexName) {
+        return localShards != null && localShards.containsKey(indexName);
+    }
+    
+    /**
+     * Get list of shard IDs for a specific index
+     * @return List of shard IDs, or empty list if index not found
+     */
+    public java.util.List<String> getShardsForIndex(String indexName) {
+        if (!hasIndex(indexName)) {
+            return new java.util.ArrayList<>();
+        }
+        Map<String, String> shards = localShards.get(indexName);
+        return shards != null ? new java.util.ArrayList<>(shards.keySet()) : new java.util.ArrayList<>();
+    }
+    
+    /**
+     * Get the role for a specific shard in an index
+     * @param indexName The index name
+     * @param shardId The shard ID
+     * @return The role ("PRIMARY" or "SEARCH_REPLICA"), or null if not found
+     */
+    public String getShardRole(String indexName, String shardId) {
+        if (!hasIndex(indexName)) {
+            return null;
+        }
+        Map<String, String> shards = localShards.get(indexName);
+        return shards != null ? shards.get(shardId) : null;
+    }
+    
     @Override
     public String toString() {
         return "SearchUnitGoalState{" +

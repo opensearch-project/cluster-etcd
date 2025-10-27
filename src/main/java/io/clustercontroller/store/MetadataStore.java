@@ -9,6 +9,7 @@ import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.Template;
 import io.clustercontroller.models.ClusterControllerAssignment;
+import io.clustercontroller.models.CoordinatorGoalState;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -202,6 +203,35 @@ public interface MetadataStore {
      * Set planned allocation for a specific shard
      */
     void setPlannedAllocation(String clusterId, String indexName, String shardId, ShardAllocation allocation) throws Exception;
+    
+    /**
+     * Get actual allocation for a specific shard
+     */
+    ShardAllocation getActualAllocation(String clusterId, String indexName, String shardId) throws Exception;
+    
+    /**
+     * Set actual allocation for a specific shard
+     */
+    void setActualAllocation(String clusterId, String indexName, String shardId, ShardAllocation allocation) throws Exception;
+    
+    /**
+     * Get all actual allocations for a specific index
+     */
+    List<ShardAllocation> getAllActualAllocations(String clusterId, String indexName) throws Exception;
+    
+    // =================================================================
+    // COORDINATOR GOAL STATE OPERATIONS
+    // =================================================================
+    
+    /**
+     * Get coordinator goal state for the default coordinator group
+     */
+    CoordinatorGoalState getCoordinatorGoalState(String clusterId) throws Exception;
+    
+    /**
+     * Set coordinator goal state for the default coordinator group
+     */
+    void setCoordinatorGoalState(String clusterId, CoordinatorGoalState goalState) throws Exception;
     
     // =================================================================
     // CLUSTER OPERATIONS

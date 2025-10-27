@@ -64,7 +64,7 @@ public class CoordinatorGoalState {
          * index-name -> shard routing configuration
          */
         @JsonProperty("indices")
-        private Map<String, IndexShardRouting> indices;
+        private Map<String, IndexRoutingInfo> indices;
         
         public RemoteShards() {
             this.indices = new HashMap<>();
@@ -89,6 +89,47 @@ public class CoordinatorGoalState {
          */
         @JsonProperty("shard_routing")
         private List<List<ShardNodeAssignment>> shardRouting;
+    }
+    
+    /**
+     * Index routing information (for simplified API)
+     */
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class IndexRoutingInfo {
+        /**
+         * Array of shard replicas, where each element is an array of node routing info
+         */
+        @JsonProperty("shard_routing")
+        private List<List<NodeRoutingInfo>> shardRouting;
+        
+        public IndexRoutingInfo() {
+            this.shardRouting = new java.util.ArrayList<>();
+        }
+        
+        public IndexRoutingInfo(List<List<NodeRoutingInfo>> shardRouting) {
+            this.shardRouting = shardRouting != null ? shardRouting : new java.util.ArrayList<>();
+        }
+    }
+    
+    /**
+     * Node routing information (for simplified API)
+     */
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class NodeRoutingInfo {
+        @JsonProperty("node_name")
+        private String nodeName;
+        
+        @JsonProperty("primary")
+        private Boolean primary;
+        
+        public NodeRoutingInfo() {}
+        
+        public NodeRoutingInfo(String nodeName, Boolean primary) {
+            this.nodeName = nodeName;
+            this.primary = primary;
+        }
     }
     
     /**

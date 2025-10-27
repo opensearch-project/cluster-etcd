@@ -29,7 +29,7 @@ class ActualAllocationUpdaterTaskTest {
     }
     
     @Test
-    void testActualAllocationUpdaterTaskExecution() {
+    void testActualAllocationUpdaterTaskExecution() throws Exception {
         String taskName = "actual-allocation-updater-task";
         String input = "";
         ActualAllocationUpdaterTask task = new ActualAllocationUpdaterTask(taskName, 1, input, TASK_SCHEDULE_REPEAT);
@@ -37,7 +37,7 @@ class ActualAllocationUpdaterTaskTest {
         String result = task.execute(taskContext, "test-cluster");
         
         assertThat(result).isEqualTo(TASK_STATUS_COMPLETED);
-        verify(actualAllocationUpdater).updateActualAllocations();
+        verify(actualAllocationUpdater).updateActualAllocations("test-cluster");
     }
     
     @Test
@@ -56,16 +56,16 @@ class ActualAllocationUpdaterTaskTest {
     }
     
     @Test
-    void testActualAllocationUpdaterTaskExecutionFailure() {
+    void testActualAllocationUpdaterTaskExecutionFailure() throws Exception {
         String taskName = "actual-allocation-updater-task";
         String input = "";
         ActualAllocationUpdaterTask task = new ActualAllocationUpdaterTask(taskName, 1, input, TASK_SCHEDULE_REPEAT);
         
-        doThrow(new RuntimeException("Allocation update failed")).when(actualAllocationUpdater).updateActualAllocations();
+        doThrow(new RuntimeException("Allocation update failed")).when(actualAllocationUpdater).updateActualAllocations("test-cluster");
         
         String result = task.execute(taskContext, "test-cluster");
         
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
-        verify(actualAllocationUpdater).updateActualAllocations();
+        verify(actualAllocationUpdater).updateActualAllocations("test-cluster");
     }
 }

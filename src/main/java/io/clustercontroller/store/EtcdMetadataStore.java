@@ -5,8 +5,8 @@ import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.Template;
+import io.clustercontroller.models.CoordinatorGoalState;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -33,8 +33,8 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
+import io.clustercontroller.config.Constants;
 import static io.clustercontroller.config.Constants.PATH_DELIMITER;
-import static io.clustercontroller.config.Constants.SUFFIX_ACTUAL_STATE;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
@@ -966,9 +966,115 @@ public class EtcdMetadataStore implements MetadataStore {
             throw e;
         }
     }
-
-
-
+    
+    @Override
+    public ShardAllocation getActualAllocation(String clusterId, String indexName, String shardId) throws Exception {
+        String path = pathResolver.getShardActualAllocationPath(clusterId, indexName, shardId);
+        
+        try {
+            ByteSequence key = ByteSequence.from(path, UTF_8);
+            GetResponse response = kvClient.get(key).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            if (response.getKvs().isEmpty()) {
+                return null; // No actual allocation exists
+            }
+            
+            String json = response.getKvs().get(0).getValue().toString(UTF_8);
+            return objectMapper.readValue(json, ShardAllocation.class);
+            
+        } catch (Exception e) {
+            log.error("Failed to get actual allocation for shard {}/{}: {}", indexName, shardId, e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    @Override
+    public void setActualAllocation(String clusterId, String indexName, String shardId, ShardAllocation allocation) throws Exception {
+        String path = pathResolver.getShardActualAllocationPath(clusterId, indexName, shardId);
+        
+        try {
+            String json = objectMapper.writeValueAsString(allocation);
+            executeEtcdPut(path, json);
+            log.debug("Set actual allocation for shard {}/{}: {}", indexName, shardId, allocation);
+            
+        } catch (Exception e) {
+            log.error("Failed to set actual allocation for shard {}/{}: {}", indexName, shardId, e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    @Override
+    public List<ShardAllocation> getAllActualAllocations(String clusterId, String indexName) throws Exception {
+        String indexPrefix = pathResolver.getIndicesPrefix(clusterId) + PATH_DELIMITER + indexName;
+        
+        try {
+            List<ShardAllocation> allocations = new ArrayList<>();
+            ByteSequence prefixBytes = ByteSequence.from(indexPrefix, UTF_8);
+            GetOption getOption = GetOption.newBuilder()
+                    .withPrefix(prefixBytes)
+                    .build();
+            
+            GetResponse response = kvClient.get(prefixBytes, getOption)
+                    .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            for (KeyValue kv : response.getKvs()) {
+                String key = kv.getKey().toString(UTF_8);
+                // Only include keys that end with "/actual-allocation"
+                if (key.endsWith("/" + Constants.SUFFIX_ACTUAL_ALLOCATION)) {
+                    String json = kv.getValue().toString(UTF_8);
+                    ShardAllocation allocation = objectMapper.readValue(json, ShardAllocation.class);
+                    allocations.add(allocation);
+                }
+            }
+            
+            log.debug("Retrieved {} actual allocations for index {}", allocations.size(), indexName);
+            return allocations;
+            
+        } catch (Exception e) {
+            log.error("Failed to get actual allocations for index {}: {}", indexName, e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    // =================================================================
+    // COORDINATOR GOAL STATE OPERATIONS
+    // =================================================================
+    
+    @Override
+    public CoordinatorGoalState getCoordinatorGoalState(String clusterId) throws Exception {
+        String path = pathResolver.getCoordinatorGoalStatePath(clusterId);
+        
+        try {
+            ByteSequence key = ByteSequence.from(path, UTF_8);
+            GetResponse response = kvClient.get(key).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            if (response.getKvs().isEmpty()) {
+                return null; // No coordinator goal state exists
+            }
+            
+            String json = response.getKvs().get(0).getValue().toString(UTF_8);
+            return objectMapper.readValue(json, CoordinatorGoalState.class);
+            
+        } catch (Exception e) {
+            log.error("Failed to get coordinator goal state: {}", e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    @Override
+    public void setCoordinatorGoalState(String clusterId, CoordinatorGoalState goalState) throws Exception {
+        String path = pathResolver.getCoordinatorGoalStatePath(clusterId);
+        
+        try {
+            String json = objectMapper.writeValueAsString(goalState);
+            executeEtcdPut(path, json);
+            log.debug("Set coordinator goal state: {}", goalState);
+            
+        } catch (Exception e) {
+            log.error("Failed to set coordinator goal state: {}", e.getMessage(), e);
+            throw e;
+        }
+    }
 
     @Override
     public void deletePrefix(String clusterId, String prefix) throws Exception {
