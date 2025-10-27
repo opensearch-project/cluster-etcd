@@ -38,6 +38,11 @@ buildscript {
     }
 }
 
+plugins {
+    id 'com.avast.gradle.docker-compose' version '0.17.4' // Or latest version
+}
+
+
 allprojects {
     version = opensearch_version.tokenize('-')[0] + '.0'
     if (version_qualifier) {
@@ -92,6 +97,27 @@ publishing {
     }
 }
 
+// Configure the Docker Compose plugin
+dockerCompose {
+    useComposeFiles = ['docker/docker-compose-test.yml']
+    // Stop containers when the build finishes (e.g., after 'run' or tests)
+    stopContainers = true
+    // Remove containers after stopping (optional, good for cleanup)
+    removeContainers = true
+    // Remove orphaned containers (containers defined in compose file but not running)
+    removeOrphans = true
+    removeImages = 'Local' // Default: 'None'. Set to 'All' or 'Local' if needed during cleanup.
+
+    // Set a project name to avoid conflicts if multiple projects use docker-compose
+    projectName = 'clusterEtcdTest'
+    // Define environment variables accessible within docker-compose-test.yml
+    // Example: Allow overriding controller source for local builds
+    environment.put('DOCKER_DIR', '../docker/controller')
+    environment.put('REPO_URL', project.findProperty('controller-repo') ?: 'https://github.com/TejasNaikk/cluster-controller.git')
+    environment.put('GIT_HASH', project.findProperty('git-hash') ?: 'main')
+
+}
+
 // This requires an additional Jar not published as part of build-tools
 loggerUsageCheck.enabled = false
 
@@ -128,9 +154,33 @@ testClusters.integTest {
     plugin(project.tasks.bundlePlugin.archiveFile)
 
     setting 'cluster.etcd.endpoint', 'http://localhost:2379'
+    //these required in the controller allocation logic
+    // TODO - assign different value for different nodes
+    setting 'node.attr.clusterless_shard_id', "0"
+
+
+    // set integTest-0 node cn role to coordinator
+    setting 'node.attr.integTest-0.clusterless_role', "coordinator"
+    setting 'node.attr.integTest-0.clusterless_shard_id', "coordinator"
+    setting 'node.attr.integTest-0.search_unit_group', "coordinator"
+    setting 'node.attr.integTest-0.search_unit', "default-coordinator"
+
+    // set integTest-1 node cn role to primary
+    setting 'node.attr.integTest-1.clusterless_role', "primary"
+    // Other nodes cn role to default `replica`
+    setting 'node.attr.clusterless_role', "replica"
 }
 
 run {
+    // Only add dependency if a specific property is set
+    if (project.hasProperty('useDocker')) {
+
+        dependsOn composeUp
+        // Ensure containers stop even if 'run' fails,
+        // NOTE: Ctl-C to end the ./gradlew run will not clean up the containers. you will need to run ./gradlew composeDown separately
+        // To rebuild from the latest controller code. ./gradlew composeDown && docker builder prune --all  to remove the image and cleanup the caches before rerunn
+        finalizedBy composeDown
+    }
     useCluster testClusters.integTest
 }
 

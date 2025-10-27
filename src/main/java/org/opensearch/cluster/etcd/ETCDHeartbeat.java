@@ -83,8 +83,17 @@ public class ETCDHeartbeat {
         this.ephemeralId = localNode.getEphemeralId();
         this.address = localNode.getAddress().getAddress();
         this.port = localNode.getAddress().getPort();
-        this.clusterlessRole = localNode.getAttributes().get(CLUSTERLESS_ROLE_ATTRIBUTE);
-        this.clusterlessShardId = localNode.getAttributes().get(CLUSTERLESS_SHARD_ID_ATTRIBUTE);
+
+        this.clusterlessRole = localNode.getAttributes()
+            .getOrDefault(
+                this.nodeName + "." + CLUSTERLESS_ROLE_ATTRIBUTE, // Key: Try node-specific first
+                localNode.getAttributes().get(CLUSTERLESS_ROLE_ATTRIBUTE)  // DefaultValue: Fall back to generic key
+            );
+        this.clusterlessShardId = localNode.getAttributes()
+            .getOrDefault(
+                this.nodeName + "." + CLUSTERLESS_SHARD_ID_ATTRIBUTE, // Key: Try node-specific first
+                localNode.getAttributes().get(CLUSTERLESS_SHARD_ID_ATTRIBUTE) // DefaultValue: Fall back to generic key
+            );
         this.etcdClient = etcdClient;
         this.threadPool = threadPool;
         String clusterName = clusterService.getClusterName().value();

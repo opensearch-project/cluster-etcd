@@ -16,17 +16,18 @@ public class ETCDPathUtils {
     private static final String SEARCH_UNIT_NAME_ATTRIBUTE = "search_unit";
 
     public static String buildSearchUnitGoalStatePath(DiscoveryNode discoveryNode, String clusterName) {
-        String searchUnitGroup = discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_GROUP_ATTRIBUTE, DEFAULT_SEARCH_UNIT_GROUP);
-        String searchUnit = discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_NAME_ATTRIBUTE, discoveryNode.getName());
+        String searchUnitGroup = getSearchUnitGroup(discoveryNode, clusterName);
+        String searchUnit = getSearchUnit(discoveryNode, clusterName);
         return String.join("/", "", clusterName, searchUnitGroup, searchUnit, "goal-state");
     }
 
     public static String buildSearchUnitActualStatePath(DiscoveryNode discoveryNode, String clusterName) {
-        String searchUnitGroup = discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_GROUP_ATTRIBUTE, DEFAULT_SEARCH_UNIT_GROUP);
+        String searchUnitGroup = getSearchUnitGroup(discoveryNode, clusterName);
         return String.join("/", "", clusterName, searchUnitGroup, discoveryNode.getName(), "actual-state");
     }
 
     public static String buildSearchUnitActualStatePath(String clusterName, String nodeName) {
+        // TODO - Decide ActualStatePath for coordinators
         return String.join("/", "", clusterName, DEFAULT_SEARCH_UNIT_GROUP, nodeName, "actual-state");
     }
 
@@ -71,4 +72,21 @@ public class ETCDPathUtils {
         return "/" + clusterName + "/indices/" + indexName + "/shard/" + shardId + "/actual-allocation";
     }
 
+    private static String getSearchUnitGroup(DiscoveryNode discoveryNode, String clusterName) {
+        return discoveryNode.getAttributes()
+            .getOrDefault(
+                discoveryNode.getName() + "." + SEARCH_UNIT_GROUP_ATTRIBUTE, // Key: Try node-specific first
+                discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_GROUP_ATTRIBUTE, DEFAULT_SEARCH_UNIT_GROUP)// DefaultValue: Fall back
+                                                                                                                  // to generic key
+            );
+    }
+
+    private static String getSearchUnit(DiscoveryNode discoveryNode, String clusterName) {
+        return discoveryNode.getAttributes()
+            .getOrDefault(
+                discoveryNode.getName() + "." + SEARCH_UNIT_NAME_ATTRIBUTE, // Key: Try node-specific first
+                discoveryNode.getAttributes().getOrDefault(SEARCH_UNIT_NAME_ATTRIBUTE, discoveryNode.getName())// DefaultValue: Fall back to
+                                                                                                               // generic key
+            );
+    }
 }

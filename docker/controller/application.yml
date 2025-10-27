@@ -1,0 +1,20 @@
+# Application Configuration
+#cluster:
+#  name: integTest
+
+etcd:
+  endpoints:
+    - http://host.docker.internal:2379
+
+task:
+  intervalSeconds: 30
+
+# Multi-Cluster Controller Configuration
+controller:
+  # Controller ID - REQUIRED: reads from NODE_NAME environment variable
+  id: ${NODE_NAME}
+  ttl:
+    seconds: 60
+  keepalive:
+    interval:
+      seconds: 10

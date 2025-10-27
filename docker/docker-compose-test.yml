@@ -1,0 +1,63 @@
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.0
+    container_name: etcd-local
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    environment:
+      - ETCD_NAME=etcd0
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_ADVERTISE_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_INITIAL_CLUSTER=etcd0=http://0.0.0.0:2380
+      - ETCD_INITIAL_CLUSTER_STATE=new
+    volumes:
+      - etcd-data:/etcd-data
+    networks:
+      - cnos-net
+    healthcheck:
+      test: ["CMD-SHELL", "etcdctl --endpoints=http://localhost:2379 endpoint health"]
+      interval: 5s
+      timeout: 1s
+      retries: 20
+      start_period: 5s # Give controller time to build and start
+
+  controller:
+    # Build the controller using the Dockerfile and context provided
+    build:
+      # The context MUST be the parent directory containing both projects
+      context: ${DOCKER_DIR:-../docker/controller} # Use env var from build.gradle, default to relative path
+      dockerfile: Dockerfile # Path to Dockerfile relative to context
+      args:
+        # Tell the Dockerfile to use the local source code provided in the context
+        REPO_URL: ${REPO_URL:-https://github.com/TejasNaikk/cluster-controller.git}
+        GIT_HASH: ${GIT_HASH:-main}
+    ports:
+      # Expose controller port to host for potential direct testing (e.g., curl)
+      - "8080:8080"
+    environment:
+      # Controller connects to etcd using the service name within the docker network
+      ETCD_ENDPOINT: http://etcd:2379
+      NODE_NAME: controller-node-gradle
+      # Add other necessary env vars for the controller if any
+      # PORT: 8080 # If needed
+    networks:
+      - cnos-net
+    depends_on:
+      etcd:
+        condition: service_healthy # Wait for etcd to be healthy before starting controller
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"] # Adjust health check endpoint if needed
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s # Give controller time to build and start
+
+networks:
+  cnos-net:
+
+volumes:
+  etcd-data:
