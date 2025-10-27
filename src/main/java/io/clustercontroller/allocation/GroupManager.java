@@ -2,7 +2,7 @@ package io.clustercontroller.allocation;
 
 import io.clustercontroller.enums.HealthState;
 import io.clustercontroller.enums.NodeRole;
-import io.clustercontroller.models.SearchReplicaGroup;
+import io.clustercontroller.models.NodesGroup;
 import io.clustercontroller.models.SearchUnit;
 import lombok.extern.slf4j.Slf4j;
 
@@ -10,7 +10,9 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Manages discovery and organization of replica groups.
+ * Manages discovery, filtering, and selection of node groups.
+ * 
+ * Generic manager that works for BOTH replica groups (SEARCH_REPLICA) and ingest groups (PRIMARY).
  * 
  * Key concept: GROUP ID is extracted from each node's attributes.
  * 
@@ -24,10 +26,17 @@ import java.util.stream.Collectors;
  * Responsibilities:
  * - Discover groups of nodes based on GROUP ID
  * - Validate group homogeneity (all nodes in a group must have the same role)
- * - Provide group selection policies (load-based, random, etc.)
+ * - Filter groups by NodeRole (PRIMARY vs REPLICA)
+ * - Select a group using pluggable GroupSelectionStrategy
  */
 @Slf4j
 public class GroupManager {
+    
+    private final GroupSelectionStrategy selectionStrategy;
+    
+    public GroupManager(GroupSelectionStrategy selectionStrategy) {
+        this.selectionStrategy = selectionStrategy;
+    }
     
     /**
      * Extract GROUP ID from a node.
@@ -46,22 +55,22 @@ public class GroupManager {
     }
     
     /**
-     * Discover replica groups from eligible nodes.
+     * Discover groups from all nodes in the cluster.
      * 
-     * Groups nodes by their GROUP ID (currently extracted from shardId).
+     * Groups nodes by their GROUP ID (extracted via getGroupId() method).
      * Validates that all nodes in a group have the same role.
      * 
-     * @param eligibleNodes Nodes that have already passed health/role checks
-     * @return List of SearchReplicaGroups, grouped by GROUP ID
+     * @param allNodes All nodes in the cluster
+     * @return List of NodesGroups, grouped by GROUP ID
      * @throws IllegalStateException if a group contains mixed roles (FATAL error)
      */
-    public List<SearchReplicaGroup> discoverGroups(List<SearchUnit> eligibleNodes) {
+    public List<NodesGroup> discoverGroups(List<SearchUnit> allNodes) {
         
         // Group nodes by GROUP ID (currently: shardId)
-        Map<String, List<SearchUnit>> groupedByGroupId = eligibleNodes.stream()
+        Map<String, List<SearchUnit>> groupedByGroupId = allNodes.stream()
             .collect(Collectors.groupingBy(this::getGroupId));
         
-        List<SearchReplicaGroup> groups = new ArrayList<>();
+        List<NodesGroup> groups = new ArrayList<>();
         
         for (Map.Entry<String, List<SearchUnit>> entry : groupedByGroupId.entrySet()) {
             String groupId = entry.getKey();
@@ -73,80 +82,90 @@ public class GroupManager {
                 .collect(Collectors.toSet());
             
             if (rolesInGroup.size() > 1) {
-                // FATAL: Mixed roles in a group
+                // FATAL: Mixed roles in a group - this is a configuration error
                 String nodeNames = nodesInGroup.stream()
                     .map(n -> n.getName() + ":" + n.getRole())
                     .collect(Collectors.joining(", "));
                 
                 log.error("FATAL: Mixed roles detected in group (groupId={}) - Roles: {}. " +
-                         "All nodes in a group MUST have the same role. Nodes: {}", 
+                         "All nodes in a group MUST have the same role. Nodes: {}. " +
+                         "Skipping this group to avoid killing allocation thread.", 
                          groupId, rolesInGroup, nodeNames);
                 
-                throw new IllegalStateException(
-                    String.format("Mixed roles in group groupId=%s: %s. " +
-                                "This is a configuration error and must be fixed.", 
-                                groupId, rolesInGroup)
-                );
+                // TODO: Add alerting for this critical misconfiguration
+                // Skip this group instead of throwing exception (which would kill allocation thread)
+                continue;
             }
             
             // Create group
             String role = nodesInGroup.get(0).getRole();
-            String shardId = nodesInGroup.get(0).getShardId(); // For SearchReplicaGroup.shardId field
+            String shardId = nodesInGroup.get(0).getShardId();
             
-            SearchReplicaGroup group = new SearchReplicaGroup();
+            NodesGroup group = new NodesGroup();
             group.setGroupId(groupId);
             group.setRole(role);
-            group.setShardId(shardId); // Store the shardId separately (currently same as groupId)
+            group.setShardId(shardId);
             group.setNodes(nodesInGroup);
             group.setNodeIds(nodesInGroup.stream()
                 .map(SearchUnit::getName)
                 .collect(Collectors.toList()));
             
-            // TODO: Calculate current shard count and max capacity
-            // For now, set placeholder values
-            group.setCurrentShardCount(0);
-            group.setMaxCapacity(100); // Placeholder
+            // TODO: Calculate current load (number of shards allocated to this group)
+            // For now, set to 0 (will be calculated from node states)
+            group.setCurrentLoad(0);
             
             groups.add(group);
             
-            log.debug("Discovered group: groupId={}, {} nodes, role: {}", 
+            log.debug("Discovered group: groupId={}, {} nodes, role={}", 
                      groupId, nodesInGroup.size(), role);
         }
         
-        log.info("Discovered {} replica groups from {} eligible nodes", 
-                groups.size(), eligibleNodes.size());
+        log.info("Discovered {} groups from {} nodes", 
+                groups.size(), allNodes.size());
         
         return groups;
     }
     
     /**
-     * Select the least loaded group (load-based bin-packing).
+     * Filter groups by NodeRole.
      * 
-     * @param groups List of groups
-     * @return The group with most available capacity, or null if no groups have capacity
+     * @param groups All groups
+     * @param targetRole Target role (PRIMARY or REPLICA)
+     * @return Filtered list of groups matching the target role
      */
-    public SearchReplicaGroup selectLeastLoadedGroup(List<SearchReplicaGroup> groups) {
+    public List<NodesGroup> filterGroupsByRole(List<NodesGroup> groups, NodeRole targetRole) {
         return groups.stream()
-            .filter(SearchReplicaGroup::hasCapacity)
-            .max(Comparator.comparingInt(SearchReplicaGroup::availableCapacity))
-            .orElse(null);
+            .filter(group -> matchesRole(group, targetRole))
+            .collect(Collectors.toList());
     }
     
     /**
-     * Select a random group (randomization policy).
+     * Check if a group matches the target NodeRole.
      * 
-     * TODO: Implement randomization policy (currently NOT supported).
-     * This would select a random group with available capacity.
-     * 
-     * @param groups List of groups
-     * @return A random group with available capacity
-     * @throws UnsupportedOperationException Always (not yet implemented)
+     * @param group The group to check
+     * @param targetRole Target role (PRIMARY or REPLICA)
+     * @return true if group matches target role
      */
-    public SearchReplicaGroup selectRandomGroup(List<SearchReplicaGroup> groups) {
-        throw new UnsupportedOperationException(
-            "Random group selection is not yet implemented. " +
-            "Only load-based (bin-packing) selection is currently supported."
-        );
+    private boolean matchesRole(NodesGroup group, NodeRole targetRole) {
+        String groupRole = group.getRole();
+        if (groupRole == null) {
+            return false;
+        }
+        
+        // Direct string match: NodeRole.PRIMARY -> "PRIMARY", NodeRole.REPLICA -> "SEARCH_REPLICA"
+        return targetRole.getValue().equals(groupRole);
+    }
+    
+    /**
+     * Select multiple groups from the list using the configured selection strategy.
+     * 
+     * @param groups List of groups (already filtered by role)
+     * @param targetRole Target role (for logging/context)
+     * @param numGroupsNeeded Number of groups needed for allocation
+     * @return List of selected groups (may be less than numGroupsNeeded if not enough available)
+     */
+    public List<NodesGroup> selectGroups(List<NodesGroup> groups, NodeRole targetRole, int numGroupsNeeded) {
+        return selectionStrategy.selectGroups(groups, targetRole, numGroupsNeeded);
     }
 }
 
