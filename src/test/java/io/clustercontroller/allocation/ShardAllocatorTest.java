@@ -342,7 +342,7 @@ class ShardAllocatorTest {
     void testE2E_UseAllAvailableNodes_IgnoresReplicaCount() throws Exception {
         // Given: Create ShardAllocator with REAL StandardAllocationEngine (not mocked!)
         ShardAllocator e2eShardAllocator = new ShardAllocator(metadataStore);
-        // DON'T call setAllocationDecisionEngine - use default StandardAllocationEngine
+        e2eShardAllocator.setAllocationDecisionEngine(new StandardAllocationEngine()); // Explicitly use Standard
         
         // Given: Index config with 2 replicas configured
         Index index = createIndex("e2e-index", Arrays.asList(2));  // Config says 2 replicas
@@ -396,6 +396,7 @@ class ShardAllocatorTest {
     void testE2E_StandardAllocationEngine_RespectsReplicaCount() throws Exception {
         // Given: ShardAllocator with real StandardAllocationEngine
         ShardAllocator e2eShardAllocator = new ShardAllocator(metadataStore);
+        e2eShardAllocator.setAllocationDecisionEngine(new StandardAllocationEngine()); // Explicitly use Standard
         
         // Given: Index config with replica count = 2
         Index index = createIndex("e2e-index-2", Arrays.asList(2));  // Config says 2 replicas
@@ -441,6 +442,7 @@ class ShardAllocatorTest {
     void testE2E_StandardAllocationEngine_FiltersUnhealthyNodes() throws Exception {
         // Given: ShardAllocator with real StandardAllocationEngine
         ShardAllocator e2eShardAllocator = new ShardAllocator(metadataStore);
+        e2eShardAllocator.setAllocationDecisionEngine(new StandardAllocationEngine()); // Explicitly use Standard
         
         // Given: Index config
         Index index = createIndex("e2e-index-3", Arrays.asList(1));
