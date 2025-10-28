@@ -28,8 +28,8 @@ public class ShardAllocator {
     
     public ShardAllocator(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
-        // Use standard allocation engine (current behavior)
-        this.allocationDecisionEngine = new StandardAllocationEngine();
+        // Use bin-packing allocation engine with random group selection strategy
+        this.allocationDecisionEngine = new GroupAwareBinPackingEngine();
     }
     
     /**
