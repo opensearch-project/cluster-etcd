@@ -40,6 +40,8 @@ public final class Constants {
     public static final String PATH_TEMPLATES = "templates";
     public static final String PATH_COORDINATORS = "coordinators";
     public static final String PATH_LEADER_ELECTION = "leader-election";
+    // Default coordinator unit name for coordinator goal state path
+    public static final String COORDINATOR_DEFAULT_UNIT = "default-coordinator";
     
     // etcd path suffixes
     public static final String SUFFIX_CONF = "conf";

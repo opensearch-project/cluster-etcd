@@ -64,6 +64,11 @@ public class ClusterControllerApplication {
         log.info("Initializing cluster-agnostic MetadataStore connection to etcd");
         try {
             EtcdMetadataStore store = EtcdMetadataStore.getInstance(config.getEtcdEndpoints());
+            // Configure coordinator goal state path from YAML config
+            store.setCoordinatorGoalStateLocation(
+                config.getCoordinatorGoalStateGroup(),
+                config.getCoordinatorGoalStateUnit()
+            );
             store.initialize();
             log.info("MetadataStore initialized successfully");
             return store;

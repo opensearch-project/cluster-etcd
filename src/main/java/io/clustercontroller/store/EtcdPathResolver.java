@@ -180,11 +180,19 @@ public class EtcdPathResolver {
     }
     
     /**
-     * Get shared coordinator goal state path (common for all coordinators)
-     * Pattern: /<cluster-name>/coordinators/goal-state
+     * Get coordinator goal state path
+     * Pattern: /<cluster-name>/coordinators/default-coordinator/goal-state
      */
     public String getCoordinatorGoalStatePath(String clusterName) {
-        return Paths.get(getCoordinatorsPrefix(clusterName), SUFFIX_GOAL_STATE).toString();
+        return Paths.get(getCoordinatorsPrefix(clusterName), COORDINATOR_DEFAULT_UNIT, SUFFIX_GOAL_STATE).toString();
+    }
+    
+    /**
+     * Get coordinator goal state path using configured group and unit
+     * Pattern: /<cluster-name>/<search_unit_group>/<search_unit>/goal-state
+     */
+    public String getCoordinatorGoalStatePath(String clusterName, String searchUnitGroup, String searchUnit) {
+        return Paths.get(PATH_DELIMITER, clusterName, searchUnitGroup, searchUnit, SUFFIX_GOAL_STATE).toString();
     }
     
     /**

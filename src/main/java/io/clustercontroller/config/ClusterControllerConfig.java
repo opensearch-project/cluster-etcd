@@ -28,6 +28,8 @@ public class ClusterControllerConfig {
     
     private final String[] etcdEndpoints;
     private final long taskIntervalSeconds;
+    private final String coordinatorGoalStateGroup;
+    private final String coordinatorGoalStateUnit;
 
     // Default classpath location
     private static final String DEFAULT_CONFIG_FILE_CLASSPATH = "application.yml";
@@ -40,6 +42,8 @@ public class ClusterControllerConfig {
         // Parse configuration values with null-safe defaults
         this.etcdEndpoints = parseEndpoints(config);
         this.taskIntervalSeconds = parseTaskIntervalSeconds(config);
+        this.coordinatorGoalStateGroup = parseCoordinatorGoalStateGroup(config);
+        this.coordinatorGoalStateUnit = parseCoordinatorGoalStateUnit(config);
         
         log.info("Loaded cluster controller config - etcd endpoints: {}, task interval: {}s", 
                 String.join(", ", etcdEndpoints), taskIntervalSeconds);
@@ -126,6 +130,32 @@ public class ClusterControllerConfig {
         return DEFAULT_TASK_INTERVAL_SECONDS;
     }
     
+    private String parseCoordinatorGoalStateGroup(ConfigModel config) {
+        try {
+            if (config.getCoordinator_goal_state() != null &&
+                config.getCoordinator_goal_state().getSearch_unit_group() != null &&
+                !config.getCoordinator_goal_state().getSearch_unit_group().isBlank()) {
+                return config.getCoordinator_goal_state().getSearch_unit_group();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to parse coordinator goal state group, using default 'coordinators': {}", e.getMessage());
+        }
+        return PATH_COORDINATORS;
+    }
+    
+    private String parseCoordinatorGoalStateUnit(ConfigModel config) {
+        try {
+            if (config.getCoordinator_goal_state() != null &&
+                config.getCoordinator_goal_state().getSearch_unit() != null &&
+                !config.getCoordinator_goal_state().getSearch_unit().isBlank()) {
+                return config.getCoordinator_goal_state().getSearch_unit();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to parse coordinator goal state unit, using default 'default-coordinator': {}", e.getMessage());
+        }
+        return "default-coordinator";
+    }
+    
     /**
      * Configuration model for the application.yml file.
      */
@@ -134,6 +164,7 @@ public class ClusterControllerConfig {
         private Etcd etcd;
         private Task task;
         private Controller controller; // Multi-cluster controller config (used by Spring @Value)
+        private CoordinatorGoalState coordinator_goal_state;
     }
     
     @Data
@@ -151,6 +182,12 @@ public class ClusterControllerConfig {
         private String id;
         private Ttl ttl;
         private Keepalive keepalive;
+    }
+    
+    @Data
+    public static class CoordinatorGoalState {
+        private String search_unit_group;
+        private String search_unit;
     }
     
     @Data

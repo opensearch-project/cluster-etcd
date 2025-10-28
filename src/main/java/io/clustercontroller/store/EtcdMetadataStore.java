@@ -54,6 +54,9 @@ public class EtcdMetadataStore implements MetadataStore {
     private final KV kvClient;
     private final EtcdPathResolver pathResolver;
     private final ObjectMapper objectMapper;
+    // Configurable coordinator goal state location
+    private volatile String coordinatorGoalStateGroup = Constants.PATH_COORDINATORS;
+    private volatile String coordinatorGoalStateUnit = "default-coordinator";
     
     // Leader election fields
     private final String nodeId;
@@ -1042,7 +1045,7 @@ public class EtcdMetadataStore implements MetadataStore {
     
     @Override
     public CoordinatorGoalState getCoordinatorGoalState(String clusterId) throws Exception {
-        String path = pathResolver.getCoordinatorGoalStatePath(clusterId);
+        String path = pathResolver.getCoordinatorGoalStatePath(clusterId, coordinatorGoalStateGroup, coordinatorGoalStateUnit);
         
         try {
             ByteSequence key = ByteSequence.from(path, UTF_8);
@@ -1063,7 +1066,7 @@ public class EtcdMetadataStore implements MetadataStore {
     
     @Override
     public void setCoordinatorGoalState(String clusterId, CoordinatorGoalState goalState) throws Exception {
-        String path = pathResolver.getCoordinatorGoalStatePath(clusterId);
+        String path = pathResolver.getCoordinatorGoalStatePath(clusterId, coordinatorGoalStateGroup, coordinatorGoalStateUnit);
         
         try {
             String json = objectMapper.writeValueAsString(goalState);
@@ -1074,6 +1077,19 @@ public class EtcdMetadataStore implements MetadataStore {
             log.error("Failed to set coordinator goal state: {}", e.getMessage(), e);
             throw e;
         }
+    }
+
+    /**
+     * Configure coordinator goal state location from application config
+     */
+    public void setCoordinatorGoalStateLocation(String searchUnitGroup, String searchUnit) {
+        if (searchUnitGroup != null && !searchUnitGroup.isBlank()) {
+            this.coordinatorGoalStateGroup = searchUnitGroup;
+        }
+        if (searchUnit != null && !searchUnit.isBlank()) {
+            this.coordinatorGoalStateUnit = searchUnit;
+        }
+        log.info("Coordinator goal state path configured to group='{}', unit='{}'", this.coordinatorGoalStateGroup, this.coordinatorGoalStateUnit);
     }
 
     @Override
