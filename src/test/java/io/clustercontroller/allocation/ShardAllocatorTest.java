@@ -538,53 +538,79 @@ class ShardAllocatorTest {
         ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
         binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
         
-        // Given: Index configured for 2 groups per shard
-        // Replica count = 1 (will be IGNORED by USE_ALL_AVAILABLE_NODES strategy)
-        Index index = createIndex("bp-stable", Arrays.asList(1));  // Only 1 replica configured!
-        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2)); // 2 groups for shard 0
+        // Given: Index with 2 shards, different group counts per shard
+        // Shard 0: 2 groups, Shard 1: 3 groups
+        Index index = createIndex("bp-stable", Arrays.asList(1, 1));  // Replica count IGNORED
+        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3)); // Shard 0: 2 groups, Shard 1: 3 groups
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
         
-        // Given: Existing planned allocation with nodes from 2 groups (group-a and group-b)
-        ShardAllocation existingPlanned = new ShardAllocation("0", "bp-stable");
-        existingPlanned.setIngestSUs(Arrays.asList("primary-0"));
-        existingPlanned.setSearchSUs(Arrays.asList("replica-a-1", "replica-a-2", "replica-b-1", "replica-b-2"));
-        existingPlanned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
-        when(metadataStore.getPlannedAllocation(testClusterId, "bp-stable", "0"))
-            .thenReturn(existingPlanned);
+        // Given: Existing planned allocations for both shards
+        // Shard 0: allocated to 2 groups (group-a and group-b)
+        ShardAllocation shard0Planned = new ShardAllocation("0", "bp-stable");
+        shard0Planned.setIngestSUs(Arrays.asList("primary-0"));
+        shard0Planned.setSearchSUs(Arrays.asList("replica-a-1", "replica-a-2", "replica-b-1", "replica-b-2"));
+        shard0Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
         
-        // Given: 3 replica groups available (group-a, group-b, group-c)
-        // Current allocation uses group-a and group-b → should remain stable
+        // Shard 1: allocated to 3 groups (group-d, group-e, group-f)
+        ShardAllocation shard1Planned = new ShardAllocation("1", "bp-stable");
+        shard1Planned.setIngestSUs(Arrays.asList("primary-1"));
+        shard1Planned.setSearchSUs(Arrays.asList("replica-d-1", "replica-d-2", "replica-e-1", "replica-e-2", "replica-f-1", "replica-f-2"));
+        shard1Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
+        
+        when(metadataStore.getPlannedAllocation(testClusterId, "bp-stable", "0"))
+            .thenReturn(shard0Planned);
+        when(metadataStore.getPlannedAllocation(testClusterId, "bp-stable", "1"))
+            .thenReturn(shard1Planned);
+        
+        // Given: Multiple replica groups available for both shards
+        // Shard 0: group-a, group-b (allocated), group-c (available)
+        // Shard 1: group-d, group-e, group-f (allocated), group-g (available)
         List<SearchUnit> allNodes = Arrays.asList(
+            // Shard 0 nodes
             createHealthyPrimaryNode("primary-0", "0"),
-            createHealthyReplicaNode("replica-a-1", "group-a"),  // ✓ Currently allocated
-            createHealthyReplicaNode("replica-a-2", "group-a"),  // ✓ Currently allocated
+            createHealthyReplicaNode("replica-a-1", "group-a"),  // ✓ Shard 0 allocated
+            createHealthyReplicaNode("replica-a-2", "group-a"),  // ✓ Shard 0 allocated
             createHealthyReplicaNode("replica-a-3", "group-a"),
-            createHealthyReplicaNode("replica-b-1", "group-b"),  // ✓ Currently allocated
-            createHealthyReplicaNode("replica-b-2", "group-b"),  // ✓ Currently allocated
+            createHealthyReplicaNode("replica-b-1", "group-b"),  // ✓ Shard 0 allocated
+            createHealthyReplicaNode("replica-b-2", "group-b"),  // ✓ Shard 0 allocated
             createHealthyReplicaNode("replica-b-3", "group-b"),
-            createHealthyReplicaNode("replica-c-1", "group-c"),  // ✗ Not allocated (group-c available but not needed)
+            createHealthyReplicaNode("replica-c-1", "group-c"),  // ✗ Available but not needed
             createHealthyReplicaNode("replica-c-2", "group-c"),
-            createHealthyReplicaNode("replica-c-3", "group-c")
+            createHealthyReplicaNode("replica-c-3", "group-c"),
+            
+            // Shard 1 nodes
+            createHealthyPrimaryNode("primary-1", "1"),
+            createHealthyReplicaNode("replica-d-1", "group-d"),  // ✓ Shard 1 allocated
+            createHealthyReplicaNode("replica-d-2", "group-d"),  // ✓ Shard 1 allocated
+            createHealthyReplicaNode("replica-d-3", "group-d"),
+            createHealthyReplicaNode("replica-e-1", "group-e"),  // ✓ Shard 1 allocated
+            createHealthyReplicaNode("replica-e-2", "group-e"),  // ✓ Shard 1 allocated
+            createHealthyReplicaNode("replica-e-3", "group-e"),
+            createHealthyReplicaNode("replica-f-1", "group-f"),  // ✓ Shard 1 allocated
+            createHealthyReplicaNode("replica-f-2", "group-f"),  // ✓ Shard 1 allocated
+            createHealthyReplicaNode("replica-f-3", "group-f"),
+            createHealthyReplicaNode("replica-g-1", "group-g"),  // ✗ Available but not needed
+            createHealthyReplicaNode("replica-g-2", "group-g"),
+            createHealthyReplicaNode("replica-g-3", "group-g")
         );
         when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allNodes);
         
         // When: Plan allocation
         binPackingShardAllocator.planShardAllocation(testClusterId, AllocationStrategy.USE_ALL_AVAILABLE_NODES);
         
-        // Then: Should keep existing allocation stable (same 2 groups: group-a and group-b)
-        // AND allocate to ALL healthy nodes in those groups (6 nodes, despite replica count = 1!)
+        // Then: Verify Shard 0 - should keep existing allocation stable (2 groups)
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("bp-stable"),
             eq("0"),
             argThat(allocation -> {
+                // Single writer constraint
+                assertThat(allocation.getIngestSUs()).hasSize(1);
+                
                 // Should allocate to ALL 6 nodes from group-a and group-b (3 per group)
-                // Config says replica count = 1, BUT:
-                // - USE_ALL_AVAILABLE_NODES strategy ignores replica count
-                // - Group-based allocation uses ALL healthy nodes from selected groups
                 assertThat(allocation.getSearchSUs())
-                    .as("Should use ALL 6 nodes from 2 groups (despite replica count = 1) due to USE_ALL_AVAILABLE_NODES")
-                    .hasSize(6)  // 3 from group-a + 3 from group-b
+                    .as("Shard 0: Should use ALL nodes from 2 groups (stable allocation)")
+                    .hasSize(6)
                     .containsExactlyInAnyOrder(
                         "replica-a-1", "replica-a-2", "replica-a-3",
                         "replica-b-1", "replica-b-2", "replica-b-3"
@@ -592,8 +618,34 @@ class ShardAllocatorTest {
                 
                 // Should NOT allocate to group-c
                 assertThat(allocation.getSearchSUs())
-                    .as("Should not select group-c (stable allocation)")
                     .noneMatch(node -> node.startsWith("replica-c-"));
+                
+                return true;
+            })
+        );
+        
+        // Then: Verify Shard 1 - should keep existing allocation stable (3 groups)
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("bp-stable"),
+            eq("1"),
+            argThat(allocation -> {
+                // Single writer constraint
+                assertThat(allocation.getIngestSUs()).hasSize(1);
+                
+                // Should allocate to ALL 9 nodes from group-d, group-e, and group-f (3 per group)
+                assertThat(allocation.getSearchSUs())
+                    .as("Shard 1: Should use ALL nodes from 3 groups (stable allocation)")
+                    .hasSize(9)
+                    .containsExactlyInAnyOrder(
+                        "replica-d-1", "replica-d-2", "replica-d-3",
+                        "replica-e-1", "replica-e-2", "replica-e-3",
+                        "replica-f-1", "replica-f-2", "replica-f-3"
+                    );
+                
+                // Should NOT allocate to group-g
+                assertThat(allocation.getSearchSUs())
+                    .noneMatch(node -> node.startsWith("replica-g-"));
                 
                 return true;
             })
@@ -606,22 +658,36 @@ class ShardAllocatorTest {
         ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
         binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
         
-        // Given: Index configured for 2 groups per shard
-        Index index = createIndex("bp-scaleup", Arrays.asList(3));
-        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2)); // Need 2 groups
+        // Given: Index with 2 shards, admin increased group counts
+        // Shard 0: 1 group → 2 groups (scale up)
+        // Shard 1: 2 groups → 4 groups (scale up)
+        Index index = createIndex("bp-scaleup", Arrays.asList(3, 3));
+        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 4)); // New desired group counts
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
         
-        // Given: Existing planned allocation with nodes from only 1 group (group-a)
-        // Need to scale up to 2 groups
-        ShardAllocation existingPlanned = new ShardAllocation("0", "bp-scaleup");
-        existingPlanned.setIngestSUs(Arrays.asList("primary-0"));
-        existingPlanned.setSearchSUs(Arrays.asList("replica-a-1", "replica-a-2"));
-        existingPlanned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
-        when(metadataStore.getPlannedAllocation(testClusterId, "bp-scaleup", "0"))
-            .thenReturn(existingPlanned);
+        // Given: Existing planned allocations
+        // Shard 0: currently has 1 group (group-a), needs to scale to 2
+        ShardAllocation shard0Planned = new ShardAllocation("0", "bp-scaleup");
+        shard0Planned.setIngestSUs(Arrays.asList("primary-0"));
+        shard0Planned.setSearchSUs(Arrays.asList("replica-a-1", "replica-a-2"));
+        shard0Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
         
-        // Given: 3 replica groups available
+        // Shard 1: currently has 2 groups (group-d, group-e), needs to scale to 4
+        ShardAllocation shard1Planned = new ShardAllocation("1", "bp-scaleup");
+        shard1Planned.setIngestSUs(Arrays.asList("primary-1"));
+        shard1Planned.setSearchSUs(Arrays.asList("replica-d-1", "replica-d-2", "replica-e-1", "replica-e-2"));
+        shard1Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
+        
+        when(metadataStore.getPlannedAllocation(testClusterId, "bp-scaleup", "0"))
+            .thenReturn(shard0Planned);
+        when(metadataStore.getPlannedAllocation(testClusterId, "bp-scaleup", "1"))
+            .thenReturn(shard1Planned);
+        
+        // Given: Multiple replica groups available for scale-up
+        // Shard 0: group-a (allocated), group-b, group-c (available for scale-up)
+        // Shard 1: group-d, group-e (allocated), group-f, group-g, group-h, group-i (available for scale-up)
         List<SearchUnit> allNodes = Arrays.asList(
+            // Shard 0 nodes (shard pool ID must match shard ID "0")
             createHealthyPrimaryNode("primary-0", "0"),
             createHealthyReplicaNode("replica-a-1", "group-a"),  // ✓ Currently allocated
             createHealthyReplicaNode("replica-a-2", "group-a"),  // ✓ Currently allocated
@@ -631,48 +697,104 @@ class ShardAllocatorTest {
             createHealthyReplicaNode("replica-b-3", "group-b"),
             createHealthyReplicaNode("replica-c-1", "group-c"),  // Available for scale-up
             createHealthyReplicaNode("replica-c-2", "group-c"),
-            createHealthyReplicaNode("replica-c-3", "group-c")
+            createHealthyReplicaNode("replica-c-3", "group-c"),
+            
+            // Shard 1 nodes (shard pool ID must match shard ID "1")
+            createHealthyPrimaryNode("primary-1", "1"),
+            createHealthyReplicaNode("replica-d-1", "group-d"),  // ✓ Currently allocated
+            createHealthyReplicaNode("replica-d-2", "group-d"),  // ✓ Currently allocated
+            createHealthyReplicaNode("replica-d-3", "group-d"),
+            createHealthyReplicaNode("replica-e-1", "group-e"),  // ✓ Currently allocated
+            createHealthyReplicaNode("replica-e-2", "group-e"),  // ✓ Currently allocated
+            createHealthyReplicaNode("replica-e-3", "group-e"),
+            createHealthyReplicaNode("replica-f-1", "group-f"),  // Available for scale-up
+            createHealthyReplicaNode("replica-f-2", "group-f"),
+            createHealthyReplicaNode("replica-f-3", "group-f"),
+            createHealthyReplicaNode("replica-g-1", "group-g"),  // Available for scale-up
+            createHealthyReplicaNode("replica-g-2", "group-g"),
+            createHealthyReplicaNode("replica-g-3", "group-g"),
+            createHealthyReplicaNode("replica-h-1", "group-h"),  // Available for scale-up
+            createHealthyReplicaNode("replica-h-2", "group-h"),
+            createHealthyReplicaNode("replica-h-3", "group-h"),
+            createHealthyReplicaNode("replica-i-1", "group-i"),  // Available for scale-up
+            createHealthyReplicaNode("replica-i-2", "group-i"),
+            createHealthyReplicaNode("replica-i-3", "group-i")
         );
         when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allNodes);
         
         // When: Plan allocation
         binPackingShardAllocator.planShardAllocation(testClusterId, AllocationStrategy.USE_ALL_AVAILABLE_NODES);
         
-        // Then: Should add 1 more group (group-a + one of group-b/group-c)
-        // AND allocate to ALL healthy nodes in those 2 groups (6 total nodes)
+        // Then: Verify Shard 0 - should scale up from 1 group to 2 groups
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("bp-scaleup"),
             eq("0"),
             argThat(allocation -> {
+                // Single writer constraint
+                assertThat(allocation.getIngestSUs())
+                    .as("Shard 0: Single writer constraint")
+                    .hasSize(1)
+                    .containsExactly("primary-0");
+                
                 List<String> allocatedNodes = allocation.getSearchSUs();
                 
                 // Should allocate to ALL nodes from 2 groups (3 nodes per group = 6 total)
-                // Replica count config (3) is IGNORED
                 assertThat(allocatedNodes)
-                    .as("Scale-up: should use ALL healthy nodes from 2 groups")
+                    .as("Shard 0: Scale-up should use ALL healthy nodes from 2 groups")
                     .hasSize(6);
                 
-                // Should include ALL nodes from group-a (existing group)
+                // Should keep ALL nodes from existing group-a
                 assertThat(allocatedNodes)
-                    .as("Should keep ALL nodes from existing group-a")
+                    .as("Shard 0: Should keep ALL nodes from existing group-a")
                     .contains("replica-a-1", "replica-a-2", "replica-a-3");
                 
-                // Should add one more group (group-b or group-c) with ALL its nodes
-                boolean hasGroupB = allocatedNodes.containsAll(Arrays.asList("replica-b-1", "replica-b-2", "replica-b-3"));
-                boolean hasGroupC = allocatedNodes.containsAll(Arrays.asList("replica-c-1", "replica-c-2", "replica-c-3"));
-                assertThat(hasGroupB || hasGroupC)
-                    .as("Should add ALL nodes from one additional group (group-b or group-c)")
-                    .isTrue();
-                
-                // Should allocate to exactly 2 distinct groups
+                // Verify exactly 2 distinct groups (doesn't matter which specific group was added)
                 long distinctGroups = allocatedNodes.stream()
                     .map(node -> node.split("-")[1]) // Extract group name
                     .distinct()
                     .count();
                 assertThat(distinctGroups)
-                    .as("Should allocate to exactly 2 groups")
+                    .as("Shard 0: Should allocate to exactly 2 groups")
                     .isEqualTo(2);
+                
+                return true;
+            })
+        );
+        
+        // Then: Verify Shard 1 - should scale up from 2 groups to 4 groups
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("bp-scaleup"),
+            eq("1"),
+            argThat(allocation -> {
+                // Single writer constraint
+                assertThat(allocation.getIngestSUs())
+                    .as("Shard 1: Single writer constraint")
+                    .hasSize(1)
+                    .containsExactly("primary-1");
+                
+                List<String> allocatedNodes = allocation.getSearchSUs();
+                
+                // Should allocate to ALL nodes from 4 groups (3 nodes per group = 12 total)
+                assertThat(allocatedNodes)
+                    .as("Shard 1: Scale-up should use ALL healthy nodes from 4 groups")
+                    .hasSize(12);
+                
+                // Should keep ALL nodes from existing group-d and group-e
+                assertThat(allocatedNodes)
+                    .as("Shard 1: Should keep ALL nodes from existing groups (group-d, group-e)")
+                    .contains("replica-d-1", "replica-d-2", "replica-d-3",
+                              "replica-e-1", "replica-e-2", "replica-e-3");
+                
+                // Should have exactly 4 distinct groups
+                long distinctGroups = allocatedNodes.stream()
+                    .map(node -> node.split("-")[1]) // Extract group name
+                    .distinct()
+                    .count();
+                assertThat(distinctGroups)
+                    .as("Shard 1: Should allocate to exactly 4 groups")
+                    .isEqualTo(4);
                 
                 return true;
             })
@@ -685,17 +807,23 @@ class ShardAllocatorTest {
         ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
         binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
         
-        // Given: Index configured for 2 groups per shard
-        Index index = createIndex("bp-initial", Arrays.asList(3));
-        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2)); // Need 2 groups
+        // Given: Index with 2 shards, different group requirements
+        // Shard 0: needs 2 groups, Shard 1: needs 3 groups
+        Index index = createIndex("bp-initial", Arrays.asList(3, 3));
+        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3));
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
         
-        // Given: No existing planned allocation (initial allocation)
+        // Given: No existing planned allocations (brand new index)
         when(metadataStore.getPlannedAllocation(testClusterId, "bp-initial", "0"))
             .thenReturn(null);
+        when(metadataStore.getPlannedAllocation(testClusterId, "bp-initial", "1"))
+            .thenReturn(null);
         
-        // Given: 3 replica groups available
+        // Given: Multiple replica groups available for initial allocation
+        // Shard 0: 3 groups available (will select 2)
+        // Shard 1: 4 groups available (will select 3)
         List<SearchUnit> allNodes = Arrays.asList(
+            // Shard 0 nodes
             createHealthyPrimaryNode("primary-0", "0"),
             createHealthyReplicaNode("replica-a-1", "group-a"),
             createHealthyReplicaNode("replica-a-2", "group-a"),
@@ -705,30 +833,43 @@ class ShardAllocatorTest {
             createHealthyReplicaNode("replica-b-3", "group-b"),
             createHealthyReplicaNode("replica-c-1", "group-c"),
             createHealthyReplicaNode("replica-c-2", "group-c"),
-            createHealthyReplicaNode("replica-c-3", "group-c")
+            createHealthyReplicaNode("replica-c-3", "group-c"),
+            
+            // Shard 1 nodes
+            createHealthyPrimaryNode("primary-1", "1"),
+            createHealthyReplicaNode("replica-d-1", "group-d"),
+            createHealthyReplicaNode("replica-d-2", "group-d"),
+            createHealthyReplicaNode("replica-d-3", "group-d"),
+            createHealthyReplicaNode("replica-e-1", "group-e"),
+            createHealthyReplicaNode("replica-e-2", "group-e"),
+            createHealthyReplicaNode("replica-e-3", "group-e"),
+            createHealthyReplicaNode("replica-f-1", "group-f"),
+            createHealthyReplicaNode("replica-f-2", "group-f"),
+            createHealthyReplicaNode("replica-f-3", "group-f"),
+            createHealthyReplicaNode("replica-g-1", "group-g"),
+            createHealthyReplicaNode("replica-g-2", "group-g"),
+            createHealthyReplicaNode("replica-g-3", "group-g")
         );
         when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allNodes);
         
         // When: Plan allocation
         binPackingShardAllocator.planShardAllocation(testClusterId, AllocationStrategy.USE_ALL_AVAILABLE_NODES);
         
-        // Then: Should randomly select 2 groups from available 3
-        // AND allocate to ALL healthy nodes in those 2 groups (6 total nodes)
+        // Then: Verify Shard 0 - should randomly select 2 groups from 3 available
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("bp-initial"),
             eq("0"),
             argThat(allocation -> {
-                // Should allocate IngestSU
+                // Single writer constraint
                 assertThat(allocation.getIngestSUs())
-                    .as("IngestSUs must be exactly 1 per shard")
+                    .as("Shard 0: IngestSUs must be exactly 1 per shard")
                     .hasSize(1);
                 
                 // Should allocate ALL nodes from 2 randomly selected groups (3 per group = 6 total)
-                // Replica count config (3) is IGNORED
                 List<String> allocatedNodes = allocation.getSearchSUs();
                 assertThat(allocatedNodes)
-                    .as("Initial allocation: should use ALL healthy nodes from 2 groups")
+                    .as("Shard 0: Initial allocation should use ALL healthy nodes from 2 groups")
                     .hasSize(6);
                 
                 // Count distinct groups - should be exactly 2
@@ -737,7 +878,7 @@ class ShardAllocatorTest {
                     .distinct()
                     .count();
                 assertThat(distinctGroups)
-                    .as("Should allocate to exactly 2 groups (random selection from 3 available)")
+                    .as("Shard 0: Should allocate to exactly 2 groups (random selection from 3 available)")
                     .isEqualTo(2);
                 
                 // Verify each selected group has ALL its nodes (3 nodes per group)
@@ -749,9 +890,218 @@ class ShardAllocatorTest {
                             .filter(node -> node.contains("-" + groupName + "-"))
                             .count();
                         assertThat(nodesInGroup)
-                            .as("Group " + groupName + " should have ALL 3 nodes allocated")
+                            .as("Shard 0: Group " + groupName + " should have ALL 3 nodes allocated")
                             .isEqualTo(3);
                     });
+                
+                return true;
+            })
+        );
+        
+        // Then: Verify Shard 1 - should randomly select 3 groups from 4 available
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("bp-initial"),
+            eq("1"),
+            argThat(allocation -> {
+                // Single writer constraint
+                assertThat(allocation.getIngestSUs())
+                    .as("Shard 1: IngestSUs must be exactly 1 per shard")
+                    .hasSize(1);
+                
+                // Should allocate ALL nodes from 3 randomly selected groups (3 per group = 9 total)
+                List<String> allocatedNodes = allocation.getSearchSUs();
+                assertThat(allocatedNodes)
+                    .as("Shard 1: Initial allocation should use ALL healthy nodes from 3 groups")
+                    .hasSize(9);
+                
+                // Count distinct groups - should be exactly 3
+                long distinctGroups = allocatedNodes.stream()
+                    .map(node -> node.split("-")[1]) // Extract group name (d, e, f, or g)
+                    .distinct()
+                    .count();
+                assertThat(distinctGroups)
+                    .as("Shard 1: Should allocate to exactly 3 groups (random selection from 4 available)")
+                    .isEqualTo(3);
+                
+                // Verify each selected group has ALL its nodes (3 nodes per group)
+                allocatedNodes.stream()
+                    .map(node -> node.split("-")[1]) // Get group name
+                    .distinct()
+                    .forEach(groupName -> {
+                        long nodesInGroup = allocatedNodes.stream()
+                            .filter(node -> node.contains("-" + groupName + "-"))
+                            .count();
+                        assertThat(nodesInGroup)
+                            .as("Shard 1: Group " + groupName + " should have ALL 3 nodes allocated")
+                            .isEqualTo(3);
+                    });
+                
+                return true;
+            })
+        );
+    }
+
+    @Test
+    void testE2E_BinPacking_MultipleIndexes_InitialAllocation() throws Exception {
+        // Given: ShardAllocator with REAL GroupAwareBinPackingEngine
+        ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
+        binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
+        
+        // Given: 2 indexes with multiple shards, different group configurations
+        // Index1: 2 shards → Shard 0: 2 groups, Shard 1: 3 groups
+        Index index1 = createIndex("multi-index1", Arrays.asList(1, 1));
+        index1.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3));
+        
+        // Index2: 2 shards → Shard 0: 1 group, Shard 1: 2 groups
+        Index index2 = createIndex("multi-index2", Arrays.asList(1, 1));
+        index2.getSettings().setShardGroupsAllocateCount(Arrays.asList(1, 2));
+        
+        when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index1, index2));
+        
+        // Given: No existing planned allocations (all brand new)
+        when(metadataStore.getPlannedAllocation(eq(testClusterId), anyString(), anyString()))
+            .thenReturn(null);
+        
+        // Given: 5 replica groups available, shared across both indexes
+        // Note: In real deployments, shard pools are shared across indexes!
+        // - Both Index1 Shard 0 and Index2 Shard 0 use the same PRIMARY node (pool "0")
+        // - Both Index1 Shard 1 and Index2 Shard 1 use the same PRIMARY node (pool "1")
+        List<SearchUnit> allNodes = Arrays.asList(
+            // Shard pool "0" - serves both Index1/Shard0 and Index2/Shard0
+            createHealthyPrimaryNode("primary-pool-0", "0"),
+            // Shard pool "1" - serves both Index1/Shard1 and Index2/Shard1
+            createHealthyPrimaryNode("primary-pool-1", "1"),
+            
+            // Group A
+            createHealthyReplicaNode("replica-a-1", "group-a"),
+            createHealthyReplicaNode("replica-a-2", "group-a"),
+            createHealthyReplicaNode("replica-a-3", "group-a"),
+            // Group B
+            createHealthyReplicaNode("replica-b-1", "group-b"),
+            createHealthyReplicaNode("replica-b-2", "group-b"),
+            createHealthyReplicaNode("replica-b-3", "group-b"),
+            // Group C
+            createHealthyReplicaNode("replica-c-1", "group-c"),
+            createHealthyReplicaNode("replica-c-2", "group-c"),
+            createHealthyReplicaNode("replica-c-3", "group-c"),
+            // Group D
+            createHealthyReplicaNode("replica-d-1", "group-d"),
+            createHealthyReplicaNode("replica-d-2", "group-d"),
+            createHealthyReplicaNode("replica-d-3", "group-d"),
+            // Group E
+            createHealthyReplicaNode("replica-e-1", "group-e"),
+            createHealthyReplicaNode("replica-e-2", "group-e"),
+            createHealthyReplicaNode("replica-e-3", "group-e")
+        );
+        when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allNodes);
+        
+        // When: Plan allocation
+        binPackingShardAllocator.planShardAllocation(testClusterId, AllocationStrategy.USE_ALL_AVAILABLE_NODES);
+        
+        // Then: Verify Index1 Shard 0 - should select 2 groups and use shared primary
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("multi-index1"),
+            eq("0"),
+            argThat(allocation -> {
+                assertThat(allocation.getIngestSUs())
+                    .as("Index1 Shard 0: Single writer constraint, uses shared pool")
+                    .hasSize(1)
+                    .containsExactly("primary-pool-0");  // Shared with Index2 Shard 0
+                
+                assertThat(allocation.getSearchSUs())
+                    .as("Index1 Shard 0: Should allocate to 2 groups × 3 nodes = 6 nodes")
+                    .hasSize(6);
+                
+                long distinctGroups = allocation.getSearchSUs().stream()
+                    .map(node -> node.split("-")[1])
+                    .distinct()
+                    .count();
+                assertThat(distinctGroups)
+                    .as("Index1 Shard 0: Should have exactly 2 groups")
+                    .isEqualTo(2);
+                
+                return true;
+            })
+        );
+        
+        // Then: Verify Index1 Shard 1 - should select 3 groups and use shared primary
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("multi-index1"),
+            eq("1"),
+            argThat(allocation -> {
+                assertThat(allocation.getIngestSUs())
+                    .as("Index1 Shard 1: Single writer constraint, uses shared pool")
+                    .hasSize(1)
+                    .containsExactly("primary-pool-1");  // Shared with Index2 Shard 1
+                
+                assertThat(allocation.getSearchSUs())
+                    .as("Index1 Shard 1: Should allocate to 3 groups × 3 nodes = 9 nodes")
+                    .hasSize(9);
+                
+                long distinctGroups = allocation.getSearchSUs().stream()
+                    .map(node -> node.split("-")[1])
+                    .distinct()
+                    .count();
+                assertThat(distinctGroups)
+                    .as("Index1 Shard 1: Should have exactly 3 groups")
+                    .isEqualTo(3);
+                
+                return true;
+            })
+        );
+        
+        // Then: Verify Index2 Shard 0 - should select 1 group and use same primary as Index1 Shard 0
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("multi-index2"),
+            eq("0"),
+            argThat(allocation -> {
+                assertThat(allocation.getIngestSUs())
+                    .as("Index2 Shard 0: Single writer constraint, shares pool with Index1 Shard 0")
+                    .hasSize(1)
+                    .containsExactly("primary-pool-0");  // Same PRIMARY as Index1 Shard 0
+                
+                assertThat(allocation.getSearchSUs())
+                    .as("Index2 Shard 0: Should allocate to 1 group × 3 nodes = 3 nodes")
+                    .hasSize(3);
+                
+                long distinctGroups = allocation.getSearchSUs().stream()
+                    .map(node -> node.split("-")[1])
+                    .distinct()
+                    .count();
+                assertThat(distinctGroups)
+                    .as("Index2 Shard 0: Should have exactly 1 group")
+                    .isEqualTo(1);
+                
+                return true;
+            })
+        );
+        
+        // Then: Verify Index2 Shard 1 - should select 2 groups and use same primary as Index1 Shard 1
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("multi-index2"),
+            eq("1"),
+            argThat(allocation -> {
+                assertThat(allocation.getIngestSUs())
+                    .as("Index2 Shard 1: Single writer constraint, shares pool with Index1 Shard 1")
+                    .hasSize(1)
+                    .containsExactly("primary-pool-1");  // Same PRIMARY as Index1 Shard 1
+                
+                assertThat(allocation.getSearchSUs())
+                    .as("Index2 Shard 1: Should allocate to 2 groups × 3 nodes = 6 nodes")
+                    .hasSize(6);
+                
+                long distinctGroups = allocation.getSearchSUs().stream()
+                    .map(node -> node.split("-")[1])
+                    .distinct()
+                    .count();
+                assertThat(distinctGroups)
+                    .as("Index2 Shard 1: Should have exactly 2 groups")
+                    .isEqualTo(2);
                 
                 return true;
             })
