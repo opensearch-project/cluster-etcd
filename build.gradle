@@ -170,7 +170,7 @@ testClusters.integTest {
     // Other nodes cn role to default `replica`
     setting 'node.attr.clusterless_role', "replica"
 
-    // fs remote storage config for segrep
+    // fs remote storage config for seg rep
     setting 'path.repo', '/tmp/os_store'
     setting 'node.attr.remote_store.mode', 'segments_only'
     setting 'node.attr.remote_store.segment.repository', 'segrep-repo'
