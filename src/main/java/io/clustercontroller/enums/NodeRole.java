@@ -23,12 +23,27 @@ public enum NodeRole {
     public static NodeRole fromString(String value) {
         if (value == null) return null;
         
-        String trimmed = value.trim();
+        String trimmed = value.trim().toUpperCase();
+        
+        // Handle common aliases
+        if ("REPLICA".equals(trimmed)) {
+            return REPLICA; // Map "replica" -> SEARCH_REPLICA
+        }
+        
+        // Try exact match with enum values (case-insensitive)
         for (NodeRole role : NodeRole.values()) {
-            if (role.value.equals(trimmed)) {
+            if (role.value.equalsIgnoreCase(trimmed)) {
                 return role;
             }
         }
+        
+        // Try matching enum names directly (e.g. "PRIMARY", "REPLICA", "COORDINATOR")
+        for (NodeRole role : NodeRole.values()) {
+            if (role.name().equals(trimmed)) {
+                return role;
+            }
+        }
+        
         return null; // Return null for unknown roles instead of throwing exception
     }
 }

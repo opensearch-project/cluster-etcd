@@ -8,8 +8,12 @@ public interface Task {
     
     /**
      * Execute the task
+     * 
+     * @param context TaskContext containing cluster-agnostic services
+     * @param clusterId The cluster identifier for this task execution
+     * @return Task execution result status
      */
-    String execute(TaskContext context);
+    String execute(TaskContext context, String clusterId);
     
     /**
      * Get task name/identifier

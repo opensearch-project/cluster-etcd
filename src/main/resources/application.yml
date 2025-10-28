@@ -1,7 +1,4 @@
 # Application Configuration
-cluster:
-  name: default-cluster
-
 etcd:
   endpoints:
     - http://localhost:2379

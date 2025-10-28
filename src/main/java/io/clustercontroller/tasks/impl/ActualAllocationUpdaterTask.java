@@ -22,14 +22,15 @@ public class ActualAllocationUpdaterTask implements Task {
     private final String schedule;
     
     @Override
-    public String execute(TaskContext context) {
-        log.info("Executing actual allocation updater task: {}", name);
+    public String execute(TaskContext context, String clusterId) {
+        log.info("Executing actual allocation updater task: {} for cluster: {}", name, clusterId);
         
         try {
+            // Note: If updateActualAllocations needs clusterId in the future, pass it here
             context.getActualAllocationUpdater().updateActualAllocations();
             return TASK_STATUS_COMPLETED;
         } catch (Exception e) {
-            log.error("Failed to execute actual allocation updater task: {}", e.getMessage(), e);
+            log.error("Failed to execute actual allocation updater task for cluster {}: {}", clusterId, e.getMessage(), e);
             return TASK_STATUS_FAILED;
         }
     }

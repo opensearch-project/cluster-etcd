@@ -1,5 +1,6 @@
 package io.clustercontroller.tasks.impl;
 
+import io.clustercontroller.allocation.AllocationStrategy;
 import io.clustercontroller.tasks.Task;
 import io.clustercontroller.tasks.TaskContext;
 import lombok.AllArgsConstructor;
@@ -22,15 +23,20 @@ public class PlanShardAllocationTask implements Task {
     private final String schedule;
     
     @Override
-    public String execute(TaskContext context) {
-        log.info("Executing plan shard allocation task: {}", name);
+    public String execute(TaskContext context, String clusterId) {
+        log.info("Executing plan shard allocation task: {} for cluster: {}", name, clusterId);
         
         try {
-            // TODO: Call ShardAllocationPlanner.plan() method when implemented
-            log.info("Shard allocation planning - implementation pending");
+            // Run shard allocation planning for all indices in the cluster
+            // Use RESPECT_REPLICA_COUNT strategy to honor the replica count in index configuration
+            context.getShardAllocator().planShardAllocation(
+                clusterId, 
+                AllocationStrategy.RESPECT_REPLICA_COUNT
+            );
+            log.info("Shard allocation planning completed successfully for cluster: {}", clusterId);
             return TASK_STATUS_COMPLETED;
         } catch (Exception e) {
-            log.error("Failed to execute plan shard allocation task: {}", e.getMessage(), e);
+            log.error("Failed to execute plan shard allocation task for cluster {}: {}", clusterId, e.getMessage(), e);
             return TASK_STATUS_FAILED;
         }
     }

@@ -637,6 +637,7 @@ class RollingUpdateOrchestrationStrategyTest {
         SearchUnitActualState actualState = new SearchUnitActualState();
         Map<String, List<SearchUnitActualState.ShardRoutingInfo>> nodeRouting = new HashMap<>();
         SearchUnitActualState.ShardRoutingInfo shardInfo = new SearchUnitActualState.ShardRoutingInfo();
+        // Parse shard ID string to integer
         shardInfo.setShardId(Integer.parseInt(shardId));
         // Convert role to lowercase format matching worker output ("primary", "search_replica", "replica")
         shardInfo.setRole("PRIMARY".equals(role) ? "primary" : "replica");

@@ -2,6 +2,7 @@ package io.clustercontroller.tasks;
 
 import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.tasks.impl.ActualAllocationUpdaterTask;
+import io.clustercontroller.tasks.impl.DiscoveryTask;
 import io.clustercontroller.tasks.impl.GoalStateOrchestratorTask;
 import io.clustercontroller.tasks.impl.PlanShardAllocationTask;
 import io.clustercontroller.tasks.impl.ShardAllocatorTask;
@@ -23,6 +24,18 @@ public class TaskFactory {
         String taskName = metadata.getName();
         
         return switch (taskName) {
+            case TASK_ACTION_DISCOVERY -> new DiscoveryTask(
+                metadata.getName(),
+                metadata.getPriority(),
+                metadata.getInput(),
+                metadata.getSchedule()
+            );
+            case TASK_ACTION_PLAN_SHARD_ALLOCATION -> new PlanShardAllocationTask(
+                metadata.getName(),
+                metadata.getPriority(),
+                metadata.getInput(),
+                metadata.getSchedule()
+            );
             case TASK_ACTION_SHARD_ALLOCATOR -> new ShardAllocatorTask(
                 metadata.getName(),
                 metadata.getPriority(),
@@ -30,12 +43,6 @@ public class TaskFactory {
                 metadata.getSchedule()
             );
             case TASK_ACTION_ACTUAL_ALLOCATION_UPDATER -> new ActualAllocationUpdaterTask(
-                metadata.getName(),
-                metadata.getPriority(),
-                metadata.getInput(),
-                metadata.getSchedule()
-            );
-            case TASK_ACTION_PLAN_SHARD_ALLOCATION -> new PlanShardAllocationTask(
                 metadata.getName(),
                 metadata.getPriority(),
                 metadata.getInput(),

@@ -22,8 +22,8 @@ public class UnknownTask implements Task {
     private final String schedule;
     
     @Override
-    public String execute(TaskContext context) {
-        log.warn("Executing unknown task type: {}", name);
+    public String execute(TaskContext context, String clusterId) {
+        log.warn("Executing unknown task type: {} for cluster: {}", name, clusterId);
         return TASK_STATUS_FAILED;
     }
 }

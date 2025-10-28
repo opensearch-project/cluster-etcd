@@ -14,6 +14,16 @@ class TaskFactoryTest {
     
     
     @Test
+    void testDiscoveryTask() {
+        TaskMetadata metadata = new TaskMetadata(TASK_ACTION_DISCOVERY, 1);
+        
+        Task task = TaskFactory.createTask(metadata);
+        
+        assertThat(task).isInstanceOf(DiscoveryTask.class);
+        assertThat(task.getName()).isEqualTo(TASK_ACTION_DISCOVERY);
+    }
+    
+    @Test
     void testShardAllocatorTask() {
         TaskMetadata metadata = new TaskMetadata(TASK_ACTION_SHARD_ALLOCATOR, 4);
         

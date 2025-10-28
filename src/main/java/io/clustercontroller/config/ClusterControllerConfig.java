@@ -26,7 +26,6 @@ import static io.clustercontroller.config.Constants.*;
 @Getter
 public class ClusterControllerConfig {
     
-    private final String clusterName;
     private final String[] etcdEndpoints;
     private final long taskIntervalSeconds;
 
@@ -39,12 +38,11 @@ public class ClusterControllerConfig {
         ConfigModel config = loadYamlConfig();
         
         // Parse configuration values with null-safe defaults
-        this.clusterName = parseClusterName(config);
         this.etcdEndpoints = parseEndpoints(config);
         this.taskIntervalSeconds = parseTaskIntervalSeconds(config);
         
-        log.info("Loaded cluster controller config - cluster: {}, etcd endpoints: {}, task interval: {}s", 
-                clusterName, String.join(", ", etcdEndpoints), taskIntervalSeconds);
+        log.info("Loaded cluster controller config - etcd endpoints: {}, task interval: {}s", 
+                String.join(", ", etcdEndpoints), taskIntervalSeconds);
     }
 
 
@@ -100,21 +98,6 @@ public class ClusterControllerConfig {
             }
         }
     }
-
-    private String parseClusterName(ConfigModel config) {
-        try {
-            if (config.getCluster() != null && config.getCluster().getName() != null) {
-                String name = config.getCluster().getName().trim();
-                if (!name.isEmpty()) {
-                    return name;
-                }
-            }
-        } catch (Exception e) {
-            log.warn("Failed to parse cluster name from config, using default: {}", e.getMessage());
-        }
-        
-        return DEFAULT_CLUSTER_NAME;
-    }
     
     private String[] parseEndpoints(ConfigModel config) {
         try {
@@ -148,15 +131,9 @@ public class ClusterControllerConfig {
      */
     @Data
     public static class ConfigModel {
-        private Cluster cluster;
         private Etcd etcd;
         private Task task;
         private Controller controller; // Multi-cluster controller config (used by Spring @Value)
-    }
-    
-    @Data
-    public static class Cluster {
-        private String name;
     }
     
     @Data

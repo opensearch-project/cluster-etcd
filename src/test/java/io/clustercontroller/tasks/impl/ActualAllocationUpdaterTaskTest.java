@@ -34,7 +34,7 @@ class ActualAllocationUpdaterTaskTest {
         String input = "";
         ActualAllocationUpdaterTask task = new ActualAllocationUpdaterTask(taskName, 1, input, TASK_SCHEDULE_REPEAT);
         
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, "test-cluster");
         
         assertThat(result).isEqualTo(TASK_STATUS_COMPLETED);
         verify(actualAllocationUpdater).updateActualAllocations();
@@ -63,7 +63,7 @@ class ActualAllocationUpdaterTaskTest {
         
         doThrow(new RuntimeException("Allocation update failed")).when(actualAllocationUpdater).updateActualAllocations();
         
-        String result = task.execute(taskContext);
+        String result = task.execute(taskContext, "test-cluster");
         
         assertThat(result).isEqualTo(TASK_STATUS_FAILED);
         verify(actualAllocationUpdater).updateActualAllocations();

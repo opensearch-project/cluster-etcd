@@ -260,7 +260,23 @@ public class EtcdMetadataStore implements MetadataStore {
         
         try {
             String unitsPrefix = pathResolver.getSearchUnitsPrefix(clusterId);
-            List<SearchUnit> searchUnits = getAllObjectsByPrefix(unitsPrefix, SearchUnit.class);
+            GetResponse response = executeEtcdPrefixQuery(unitsPrefix);
+            
+            List<SearchUnit> searchUnits = new ArrayList<>();
+            for (var kv : response.getKvs()) {
+                String key = kv.getKey().toString(StandardCharsets.UTF_8);
+                // Only process keys that end with /conf (search unit configuration files)
+                // This filters out /actual-state and other non-config paths
+                if (key.endsWith("/conf")) {
+                    String json = kv.getValue().toString(StandardCharsets.UTF_8);
+                    try {
+                        SearchUnit searchUnit = objectMapper.readValue(json, SearchUnit.class);
+                        searchUnits.add(searchUnit);
+                    } catch (Exception parseException) {
+                        log.warn("Failed to parse search unit config at key {}: {}", key, parseException.getMessage());
+                    }
+                }
+            }
             
             log.debug("Retrieved {} search units from etcd", searchUnits.size());
             return searchUnits;
@@ -345,6 +361,8 @@ public class EtcdMetadataStore implements MetadataStore {
         log.info("Getting all search unit actual states from etcd for cluster '{}' in getAllSearchUnitActualStates", clusterId);
 
         String prefix = pathResolver.getSearchUnitsPrefix(clusterId);
+        log.info("Querying etcd for actual-states with clusterId: '{}', prefix: '{}'", clusterId, prefix);
+        
         GetOption option = GetOption.newBuilder()
                 .withPrefix(ByteSequence.from(prefix, UTF_8))
                 .build();
@@ -353,23 +371,32 @@ public class EtcdMetadataStore implements MetadataStore {
                 ByteSequence.from(prefix, UTF_8), option);
         GetResponse response = getFuture.get();
         
+        log.info("Etcd returned {} total keys for prefix '{}'", response.getKvs().size(), prefix);
+        
         Map<String, SearchUnitActualState> actualStates = new HashMap<>();
         
         for (KeyValue kv : response.getKvs()) {
             String key = kv.getKey().toString(UTF_8);
             String json = kv.getValue().toString(UTF_8);
-
+            log.info("Processing etcd key: {}", key);
+            
             // Parse key to get unit name and check if it's an actual-state key
+            // relativePath example: /unit-name/actual-state
             String relativePath = key.substring(prefix.length());
+            if (relativePath.startsWith("/")) {
+                relativePath = relativePath.substring(1); // Remove leading slash
+            }
             String[] parts = relativePath.split("/");
-
-            if (parts.length >= 2 && SUFFIX_ACTUAL_STATE.equals(parts[2])) {
-                String unitName = parts[1];
+            // After removing leading slash: parts[0] = unit-name, parts[1] = actual-state
+            if (parts.length >= 2 && "actual-state".equals(parts[1])) {
+                String unitName = parts[0];
+                log.info("Found actual-state for unit: {} (key: {})", unitName, key);
                 try {
                     SearchUnitActualState actualState = objectMapper.readValue(json, SearchUnitActualState.class);
                     actualStates.put(unitName, actualState);
+                    log.info("Successfully parsed actual-state for unit: {}", unitName);
                 } catch (Exception e) {
-                    log.warn("Failed to parse actual state for unit {}: {}", unitName, e.getMessage());
+                    log.warn("Failed to parse actual state for unit {}: {}", unitName, e.getMessage(), e);
                 }
             }
         }
@@ -614,10 +641,17 @@ public class EtcdMetadataStore implements MetadataStore {
         log.debug("Setting index settings for {} in etcd", indexName);
         
         try {
-            String settingsPath = pathResolver.getIndexSettingsPath(clusterId, indexName);
-            executeEtcdPut(settingsPath, settings);
+            // Wrap settings in "index" key to match Elasticsearch convention
+            // Parse the incoming settings JSON and wrap it
+            com.fasterxml.jackson.databind.JsonNode settingsNode = objectMapper.readTree(settings);
+            java.util.Map<String, com.fasterxml.jackson.databind.JsonNode> wrappedSettings = new java.util.HashMap<>();
+            wrappedSettings.put("index", settingsNode);
+            String wrappedSettingsJson = objectMapper.writeValueAsString(wrappedSettings);
             
-            log.debug("Successfully set index settings for {} in etcd", indexName);
+            String settingsPath = pathResolver.getIndexSettingsPath(clusterId, indexName);
+            executeEtcdPut(settingsPath, wrappedSettingsJson);
+            
+            log.debug("Successfully set index settings for {} in etcd (wrapped in 'index' key)", indexName);
             
         } catch (Exception e) {
             log.error("Failed to set index settings for {} in etcd: {}", indexName, e.getMessage(), e);

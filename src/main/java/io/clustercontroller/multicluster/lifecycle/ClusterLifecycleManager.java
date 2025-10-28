@@ -38,7 +38,7 @@ public class ClusterLifecycleManager {
     private static final int ETCD_OPERATION_TIMEOUT_SECONDS = 5;
     
     private final MetadataStore metadataStore;
-    private final TaskContext taskContext;
+    private final TaskContext taskContext;  // Shared singleton
     private final DistributedLockManager lockManager;
     private final KV kvClient;
     private final EtcdPathResolver pathResolver;
@@ -68,7 +68,7 @@ public class ClusterLifecycleManager {
         
         this.healthCheckScheduler = Executors.newScheduledThreadPool(10, r -> {
             Thread t = new Thread(r);
-            t.setName("cluster-health-check-" + t.getId());
+            t.setName("cluster-health-check-" + t.threadId());
             t.setDaemon(true);
             return t;
         });
@@ -89,7 +89,8 @@ public class ClusterLifecycleManager {
         try {
             log.info("Starting management of cluster: {}", clusterId);
             
-            // Create TaskManager for this cluster
+            // Create and start TaskManager for this cluster
+            // TaskManager will automatically bootstrap recurring tasks on start()
             TaskManager taskManager = new TaskManager(
                 metadataStore,
                 taskContext,

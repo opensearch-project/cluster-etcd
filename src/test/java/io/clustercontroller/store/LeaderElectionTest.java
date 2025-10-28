@@ -242,11 +242,8 @@ class LeaderElectionTest {
         assertNotNull(nodeId1);
         assertFalse(nodeId1.trim().isEmpty());
         
-        // If NODE_NAME is set, it should not contain the timestamp pattern
-        // (since we no longer generate automatic IDs)
-        if (System.getenv("NODE_NAME") != null) {
-            assertEquals(System.getenv("NODE_NAME").trim(), nodeId1);
-        }
+        // In test environment, should match the test node ID we set
+        assertEquals("test-node-1", nodeId1);
     }
     
     @Test

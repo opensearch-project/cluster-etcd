@@ -10,7 +10,6 @@ public final class Constants {
     }
     
     // Default configuration values
-    public static final String DEFAULT_CLUSTER_NAME = "default-cluster";
     public static final String DEFAULT_ETCD_ENDPOINT = "http://localhost:2379";
     public static final long DEFAULT_TASK_INTERVAL_SECONDS = 30L;
     
@@ -27,6 +26,7 @@ public final class Constants {
     // Task actions
     public static final String TASK_ACTION_CREATE_INDEX = "create_index";
     public static final String TASK_ACTION_DELETE_INDEX = "delete_index";
+    public static final String TASK_ACTION_DISCOVERY = "discovery";
     public static final String TASK_ACTION_PLAN_SHARD_ALLOCATION = "plan_shard_allocation";
     public static final String TASK_ACTION_SHARD_ALLOCATOR = "shard_allocator";
     public static final String TASK_ACTION_ACTUAL_ALLOCATION_UPDATER = "actual_allocation_updater";

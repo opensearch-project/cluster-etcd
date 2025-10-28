@@ -1,6 +1,5 @@
 package io.clustercontroller.tasks.impl;
 
-import io.clustercontroller.orchestration.GoalStateOrchestrator;
 import io.clustercontroller.tasks.Task;
 import io.clustercontroller.tasks.TaskContext;
 import lombok.AllArgsConstructor;
@@ -10,12 +9,13 @@ import lombok.extern.slf4j.Slf4j;
 import static io.clustercontroller.config.Constants.*;
 
 /**
- * Task to execute goal state orchestration
+ * Task implementation for discovering search units from etcd.
+ * This task regularly scans etcd for actual-state updates and updates the SearchUnit inventory.
  */
 @Slf4j
 @Getter
 @AllArgsConstructor
-public class GoalStateOrchestratorTask implements Task {
+public class DiscoveryTask implements Task {
     
     private final String name;
     private final int priority;
@@ -24,14 +24,16 @@ public class GoalStateOrchestratorTask implements Task {
     
     @Override
     public String execute(TaskContext context, String clusterId) {
-        log.info("Executing goal state orchestrator task: {} for cluster: {}", name, clusterId);
+        log.info("Executing discovery task: {} for cluster: {}", name, clusterId);
         
         try {
-            context.getGoalStateOrchestrator().orchestrateGoalStates(clusterId);
+            context.getDiscovery().discoverSearchUnits(clusterId);
+            log.info("Discovery task completed successfully for cluster: {}", clusterId);
             return TASK_STATUS_COMPLETED;
         } catch (Exception e) {
-            log.error("Failed to execute goal state orchestrator task for cluster {}: {}", clusterId, e.getMessage(), e);
+            log.error("Failed to execute discovery task for cluster {}: {}", clusterId, e.getMessage(), e);
             return TASK_STATUS_FAILED;
         }
     }
 }
+
