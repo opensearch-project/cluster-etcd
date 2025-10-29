@@ -1,9 +1,9 @@
 package io.clustercontroller.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.clustercontroller.enums.HealthState;import io.clustercontroller.enums.NodeRole;
+import io.clustercontroller.enums.HealthState;
+import io.clustercontroller.config.Constants;
 import lombok.Data;
-import lombok.NoArgsConstructor;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -59,6 +59,6 @@ public class SearchUnit {
         this.name = name;
         this.role = role;
         this.host = host;
-        this.stateAdmin = "NORMAL";
+        this.stateAdmin = Constants.ADMIN_STATE_NORMAL;
     }
 }

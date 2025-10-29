@@ -4,6 +4,7 @@ import io.clustercontroller.enums.Decision;
 import io.clustercontroller.enums.HealthState;
 import io.clustercontroller.enums.NodeRole;
 import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.config.Constants;
 
 /**
  * Decider that filters nodes based on health status.
@@ -18,7 +19,7 @@ public class HealthDecider implements AllocationDecider {
         String stateAdmin = node.getStateAdmin();
         HealthState statePulled = node.getStatePulled();
         
-        if (stateAdmin == null || !"NORMAL".equalsIgnoreCase(stateAdmin)) {
+        if (stateAdmin == null || !Constants.ADMIN_STATE_NORMAL.equalsIgnoreCase(stateAdmin)) {
             return Decision.NO;
         }
         

@@ -4,6 +4,7 @@ import io.clustercontroller.enums.ShardState;
 import io.clustercontroller.models.*;
 import io.clustercontroller.store.MetadataStore;
 import lombok.extern.slf4j.Slf4j;
+import io.clustercontroller.config.Constants;
 
 import java.util.*;
 
@@ -83,8 +84,8 @@ public class ActualAllocationUpdater {
             String unitName = searchUnit.getName();
             
             try {
-                // First check if the search unit itself is DRAINED or unhealthy in configuration
-                if (!"NORMAL".equals(searchUnit.getStateAdmin())) {
+                // First check if the search unit itself is DRAINED or unhealthy in configuration 
+                if (!Constants.ADMIN_STATE_NORMAL.equalsIgnoreCase(String.valueOf(searchUnit.getStateAdmin()))) {
                     log.debug("ActualAllocationUpdater - Skipping non-normal SU: {} (admin_state: {})", 
                         unitName, searchUnit.getStateAdmin());
                     continue;
@@ -295,20 +296,7 @@ public class ActualAllocationUpdater {
         log.info("ActualAllocationUpdater - Completed cleanup, removed {} stale actual allocations", totalCleanups);
     }
     
-    /**
-     * Clean up actual allocations for shards that no longer exist on any search unit
-     * Public method for external cleanup calls (backwards compatibility)
-     */
-    public void cleanupStaleActualAllocations(String clusterId) throws Exception {
-        log.info("ActualAllocationUpdater - Starting standalone cleanup of stale actual allocations");
-        
-        // Get all search units to read their actual states
-        List<SearchUnit> searchUnits = metadataStore.getAllSearchUnits(clusterId);
-        Map<String, Map<String, Set<String>>> currentActualAllocations = collectActualAllocations(clusterId, searchUnits);
-        
-        // Use the improved cleanup method
-        cleanupStaleActualAllocations(clusterId, currentActualAllocations);
-    }
+    // (standalone cleanup wrapper removed; no external callers)
     
     /**
      * Determines if a search unit is a coordinator node
@@ -346,24 +334,22 @@ public class ActualAllocationUpdater {
     public int updateCoordinatorGoalStates(String clusterId, List<SearchUnit> searchUnits) throws Exception {
         log.info("ActualAllocationUpdater - Starting coordinator goal state updates for coordinator group");
         
-        // Get current coordinator goal state to understand what needs to be updated/cleaned
-        CoordinatorGoalState currentCoordinatorState = metadataStore.getCoordinatorGoalState(clusterId);
-        Set<String> currentCoordinatorIndexes = new HashSet<>();
-        if (currentCoordinatorState != null && currentCoordinatorState.getRemoteShards() != null) {
-            currentCoordinatorIndexes.addAll(currentCoordinatorState.getRemoteShards().getIndices().keySet());
-        }
-        
         // Get all index configurations that still exist
         List<Index> indexConfigs = metadataStore.getAllIndexConfigs(clusterId);
         
-        // Build the new coordinator goal state structure
+        // Build the new coordinator goal state structure (with null-safety guards)
         CoordinatorGoalState coordinatorGoalState = new CoordinatorGoalState();
+        if (coordinatorGoalState.getRemoteShards() == null) {
+            coordinatorGoalState.setRemoteShards(new CoordinatorGoalState.RemoteShards());
+        }
         CoordinatorGoalState.RemoteShards remoteShards = coordinatorGoalState.getRemoteShards();
+        if (remoteShards.getIndices() == null) {
+            remoteShards.setIndices(new HashMap<>());
+        }
         Map<String, CoordinatorGoalState.IndexShardRouting> indices = remoteShards.getIndices();
         
         int totalUpdates = 0;
         List<String> indexesWithActualAllocations = new ArrayList<>();
-        Set<String> processedIndexes = new HashSet<>();
         
         // Process all indexes that have configurations
         for (Index indexConfig : indexConfigs) {
@@ -375,7 +361,6 @@ public class ActualAllocationUpdater {
             }
             
             List<Integer> shardReplicaCount = settings.getShardReplicaCount();
-            processedIndexes.add(indexName);
             
             // Check if this index has any actual allocations
             List<ShardAllocation> actualAllocations;
@@ -452,14 +437,6 @@ public class ActualAllocationUpdater {
             indices.put(indexName, indexShardRouting);
         }
         
-        // Clean up orphaned indexes from coordinator state that no longer have configs or actual allocations
-        Set<String> orphanedIndexes = new HashSet<>(currentCoordinatorIndexes);
-        orphanedIndexes.removeAll(processedIndexes);
-        orphanedIndexes.removeAll(indexesWithActualAllocations);
-        
-        if (!orphanedIndexes.isEmpty()) {
-            log.info("ActualAllocationUpdater - Cleaning up orphaned indexes from coordinator goal state: {}", orphanedIndexes);
-        }
         
         // Update the coordinator goal state in etcd
         try {
@@ -473,7 +450,7 @@ public class ActualAllocationUpdater {
         
         log.info("ActualAllocationUpdater - Completed coordinator goal state updates: {} shard updates across {} indexes with actual allocations: {}", 
             totalUpdates, indexesWithActualAllocations.size(), indexesWithActualAllocations);
-        return 1; // Return 1 since we updated the single coordinator goal state
+        return totalUpdates;
     }
     
     /**
@@ -605,24 +582,4 @@ public class ActualAllocationUpdater {
         return true;
     }
     
-    // Legacy methods for backward compatibility
-    
-    public void syncCoordinatorState(String clusterId) {
-        log.info("Syncing coordinator state with search units");
-        try {
-            List<SearchUnit> searchUnits = metadataStore.getAllSearchUnits(clusterId);
-            updateCoordinatorGoalStates(clusterId, searchUnits);
-        } catch (Exception e) {
-            log.error("Failed to sync coordinator state", e);
-        }
-    }
-    
-    public void handleAllocationDrift(String clusterId) {
-        log.info("Handling allocation drift detection and correction");
-        try {
-            cleanupStaleActualAllocations(clusterId);
-        } catch (Exception e) {
-            log.error("Failed to handle allocation drift", e);
-        }
-    }
 }
