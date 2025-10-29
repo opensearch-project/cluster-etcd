@@ -144,6 +144,9 @@ public class GroupManager {
     /**
      * Check if a group matches the target NodeRole.
      * 
+     * Handles case-insensitive matching and multiple role name variants
+     * (e.g., "replica", "REPLICA", "search_replica", "SEARCH_REPLICA" all match NodeRole.REPLICA).
+     * 
      * @param group The group to check
      * @param targetRole Target role (PRIMARY or REPLICA)
      * @return true if group matches target role
@@ -154,8 +157,10 @@ public class GroupManager {
             return false;
         }
         
-        // Direct string match: NodeRole.PRIMARY -> "PRIMARY", NodeRole.REPLICA -> "SEARCH_REPLICA"
-        return targetRole.getValue().equals(groupRole);
+        // Parse group role string to NodeRole enum (handles case-insensitivity and variants)
+        // Then compare enum values directly
+        NodeRole parsedRole = NodeRole.fromString(groupRole);
+        return parsedRole == targetRole;
     }
     
     /**
