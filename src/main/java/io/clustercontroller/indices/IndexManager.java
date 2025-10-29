@@ -134,6 +134,10 @@ public class IndexManager {
         newIndex.getSettings().setNumberOfShards(numberOfShards);
         newIndex.getSettings().setShardReplicaCount(shardReplicaCount);
         
+        // TODO: Allow explicit configuration of shardGroupsAllocateCount from createIndexRequest
+        // For now, default to same values as shardReplicaCount (e.g., if replicas=[5,5,5], groups=[5,5,5])
+        newIndex.getSettings().setShardGroupsAllocateCount(new ArrayList<>(shardReplicaCount));
+        
         // Store the index configuration
         String indexConfigJson = objectMapper.writeValueAsString(newIndex);
         String documentId = metadataStore.createIndexConfig(clusterId, indexName, indexConfigJson);

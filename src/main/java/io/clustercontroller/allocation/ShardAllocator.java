@@ -28,12 +28,8 @@ public class ShardAllocator {
     
     public ShardAllocator(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
-        this.allocationDecisionEngine = new AllocationDecisionEngine();
-        
-        // Enable deciders for now (later configurable)
-        allocationDecisionEngine.enableDecider(AllNodesDecider.class);
-        allocationDecisionEngine.enableDecider(RoleDecider.class);
-        allocationDecisionEngine.enableDecider(ShardPoolDecider.class);
+        // Use bin-packing allocation engine with random group selection strategy
+        this.allocationDecisionEngine = new GroupAwareBinPackingEngine();
     }
     
     /**
@@ -67,7 +63,7 @@ public class ShardAllocator {
                 
                 // For each shard in the index
                 for (int shardIndex = 0; shardIndex < numberOfShards; shardIndex++) {
-                    String shardId = String.valueOf(shardIndex);
+                    String shardIdStr = String.valueOf(shardIndex);
                     
                     // Validate and get replica count for RESPECT_REPLICA_COUNT strategy
                     int replicaCount = 0; // Default for USE_ALL_AVAILABLE_NODES
@@ -81,31 +77,31 @@ public class ShardAllocator {
                     }
                     
                     // Get current planned allocation and all nodes
-                    ShardAllocation currentPlanned = metadataStore.getPlannedAllocation(clusterId, indexName, shardId);
+                    ShardAllocation currentPlanned = metadataStore.getPlannedAllocation(clusterId, indexName, shardIdStr);
                     List<SearchUnit> allNodes = metadataStore.getAllSearchUnits(clusterId);
                     
                     // Handle IngestSUs first (primary allocation)
-                    List<String> ingestNodes = planIngestAllocation(clusterId, indexName, shardId, allNodes, currentPlanned);
+                    List<String> ingestNodes = planIngestAllocation(clusterId, indexName, shardIndex, indexConfig, allNodes, currentPlanned);
                     if (ingestNodes == null || ingestNodes.isEmpty()) {
-                        log.warn("IngestSU allocation failed or empty for shard {}/{}", indexName, shardId);
+                        log.warn("IngestSU allocation failed or empty for shard {}/{}", indexName, shardIndex);
                     }
                     
                     // Handle SearchSUs (replica allocation)
-                    List<String> searchNodes = planSearchReplicaAllocation(clusterId, indexName, shardId, replicaCount, strategy, allNodes, currentPlanned);
+                    List<String> searchNodes = planSearchReplicaAllocation(clusterId, indexName, shardIndex, indexConfig, replicaCount, strategy, allNodes, currentPlanned);
                     if (searchNodes.isEmpty()) {
-                        log.warn("SearchSU allocation empty for shard {}/{}", indexName, shardId);
+                        log.warn("SearchSU allocation empty for shard {}/{}", indexName, shardIndex);
                     }
                     
                     // Update planned allocation in etcd (only if we have valid allocations)
                     if ((ingestNodes == null || ingestNodes.isEmpty()) && searchNodes.isEmpty()) {
-                        log.warn("Skipping planned allocation update for shard {}/{} - no valid allocations", indexName, shardId);
+                        log.warn("Skipping planned allocation update for shard {}/{} - no valid allocations", indexName, shardIndex);
                         continue;
                     }
                     
-                    updatePlannedAllocation(clusterId, indexName, shardId, ingestNodes, searchNodes);
+                    updatePlannedAllocation(clusterId, indexName, shardIdStr, ingestNodes, searchNodes);
                     
                     log.info("Planned allocation for shard {}/{} - IngestSUs: {}, SearchSUs: {}", 
-                             indexName, shardId, ingestNodes, searchNodes);
+                             indexName, shardIndex, ingestNodes, searchNodes);
                 }
             }
             
@@ -154,14 +150,14 @@ public class ShardAllocator {
     /**
      * Plan IngestSU allocation (primary allocation)
      */
-    private List<String> planIngestAllocation(String clusterId, String indexName, String shardId, 
-                                            List<SearchUnit> allNodes, ShardAllocation currentPlanned) {
+    private List<String> planIngestAllocation(String clusterId, String indexName, int shardId, 
+                                            Index indexConfig, List<SearchUnit> allNodes, ShardAllocation currentPlanned) {
         try {
             List<String> currentIngestSUs = (currentPlanned != null) ? currentPlanned.getIngestSUs() : List.of();
             
             // Get eligible ingest nodes
             List<SearchUnit> eligibleIngestNodes = allocationDecisionEngine
-                .getAvailableNodesForAllocation(shardId, indexName, allNodes, NodeRole.PRIMARY);
+                .getAvailableNodesForAllocation(shardId, indexName, indexConfig, allNodes, NodeRole.PRIMARY, currentPlanned);
             
             // Validate single writer constraint - fatal if current OR eligible has more than 1
             if (currentIngestSUs.size() > 1 || eligibleIngestNodes.size() > 1) {
@@ -190,12 +186,13 @@ public class ShardAllocator {
     /**
      * Plan SearchSU allocation (replica allocation)
      */
-    private List<String> planSearchReplicaAllocation(String clusterId, String indexName, String shardId, 
-                                            int replicaCount, AllocationStrategy strategy, List<SearchUnit> allNodes, 
-                                            ShardAllocation currentPlanned) {
+    private List<String> planSearchReplicaAllocation(String clusterId, String indexName, int shardId, 
+                                            Index indexConfig, int replicaCount, AllocationStrategy strategy, 
+                                            List<SearchUnit> allNodes, ShardAllocation currentPlanned) {
         try {
             // Check if allocation is recent (within threshold) - only for replicas
-            if (isRecentAllocation(clusterId, indexName, shardId)) {
+            String shardIdStr = String.valueOf(shardId);
+            if (isRecentAllocation(clusterId, indexName, shardIdStr)) {
                 log.debug("Skipping replica allocation for shard {}/{} - recent allocation", indexName, shardId);
                 // Return current planned search nodes if recent
                 return (currentPlanned != null) ? currentPlanned.getSearchSUs() : List.of();
@@ -203,7 +200,7 @@ public class ShardAllocator {
             
             // Get eligible search nodes
             List<SearchUnit> eligibleSearchNodes = allocationDecisionEngine
-                .getAvailableNodesForAllocation(shardId, indexName, allNodes, NodeRole.REPLICA);
+                .getAvailableNodesForAllocation(shardId, indexName, indexConfig, allNodes, NodeRole.REPLICA, currentPlanned);
             
             if (eligibleSearchNodes.isEmpty()) {
                 log.warn("No eligible search nodes found for shard {}/{}", indexName, shardId);

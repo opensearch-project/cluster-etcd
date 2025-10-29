@@ -120,8 +120,8 @@ public class TaskManager {
             // 1. Discovery task - discovers search units from actual-state (highest priority)
             ensureRecurringTask(TASK_ACTION_DISCOVERY, 1, "Discover search units from etcd");
             
-            // 2. Plan Shard Allocation - plans shard allocation based on discovered nodes
-            ensureRecurringTask(TASK_ACTION_PLAN_SHARD_ALLOCATION, 2, "Plan shard allocation");
+            // 2. Shard Allocator - plans shard allocation using USE_ALL_AVAILABLE_NODES strategy (bin-packing)
+            ensureRecurringTask(TASK_ACTION_SHARD_ALLOCATOR, 2, "Run shard allocator with bin-packing");
             
             // 3. Goal State Orchestrator - orchestrates goal states to search units
             ensureRecurringTask(TASK_ACTION_GOAL_STATE_ORCHESTRATOR, 3, "Orchestrate goal states to search units");

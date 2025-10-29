@@ -25,16 +25,4 @@ public class Index {
     
     @JsonProperty("settings")
     private IndexSettings settings;
-    
-    public Index(String indexName, List<Integer> shardReplicaCount) {
-        this.indexName = indexName;
-        this.settings = new IndexSettings();
-        this.settings.setShardReplicaCount(shardReplicaCount != null ? shardReplicaCount : new ArrayList<>());
-        this.settings.setNumberOfShards(this.settings.getShardReplicaCount().size());
-    }
-    
-    // Custom setters to maintain null safety
-    public void setShardReplicaCount(List<Integer> shardReplicaCount) { 
-        this.settings.setShardReplicaCount(shardReplicaCount != null ? shardReplicaCount : new ArrayList<>()); 
-    }
 } 

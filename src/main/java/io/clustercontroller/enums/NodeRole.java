@@ -25,25 +25,17 @@ public enum NodeRole {
         
         String trimmed = value.trim().toUpperCase();
         
-        // Handle common aliases
-        if ("REPLICA".equals(trimmed)) {
-            return REPLICA; // Map "replica" -> SEARCH_REPLICA
+        // Handle common role name variations
+        switch (trimmed) {
+            case "PRIMARY":
+                return PRIMARY;
+            case "SEARCH_REPLICA":
+            case "REPLICA":  // Support both "replica" and "search_replica"
+                return REPLICA;
+            case "COORDINATOR":
+                return COORDINATOR;
+            default:
+                return null; // Return null for unknown roles
         }
-        
-        // Try exact match with enum values (case-insensitive)
-        for (NodeRole role : NodeRole.values()) {
-            if (role.value.equalsIgnoreCase(trimmed)) {
-                return role;
-            }
-        }
-        
-        // Try matching enum names directly (e.g. "PRIMARY", "REPLICA", "COORDINATOR")
-        for (NodeRole role : NodeRole.values()) {
-            if (role.name().equals(trimmed)) {
-                return role;
-            }
-        }
-        
-        return null; // Return null for unknown roles instead of throwing exception
     }
 }

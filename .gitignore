@@ -49,3 +49,5 @@ Thumbs.db
 *.tmp
 *.temp
 *~
+default.etcd/
+*.etcd/
