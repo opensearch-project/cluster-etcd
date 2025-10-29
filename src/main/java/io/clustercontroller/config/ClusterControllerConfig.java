@@ -153,7 +153,7 @@ public class ClusterControllerConfig {
         } catch (Exception e) {
             log.warn("Failed to parse coordinator goal state unit, using default 'default-coordinator': {}", e.getMessage());
         }
-        return "default-coordinator";
+        return COORDINATOR_DEFAULT_UNIT;
     }
     
     /**

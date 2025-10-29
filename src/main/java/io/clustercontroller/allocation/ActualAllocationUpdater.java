@@ -10,11 +10,26 @@ import java.util.*;
 /**
  * ActualAllocationUpdater - Responsible for aggregating search unit actual states into index shard actual allocations
  * 
- * This controller:
+ * This task:
  * 1. Reads actual states from /search-units/<su-name>/actual-state
  * 2. Aggregates this information by index and shard
  * 3. Updates actual allocations at /indices/<index-name>/<shard_id>/actual-allocation
- * 4. Provides coordinator nodes with current allocation state for monitoring/querying
+ * 4. Provides coordinator nodes with a goal-state view of remote_shards used for routing/monitoring
+ *
+ * Coordinator goal state specifics:
+ * - For each index and shard, we compute a list of nodes with their role (primary/replica) flag: List<List<NodeRoutingInfo>>.
+ * - A node is included only when it is converged for that index/shard.
+ *   Converged means: (a) the node's goal state requests that index+shard (with a role), and
+ *   (b) the node's actual state reports that shard in STARTED state.
+ * - Primaries come from the current actual ingest set; replicas come from the current actual search set,
+ *   and both are filtered by convergence before inclusion.
+ *
+ * Example:
+ * - Index "logs-2025" has 2 shards.
+ *   - Shard 0: su-a (primary, STARTED, requested in goal) and su-b (replica, STARTED, requested in goal)
+ *     -> shard[0] = [ { node: "su-a", primary: true }, { node: "su-b", primary: false } ]
+ *   - Shard 1: su-c (primary, STARTED, requested in goal) and su-d (replica, STARTED, NOT requested in goal)
+ *     -> shard[1] = [ { node: "su-c", primary: true } ]   // su-d excluded (not converged)
  */
 @Slf4j
 public class ActualAllocationUpdater {
@@ -344,7 +359,7 @@ public class ActualAllocationUpdater {
         // Build the new coordinator goal state structure
         CoordinatorGoalState coordinatorGoalState = new CoordinatorGoalState();
         CoordinatorGoalState.RemoteShards remoteShards = coordinatorGoalState.getRemoteShards();
-        Map<String, CoordinatorGoalState.IndexRoutingInfo> indices = remoteShards.getIndices();
+        Map<String, CoordinatorGoalState.IndexShardRouting> indices = remoteShards.getIndices();
         
         int totalUpdates = 0;
         List<String> indexesWithActualAllocations = new ArrayList<>();
@@ -380,7 +395,7 @@ public class ActualAllocationUpdater {
                 indexName, actualAllocations.size());
             
             // Build shard routing array for this index
-            List<List<CoordinatorGoalState.NodeRoutingInfo>> shardRouting = new ArrayList<>();
+            List<List<CoordinatorGoalState.ShardNodeAssignment>> shardRouting = new ArrayList<>();
             
             for (int shardIndex = 0; shardIndex < shardReplicaCount.size(); shardIndex++) {
                 String shardId = String.valueOf(shardIndex);
@@ -395,12 +410,15 @@ public class ActualAllocationUpdater {
                 }
                 
                 // Build node routing info for this shard based on convergence rules
-                List<CoordinatorGoalState.NodeRoutingInfo> shardNodes = new ArrayList<>();
+                List<CoordinatorGoalState.ShardNodeAssignment> shardNodes = new ArrayList<>();
                 
                 // Add primary nodes (if converged)
                 for (String unitName : actual.getIngestSUs()) {
                     if (isNodeGoalStateConverged(clusterId, unitName, indexName, shardId)) {
-                        shardNodes.add(new CoordinatorGoalState.NodeRoutingInfo(unitName, true)); // primary = true
+                        CoordinatorGoalState.ShardNodeAssignment node = new CoordinatorGoalState.ShardNodeAssignment();
+                        node.setNodeName(unitName);
+                        node.setPrimary(true);
+                        shardNodes.add(node);
                         log.debug("ActualAllocationUpdater - Including primary node '{}' in coordinator routing for {}/{}", 
                             unitName, indexName, shardId);
                     } else {
@@ -412,7 +430,10 @@ public class ActualAllocationUpdater {
                 // Add search replica nodes (if converged)
                 for (String unitName : actual.getSearchSUs()) {
                     if (isNodeGoalStateConverged(clusterId, unitName, indexName, shardId)) {
-                        shardNodes.add(new CoordinatorGoalState.NodeRoutingInfo(unitName, false)); // primary = false
+                        CoordinatorGoalState.ShardNodeAssignment node = new CoordinatorGoalState.ShardNodeAssignment();
+                        node.setNodeName(unitName);
+                        node.setPrimary(false);
+                        shardNodes.add(node);
                         log.debug("ActualAllocationUpdater - Including search replica node '{}' in coordinator routing for {}/{}", 
                             unitName, indexName, shardId);
                     } else {
@@ -426,8 +447,9 @@ public class ActualAllocationUpdater {
             }
             
             // Add this index to the coordinator goal state
-            CoordinatorGoalState.IndexRoutingInfo indexRoutingInfo = new CoordinatorGoalState.IndexRoutingInfo(shardRouting);
-            indices.put(indexName, indexRoutingInfo);
+            CoordinatorGoalState.IndexShardRouting indexShardRouting = new CoordinatorGoalState.IndexShardRouting();
+            indexShardRouting.setShardRouting(shardRouting);
+            indices.put(indexName, indexShardRouting);
         }
         
         // Clean up orphaned indexes from coordinator state that no longer have configs or actual allocations

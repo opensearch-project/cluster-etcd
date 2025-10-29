@@ -80,4 +80,8 @@ public final class Constants {
     public static final String LEVEL_INDICES = "indices";
     public static final String LEVEL_SHARDS = "shards";
     public static final String LEVEL_CLUSTER = "cluster";
+
+    // Shard/Node role string constants (as reported in actual state payloads)
+    public static final String ROLE_PRIMARY = "primary";
+    public static final String ROLE_SEARCH_REPLICA = "search_replica";
 }

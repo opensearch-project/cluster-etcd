@@ -175,7 +175,7 @@ public class SearchUnitActualState {
          * @return true if role is "primary", false otherwise
          */
         public boolean isPrimary() {
-            return role != null && "primary".equalsIgnoreCase(role);
+            return role != null && Constants.ROLE_PRIMARY.equalsIgnoreCase(role);
         }
     }
 } 
