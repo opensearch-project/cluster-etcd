@@ -29,12 +29,6 @@ public class TaskFactory {
                 metadata.getInput(),
                 metadata.getSchedule()
             );
-            case TASK_ACTION_PLAN_SHARD_ALLOCATION -> new ShardAllocatorTask(
-                metadata.getName(),
-                metadata.getPriority(),
-                metadata.getInput(),
-                metadata.getSchedule()
-            );
             case TASK_ACTION_SHARD_ALLOCATOR -> new ShardAllocatorTask(
                 metadata.getName(),
                 metadata.getPriority(),
