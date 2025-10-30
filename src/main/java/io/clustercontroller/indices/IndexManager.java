@@ -115,16 +115,15 @@ public class IndexManager {
         // Extract number of shards from final merged settings, defaulting to 1 if not specified
         int numberOfShards = extractNumberOfShards(finalSettings);
         
-        // Extract number of replicas from final merged settings, defaulting to 1 if not specified
-        int numberOfReplicas = extractNumberOfReplicas(finalSettings);
-        
-        // Create shard replica count list based on actual settings
-        List<Integer> shardReplicaCount = new ArrayList<>();
-        for (int i = 0; i < numberOfShards; i++) {
-            shardReplicaCount.add(numberOfReplicas);
-        }
+        // Extract shard replica count: prefer num_replicas_per_shard if present, otherwise use number_of_replicas
+        List<Integer> shardReplicaCount = extractShardReplicaCount(finalSettings, numberOfShards);
         
         log.info("CreateIndex - Using {} shards with replica count: {}", numberOfShards, shardReplicaCount);
+        
+        // Extract shard groups allocate count: prefer num_groups_per_shard if present, otherwise fallback to shardReplicaCount
+        List<Integer> shardGroupsAllocateCount = extractShardGroupsAllocateCount(finalSettings, numberOfShards, shardReplicaCount);
+        
+        log.info("CreateIndex - Using {} shards with groups allocate count: {}", numberOfShards, shardGroupsAllocateCount);
         
         // Create the new Index configuration
         Index newIndex = new Index();
@@ -133,10 +132,7 @@ public class IndexManager {
         newIndex.setSettings(new IndexSettings());
         newIndex.getSettings().setNumberOfShards(numberOfShards);
         newIndex.getSettings().setShardReplicaCount(shardReplicaCount);
-        
-        // TODO: Allow explicit configuration of shardGroupsAllocateCount from createIndexRequest
-        // For now, default to same values as shardReplicaCount (e.g., if replicas=[5,5,5], groups=[5,5,5])
-        newIndex.getSettings().setShardGroupsAllocateCount(new ArrayList<>(shardReplicaCount));
+        newIndex.getSettings().setShardGroupsAllocateCount(shardGroupsAllocateCount);
         
         // Store the index configuration
         String indexConfigJson = objectMapper.writeValueAsString(newIndex);
@@ -378,6 +374,119 @@ public class IndexManager {
     }
 
     /**
+     * Extract the shard replica count list from the settings map.
+     * Prefers num_replicas_per_shard if present, otherwise falls back to number_of_replicas.
+     * Returns a list with default value of 1 per shard if not specified or if parsing fails.
+     */
+    private List<Integer> extractShardReplicaCount(Map<String, Object> settings, int numberOfShards) {
+        List<Integer> result = new ArrayList<>();
+        
+        if (settings == null || settings.isEmpty()) {
+            log.debug("No settings provided, using default replica count of 1 for all shards");
+            for (int i = 0; i < numberOfShards; i++) {
+                result.add(1);
+            }
+            return result;
+        }
+        
+        // Try to extract num_replicas_per_shard first (list of integers)
+        try {
+            Object replicasPerShardObj = settings.get("num_replicas_per_shard");
+            if (replicasPerShardObj != null) {
+                if (replicasPerShardObj instanceof List) {
+                    @SuppressWarnings("unchecked")
+                    List<Object> replicasPerShardList = (List<Object>) replicasPerShardObj;
+                    
+                    // Convert to List<Integer> and validate length
+                    for (int i = 0; i < numberOfShards; i++) {
+                        if (i < replicasPerShardList.size() && replicasPerShardList.get(i) != null) {
+                            int replicaCount = ((Number) replicasPerShardList.get(i)).intValue();
+                            result.add(replicaCount);
+                        } else {
+                            // If list is shorter than numberOfShards, use default value of 1 for missing entries
+                            log.warn("num_replicas_per_shard list is shorter than number_of_shards. Using default value of 1 for shard {}", i);
+                            result.add(1);
+                        }
+                    }
+                    
+                    if (replicasPerShardList.size() > numberOfShards) {
+                        log.warn("num_replicas_per_shard list is longer than number_of_shards. Ignoring extra entries.");
+                    }
+                    
+                    log.debug("Extracted num_replicas_per_shard from settings: {}", result);
+                    return result;
+                } else {
+                    log.warn("num_replicas_per_shard is not a list, ignoring it and falling back to number_of_replicas");
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract num_replicas_per_shard from settings, falling back to number_of_replicas. Error: {}", e.getMessage());
+        }
+        
+        // Fallback to number_of_replicas (single integer, repeat for all shards)
+        int numberOfReplicas = extractNumberOfReplicas(settings);
+        for (int i = 0; i < numberOfShards; i++) {
+            result.add(numberOfReplicas);
+        }
+        
+        log.debug("Using number_of_replicas (repeated for all shards): {}", result);
+        return result;
+    }
+
+    /**
+     * Extract the shard groups allocate count list from the settings map.
+     * Prefers num_groups_per_shard if present, otherwise falls back to shardReplicaCount.
+     * Returns a list with values from shardReplicaCount if not specified or if parsing fails.
+     */
+    private List<Integer> extractShardGroupsAllocateCount(Map<String, Object> settings, int numberOfShards, List<Integer> shardReplicaCount) {
+        List<Integer> result = new ArrayList<>();
+        
+        if (settings == null || settings.isEmpty()) {
+            log.debug("No settings provided, using shardReplicaCount for groups allocate count: {}", shardReplicaCount);
+            return new ArrayList<>(shardReplicaCount);
+        }
+        
+        // Try to extract num_groups_per_shard first (list of integers)
+        try {
+            Object groupsPerShardObj = settings.get("num_groups_per_shard");
+            if (groupsPerShardObj != null) {
+                if (groupsPerShardObj instanceof List) {
+                    @SuppressWarnings("unchecked")
+                    List<Object> groupsPerShardList = (List<Object>) groupsPerShardObj;
+                    
+                    // Convert to List<Integer> and validate length
+                    for (int i = 0; i < numberOfShards; i++) {
+                        if (i < groupsPerShardList.size() && groupsPerShardList.get(i) != null) {
+                            int groupCount = ((Number) groupsPerShardList.get(i)).intValue();
+                            result.add(groupCount);
+                        } else {
+                            // If list is shorter than numberOfShards, use value from shardReplicaCount
+                            int fallbackValue = (i < shardReplicaCount.size()) ? shardReplicaCount.get(i) : 1;
+                            log.warn("num_groups_per_shard list is shorter than number_of_shards. Using fallback value {} from shardReplicaCount for shard {}", fallbackValue, i);
+                            result.add(fallbackValue);
+                        }
+                    }
+                    
+                    if (groupsPerShardList.size() > numberOfShards) {
+                        log.warn("num_groups_per_shard list is longer than number_of_shards. Ignoring extra entries.");
+                    }
+                    
+                    log.debug("Extracted num_groups_per_shard from settings: {}", result);
+                    return result;
+                } else {
+                    log.warn("num_groups_per_shard is not a list, ignoring it and falling back to shardReplicaCount");
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to extract num_groups_per_shard from settings, falling back to shardReplicaCount. Error: {}", e.getMessage());
+        }
+        
+        // Fallback to shardReplicaCount
+        log.debug("Using shardReplicaCount for groups allocate count: {}", shardReplicaCount);
+        return new ArrayList<>(shardReplicaCount);
+    }
+
+    /**
      * Merge two IndexSettings objects, with the second object's values taking precedence.
      * Only non-null fields from newSettings are applied to oldSettings.
      */
@@ -406,6 +515,11 @@ public class IndexManager {
         if (newSettings.getShardReplicaCount() != null) {
             oldSettings.setShardReplicaCount(newSettings.getShardReplicaCount());
             log.debug("Updating shard_replica_count");
+        }
+        
+        if (newSettings.getShardGroupsAllocateCount() != null) {
+            oldSettings.setShardGroupsAllocateCount(newSettings.getShardGroupsAllocateCount());
+            log.debug("Updating shard_groups_allocate_count");
         }
         
         if (newSettings.getPausePullIngestion() != null) {

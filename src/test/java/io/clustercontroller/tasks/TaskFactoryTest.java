@@ -49,7 +49,7 @@ class TaskFactoryTest {
         
         Task task = TaskFactory.createTask(metadata);
         
-        assertThat(task).isInstanceOf(PlanShardAllocationTask.class);
+        assertThat(task).isInstanceOf(ShardAllocatorTask.class);
         assertThat(task.getName()).isEqualTo(TASK_ACTION_PLAN_SHARD_ALLOCATION);
     }
     
