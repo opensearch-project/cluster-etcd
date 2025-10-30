@@ -302,20 +302,19 @@ class ShardAllocatorTest {
         // Then - Should process all indexes and shards
         verify(metadataStore).getAllIndexConfigs(testClusterId);
         
-        // Should call getPlannedAllocation for each shard (6 shards * 2 calls per shard = 12 calls)
-        // Each shard calls getPlannedAllocation once in main loop and once in isRecentAllocation
-        verify(metadataStore, times(12)).getPlannedAllocation(anyString(), anyString(), anyString());
+        // Should call getPlannedAllocation for each shard (6 shards * 1 call per shard = 6 calls)
+        verify(metadataStore, times(6)).getPlannedAllocation(anyString(), anyString(), anyString());
         
         // Should call setPlannedAllocation for each shard (6 calls)
         verify(metadataStore, times(6)).setPlannedAllocation(anyString(), anyString(), anyString(), any(ShardAllocation.class));
         
-        // Verify specific index/shard combinations were processed (each called twice: main loop + isRecentAllocation)
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index1", "0");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index1", "1");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index2", "0");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index3", "0");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index3", "1");
-        verify(metadataStore, times(2)).getPlannedAllocation(testClusterId, "index3", "2");
+        // Verify specific index/shard combinations were processed
+        verify(metadataStore, times(1)).getPlannedAllocation(testClusterId, "index1", "0");
+        verify(metadataStore, times(1)).getPlannedAllocation(testClusterId, "index1", "1");
+        verify(metadataStore, times(1)).getPlannedAllocation(testClusterId, "index2", "0");
+        verify(metadataStore, times(1)).getPlannedAllocation(testClusterId, "index3", "0");
+        verify(metadataStore, times(1)).getPlannedAllocation(testClusterId, "index3", "1");
+        verify(metadataStore, times(1)).getPlannedAllocation(testClusterId, "index3", "2");
     }
 
     private SearchUnit createSearchUnit(String nodeId, String role) {
