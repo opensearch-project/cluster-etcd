@@ -190,13 +190,7 @@ public class ShardAllocator {
                                             Index indexConfig, int replicaCount, AllocationStrategy strategy, 
                                             List<SearchUnit> allNodes, ShardAllocation currentPlanned) {
         try {
-            // Check if allocation is recent (within threshold) - only for replicas
             String shardIdStr = String.valueOf(shardId);
-            if (isRecentAllocation(clusterId, indexName, shardIdStr)) {
-                log.debug("Skipping replica allocation for shard {}/{} - recent allocation", indexName, shardId);
-                // Return current planned search nodes if recent
-                return (currentPlanned != null) ? currentPlanned.getSearchSUs() : List.of();
-            }
             
             // Get eligible search nodes
             List<SearchUnit> eligibleSearchNodes = allocationDecisionEngine
