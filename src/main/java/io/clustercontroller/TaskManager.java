@@ -126,6 +126,9 @@ public class TaskManager {
             // 3. Goal State Orchestrator - orchestrates goal states to search units
             ensureRecurringTask(TASK_ACTION_GOAL_STATE_ORCHESTRATOR, 3, "Orchestrate goal states to search units");
             
+            // 4. Actual Allocation Updater - aggregates actual states into actual allocations and coordinator routing
+            ensureRecurringTask(TASK_ACTION_ACTUAL_ALLOCATION_UPDATER, 4, "Update actual allocations and coordinator goal states");
+            
             log.info("[Cluster: {}] Successfully bootstrapped recurring tasks", clusterName);
         } catch (Exception e) {
             log.error("[Cluster: {}] Failed to bootstrap recurring tasks: {}", clusterName, e.getMessage(), e);

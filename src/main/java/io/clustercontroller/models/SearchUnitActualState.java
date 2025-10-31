@@ -169,5 +169,13 @@ public class SearchUnitActualState {
             this.state = state;
             this.relocating = false;
         }
+        
+        /**
+         * Check if this shard is a primary shard
+         * @return true if role is "primary", false otherwise
+         */
+        public boolean isPrimary() {
+            return role != null && Constants.ROLE_PRIMARY.equalsIgnoreCase(role);
+        }
     }
 } 

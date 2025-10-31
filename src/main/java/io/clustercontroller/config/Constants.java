@@ -40,6 +40,8 @@ public final class Constants {
     public static final String PATH_TEMPLATES = "templates";
     public static final String PATH_COORDINATORS = "coordinators";
     public static final String PATH_LEADER_ELECTION = "leader-election";
+    // Default coordinator unit name for coordinator goal state path
+    public static final String COORDINATOR_DEFAULT_UNIT = "default-coordinator";
     
     // etcd path suffixes
     public static final String SUFFIX_CONF = "conf";
@@ -78,4 +80,8 @@ public final class Constants {
     public static final String LEVEL_INDICES = "indices";
     public static final String LEVEL_SHARDS = "shards";
     public static final String LEVEL_CLUSTER = "cluster";
+
+    // Shard/Node role string constants (as reported in actual state payloads)
+    public static final String ROLE_PRIMARY = "primary";
+    public static final String ROLE_SEARCH_REPLICA = "search_replica";
 }

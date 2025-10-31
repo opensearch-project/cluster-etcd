@@ -108,8 +108,8 @@ class EtcdPathResolverTest {
 
     @Test
     void testGetCoordinatorGoalStatePath() {
-        String path = pathResolver.getCoordinatorGoalStatePath(testClusterName);
-        assertThat(path).isEqualTo("/test-cluster/coordinators/goal-state");
+        String path = pathResolver.getCoordinatorGoalStatePath(testClusterName, "coordinators", "default-coordinator");
+        assertThat(path).isEqualTo("/test-cluster/coordinators/default-coordinator/goal-state");
     }
 
     @Test

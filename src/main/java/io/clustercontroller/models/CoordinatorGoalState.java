@@ -78,18 +78,14 @@ public class CoordinatorGoalState {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class IndexShardRouting {
         /**
-         * Optional UUID for the index. If not provided, index name is used as UUID.
-         */
-        @JsonProperty("uuid")
-        private String uuid;
-        
-        /**
          * Array of shard replicas, where each element is an array of node assignments
          * Each inner array represents all replicas for that shard number
          */
         @JsonProperty("shard_routing")
         private List<List<ShardNodeAssignment>> shardRouting;
     }
+    
+    
     
     /**
      * Node assignment for a specific shard replica
