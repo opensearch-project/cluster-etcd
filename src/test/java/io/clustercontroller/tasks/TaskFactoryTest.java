@@ -44,12 +44,13 @@ class TaskFactoryTest {
     }
     
     @Test
-    void testPlanShardAllocationTask() {
+    void testPlanShardAllocationTask_BecomesUnknownTask() {
         TaskMetadata metadata = new TaskMetadata(TASK_ACTION_PLAN_SHARD_ALLOCATION, 6);
         
         Task task = TaskFactory.createTask(metadata);
         
-        assertThat(task).isInstanceOf(PlanShardAllocationTask.class);
+        // TASK_ACTION_PLAN_SHARD_ALLOCATION is no longer supported, should become UnknownTask
+        assertThat(task).isInstanceOf(UnknownTask.class);
         assertThat(task.getName()).isEqualTo(TASK_ACTION_PLAN_SHARD_ALLOCATION);
     }
     
