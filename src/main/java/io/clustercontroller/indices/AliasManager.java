@@ -1,7 +1,14 @@
 package io.clustercontroller.indices;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.clustercontroller.models.CoordinatorGoalState;
 import io.clustercontroller.store.MetadataStore;
 import lombok.extern.slf4j.Slf4j;
+
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Manages index alias operations with multi-cluster support.
@@ -11,34 +18,185 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 public class AliasManager {
+    private static final ObjectMapper objectMapper = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
     private final MetadataStore metadataStore;
 
     public AliasManager(MetadataStore metadataStore) {
         this.metadataStore = metadataStore;
     }
-
+    
+    /**
+     * Creates an alias that points to one or more indices
+     * This is called from the API handler
+     * 
+     * @param clusterId The cluster ID
+     * @param aliasName The alias name
+     * @param indexName The index name (or comma-separated list)
+     * @param aliasConfig Optional alias configuration
+     * @throws Exception if alias creation fails
+     */
+    public void createAlias(String clusterId, String aliasName, String indexName, String aliasConfig) throws Exception {
+        log.info("AliasManager - Creating alias '{}' for index '{}' in cluster '{}'", aliasName, indexName, clusterId);
+        
+        // Parse target indices from the indexName parameter (could be comma-separated)
+        List<String> targetIndices = Arrays.stream(indexName.split(","))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .collect(Collectors.toList());
+        
+        log.info("AliasManager - Parsed alias name: {}, target indices: {}", aliasName, targetIndices);
+        
+        validateAliasName(aliasName);
+        validateTargetIndices(clusterId, targetIndices);
+        
+        CoordinatorGoalState goalState = getOrCreateCoordinatorGoalState(clusterId);
+        if (targetIndices.size() == 1) {
+            goalState.getRemoteShards().getAliases().put(aliasName, targetIndices.get(0));
+        } else {
+            goalState.getRemoteShards().getAliases().put(aliasName, targetIndices);
+        }
+        saveCoordinatorGoalState(clusterId, goalState);
+        
+        log.info("AliasManager - Successfully created alias '{}' pointing to {} indices: {}", 
+                   aliasName, targetIndices.size(), targetIndices);
+    }
+    
+    /**
+     * Deletes an alias from the coordinator goal state
+     * 
+     * @param clusterId The cluster ID
+     * @param aliasName The alias name
+     * @param indexName The index name (optional, for API compatibility)
+     * @throws Exception if alias deletion fails
+     */
+    public void deleteAlias(String clusterId, String aliasName, String indexName) throws Exception {
+        log.info("AliasManager - Deleting alias '{}' from cluster '{}'", aliasName, clusterId);
+        
+        validateAliasName(aliasName);
+        CoordinatorGoalState goalState = metadataStore.getCoordinatorGoalState(clusterId);
+        if (goalState == null) {
+            log.warn("AliasManager - No coordinator goal state found, nothing to delete");
+            return;
+        }
+        
+        if (!goalState.getRemoteShards().getAliases().containsKey(aliasName)) {
+            log.warn("AliasManager - Alias '{}' does not exist, nothing to delete", aliasName);
+            return;
+        }
+        goalState.getRemoteShards().getAliases().remove(aliasName);
+        saveCoordinatorGoalState(clusterId, goalState);
+        
+        log.info("AliasManager - Successfully deleted alias '{}'", aliasName);
+    }
+    
+    /**
+     * Get alias information
+     */
+    public String getAlias(String clusterId, String aliasName) throws Exception {
+        log.info("AliasManager - Getting alias '{}' from cluster '{}'", aliasName, clusterId);
+        
+        CoordinatorGoalState goalState = metadataStore.getCoordinatorGoalState(clusterId);
+        if (goalState == null) {
+            throw new Exception("No coordinator goal state found for cluster '" + clusterId + "'");
+        }
+        
+        Map<String, Object> aliases = goalState.getRemoteShards().getAliases();
+        
+        if (!aliases.containsKey(aliasName)) {
+            throw new Exception("Alias '" + aliasName + "' not found in cluster '" + clusterId + "'");
+        }
+        
+        // Return as JSON
+        Map<String, Object> response = new HashMap<>();
+        response.put(aliasName, aliases.get(aliasName));
+        return objectMapper.writeValueAsString(response);
+    }
+    
+    /**
+     * Check if alias exists
+     */
     public boolean aliasExists(String clusterId, String aliasName) {
-        log.info("Checking if alias '{}' exists in cluster '{}'", aliasName, clusterId);
-        // TODO: Implement alias existence check - use clusterId
-        throw new UnsupportedOperationException("Alias existence check not yet implemented");
+        log.info("AliasManager - Checking if alias '{}' exists in cluster '{}'", aliasName, clusterId);
+        try {
+            CoordinatorGoalState goalState = metadataStore.getCoordinatorGoalState(clusterId);
+            if (goalState == null) {
+                return false;
+            }
+            return goalState.getRemoteShards().getAliases().containsKey(aliasName);
+        } catch (Exception e) {
+            log.error("AliasManager - Error checking if alias exists: {}", e.getMessage());
+            return false;
+        }
     }
-
-    public void createAlias(String clusterId, String aliasName, String indexName, String aliasConfig) {
-        log.info("Creating alias '{}' for index '{}' in cluster '{}' with config: {}", aliasName, indexName, clusterId, aliasConfig);
-        // TODO: Implement alias creation logic - use clusterId
-        throw new UnsupportedOperationException("Alias creation not yet implemented");
+    
+    // =================================================================
+    // VALIDATION METHODS
+    // =================================================================
+    
+    /**
+     * Helper method to validate alias name
+     */
+    private void validateAliasName(String aliasName) throws Exception {
+        if (aliasName == null || aliasName.trim().isEmpty()) {
+            throw new Exception("Alias name cannot be null or empty");
+        }
+        
+        if (aliasName.contains(" ")) {
+            throw new Exception("Alias name cannot contain spaces");
+        }
     }
-
-    public void deleteAlias(String clusterId, String aliasName, String indexName) {
-        log.info("Deleting alias '{}' from index '{}' in cluster '{}'", aliasName, indexName, clusterId);
-        // TODO: Implement alias deletion logic - use clusterId
-        throw new UnsupportedOperationException("Alias deletion not yet implemented");
+    
+    /**
+     * Helper method to validate target indices
+     */
+    private void validateTargetIndices(String clusterId, List<String> targetIndices) throws Exception {
+        if (targetIndices == null || targetIndices.isEmpty()) {
+            throw new Exception("Target indices cannot be null or empty");
+        }
+        
+        // Validate that all target indices exist
+        for (String targetIndex : targetIndices) {
+            if (targetIndex == null || targetIndex.trim().isEmpty()) {
+                throw new Exception("Target index cannot be null or empty");
+            }
+            if (!metadataStore.getIndexConfig(clusterId, targetIndex).isPresent()) {
+                throw new Exception("Target index '" + targetIndex + "' does not exist in cluster '" + clusterId + "'");
+            }
+        }
     }
-
-    public String getAlias(String clusterId, String aliasName) {
-        log.info("Getting alias information for '{}' from cluster '{}'", aliasName, clusterId);
-        // TODO: Implement get alias logic - use clusterId
-        throw new UnsupportedOperationException("Get alias not yet implemented");
+    
+    // =================================================================
+    // COORDINATOR GOAL STATE METHODS
+    // =================================================================
+    
+    /**
+     * Helper method to get or create coordinator goal state
+     */
+    private CoordinatorGoalState getOrCreateCoordinatorGoalState(String clusterId) throws Exception {
+        CoordinatorGoalState goalState = metadataStore.getCoordinatorGoalState(clusterId);
+        
+        if (goalState != null) {
+            return goalState;
+        } else {
+            goalState = new CoordinatorGoalState();
+            log.info("AliasManager - Created new coordinator goal state for cluster '{}'", clusterId);
+            return goalState;
+        }
+    }
+    
+    /**
+     * Helper method to save coordinator goal state to etcd
+     */
+    private void saveCoordinatorGoalState(String clusterId, CoordinatorGoalState goalState) throws Exception {
+        try {
+            metadataStore.setCoordinatorGoalState(clusterId, goalState);
+            log.info("AliasManager - Saved coordinator goal state for cluster '{}'", clusterId);
+        } catch (Exception e) {
+            log.error("AliasManager - Failed to save coordinator goal state: {}", e.getMessage(), e);
+            throw new Exception("Failed to save coordinator goal state: " + e.getMessage(), e);
+        }
     }
 }

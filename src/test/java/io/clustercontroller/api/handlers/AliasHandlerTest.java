@@ -85,7 +85,7 @@ class AliasHandlerTest {
     }
 
     @Test
-    void testDeleteAlias_Success() {
+    void testDeleteAlias_Success() throws Exception {
         // Given
         String index = "test-index";
         String alias = "test-alias";
@@ -107,7 +107,7 @@ class AliasHandlerTest {
     }
 
     @Test
-    void testGetAlias_NotImplemented() {
+    void testGetAlias_NotImplemented() throws Exception {
         // Given
         String alias = "test-alias";
         when(aliasManager.getAlias(anyString(), anyString()))
