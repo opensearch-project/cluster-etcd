@@ -2,6 +2,7 @@ package io.clustercontroller.indices;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.clustercontroller.models.CoordinatorGoalState;
+import io.clustercontroller.models.Alias;
 import io.clustercontroller.store.MetadataStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,12 +48,20 @@ public class AliasManagerTest {
         
         // Mock empty goal state initially
         when(metadataStore.getCoordinatorGoalState(testClusterId)).thenReturn(null);
+        doNothing().when(metadataStore).setAlias(eq(testClusterId), eq(aliasName), any(Alias.class));
         doNothing().when(metadataStore).setCoordinatorGoalState(eq(testClusterId), any(CoordinatorGoalState.class));
         
         // Act
         aliasManager.createAlias(testClusterId, aliasName, indexName, aliasConfig);
         
-        // Assert
+        // Assert - verify alias is stored
+        verify(metadataStore).setAlias(eq(testClusterId), eq(aliasName),
+            argThat(alias -> {
+                return aliasName.equals(alias.getAliasName()) &&
+                       indexName.equals(alias.getTargetIndices());
+            }));
+        
+        // Assert - verify coordinator goal state is updated
         verify(metadataStore).setCoordinatorGoalState(eq(testClusterId),
             argThat(goalState -> {
                 Map<String, Object> aliases = goalState.getRemoteShards().getAliases();
@@ -70,12 +79,21 @@ public class AliasManagerTest {
         
         // Mock empty goal state initially
         when(metadataStore.getCoordinatorGoalState(testClusterId)).thenReturn(null);
+        doNothing().when(metadataStore).setAlias(eq(testClusterId), eq(aliasName), any(Alias.class));
         doNothing().when(metadataStore).setCoordinatorGoalState(eq(testClusterId), any(CoordinatorGoalState.class));
         
         // Act
         aliasManager.createAlias(testClusterId, aliasName, indexName, aliasConfig);
         
-        // Assert
+        // Assert - verify alias is stored
+        verify(metadataStore).setAlias(eq(testClusterId), eq(aliasName),
+            argThat(alias -> {
+                return aliasName.equals(alias.getAliasName()) &&
+                       alias.getTargetIndices() instanceof List &&
+                       ((List<?>) alias.getTargetIndices()).containsAll(Arrays.asList("test-monday", "test-tuesday"));
+            }));
+        
+        // Assert - verify coordinator goal state is updated
         verify(metadataStore).setCoordinatorGoalState(eq(testClusterId),
             argThat(goalState -> {
                 Map<String, Object> aliases = goalState.getRemoteShards().getAliases();

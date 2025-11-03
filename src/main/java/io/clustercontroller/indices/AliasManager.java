@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.clustercontroller.models.CoordinatorGoalState;
+import io.clustercontroller.models.Alias;
 import io.clustercontroller.store.MetadataStore;
 import lombok.extern.slf4j.Slf4j;
 
@@ -52,16 +53,20 @@ public class AliasManager {
         validateAliasName(aliasName);
         validateTargetIndices(clusterId, targetIndices);
         
+        // Store alias configuration for persistence and rebuilding
+        Object targetValue = targetIndices.size() == 1 ? targetIndices.get(0) : targetIndices;
+        Alias alias = new Alias(aliasName, targetValue);
+        metadataStore.setAlias(clusterId, aliasName, alias);
+        log.info("AliasManager - Stored alias config for '{}'", aliasName);
+        
+        // Immediately update coordinator goal state for instant availability
+        // (ActualAllocationUpdater will rebuild periodically as backup)
         CoordinatorGoalState goalState = getOrCreateCoordinatorGoalState(clusterId);
-        if (targetIndices.size() == 1) {
-            goalState.getRemoteShards().getAliases().put(aliasName, targetIndices.get(0));
-        } else {
-            goalState.getRemoteShards().getAliases().put(aliasName, targetIndices);
-        }
+        goalState.getRemoteShards().getAliases().put(aliasName, targetValue);
         saveCoordinatorGoalState(clusterId, goalState);
         
         log.info("AliasManager - Successfully created alias '{}' pointing to {} indices: {}", 
-                   aliasName, targetIndices.size(), targetIndices);
+                 aliasName, targetIndices.size(), targetIndices);
     }
     
     /**
@@ -76,18 +81,18 @@ public class AliasManager {
         log.info("AliasManager - Deleting alias '{}' from cluster '{}'", aliasName, clusterId);
         
         validateAliasName(aliasName);
-        CoordinatorGoalState goalState = metadataStore.getCoordinatorGoalState(clusterId);
-        if (goalState == null) {
-            log.warn("AliasManager - No coordinator goal state found, nothing to delete");
-            return;
-        }
         
-        if (!goalState.getRemoteShards().getAliases().containsKey(aliasName)) {
-            log.warn("AliasManager - Alias '{}' does not exist, nothing to delete", aliasName);
-            return;
+        // Delete alias from storage
+        metadataStore.deleteAlias(clusterId, aliasName);
+        log.info("AliasManager - Deleted alias config for '{}'", aliasName);
+        
+        // Immediately remove from coordinator goal state
+        // (ActualAllocationUpdater will rebuild periodically as backup)
+        CoordinatorGoalState goalState = metadataStore.getCoordinatorGoalState(clusterId);
+        if (goalState != null && goalState.getRemoteShards().getAliases().containsKey(aliasName)) {
+            goalState.getRemoteShards().getAliases().remove(aliasName);
+            saveCoordinatorGoalState(clusterId, goalState);
         }
-        goalState.getRemoteShards().getAliases().remove(aliasName);
-        saveCoordinatorGoalState(clusterId, goalState);
         
         log.info("AliasManager - Successfully deleted alias '{}'", aliasName);
     }

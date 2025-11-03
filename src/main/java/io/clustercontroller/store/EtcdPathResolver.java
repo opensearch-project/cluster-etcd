@@ -128,6 +128,26 @@ public class EtcdPathResolver {
     }
     
     // =================================================================
+    // ALIAS PATHS
+    // =================================================================
+    
+    /**
+     * Get prefix for all aliases
+     * Pattern: /<cluster-name>/aliases
+     */
+    public String getAliasesPrefix(String clusterName) {
+        return Paths.get(PATH_DELIMITER, clusterName, "aliases").toString();
+    }
+    
+    /**
+     * Get alias configuration path
+     * Pattern: /<cluster-name>/aliases/<alias-name>/conf
+     */
+    public String getAliasConfPath(String clusterName, String aliasName) {
+        return Paths.get(getAliasesPrefix(clusterName), aliasName, SUFFIX_CONF).toString();
+    }
+    
+    // =================================================================
     // TEMPLATE PATHS
     // =================================================================
     
