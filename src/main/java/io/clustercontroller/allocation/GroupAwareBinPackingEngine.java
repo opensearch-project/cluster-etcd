@@ -2,8 +2,6 @@ package io.clustercontroller.allocation;
 
 import io.clustercontroller.allocation.deciders.AllocationDecider;
 import io.clustercontroller.allocation.deciders.HealthDecider;
-import io.clustercontroller.allocation.deciders.RoleDecider;
-import io.clustercontroller.allocation.deciders.ShardPoolDecider;
 import io.clustercontroller.enums.Decision;
 import io.clustercontroller.enums.NodeRole;
 import io.clustercontroller.models.Index;
@@ -24,12 +22,16 @@ import java.util.stream.Collectors;
  * Strategy:
  * - For REPLICA allocation:
  *   - Uses GroupManager to discover replica groups (fixed sets of 3-5 nodes)
- *   - Allocates hot shards to the least loaded group (bin-packing)
- *   - Applies: HealthDecider, RoleDecider (NOT ShardPoolDecider - group logic replaces it)
+ *   - Allocates shards to groups using RandomGroupSelectionStrategy
+ *   - Returns ALL nodes from selected groups
+ *   - Applies: HealthDecider only (role/pool handled by group filtering)
  * 
- * - For PRIMARY allocation:
- *   - Falls back to standard decider-based allocation
- *   - Applies: RoleDecider, ShardPoolDecider, HealthDecider
+ * - For PRIMARY allocation (NEW - Ingester Bin-Packing):
+ *   - Uses GroupManager to discover PRIMARY groups
+ *   - Selects N groups using RandomGroupSelectionStrategy (N from config)
+ *   - Picks EXACTLY ONE node per group using IngesterNodeSelector
+ *   - Applies: HealthDecider, ZoneAntiAffinityDecider (best-effort)
+ *   - Supports stable allocation (avoids reallocation if already correctly allocated)
  * 
  * Note: This engine does NOT support RESPECT_REPLICA_COUNT strategy.
  * Only USE_ALL_AVAILABLE_NODES is supported.
@@ -38,33 +40,33 @@ import java.util.stream.Collectors;
 public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
     
     private final GroupManager groupManager;
-    
-    // Deciders for PRIMARY allocation (standard decider-based)
-    // TODO: When group-aware bin packing is implemented for PRIMARY, change to only HealthDecider
-    //       This ensures hot shards are allocated to a new GROUP, not scattered across nodes.
-    private final List<AllocationDecider> primaryDeciders;
+    private IngesterNodeSelector ingesterNodeSelector;
     
     // Deciders for REPLICA allocation (group-based, only health check)
     private final List<AllocationDecider> replicaDeciders;
     
     public GroupAwareBinPackingEngine() {
-        // TODO: Make selection strategy configurable via properties
-        // For now, use Random strategy (NOT YET IMPLEMENTED)
-        GroupSelectionStrategy selectionStrategy = new RandomGroupSelectionStrategy();
-        this.groupManager = new GroupManager(selectionStrategy);
+        // Group selection: Random strategy for both PRIMARY and REPLICA
+        GroupSelectionStrategy groupSelectionStrategy = new RandomGroupSelectionStrategy();
+        this.groupManager = new GroupManager(groupSelectionStrategy);
+        
+        // Ingester node selection: Random strategy (picks ONE node per group for PRIMARY)
+        IngesterNodeSelectionStrategy ingesterNodeSelectionStrategy = 
+            new RandomIngesterNodeSelectionStrategy();
+        this.ingesterNodeSelector = new IngesterNodeSelector(ingesterNodeSelectionStrategy);
         
         // Initialize deciders
         HealthDecider healthDecider = new HealthDecider();
         
-        // PRIMARY uses all standard deciders (for now)
-        this.primaryDeciders = List.of(
-            new RoleDecider(),
-            new ShardPoolDecider(),
-            healthDecider
-        );
-        
         // REPLICA only uses HealthDecider (role/pool handled by group filtering)
         this.replicaDeciders = List.of(healthDecider);
+    }
+    
+    /**
+     * Setter for IngesterNodeSelector (for testing purposes).
+     */
+    public void setIngesterNodeSelector(IngesterNodeSelector ingesterNodeSelector) {
+        this.ingesterNodeSelector = ingesterNodeSelector;
     }
     
     @Override
@@ -78,8 +80,8 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
     ) {
         
         if (targetRole == NodeRole.PRIMARY) {
-            // PRIMARY allocation: use standard decider-based approach
-            return getPrimaryNodesForAllocation(shardId, indexName, allNodes);
+            // PRIMARY allocation: use group-based bin-packing with ingester node selection
+            return getPrimaryNodesForAllocation(shardId, indexName, indexConfig, allNodes, currentPlanned);
         } else {
             // REPLICA allocation: use group-based bin-packing with stable allocation
             return getReplicaNodesForAllocation(shardId, indexName, indexConfig, allNodes, targetRole, currentPlanned);
@@ -87,37 +89,175 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
     }
     
     /**
-     * Get eligible nodes for PRIMARY allocation using standard deciders.
+     * Get eligible nodes for PRIMARY allocation using group-based bin-packing.
      * 
-     * Applies: RoleDecider, ShardPoolDecider, HealthDecider
+     * Returns EXACTLY ONE node per selected group (via IngesterNodeSelector).
      * 
-     * TODO: Change to group-aware bin packing (same as REPLICA flow)
+     * Flow:
+     * 1. Check stable allocation (if already has N ingesters → keep them)
+     * 2. Get desired group count from config (default: 1 for single-writer)
+     * 3. Discover and filter PRIMARY groups
+     * 4. Select N groups using RandomGroupSelectionStrategy
+     * 5. Pick EXACTLY ONE node per group using IngesterNodeSelector
+     *    - Applies HealthDecider
+     *    - Applies ZoneAntiAffinityDecider (best-effort for multi-writer)
+     *    - Uses RandomIngesterNodeSelectionStrategy
+     * 6. Return N nodes (1 per group)
      */
-    private List<SearchUnit> getPrimaryNodesForAllocation(int shardId, String indexName, List<SearchUnit> allNodes) {
-        List<SearchUnit> selectedNodes = new ArrayList<>();
+    private List<SearchUnit> getPrimaryNodesForAllocation(
+        int shardId,
+        String indexName,
+        Index indexConfig,
+        List<SearchUnit> allNodes,
+        ShardAllocation currentPlanned
+    ) {
         String shardIdStr = String.valueOf(shardId);
         
-        for (SearchUnit node : allNodes) {
-            boolean canAllocate = true;
+        // Step 1: Stable allocation check
+        List<String> currentIngestSUs = getCurrentIngestersFromPlannedAllocation(currentPlanned);
+        int desiredGroupCount = getDesiredIngestGroupCount(indexConfig, shardId);
+        
+        if (currentIngestSUs.size() == desiredGroupCount && !currentIngestSUs.isEmpty()) {
+            log.info("PRIMARY allocation for shard {}/{}: already has {} ingester(s) - checking stability", 
+                    indexName, shardId, currentIngestSUs.size());
             
-            for (AllocationDecider decider : primaryDeciders) {
-                Decision decision = decider.canAllocate(shardIdStr, node, indexName, NodeRole.PRIMARY);
-                if (decision == Decision.NO) {
-                    canAllocate = false;
-                    break;
-                }
-            }
-            
-            if (canAllocate) {
-                selectedNodes.add(node);
+            List<SearchUnit> existingNodes = validateExistingIngesters(currentIngestSUs, allNodes);
+            if (existingNodes.size() == desiredGroupCount) {
+                log.info("PRIMARY allocation for shard {}/{}: all ingesters healthy - stable allocation", 
+                        indexName, shardId);
+                return existingNodes;
+            } else {
+                log.warn("PRIMARY allocation for shard {}/{}: some ingesters unhealthy - reallocating", 
+                        indexName, shardId);
             }
         }
         
-        log.debug("PRIMARY allocation for shard {}/{}: {} eligible nodes", 
-                 indexName, shardId, selectedNodes.size());
+        // Step 2: Discover and filter PRIMARY groups
+        List<NodesGroup> allGroups = groupManager.discoverGroups(allNodes);
+        if (allGroups.isEmpty()) {
+            log.error("PRIMARY allocation for shard {}/{}: no groups discovered. Allocation failed.", 
+                    indexName, shardId);
+            return List.of();
+        }
+        
+        List<NodesGroup> primaryGroups = groupManager.filterGroupsByRole(allGroups, NodeRole.PRIMARY);
+        if (primaryGroups.isEmpty()) {
+            log.error("PRIMARY allocation for shard {}/{}: no PRIMARY groups found. Allocation failed.", 
+                    indexName, shardId);
+            return List.of();
+        }
+        
+        log.debug("PRIMARY allocation for shard {}/{}: discovered {} PRIMARY groups", 
+                 indexName, shardId, primaryGroups.size());
+        
+        // Step 3: Select N groups using RandomGroupSelectionStrategy
+        List<NodesGroup> selectedGroups = groupManager.selectGroups(
+            primaryGroups, 
+            NodeRole.PRIMARY, 
+            desiredGroupCount
+        );
+        
+        if (selectedGroups.isEmpty()) {
+            log.error("PRIMARY allocation for shard {}/{}: group selection failed. Allocation failed.", 
+                    indexName, shardId);
+            return List.of();
+        }
+        
+        if (selectedGroups.size() < desiredGroupCount) {
+            log.warn("PRIMARY allocation for shard {}/{}: could only select {}/{} groups", 
+                    indexName, shardId, selectedGroups.size(), desiredGroupCount);
+        }
+        
+        log.info("PRIMARY allocation for shard {}/{}: selected {} group(s) from {} available", 
+                indexName, shardId, selectedGroups.size(), primaryGroups.size());
+        
+        // Step 4: Pick EXACTLY ONE node per group using IngesterNodeSelector
+        // ZoneAntiAffinityDecider is always applied - it automatically handles single-writer case
+        List<SearchUnit> selectedNodes = new ArrayList<>();
+        Set<String> usedZones = new HashSet<>();
+        
+        for (NodesGroup group : selectedGroups) {
+            SearchUnit selectedNode = ingesterNodeSelector.selectNodeFromGroup(
+                group,
+                shardIdStr,
+                indexName,
+                usedZones
+            );
+            
+            if (selectedNode != null) {
+                selectedNodes.add(selectedNode);
+                if (selectedNode.getZone() != null) {
+                    usedZones.add(selectedNode.getZone());
+                }
+                
+                log.info("PRIMARY allocation for shard {}/{}: selected node {} from group {} (zone={})", 
+                        indexName, shardId, selectedNode.getName(), 
+                        group.getGroupId(), selectedNode.getZone());
+            } else {
+                log.warn("PRIMARY allocation for shard {}/{}: no node selected from group {}", 
+                        indexName, shardId, group.getGroupId());
+            }
+        }
+        
+        if (selectedNodes.isEmpty()) {
+            log.error("PRIMARY allocation for shard {}/{}: no nodes selected. Allocation failed.", 
+                    indexName, shardId);
+        }
         
         return selectedNodes;
     }
+    
+    /**
+     * Get desired number of ingester groups for a shard.
+     * 
+     * @return Number of groups (default: 1 for single-writer)
+     */
+    private int getDesiredIngestGroupCount(Index indexConfig, int shardId) {
+        // Default: 1 group per shard (single writer)
+        int desiredGroupCount = 1;
+        
+        if (indexConfig != null && indexConfig.getSettings() != null 
+            && indexConfig.getSettings().getIngestGroupsAllocateCount() != null 
+            && shardId < indexConfig.getSettings().getIngestGroupsAllocateCount().size()) {
+            desiredGroupCount = indexConfig.getSettings().getIngestGroupsAllocateCount().get(shardId);
+        }
+        
+        log.debug("Desired ingester group count for shard {}: {}", shardId, desiredGroupCount);
+        return desiredGroupCount;
+    }
+    
+    /**
+     * Get current ingesters from planned allocation.
+     */
+    private List<String> getCurrentIngestersFromPlannedAllocation(ShardAllocation currentPlanned) {
+        if (currentPlanned == null || currentPlanned.getIngestSUs() == null) {
+            return List.of();
+        }
+        return currentPlanned.getIngestSUs();
+    }
+    
+    /**
+     * Validate existing ingesters are still healthy.
+     */
+    private List<SearchUnit> validateExistingIngesters(List<String> ingesterNames, List<SearchUnit> allNodes) {
+        List<SearchUnit> validNodes = new ArrayList<>();
+        
+        for (String nodeName : ingesterNames) {
+            SearchUnit node = allNodes.stream()
+                .filter(n -> n.getName().equals(nodeName))
+                .findFirst()
+                .orElse(null);
+            
+            if (node != null && node.getStatePulled() == io.clustercontroller.enums.HealthState.GREEN) {
+                validNodes.add(node);
+            } else {
+                log.warn("PRIMARY allocation: ingester {} is unhealthy or missing", nodeName);
+            }
+        }
+        
+        return validNodes;
+    }
+    
     
     /**
      * Get eligible nodes for REPLICA allocation using group-based bin-packing with stable allocation.

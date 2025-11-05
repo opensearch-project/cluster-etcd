@@ -148,23 +148,26 @@ public class ShardAllocator {
     }
     
     /**
-     * Plan IngestSU allocation (primary allocation)
+     * Plan IngestSU allocation (primary allocation).
+     * 
+     * Supports both single-writer (default) and multi-writer configurations.
+     * The desired number of ingesters is determined by ingestGroupsAllocateCount config.
      */
     private List<String> planIngestAllocation(String clusterId, String indexName, int shardId, 
                                             Index indexConfig, List<SearchUnit> allNodes, ShardAllocation currentPlanned) {
         try {
-            List<String> currentIngestSUs = (currentPlanned != null) ? currentPlanned.getIngestSUs() : List.of();
+            // Get desired number of ingesters from config (default: 1 for single-writer)
+            int desiredIngestCount = getDesiredIngestGroupCount(indexConfig, shardId);
             
-            // Get eligible ingest nodes
+            // Get eligible ingest nodes from allocation engine
             List<SearchUnit> eligibleIngestNodes = allocationDecisionEngine
                 .getAvailableNodesForAllocation(shardId, indexName, indexConfig, allNodes, NodeRole.PRIMARY, currentPlanned);
             
-            // Validate single writer constraint - fatal if current OR eligible has more than 1
-            if (currentIngestSUs.size() > 1 || eligibleIngestNodes.size() > 1) {
-                log.error("Multiple IngestSUs detected for shard {}/{} - Current: {}, Eligible: {}. " +
-                         "This violates single writer constraint.", indexName, shardId, currentIngestSUs,
-                         eligibleIngestNodes.stream().map(SearchUnit::getName).collect(java.util.stream.Collectors.toList()));
-                // TODO: Add alert/notification for multiple IngestSUs violation
+            // Validate: should not exceed desired count
+            if (eligibleIngestNodes.size() > desiredIngestCount) {
+                log.error("Too many IngestSUs ({}) for shard {}/{} - expected {}. Allocation constraint violated.",
+                         eligibleIngestNodes.size(), indexName, shardId, desiredIngestCount);
+                // TODO: Add alert/notification for constraint violation
                 return null;
             }
             
@@ -173,14 +176,38 @@ public class ShardAllocator {
                 return List.of();
             }
             
-            // TODO: Use algorithm to pick a leader out of multiple ingester nodes
-            // For now, just pick the first eligible node
-            return List.of(eligibleIngestNodes.get(0).getName());
+            // Return all eligible nodes (allocation engine already selected the correct number)
+            List<String> selectedIngesters = eligibleIngestNodes.stream()
+                .map(SearchUnit::getName)
+                .collect(java.util.stream.Collectors.toList());
+            
+            log.debug("IngestSU allocation for shard {}/{}: selected {} ingester(s) (desired: {})", 
+                     indexName, shardId, selectedIngesters.size(), desiredIngestCount);
+            
+            return selectedIngesters;
             
         } catch (Exception e) {
             log.error("Failed to plan IngestSU allocation for shard {}/{}: {}", indexName, shardId, e.getMessage(), e);
             return null;
         }
+    }
+    
+    /**
+     * Get desired number of ingester groups for a shard.
+     * 
+     * @return Number of ingesters (default: 1 for single-writer)
+     */
+    private int getDesiredIngestGroupCount(Index indexConfig, int shardId) {
+        // Default: 1 ingester per shard (single writer)
+        int desiredCount = 1;
+        
+        if (indexConfig != null && indexConfig.getSettings() != null 
+            && indexConfig.getSettings().getIngestGroupsAllocateCount() != null 
+            && shardId < indexConfig.getSettings().getIngestGroupsAllocateCount().size()) {
+            desiredCount = indexConfig.getSettings().getIngestGroupsAllocateCount().get(shardId);
+        }
+        
+        return desiredCount;
     }
     
     /**
