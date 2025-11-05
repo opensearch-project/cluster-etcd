@@ -1310,25 +1310,27 @@ class ShardAllocatorTest {
         when(metadataStore.getPlannedAllocation(testClusterId, "multi-writer-index", "0"))
             .thenReturn(null);
         
-        // Given: Multiple PRIMARY groups with different zones (for zone anti-affinity)
-        // PRIMARY Group 0: 3 nodes in us-east-1
-        // PRIMARY Group 1: 3 nodes in us-west-2
-        // PRIMARY Group 2: 3 nodes in eu-west-1
+        // Given: Multiple PRIMARY groups with MIXED zones (for realistic zone anti-affinity testing)
+        // Each PRIMARY group has nodes in DIFFERENT zones (not all in same zone)
+        // This validates that zone anti-affinity actually selects nodes from different zones
+        // PRIMARY Group 0: nodes in us-east-1, us-west-2, eu-west-1
+        // PRIMARY Group 1: nodes in us-east-1, us-west-2, eu-west-1
+        // PRIMARY Group 2: nodes in us-east-1, us-west-2, eu-west-1
         // REPLICA Groups: A, B (for searchers)
         List<SearchUnit> allNodes = Arrays.asList(
-            // PRIMARY Group 0 (shard pool ID "0", zone "us-east-1")
+            // PRIMARY Group 0 (shard pool ID "0") - MIXED zones
             createHealthyPrimaryNodeWithZone("primary-pool-0-a", "0", "us-east-1"),
-            createHealthyPrimaryNodeWithZone("primary-pool-0-b", "0", "us-east-1"),
-            createHealthyPrimaryNodeWithZone("primary-pool-0-c", "0", "us-east-1"),
+            createHealthyPrimaryNodeWithZone("primary-pool-0-b", "0", "us-west-2"),
+            createHealthyPrimaryNodeWithZone("primary-pool-0-c", "0", "eu-west-1"),
             
-            // PRIMARY Group 1 (shard pool ID "1", zone "us-west-2")
-            createHealthyPrimaryNodeWithZone("primary-pool-1-a", "1", "us-west-2"),
+            // PRIMARY Group 1 (shard pool ID "1") - MIXED zones
+            createHealthyPrimaryNodeWithZone("primary-pool-1-a", "1", "us-east-1"),
             createHealthyPrimaryNodeWithZone("primary-pool-1-b", "1", "us-west-2"),
-            createHealthyPrimaryNodeWithZone("primary-pool-1-c", "1", "us-west-2"),
+            createHealthyPrimaryNodeWithZone("primary-pool-1-c", "1", "eu-west-1"),
             
-            // PRIMARY Group 2 (shard pool ID "2", zone "eu-west-1")
-            createHealthyPrimaryNodeWithZone("primary-pool-2-a", "2", "eu-west-1"),
-            createHealthyPrimaryNodeWithZone("primary-pool-2-b", "2", "eu-west-1"),
+            // PRIMARY Group 2 (shard pool ID "2") - MIXED zones
+            createHealthyPrimaryNodeWithZone("primary-pool-2-a", "2", "us-east-1"),
+            createHealthyPrimaryNodeWithZone("primary-pool-2-b", "2", "us-west-2"),
             createHealthyPrimaryNodeWithZone("primary-pool-2-c", "2", "eu-west-1"),
             
             // REPLICA Groups (for searchers)
@@ -1383,16 +1385,19 @@ class ShardAllocatorTest {
                 
                 // ========== ZONE ANTI-AFFINITY VALIDATION ==========
                 
-                // Map nodes to zones
+                // Map nodes to zones (now with MIXED zones per group)
                 java.util.Map<String, String> nodeToZone = new java.util.HashMap<>();
+                // Group 0 nodes spread across zones
                 nodeToZone.put("primary-pool-0-a", "us-east-1");
-                nodeToZone.put("primary-pool-0-b", "us-east-1");
-                nodeToZone.put("primary-pool-0-c", "us-east-1");
-                nodeToZone.put("primary-pool-1-a", "us-west-2");
+                nodeToZone.put("primary-pool-0-b", "us-west-2");
+                nodeToZone.put("primary-pool-0-c", "eu-west-1");
+                // Group 1 nodes spread across zones
+                nodeToZone.put("primary-pool-1-a", "us-east-1");
                 nodeToZone.put("primary-pool-1-b", "us-west-2");
-                nodeToZone.put("primary-pool-1-c", "us-west-2");
-                nodeToZone.put("primary-pool-2-a", "eu-west-1");
-                nodeToZone.put("primary-pool-2-b", "eu-west-1");
+                nodeToZone.put("primary-pool-1-c", "eu-west-1");
+                // Group 2 nodes spread across zones
+                nodeToZone.put("primary-pool-2-a", "us-east-1");
+                nodeToZone.put("primary-pool-2-b", "us-west-2");
                 nodeToZone.put("primary-pool-2-c", "eu-west-1");
                 
                 String zone1 = nodeToZone.get(ingester1);
@@ -1407,9 +1412,10 @@ class ShardAllocatorTest {
                     .isNotNull();
                 
                 // Zone anti-affinity: prefer different zones (best effort)
-                // Since we have 3 zones available and need 2 ingesters, they SHOULD be in different zones
+                // With mixed zones per group, the ZoneAntiAffinityDecider should actively choose
+                // nodes from different zones when selecting from the 2 groups
                 assertThat(zone1)
-                    .as("Zone anti-affinity: With 3 zones available, 2 ingesters should be in different zones")
+                    .as("Zone anti-affinity: ZoneAntiAffinityDecider should select nodes in different zones when possible")
                     .isNotEqualTo(zone2);
                 
                 // ========== REPLICA VALIDATION ==========
