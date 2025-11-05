@@ -1293,4 +1293,156 @@ class ShardAllocatorTest {
             })
         );
     }
+
+    @Test
+    void testE2E_BinPacking_MultiWriter_WithZoneAntiAffinity() throws Exception {
+        // Given: ShardAllocator with REAL GroupAwareBinPackingEngine
+        ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
+        binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
+        
+        // Given: Index with multi-writer configuration (2 ingester groups per shard)
+        Index index = createIndex("multi-writer-index", Arrays.asList(3));
+        index.getSettings().setIngestGroupsAllocateCount(Arrays.asList(2));  // ← Multi-writer: 2 ingesters!
+        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2));    // 2 replica groups
+        when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
+        
+        // Given: No existing planned allocations
+        when(metadataStore.getPlannedAllocation(testClusterId, "multi-writer-index", "0"))
+            .thenReturn(null);
+        
+        // Given: Multiple PRIMARY groups with different zones (for zone anti-affinity)
+        // PRIMARY Group 0: 3 nodes in us-east-1
+        // PRIMARY Group 1: 3 nodes in us-west-2
+        // PRIMARY Group 2: 3 nodes in eu-west-1
+        // REPLICA Groups: A, B (for searchers)
+        List<SearchUnit> allNodes = Arrays.asList(
+            // PRIMARY Group 0 (shard pool ID "0", zone "us-east-1")
+            createHealthyPrimaryNodeWithZone("primary-pool-0-a", "0", "us-east-1"),
+            createHealthyPrimaryNodeWithZone("primary-pool-0-b", "0", "us-east-1"),
+            createHealthyPrimaryNodeWithZone("primary-pool-0-c", "0", "us-east-1"),
+            
+            // PRIMARY Group 1 (shard pool ID "1", zone "us-west-2")
+            createHealthyPrimaryNodeWithZone("primary-pool-1-a", "1", "us-west-2"),
+            createHealthyPrimaryNodeWithZone("primary-pool-1-b", "1", "us-west-2"),
+            createHealthyPrimaryNodeWithZone("primary-pool-1-c", "1", "us-west-2"),
+            
+            // PRIMARY Group 2 (shard pool ID "2", zone "eu-west-1")
+            createHealthyPrimaryNodeWithZone("primary-pool-2-a", "2", "eu-west-1"),
+            createHealthyPrimaryNodeWithZone("primary-pool-2-b", "2", "eu-west-1"),
+            createHealthyPrimaryNodeWithZone("primary-pool-2-c", "2", "eu-west-1"),
+            
+            // REPLICA Groups (for searchers)
+            createHealthyReplicaNode("replica-a-1", "group-a"),
+            createHealthyReplicaNode("replica-a-2", "group-a"),
+            createHealthyReplicaNode("replica-a-3", "group-a"),
+            createHealthyReplicaNode("replica-b-1", "group-b"),
+            createHealthyReplicaNode("replica-b-2", "group-b"),
+            createHealthyReplicaNode("replica-b-3", "group-b")
+        );
+        when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allNodes);
+        
+        // When: Plan allocation
+        binPackingShardAllocator.planShardAllocation(testClusterId, AllocationStrategy.USE_ALL_AVAILABLE_NODES);
+        
+        // Then: Verify multi-writer allocation with zone anti-affinity
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("multi-writer-index"),
+            eq("0"),
+            argThat(allocation -> {
+                // ========== INGESTER VALIDATION (Multi-Writer) ==========
+                
+                // Should have exactly 2 ingesters (multi-writer constraint)
+                assertThat(allocation.getIngestSUs())
+                    .as("Multi-writer: Should allocate exactly 2 ingesters")
+                    .hasSize(2);
+                
+                // Extract selected ingesters
+                List<String> selectedIngesters = allocation.getIngestSUs();
+                
+                // Verify both ingesters are from different PRIMARY groups
+                String ingester1 = selectedIngesters.get(0);
+                String ingester2 = selectedIngesters.get(1);
+                
+                // Extract group IDs (format: "primary-pool-{groupId}-{nodeId}")
+                String group1 = ingester1.split("-")[2];  // "0", "1", or "2"
+                String group2 = ingester2.split("-")[2];
+                
+                assertThat(group1)
+                    .as("Multi-writer: Ingesters should be from DIFFERENT PRIMARY groups")
+                    .isNotEqualTo(group2);
+                
+                // Verify ingesters are valid PRIMARY nodes from available groups
+                assertThat(ingester1)
+                    .as("Ingester 1 should be from a PRIMARY group")
+                    .matches("primary-pool-[0-2]-[a-c]");
+                
+                assertThat(ingester2)
+                    .as("Ingester 2 should be from a PRIMARY group")
+                    .matches("primary-pool-[0-2]-[a-c]");
+                
+                // ========== ZONE ANTI-AFFINITY VALIDATION ==========
+                
+                // Map nodes to zones
+                java.util.Map<String, String> nodeToZone = new java.util.HashMap<>();
+                nodeToZone.put("primary-pool-0-a", "us-east-1");
+                nodeToZone.put("primary-pool-0-b", "us-east-1");
+                nodeToZone.put("primary-pool-0-c", "us-east-1");
+                nodeToZone.put("primary-pool-1-a", "us-west-2");
+                nodeToZone.put("primary-pool-1-b", "us-west-2");
+                nodeToZone.put("primary-pool-1-c", "us-west-2");
+                nodeToZone.put("primary-pool-2-a", "eu-west-1");
+                nodeToZone.put("primary-pool-2-b", "eu-west-1");
+                nodeToZone.put("primary-pool-2-c", "eu-west-1");
+                
+                String zone1 = nodeToZone.get(ingester1);
+                String zone2 = nodeToZone.get(ingester2);
+                
+                assertThat(zone1)
+                    .as("Zone anti-affinity: Ingesters should be in DIFFERENT zones (preferred)")
+                    .isNotNull();
+                
+                assertThat(zone2)
+                    .as("Zone anti-affinity: Ingesters should be in DIFFERENT zones (preferred)")
+                    .isNotNull();
+                
+                // Zone anti-affinity: prefer different zones (best effort)
+                // Since we have 3 zones available and need 2 ingesters, they SHOULD be in different zones
+                assertThat(zone1)
+                    .as("Zone anti-affinity: With 3 zones available, 2 ingesters should be in different zones")
+                    .isNotEqualTo(zone2);
+                
+                // ========== REPLICA VALIDATION ==========
+                
+                // Should allocate to 2 replica groups
+                assertThat(allocation.getSearchSUs())
+                    .as("Should allocate to 2 replica groups × 3 nodes = 6 nodes")
+                    .hasSize(6);
+                
+                long distinctReplicaGroups = allocation.getSearchSUs().stream()
+                    .map(node -> node.split("-")[1])  // Extract group ID
+                    .distinct()
+                    .count();
+                
+                assertThat(distinctReplicaGroups)
+                    .as("Should have exactly 2 replica groups")
+                    .isEqualTo(2);
+                
+                return true;
+            })
+        );
+    }
+
+    // Helper method to create PRIMARY nodes with zones
+    private SearchUnit createHealthyPrimaryNodeWithZone(String name, String shardId, String zone) {
+        SearchUnit searchUnit = new SearchUnit();
+        searchUnit.setId(name);
+        searchUnit.setName(name);
+        searchUnit.setShardId(shardId);
+        searchUnit.setRole("PRIMARY");
+        searchUnit.setZone(zone);  // ← Set zone for anti-affinity
+        searchUnit.setStatePulled(HealthState.GREEN);
+        searchUnit.setStateAdmin("NORMAL");
+        return searchUnit;
+    }
 }
