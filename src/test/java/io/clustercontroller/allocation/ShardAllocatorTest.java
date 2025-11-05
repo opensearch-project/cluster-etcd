@@ -555,36 +555,52 @@ class ShardAllocatorTest {
         ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
         binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
         
-        // Given: Index with 2 shards, different group counts per shard
-        // Shard 0: 2 groups, Shard 1: 3 groups
-        Index index = createIndex("bp-stable", Arrays.asList(1, 1));  // Replica count IGNORED
-        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3)); // Shard 0: 2 groups, Shard 1: 3 groups
+        // Given: Index with 3 shards, different group counts per shard
+        // Shard 0: 2 groups, Shard 1: 3 groups, Shard 2: 2 groups
+        Index index = createIndex("bp-stable", Arrays.asList(1, 1, 1));  // Replica count IGNORED
+        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3, 2)); // Group counts per shard
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
         
-        // Given: Existing planned allocations for both shards
-        // Shard 0: allocated to 2 groups (group-a and group-b)
+        // Given: Existing planned allocations for 3 shards
+        // Test THREE scenarios with ONLY 2 PRIMARY nodes (demonstrates bin-packing reuse!):
+        // 1. Stable allocation: Shard 0 has existing healthy PRIMARY → should keep it
+        // 2. New allocation: Shard 1 has NO PRIMARY → should allocate from shared PRIMARY group
+        // 3. PRIMARY reuse: Shard 2 has NO PRIMARY → reuses one of the 2 PRIMARY nodes!
+        
+        // Shard 0: HAS existing PRIMARY (stable allocation test)
         ShardAllocation shard0Planned = new ShardAllocation("0", "bp-stable");
-        shard0Planned.setIngestSUs(Arrays.asList("primary-0"));
+        shard0Planned.setIngestSUs(Arrays.asList("primary-pool-0-a"));  // ← Existing PRIMARY
         shard0Planned.setSearchSUs(Arrays.asList("replica-a-1", "replica-a-2", "replica-b-1", "replica-b-2"));
         shard0Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
         
-        // Shard 1: allocated to 3 groups (group-d, group-e, group-f)
+        // Shard 1: NO PRIMARY yet (new allocation test)
         ShardAllocation shard1Planned = new ShardAllocation("1", "bp-stable");
-        shard1Planned.setIngestSUs(Arrays.asList("primary-1"));
+        shard1Planned.setIngestSUs(null);  // ← NO PRIMARY! Bin-packing should allocate one
         shard1Planned.setSearchSUs(Arrays.asList("replica-d-1", "replica-d-2", "replica-e-1", "replica-e-2", "replica-f-1", "replica-f-2"));
         shard1Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
+        
+        // Shard 2: NO PRIMARY yet (PRIMARY reuse test - with only 2 PRIMARY nodes, this must reuse one!)
+        ShardAllocation shard2Planned = new ShardAllocation("2", "bp-stable");
+        shard2Planned.setIngestSUs(null);  // ← NO PRIMARY! Must reuse from 2 available
+        shard2Planned.setSearchSUs(Arrays.asList("replica-h-1", "replica-h-2", "replica-i-1", "replica-i-2"));
+        shard2Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
         
         when(metadataStore.getPlannedAllocation(testClusterId, "bp-stable", "0"))
             .thenReturn(shard0Planned);
         when(metadataStore.getPlannedAllocation(testClusterId, "bp-stable", "1"))
             .thenReturn(shard1Planned);
+        when(metadataStore.getPlannedAllocation(testClusterId, "bp-stable", "2"))
+            .thenReturn(shard2Planned);
         
-        // Given: Multiple replica groups available for both shards
-        // Shard 0: group-a, group-b (allocated), group-c (available)
-        // Shard 1: group-d, group-e, group-f (allocated), group-g (available)
+        // Given: Single PRIMARY group with 2 nodes (shared across shards - bin-packing!)
+        // These same PRIMARY nodes can be reused for future shards (no shard affinity!)
+        // Multiple REPLICA groups for different shards
         List<SearchUnit> allNodes = Arrays.asList(
-            // Shard 0 nodes
-            createHealthyPrimaryNode("primary-0", "0"),
+            // PRIMARY Group 0 - SHARED across ALL shards (no shard affinity!)
+            createHealthyPrimaryNode("primary-pool-0-a", "0"),  // ✓ Currently used by Shard 0, reusable for future shards
+            createHealthyPrimaryNode("primary-pool-0-b", "0"),  // ✓ Currently used by Shard 1, reusable for future shards
+            
+            // REPLICA Groups for Shard 0
             createHealthyReplicaNode("replica-a-1", "group-a"),  // ✓ Shard 0 allocated
             createHealthyReplicaNode("replica-a-2", "group-a"),  // ✓ Shard 0 allocated
             createHealthyReplicaNode("replica-a-3", "group-a"),
@@ -595,8 +611,7 @@ class ShardAllocatorTest {
             createHealthyReplicaNode("replica-c-2", "group-c"),
             createHealthyReplicaNode("replica-c-3", "group-c"),
             
-            // Shard 1 nodes
-            createHealthyPrimaryNode("primary-1", "1"),
+            // REPLICA Groups for Shard 1
             createHealthyReplicaNode("replica-d-1", "group-d"),  // ✓ Shard 1 allocated
             createHealthyReplicaNode("replica-d-2", "group-d"),  // ✓ Shard 1 allocated
             createHealthyReplicaNode("replica-d-3", "group-d"),
@@ -608,22 +623,37 @@ class ShardAllocatorTest {
             createHealthyReplicaNode("replica-f-3", "group-f"),
             createHealthyReplicaNode("replica-g-1", "group-g"),  // ✗ Available but not needed
             createHealthyReplicaNode("replica-g-2", "group-g"),
-            createHealthyReplicaNode("replica-g-3", "group-g")
+            createHealthyReplicaNode("replica-g-3", "group-g"),
+            
+            // REPLICA Groups for Shard 2
+            createHealthyReplicaNode("replica-h-1", "group-h"),  // ✓ Shard 2 allocated
+            createHealthyReplicaNode("replica-h-2", "group-h"),  // ✓ Shard 2 allocated
+            createHealthyReplicaNode("replica-h-3", "group-h"),
+            createHealthyReplicaNode("replica-i-1", "group-i"),  // ✓ Shard 2 allocated
+            createHealthyReplicaNode("replica-i-2", "group-i"),  // ✓ Shard 2 allocated
+            createHealthyReplicaNode("replica-i-3", "group-i"),
+            createHealthyReplicaNode("replica-j-1", "group-j"),  // ✗ Available but not needed
+            createHealthyReplicaNode("replica-j-2", "group-j"),
+            createHealthyReplicaNode("replica-j-3", "group-j")
         );
         when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allNodes);
         
         // When: Plan allocation
         binPackingShardAllocator.planShardAllocation(testClusterId, AllocationStrategy.USE_ALL_AVAILABLE_NODES);
         
-        // Then: Verify Shard 0 - should keep existing allocation stable (2 groups)
+        // Then: Verify Shard 0 - should keep existing allocation stable (2 replica groups + PRIMARY)
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("bp-stable"),
             eq("0"),
             argThat(allocation -> {
-                // Single writer constraint
-                assertThat(allocation.getIngestSUs()).hasSize(1);
+                // ========== PRIMARY VALIDATION (Stable Allocation) ==========
+                assertThat(allocation.getIngestSUs())
+                    .as("Shard 0: Should keep existing PRIMARY node (stable allocation)")
+                    .hasSize(1)
+                    .containsExactly("primary-pool-0-a");  // ✅ Keeps same PRIMARY
                 
+                // ========== REPLICA VALIDATION ==========
                 // Should allocate to ALL 6 nodes from group-a and group-b (3 per group)
                 assertThat(allocation.getSearchSUs())
                     .as("Shard 0: Should use ALL nodes from 2 groups (stable allocation)")
@@ -641,15 +671,21 @@ class ShardAllocatorTest {
             })
         );
         
-        // Then: Verify Shard 1 - should keep existing allocation stable (3 groups)
+        // Then: Verify Shard 1 - should allocate NEW PRIMARY from shared group (3 replica groups + PRIMARY)
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("bp-stable"),
             eq("1"),
             argThat(allocation -> {
-                // Single writer constraint
-                assertThat(allocation.getIngestSUs()).hasSize(1);
+                // ========== PRIMARY VALIDATION (NEW Allocation from SHARED GROUP) ==========
+                assertThat(allocation.getIngestSUs())
+                    .as("Shard 1: Should allocate NEW PRIMARY from SHARED PRIMARY group (bin-packing)")
+                    .hasSize(1)
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .as("Should pick from shared PRIMARY group (could be primary-pool-0-a or primary-pool-0-b)")
+                        .isIn("primary-pool-0-a", "primary-pool-0-b"));  // ✅ Random from shared group
                 
+                // ========== REPLICA VALIDATION ==========
                 // Should allocate to ALL 9 nodes from group-d, group-e, and group-f (3 per group)
                 assertThat(allocation.getSearchSUs())
                     .as("Shard 1: Should use ALL nodes from 3 groups (stable allocation)")
@@ -663,6 +699,40 @@ class ShardAllocatorTest {
                 // Should NOT allocate to group-g
                 assertThat(allocation.getSearchSUs())
                     .noneMatch(node -> node.startsWith("replica-g-"));
+                
+                return true;
+            })
+        );
+        
+        // Then: Verify Shard 2 - demonstrates PRIMARY REUSE (only 2 PRIMARY nodes for 3 shards!)
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("bp-stable"),
+            eq("2"),
+            argThat(allocation -> {
+                // ========== PRIMARY VALIDATION (PRIMARY REUSE!) ==========
+                // With only 2 PRIMARY nodes and 3 shards, Shard 2 MUST reuse one of them!
+                // This demonstrates the power of bin-packing: no shard affinity needed
+                assertThat(allocation.getIngestSUs())
+                    .as("Shard 2: Should REUSE PRIMARY from shared group (only 2 PRIMARY nodes for 3 shards!)")
+                    .hasSize(1)
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .as("Must pick from the 2 available PRIMARY nodes (demonstrates PRIMARY reuse)")
+                        .isIn("primary-pool-0-a", "primary-pool-0-b"));  // ✅ Reuses one of the 2 PRIMARYs
+                
+                // ========== REPLICA VALIDATION ==========
+                // Should allocate to ALL 6 nodes from group-h and group-i (3 per group)
+                assertThat(allocation.getSearchSUs())
+                    .as("Shard 2: Should use ALL nodes from 2 groups")
+                    .hasSize(6)
+                    .containsExactlyInAnyOrder(
+                        "replica-h-1", "replica-h-2", "replica-h-3",
+                        "replica-i-1", "replica-i-2", "replica-i-3"
+                    );
+                
+                // Should NOT allocate to group-j
+                assertThat(allocation.getSearchSUs())
+                    .noneMatch(node -> node.startsWith("replica-j-"));
                 
                 return true;
             })
