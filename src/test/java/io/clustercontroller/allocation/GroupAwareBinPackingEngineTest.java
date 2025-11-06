@@ -246,22 +246,27 @@ class GroupAwareBinPackingEngineTest {
 
     @Test
     void testPrimaryAllocation_UsesStandardDeciders() {
-        // Given: Primary nodes with correct role and shard pool
-        // Note: ShardPoolDecider expects node.shardId to match the shard ID string
+        // Given: PRIMARY nodes in different groups (NO SHARD AFFINITY with bin-packing!)
+        // Group "0": primary-node-1, primary-node-2
+        // Group "1": primary-node-3
         List<SearchUnit> allNodes = new ArrayList<>();
-        allNodes.add(createPrimaryNode("primary-node-1", "0", HealthState.GREEN)); // Shard pool "0"
-        allNodes.add(createPrimaryNode("primary-node-2", "0", HealthState.GREEN)); // Shard pool "0"
-        allNodes.add(createPrimaryNode("primary-node-3", "1", HealthState.GREEN)); // Different pool
+        allNodes.add(createPrimaryNode("primary-node-1", "0", HealthState.GREEN)); // Group "0"
+        allNodes.add(createPrimaryNode("primary-node-2", "0", HealthState.GREEN)); // Group "0"
+        allNodes.add(createPrimaryNode("primary-node-3", "1", HealthState.GREEN)); // Group "1"
 
-        // When: Allocation engine runs for PRIMARY shard 0
+        // When: Allocation engine runs for PRIMARY shard 0 (defaults to single-writer = 1 ingester)
+        // With bin-packing: randomly selects 1 group, then 1 node from that group
+        // NO SHARD AFFINITY - can pick from ANY group!
         List<SearchUnit> result = engine.getAvailableNodesForAllocation(
             0, "test-index", null, allNodes, NodeRole.PRIMARY, null
         );
 
-        // Then: Should return primary nodes from correct shard pool
-        assertThat(result).hasSize(2);
-        assertThat(result).extracting(SearchUnit::getName)
-            .containsExactlyInAnyOrder("primary-node-1", "primary-node-2");
+        // Then: Should return 1 PRIMARY node (single-writer default)
+        // Can be from ANY group (no shard affinity!)
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getName())
+            .as("Bin-packing: Can select from ANY PRIMARY group (no shard affinity)")
+            .isIn("primary-node-1", "primary-node-2", "primary-node-3");  // Any PRIMARY node!
     }
 
     @Test

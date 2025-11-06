@@ -20,6 +20,9 @@ public class IndexSettings {
     
     @JsonProperty("shard_groups_allocate_count")
     private List<Integer> shardGroupsAllocateCount;
+    
+    @JsonProperty("ingest_groups_allocate_count")
+    private List<Integer> ingestGroupsAllocateCount;
 
     @JsonProperty("pause_pull_ingestion")
     private Boolean pausePullIngestion;

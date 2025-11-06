@@ -2,6 +2,7 @@ package io.clustercontroller.allocation;
 
 import io.clustercontroller.allocation.AllocationDecisionEngine;
 import io.clustercontroller.enums.HealthState;
+import io.clustercontroller.enums.NodeRole;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.ShardAllocation;
@@ -160,27 +161,32 @@ class ShardAllocatorTest {
         List<Index> indexConfigs = Arrays.asList(createIndex("index1", Arrays.asList(1)));
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(indexConfigs);
         
-        // Mock existing planned allocation with multiple IngestSUs (should cause error)
+        // Mock existing planned allocation with multiple IngestSUs (violates single-writer constraint)
         ShardAllocation currentAllocation = new ShardAllocation("0", "index1");
         currentAllocation.setIngestSUs(Arrays.asList("node1", "node2")); // Multiple IngestSUs!
         currentAllocation.setSearchSUs(Arrays.asList("node3"));
         when(metadataStore.getPlannedAllocation(anyString(), anyString(), anyString())).thenReturn(currentAllocation);
 
-        // Mock valid search nodes for SearchSU allocation
+        // Mock PRIMARY nodes (for reallocation) and REPLICA nodes
+        List<SearchUnit> eligiblePrimaryNodes = Arrays.asList(createSearchUnit("node4", "PRIMARY"));
         List<SearchUnit> eligibleSearchNodes = Arrays.asList(createSearchUnit("node4", "REPLICA"));
-        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), any(), any()))
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), eq(NodeRole.PRIMARY), any()))
+            .thenReturn(eligiblePrimaryNodes);
+        when(allocationDecisionEngine.getAvailableNodesForAllocation(anyInt(), anyString(), any(), anyList(), eq(NodeRole.REPLICA), any()))
             .thenReturn(eligibleSearchNodes);
 
         // When
         shardAllocator.planShardAllocation(testClusterId, AllocationStrategy.RESPECT_REPLICA_COUNT);
 
-        // Then - Should update planned allocation with SearchSUs even if current IngestSU allocation has multiple nodes
+        // Then - Should reallocate to single ingester (fixing the violation)
         verify(metadataStore).getAllIndexConfigs(testClusterId);
         verify(metadataStore, atLeastOnce()).getPlannedAllocation(anyString(), anyString(), anyString());
         verify(metadataStore).setPlannedAllocation(anyString(), anyString(), anyString(), argThat(allocation -> {
             ShardAllocation shardAllocation = (ShardAllocation) allocation;
-            // IngestSUs should be empty/null due to multiple IngestSUs error, but SearchSUs should be present
-            return (shardAllocation.getIngestSUs() == null || shardAllocation.getIngestSUs().isEmpty()) &&
+            // Should reallocate to a single ingester (fixing the multiple IngestSUs violation)
+            return shardAllocation.getIngestSUs() != null &&
+                   shardAllocation.getIngestSUs().size() == 1 &&
+                   shardAllocation.getIngestSUs().contains("node4") &&
                    !shardAllocation.getSearchSUs().isEmpty();
         }));
     }
@@ -549,36 +555,52 @@ class ShardAllocatorTest {
         ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
         binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
         
-        // Given: Index with 2 shards, different group counts per shard
-        // Shard 0: 2 groups, Shard 1: 3 groups
-        Index index = createIndex("bp-stable", Arrays.asList(1, 1));  // Replica count IGNORED
-        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3)); // Shard 0: 2 groups, Shard 1: 3 groups
+        // Given: Index with 3 shards, different group counts per shard
+        // Shard 0: 2 groups, Shard 1: 3 groups, Shard 2: 2 groups
+        Index index = createIndex("bp-stable", Arrays.asList(1, 1, 1));  // Replica count IGNORED
+        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3, 2)); // Group counts per shard
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
         
-        // Given: Existing planned allocations for both shards
-        // Shard 0: allocated to 2 groups (group-a and group-b)
+        // Given: Existing planned allocations for 3 shards
+        // Test THREE scenarios with ONLY 2 PRIMARY nodes (demonstrates bin-packing reuse!):
+        // 1. Stable allocation: Shard 0 has existing healthy PRIMARY → should keep it
+        // 2. New allocation: Shard 1 has NO PRIMARY → should allocate from shared PRIMARY group
+        // 3. PRIMARY reuse: Shard 2 has NO PRIMARY → reuses one of the 2 PRIMARY nodes!
+        
+        // Shard 0: HAS existing PRIMARY (stable allocation test)
         ShardAllocation shard0Planned = new ShardAllocation("0", "bp-stable");
-        shard0Planned.setIngestSUs(Arrays.asList("primary-0"));
+        shard0Planned.setIngestSUs(Arrays.asList("primary-pool-0-a"));  // ← Existing PRIMARY
         shard0Planned.setSearchSUs(Arrays.asList("replica-a-1", "replica-a-2", "replica-b-1", "replica-b-2"));
         shard0Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
         
-        // Shard 1: allocated to 3 groups (group-d, group-e, group-f)
+        // Shard 1: NO PRIMARY yet (new allocation test)
         ShardAllocation shard1Planned = new ShardAllocation("1", "bp-stable");
-        shard1Planned.setIngestSUs(Arrays.asList("primary-1"));
+        shard1Planned.setIngestSUs(null);  // ← NO PRIMARY! Bin-packing should allocate one
         shard1Planned.setSearchSUs(Arrays.asList("replica-d-1", "replica-d-2", "replica-e-1", "replica-e-2", "replica-f-1", "replica-f-2"));
         shard1Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
+        
+        // Shard 2: NO PRIMARY yet (PRIMARY reuse test - with only 2 PRIMARY nodes, this must reuse one!)
+        ShardAllocation shard2Planned = new ShardAllocation("2", "bp-stable");
+        shard2Planned.setIngestSUs(null);  // ← NO PRIMARY! Must reuse from 2 available
+        shard2Planned.setSearchSUs(Arrays.asList("replica-h-1", "replica-h-2", "replica-i-1", "replica-i-2"));
+        shard2Planned.setAllocationTimestamp(System.currentTimeMillis() - Duration.ofMinutes(10).toMillis());
         
         when(metadataStore.getPlannedAllocation(testClusterId, "bp-stable", "0"))
             .thenReturn(shard0Planned);
         when(metadataStore.getPlannedAllocation(testClusterId, "bp-stable", "1"))
             .thenReturn(shard1Planned);
+        when(metadataStore.getPlannedAllocation(testClusterId, "bp-stable", "2"))
+            .thenReturn(shard2Planned);
         
-        // Given: Multiple replica groups available for both shards
-        // Shard 0: group-a, group-b (allocated), group-c (available)
-        // Shard 1: group-d, group-e, group-f (allocated), group-g (available)
+        // Given: Single PRIMARY group with 2 nodes (shared across shards - bin-packing!)
+        // These same PRIMARY nodes can be reused for future shards (no shard affinity!)
+        // Multiple REPLICA groups for different shards
         List<SearchUnit> allNodes = Arrays.asList(
-            // Shard 0 nodes
-            createHealthyPrimaryNode("primary-0", "0"),
+            // PRIMARY Group 0 - SHARED across ALL shards (no shard affinity!)
+            createHealthyPrimaryNode("primary-pool-0-a", "0"),  // ✓ Currently used by Shard 0, reusable for future shards
+            createHealthyPrimaryNode("primary-pool-0-b", "0"),  // ✓ Currently used by Shard 1, reusable for future shards
+            
+            // REPLICA Groups for Shard 0
             createHealthyReplicaNode("replica-a-1", "group-a"),  // ✓ Shard 0 allocated
             createHealthyReplicaNode("replica-a-2", "group-a"),  // ✓ Shard 0 allocated
             createHealthyReplicaNode("replica-a-3", "group-a"),
@@ -589,8 +611,7 @@ class ShardAllocatorTest {
             createHealthyReplicaNode("replica-c-2", "group-c"),
             createHealthyReplicaNode("replica-c-3", "group-c"),
             
-            // Shard 1 nodes
-            createHealthyPrimaryNode("primary-1", "1"),
+            // REPLICA Groups for Shard 1
             createHealthyReplicaNode("replica-d-1", "group-d"),  // ✓ Shard 1 allocated
             createHealthyReplicaNode("replica-d-2", "group-d"),  // ✓ Shard 1 allocated
             createHealthyReplicaNode("replica-d-3", "group-d"),
@@ -602,22 +623,37 @@ class ShardAllocatorTest {
             createHealthyReplicaNode("replica-f-3", "group-f"),
             createHealthyReplicaNode("replica-g-1", "group-g"),  // ✗ Available but not needed
             createHealthyReplicaNode("replica-g-2", "group-g"),
-            createHealthyReplicaNode("replica-g-3", "group-g")
+            createHealthyReplicaNode("replica-g-3", "group-g"),
+            
+            // REPLICA Groups for Shard 2
+            createHealthyReplicaNode("replica-h-1", "group-h"),  // ✓ Shard 2 allocated
+            createHealthyReplicaNode("replica-h-2", "group-h"),  // ✓ Shard 2 allocated
+            createHealthyReplicaNode("replica-h-3", "group-h"),
+            createHealthyReplicaNode("replica-i-1", "group-i"),  // ✓ Shard 2 allocated
+            createHealthyReplicaNode("replica-i-2", "group-i"),  // ✓ Shard 2 allocated
+            createHealthyReplicaNode("replica-i-3", "group-i"),
+            createHealthyReplicaNode("replica-j-1", "group-j"),  // ✗ Available but not needed
+            createHealthyReplicaNode("replica-j-2", "group-j"),
+            createHealthyReplicaNode("replica-j-3", "group-j")
         );
         when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allNodes);
         
         // When: Plan allocation
         binPackingShardAllocator.planShardAllocation(testClusterId, AllocationStrategy.USE_ALL_AVAILABLE_NODES);
         
-        // Then: Verify Shard 0 - should keep existing allocation stable (2 groups)
+        // Then: Verify Shard 0 - should keep existing allocation stable (2 replica groups + PRIMARY)
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("bp-stable"),
             eq("0"),
             argThat(allocation -> {
-                // Single writer constraint
-                assertThat(allocation.getIngestSUs()).hasSize(1);
+                // ========== PRIMARY VALIDATION (Stable Allocation) ==========
+                assertThat(allocation.getIngestSUs())
+                    .as("Shard 0: Should keep existing PRIMARY node (stable allocation)")
+                    .hasSize(1)
+                    .containsExactly("primary-pool-0-a");  // ✅ Keeps same PRIMARY
                 
+                // ========== REPLICA VALIDATION ==========
                 // Should allocate to ALL 6 nodes from group-a and group-b (3 per group)
                 assertThat(allocation.getSearchSUs())
                     .as("Shard 0: Should use ALL nodes from 2 groups (stable allocation)")
@@ -635,15 +671,21 @@ class ShardAllocatorTest {
             })
         );
         
-        // Then: Verify Shard 1 - should keep existing allocation stable (3 groups)
+        // Then: Verify Shard 1 - should allocate NEW PRIMARY from shared group (3 replica groups + PRIMARY)
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("bp-stable"),
             eq("1"),
             argThat(allocation -> {
-                // Single writer constraint
-                assertThat(allocation.getIngestSUs()).hasSize(1);
+                // ========== PRIMARY VALIDATION (NEW Allocation from SHARED GROUP) ==========
+                assertThat(allocation.getIngestSUs())
+                    .as("Shard 1: Should allocate NEW PRIMARY from SHARED PRIMARY group (bin-packing)")
+                    .hasSize(1)
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .as("Should pick from shared PRIMARY group (could be primary-pool-0-a or primary-pool-0-b)")
+                        .isIn("primary-pool-0-a", "primary-pool-0-b"));  // ✅ Random from shared group
                 
+                // ========== REPLICA VALIDATION ==========
                 // Should allocate to ALL 9 nodes from group-d, group-e, and group-f (3 per group)
                 assertThat(allocation.getSearchSUs())
                     .as("Shard 1: Should use ALL nodes from 3 groups (stable allocation)")
@@ -657,6 +699,40 @@ class ShardAllocatorTest {
                 // Should NOT allocate to group-g
                 assertThat(allocation.getSearchSUs())
                     .noneMatch(node -> node.startsWith("replica-g-"));
+                
+                return true;
+            })
+        );
+        
+        // Then: Verify Shard 2 - demonstrates PRIMARY REUSE (only 2 PRIMARY nodes for 3 shards!)
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("bp-stable"),
+            eq("2"),
+            argThat(allocation -> {
+                // ========== PRIMARY VALIDATION (PRIMARY REUSE!) ==========
+                // With only 2 PRIMARY nodes and 3 shards, Shard 2 MUST reuse one of them!
+                // This demonstrates the power of bin-packing: no shard affinity needed
+                assertThat(allocation.getIngestSUs())
+                    .as("Shard 2: Should REUSE PRIMARY from shared group (only 2 PRIMARY nodes for 3 shards!)")
+                    .hasSize(1)
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .as("Must pick from the 2 available PRIMARY nodes (demonstrates PRIMARY reuse)")
+                        .isIn("primary-pool-0-a", "primary-pool-0-b"));  // ✅ Reuses one of the 2 PRIMARYs
+                
+                // ========== REPLICA VALIDATION ==========
+                // Should allocate to ALL 6 nodes from group-h and group-i (3 per group)
+                assertThat(allocation.getSearchSUs())
+                    .as("Shard 2: Should use ALL nodes from 2 groups")
+                    .hasSize(6)
+                    .containsExactlyInAnyOrder(
+                        "replica-h-1", "replica-h-2", "replica-h-3",
+                        "replica-i-1", "replica-i-2", "replica-i-3"
+                    );
+                
+                // Should NOT allocate to group-j
+                assertThat(allocation.getSearchSUs())
+                    .noneMatch(node -> node.startsWith("replica-j-"));
                 
                 return true;
             })
@@ -955,9 +1031,13 @@ class ShardAllocatorTest {
 
     @Test
     void testE2E_BinPacking_MultipleIndexes_InitialAllocation() throws Exception {
-        // Given: ShardAllocator with REAL GroupAwareBinPackingEngine
+        // Given: ShardAllocator with REAL GroupAwareBinPackingEngine using seeded random for deterministic tests
         ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
-        binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
+        GroupAwareBinPackingEngine engine = new GroupAwareBinPackingEngine();
+        // Use seeded random (seed=100) for deterministic node selection in tests
+        IngesterNodeSelector seededSelector = new IngesterNodeSelector(new RandomIngesterNodeSelectionStrategy(100L));
+        engine.setIngesterNodeSelector(seededSelector);
+        binPackingShardAllocator.setAllocationDecisionEngine(engine);
         
         // Given: 2 indexes with multiple shards, different group configurations
         // Index1: 2 shards → Shard 0: 2 groups, Shard 1: 3 groups
@@ -1010,16 +1090,17 @@ class ShardAllocatorTest {
         // When: Plan allocation
         binPackingShardAllocator.planShardAllocation(testClusterId, AllocationStrategy.USE_ALL_AVAILABLE_NODES);
         
-        // Then: Verify Index1 Shard 0 - should select 2 groups and use shared primary
+        // Then: Verify Index1 Shard 0 - should select 2 groups, random primary selection with seed=100
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("multi-index1"),
             eq("0"),
             argThat(allocation -> {
                 assertThat(allocation.getIngestSUs())
-                    .as("Index1 Shard 0: Single writer constraint, uses shared pool")
+                    .as("Index1 Shard 0: Single writer constraint, random selection with seed=100")
                     .hasSize(1)
-                    .containsExactly("primary-pool-0");  // Shared with Index2 Shard 0
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .isIn("primary-pool-0", "primary-pool-1"));  // Random selection from available primaries
                 
                 assertThat(allocation.getSearchSUs())
                     .as("Index1 Shard 0: Should allocate to 2 groups × 3 nodes = 6 nodes")
@@ -1037,16 +1118,17 @@ class ShardAllocatorTest {
             })
         );
         
-        // Then: Verify Index1 Shard 1 - should select 3 groups and use shared primary
+        // Then: Verify Index1 Shard 1 - should select 3 groups, random primary selection with seed=100
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("multi-index1"),
             eq("1"),
             argThat(allocation -> {
                 assertThat(allocation.getIngestSUs())
-                    .as("Index1 Shard 1: Single writer constraint, uses shared pool")
+                    .as("Index1 Shard 1: Single writer constraint, random selection with seed=100")
                     .hasSize(1)
-                    .containsExactly("primary-pool-1");  // Shared with Index2 Shard 1
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .isIn("primary-pool-0", "primary-pool-1"));  // Random selection from available primaries
                 
                 assertThat(allocation.getSearchSUs())
                     .as("Index1 Shard 1: Should allocate to 3 groups × 3 nodes = 9 nodes")
@@ -1064,16 +1146,17 @@ class ShardAllocatorTest {
             })
         );
         
-        // Then: Verify Index2 Shard 0 - should select 1 group and use same primary as Index1 Shard 0
+        // Then: Verify Index2 Shard 0 - should select 1 group, independent random primary selection
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("multi-index2"),
             eq("0"),
             argThat(allocation -> {
                 assertThat(allocation.getIngestSUs())
-                    .as("Index2 Shard 0: Single writer constraint, shares pool with Index1 Shard 0")
+                    .as("Index2 Shard 0: Single writer constraint, random selection")
                     .hasSize(1)
-                    .containsExactly("primary-pool-0");  // Same PRIMARY as Index1 Shard 0
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .isIn("primary-pool-0", "primary-pool-1"));  // Random selection from available primaries
                 
                 assertThat(allocation.getSearchSUs())
                     .as("Index2 Shard 0: Should allocate to 1 group × 3 nodes = 3 nodes")
@@ -1091,16 +1174,17 @@ class ShardAllocatorTest {
             })
         );
         
-        // Then: Verify Index2 Shard 1 - should select 2 groups and use same primary as Index1 Shard 1
+        // Then: Verify Index2 Shard 1 - should select 2 groups, independent random primary selection
         verify(metadataStore).setPlannedAllocation(
             eq(testClusterId),
             eq("multi-index2"),
             eq("1"),
             argThat(allocation -> {
                 assertThat(allocation.getIngestSUs())
-                    .as("Index2 Shard 1: Single writer constraint, shares pool with Index1 Shard 1")
+                    .as("Index2 Shard 1: Single writer constraint, random selection")
                     .hasSize(1)
-                    .containsExactly("primary-pool-1");  // Same PRIMARY as Index1 Shard 1
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .isIn("primary-pool-0", "primary-pool-1"));  // Random selection from available primaries
                 
                 assertThat(allocation.getSearchSUs())
                     .as("Index2 Shard 1: Should allocate to 2 groups × 3 nodes = 6 nodes")
@@ -1121,7 +1205,7 @@ class ShardAllocatorTest {
 
     @Test
     void testE2E_BinPacking_RespectsGroupCount_IgnoresReplicaCount() throws Exception {
-        // Given: ShardAllocator with REAL GroupAwareBinPackingEngine
+        // Given: ShardAllocator with REAL GroupAwareBinPackingEngine (random ingester selection)
         ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
         binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
         
@@ -1186,10 +1270,13 @@ class ShardAllocatorTest {
             eq("test-groups-replicas"),
             eq("0"),
             argThat(allocation -> {
+                // Single writer constraint - random selection from available PRIMARY nodes
                 assertThat(allocation.getIngestSUs())
-                    .as("Shard 0: Single writer constraint")
+                    .as("Shard 0: Single writer constraint, random ingester selection")
                     .hasSize(1)
-                    .containsExactly("primary-0");
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .as("Should select one PRIMARY node")
+                        .isIn("primary-0", "primary-1", "primary-2"));  // Accept any PRIMARY (random selection)
                 
                 // Should use ALL nodes from 1 group (5 nodes), ignoring replica count of 2
                 // Verify group count: all nodes should be from the same group
@@ -1216,10 +1303,13 @@ class ShardAllocatorTest {
             eq("test-groups-replicas"),
             eq("1"),
             argThat(allocation -> {
+                // Single writer constraint - random selection from available PRIMARY nodes
                 assertThat(allocation.getIngestSUs())
-                    .as("Shard 1: Single writer constraint")
+                    .as("Shard 1: Single writer constraint, random ingester selection")
                     .hasSize(1)
-                    .containsExactly("primary-1");
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .as("Should select one PRIMARY node")
+                        .isIn("primary-0", "primary-1", "primary-2"));  // Accept any PRIMARY (random selection)
                 
                 // Should use ALL nodes from 2 groups (10 nodes total), ignoring replica count of 4
                 // Verify group count: all nodes should be from exactly 2 groups
@@ -1246,10 +1336,13 @@ class ShardAllocatorTest {
             eq("test-groups-replicas"),
             eq("2"),
             argThat(allocation -> {
+                // Single writer constraint - random selection from available PRIMARY nodes
                 assertThat(allocation.getIngestSUs())
-                    .as("Shard 2: Single writer constraint")
+                    .as("Shard 2: Single writer constraint, random ingester selection")
                     .hasSize(1)
-                    .containsExactly("primary-2");
+                    .satisfies(ingestSUs -> assertThat(ingestSUs.get(0))
+                        .as("Should select one PRIMARY node")
+                        .isIn("primary-0", "primary-1", "primary-2"));  // Accept any PRIMARY (random selection)
                 
                 // Should use ALL nodes from 1 group (5 nodes), ignoring replica count of 3
                 // Verify group count: all nodes should be from the same group
@@ -1269,5 +1362,163 @@ class ShardAllocatorTest {
                 return true;
             })
         );
+    }
+
+    @Test
+    void testE2E_BinPacking_MultiWriter_WithZoneAntiAffinity() throws Exception {
+        // Given: ShardAllocator with REAL GroupAwareBinPackingEngine
+        ShardAllocator binPackingShardAllocator = new ShardAllocator(metadataStore);
+        binPackingShardAllocator.setAllocationDecisionEngine(new GroupAwareBinPackingEngine());
+        
+        // Given: Index with multi-writer configuration (2 ingester groups per shard)
+        Index index = createIndex("multi-writer-index", Arrays.asList(3));
+        index.getSettings().setIngestGroupsAllocateCount(Arrays.asList(2));  // ← Multi-writer: 2 ingesters!
+        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2));    // 2 replica groups
+        when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
+        
+        // Given: No existing planned allocations
+        when(metadataStore.getPlannedAllocation(testClusterId, "multi-writer-index", "0"))
+            .thenReturn(null);
+        
+        // Given: Multiple PRIMARY groups with MIXED zones (for realistic zone anti-affinity testing)
+        // Each PRIMARY group has nodes in DIFFERENT zones (not all in same zone)
+        // This validates that zone anti-affinity actually selects nodes from different zones
+        // PRIMARY Group 0: nodes in us-east-1, us-west-2, eu-west-1
+        // PRIMARY Group 1: nodes in us-east-1, us-west-2, eu-west-1
+        // PRIMARY Group 2: nodes in us-east-1, us-west-2, eu-west-1
+        // REPLICA Groups: A, B (for searchers)
+        List<SearchUnit> allNodes = Arrays.asList(
+            // PRIMARY Group 0 (shard pool ID "0") - MIXED zones
+            createHealthyPrimaryNodeWithZone("primary-pool-0-a", "0", "us-east-1"),
+            createHealthyPrimaryNodeWithZone("primary-pool-0-b", "0", "us-west-2"),
+            createHealthyPrimaryNodeWithZone("primary-pool-0-c", "0", "eu-west-1"),
+            
+            // PRIMARY Group 1 (shard pool ID "1") - MIXED zones
+            createHealthyPrimaryNodeWithZone("primary-pool-1-a", "1", "us-east-1"),
+            createHealthyPrimaryNodeWithZone("primary-pool-1-b", "1", "us-west-2"),
+            createHealthyPrimaryNodeWithZone("primary-pool-1-c", "1", "eu-west-1"),
+            
+            // PRIMARY Group 2 (shard pool ID "2") - MIXED zones
+            createHealthyPrimaryNodeWithZone("primary-pool-2-a", "2", "us-east-1"),
+            createHealthyPrimaryNodeWithZone("primary-pool-2-b", "2", "us-west-2"),
+            createHealthyPrimaryNodeWithZone("primary-pool-2-c", "2", "eu-west-1"),
+            
+            // REPLICA Groups (for searchers)
+            createHealthyReplicaNode("replica-a-1", "group-a"),
+            createHealthyReplicaNode("replica-a-2", "group-a"),
+            createHealthyReplicaNode("replica-a-3", "group-a"),
+            createHealthyReplicaNode("replica-b-1", "group-b"),
+            createHealthyReplicaNode("replica-b-2", "group-b"),
+            createHealthyReplicaNode("replica-b-3", "group-b")
+        );
+        when(metadataStore.getAllSearchUnits(testClusterId)).thenReturn(allNodes);
+        
+        // When: Plan allocation
+        binPackingShardAllocator.planShardAllocation(testClusterId, AllocationStrategy.USE_ALL_AVAILABLE_NODES);
+        
+        // Then: Verify multi-writer allocation with zone anti-affinity
+        verify(metadataStore).setPlannedAllocation(
+            eq(testClusterId),
+            eq("multi-writer-index"),
+            eq("0"),
+            argThat(allocation -> {
+                // ========== INGESTER VALIDATION (Multi-Writer) ==========
+                
+                // Should have exactly 2 ingesters (multi-writer constraint)
+                assertThat(allocation.getIngestSUs())
+                    .as("Multi-writer: Should allocate exactly 2 ingesters")
+                    .hasSize(2);
+                
+                // Extract selected ingesters
+                List<String> selectedIngesters = allocation.getIngestSUs();
+                
+                // Verify both ingesters are from different PRIMARY groups
+                String ingester1 = selectedIngesters.get(0);
+                String ingester2 = selectedIngesters.get(1);
+                
+                // Extract group IDs (format: "primary-pool-{groupId}-{nodeId}")
+                String group1 = ingester1.split("-")[2];  // "0", "1", or "2"
+                String group2 = ingester2.split("-")[2];
+                
+                assertThat(group1)
+                    .as("Multi-writer: Ingesters should be from DIFFERENT PRIMARY groups")
+                    .isNotEqualTo(group2);
+                
+                // Verify ingesters are valid PRIMARY nodes from available groups
+                assertThat(ingester1)
+                    .as("Ingester 1 should be from a PRIMARY group")
+                    .matches("primary-pool-[0-2]-[a-c]");
+                
+                assertThat(ingester2)
+                    .as("Ingester 2 should be from a PRIMARY group")
+                    .matches("primary-pool-[0-2]-[a-c]");
+                
+                // ========== ZONE ANTI-AFFINITY VALIDATION ==========
+                
+                // Map nodes to zones (now with MIXED zones per group)
+                java.util.Map<String, String> nodeToZone = new java.util.HashMap<>();
+                // Group 0 nodes spread across zones
+                nodeToZone.put("primary-pool-0-a", "us-east-1");
+                nodeToZone.put("primary-pool-0-b", "us-west-2");
+                nodeToZone.put("primary-pool-0-c", "eu-west-1");
+                // Group 1 nodes spread across zones
+                nodeToZone.put("primary-pool-1-a", "us-east-1");
+                nodeToZone.put("primary-pool-1-b", "us-west-2");
+                nodeToZone.put("primary-pool-1-c", "eu-west-1");
+                // Group 2 nodes spread across zones
+                nodeToZone.put("primary-pool-2-a", "us-east-1");
+                nodeToZone.put("primary-pool-2-b", "us-west-2");
+                nodeToZone.put("primary-pool-2-c", "eu-west-1");
+                
+                String zone1 = nodeToZone.get(ingester1);
+                String zone2 = nodeToZone.get(ingester2);
+                
+                assertThat(zone1)
+                    .as("Zone anti-affinity: Ingesters should be in DIFFERENT zones (preferred)")
+                    .isNotNull();
+                
+                assertThat(zone2)
+                    .as("Zone anti-affinity: Ingesters should be in DIFFERENT zones (preferred)")
+                    .isNotNull();
+                
+                // Zone anti-affinity: prefer different zones (best effort)
+                // With mixed zones per group, the ZoneAntiAffinityDecider should actively choose
+                // nodes from different zones when selecting from the 2 groups
+                assertThat(zone1)
+                    .as("Zone anti-affinity: ZoneAntiAffinityDecider should select nodes in different zones when possible")
+                    .isNotEqualTo(zone2);
+                
+                // ========== REPLICA VALIDATION ==========
+                
+                // Should allocate to 2 replica groups
+                assertThat(allocation.getSearchSUs())
+                    .as("Should allocate to 2 replica groups × 3 nodes = 6 nodes")
+                    .hasSize(6);
+                
+                long distinctReplicaGroups = allocation.getSearchSUs().stream()
+                    .map(node -> node.split("-")[1])  // Extract group ID
+                    .distinct()
+                    .count();
+                
+                assertThat(distinctReplicaGroups)
+                    .as("Should have exactly 2 replica groups")
+                    .isEqualTo(2);
+                
+                return true;
+            })
+        );
+    }
+
+    // Helper method to create PRIMARY nodes with zones
+    private SearchUnit createHealthyPrimaryNodeWithZone(String name, String shardId, String zone) {
+        SearchUnit searchUnit = new SearchUnit();
+        searchUnit.setId(name);
+        searchUnit.setName(name);
+        searchUnit.setShardId(shardId);
+        searchUnit.setRole("PRIMARY");
+        searchUnit.setZone(zone);  // ← Set zone for anti-affinity
+        searchUnit.setStatePulled(HealthState.GREEN);
+        searchUnit.setStateAdmin("NORMAL");
+        return searchUnit;
     }
 }
