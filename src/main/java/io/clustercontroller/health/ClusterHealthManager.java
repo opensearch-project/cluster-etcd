@@ -1,6 +1,7 @@
 package io.clustercontroller.health;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.clustercontroller.api.models.requests.ClusterInformationRequest;
 import io.clustercontroller.discovery.Discovery;
 import io.clustercontroller.enums.HealthState;
 import io.clustercontroller.enums.ShardState;
@@ -456,6 +457,7 @@ public class ClusterHealthManager {
         try {
             ClusterInformation clusterInfo = new ClusterInformation();
             clusterInfo.setClusterName(clusterId);
+            clusterInfo.setClusterUuid(clusterId);
             
             // Get the controller name assigned to this cluster from etcd
             ClusterControllerAssignment assignedController = metadataStore.getAssignedController(clusterId);
@@ -466,11 +468,55 @@ public class ClusterHealthManager {
                 log.warn("No controller assigned to cluster '{}'", clusterId);
                 throw new Exception("Cluster is not associated with a controller");
             }
-            // TODO: Add the cluster version information
+            
+            // Read cluster version information from cluster registry metadata
+            try {
+                ClusterInformation.Version version = metadataStore.getClusterVersion(clusterId);
+                if (version != null) {
+                    clusterInfo.setVersion(version);
+                    log.debug("Set cluster version from registry for cluster '{}': {}", 
+                        clusterId, version.getNumber());
+                } else {
+                    log.debug("No version information found in cluster registry for cluster '{}'", clusterId);
+                }
+            } catch (Exception e) {
+                log.warn("Failed to read cluster version from registry for cluster '{}': {}", 
+                    clusterId, e.getMessage());
+            }
+
             return objectMapper.writeValueAsString(clusterInfo);
         } catch (Exception e) {
             log.error("Failed to get cluster information for cluster '{}': {}", clusterId, e.getMessage(), e);
             throw new Exception("Failed to get cluster information: " + e.getMessage(), e);
+        }
+    }
+    /**
+     * Set/update cluster version information for the specified cluster.
+     */
+    public void setClusterInformation(String clusterId, ClusterInformationRequest request) throws Exception {
+        log.info("Setting cluster information for cluster '{}'", clusterId);
+        
+        try {
+            // Extract just the version object from the request
+            ClusterInformation.Version version = request.getVersion();
+            
+            // Validate version is present
+            if (version == null) {
+                throw new IllegalArgumentException("Version information is required");
+            }
+            
+            // Store only the version field at the cluster registry path
+            // Path: /multi-cluster/clusters/<cluster-id>/metadata
+            metadataStore.setClusterVersion(clusterId, version);
+            log.info("Successfully set cluster version for cluster '{}': {}", 
+                clusterId, version.getNumber());
+            
+        } catch (IllegalArgumentException e) {
+            log.error("Invalid cluster information for cluster '{}': {}", clusterId, e.getMessage());
+            throw e;
+        } catch (Exception e) {
+            log.error("Failed to set cluster information for cluster '{}': {}", clusterId, e.getMessage(), e);
+            throw new Exception("Failed to set cluster information: " + e.getMessage(), e);
         }
     }
 }

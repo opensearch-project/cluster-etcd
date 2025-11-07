@@ -1,7 +1,10 @@
 package io.clustercontroller.api.handlers;
 
+import io.clustercontroller.api.models.requests.ClusterInformationRequest;
+import io.clustercontroller.api.models.responses.ClusterInformationResponse;
 import io.clustercontroller.api.models.responses.ErrorResponse;
 import io.clustercontroller.health.ClusterHealthManager;
+import io.clustercontroller.models.ClusterInformation;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -12,7 +15,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 
 class HealthHandlerTest {
@@ -188,6 +194,76 @@ class HealthHandlerTest {
         ErrorResponse errorResponse = (ErrorResponse) response.getBody();
         assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
         assertThat(errorResponse.getReason()).contains("Failed to retrieve cluster information");
+        assertThat(errorResponse.getStatus()).isEqualTo(500);
+    }
+
+    @Test
+    void testSetClusterInformation_Success() throws Exception {
+        // Given
+        ClusterInformation.Version version = new ClusterInformation.Version();
+        version.setNumber("3.2.0");
+        version.setDistribution("opensearch");
+        
+        ClusterInformationRequest request = ClusterInformationRequest.builder()
+            .version(version)
+            .build();
+
+        // When
+        ResponseEntity<Object> response = healthHandler.setClusterInformation(testClusterId, request);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody()).isInstanceOf(ClusterInformationResponse.class);
+        ClusterInformationResponse body = (ClusterInformationResponse) response.getBody();
+        assertThat(body.isAcknowledged()).isTrue();
+    }
+
+    @Test
+    void testSetClusterInformation_NullVersion() throws Exception {
+        // Given - request without version
+        ClusterInformationRequest request = ClusterInformationRequest.builder()
+            .build();
+        
+        doThrow(new IllegalArgumentException("Version information is required"))
+            .when(healthManager).setClusterInformation(eq(testClusterId), any(ClusterInformationRequest.class));
+
+        // When
+        ResponseEntity<Object> response = healthHandler.setClusterInformation(testClusterId, request);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("bad_request");
+        assertThat(errorResponse.getReason()).contains("Version information is required");
+        assertThat(errorResponse.getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void testSetClusterInformation_InternalError() throws Exception {
+        // Given
+        ClusterInformation.Version version = new ClusterInformation.Version();
+        version.setNumber("3.2.0");
+        
+        ClusterInformationRequest request = ClusterInformationRequest.builder()
+            .version(version)
+            .build();
+        
+        doThrow(new RuntimeException("Failed to write to etcd"))
+            .when(healthManager).setClusterInformation(eq(testClusterId), any(ClusterInformationRequest.class));
+
+        // When
+        ResponseEntity<Object> response = healthHandler.setClusterInformation(testClusterId, request);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
+        assertThat(errorResponse.getReason()).contains("Failed to write to etcd");
         assertThat(errorResponse.getStatus()).isEqualTo(500);
     }
 }

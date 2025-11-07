@@ -6,6 +6,7 @@ import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.Template;
 import io.clustercontroller.models.CoordinatorGoalState;
+import io.clustercontroller.models.ClusterInformation;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -1137,6 +1138,81 @@ public class EtcdMetadataStore implements MetadataStore {
         } catch (Exception e) {
             log.error("Failed to get assigned controller for cluster '{}': {}", clusterId, e.getMessage(), e);
             throw new Exception("Failed to get assigned controller: " + e.getMessage(), e);
+        }
+    }
+    
+    @Override
+    public ClusterInformation.Version getClusterVersion(String clusterId) throws Exception {
+        log.debug("Getting cluster version from registry for cluster '{}'", clusterId);
+        
+        try {
+            String clusterRegistryPath = pathResolver.getClusterRegistryPath(clusterId);
+            GetResponse response = executeEtcdGet(clusterRegistryPath);
+            
+            if (response.getKvs().isEmpty()) {
+                log.debug("No cluster version found in registry for cluster '{}'", clusterId);
+                return null;
+            }
+            
+            String json = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+            log.debug("Retrieved cluster metadata from registry for cluster '{}': {}", clusterId, json);
+            
+            // Parse as generic Map to extract version field
+            Map<String, Object> metadata = objectMapper.readValue(json, Map.class);
+            
+            // Extract and deserialize the version field
+            if (metadata.containsKey("version")) {
+                Object versionObj = metadata.get("version");
+                ClusterInformation.Version version = objectMapper.convertValue(versionObj, ClusterInformation.Version.class);
+                return version;
+            }
+            
+            return null;
+            
+        } catch (Exception e) {
+            log.error("Failed to get cluster version from registry for '{}': {}", clusterId, e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    @Override
+    public void setClusterVersion(String clusterId, ClusterInformation.Version version) throws Exception {
+        log.debug("Setting cluster version at registry path for cluster '{}'", clusterId);
+        
+        try {
+            String clusterRegistryPath = pathResolver.getClusterRegistryPath(clusterId);
+            
+            // Read existing cluster metadata to preserve other fields
+            GetResponse response = executeEtcdGet(clusterRegistryPath);
+            
+            Map<String, Object> existingMetadata;
+            if (!response.getKvs().isEmpty()) {
+                String existingJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+                // Parse as generic Map to preserve all existing fields
+                existingMetadata = objectMapper.readValue(existingJson, Map.class);
+                log.debug("Found existing cluster metadata for cluster '{}'", clusterId);
+            } else {
+                // No existing metadata, create new map
+                existingMetadata = new HashMap<>();
+                log.debug("No existing cluster metadata for cluster '{}', creating new", clusterId);
+            }
+            
+            // Update only the version field
+            if (version != null) {
+                // Convert version object to Map for JSON serialization
+                Map<String, Object> versionMap = objectMapper.convertValue(version, Map.class);
+                existingMetadata.put("version", versionMap);
+                log.debug("Updated version field for cluster '{}': {}", clusterId, version.getNumber());
+            }
+            
+            // Write back the updated metadata
+            String json = objectMapper.writeValueAsString(existingMetadata);
+            executeEtcdPut(clusterRegistryPath, json);
+            log.info("Successfully set cluster version at registry for cluster '{}'", clusterId);
+            
+        } catch (Exception e) {
+            log.error("Failed to set cluster version at registry for '{}': {}", clusterId, e.getMessage(), e);
+            throw new Exception("Failed to set cluster version in etcd: " + e.getMessage(), e);
         }
     }
 }

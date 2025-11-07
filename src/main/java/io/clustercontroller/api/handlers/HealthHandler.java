@@ -1,5 +1,7 @@
 package io.clustercontroller.api.handlers;
 
+import io.clustercontroller.api.models.requests.ClusterInformationRequest;
+import io.clustercontroller.api.models.responses.ClusterInformationResponse;
 import io.clustercontroller.api.models.responses.ErrorResponse;
 import io.clustercontroller.health.ClusterHealthManager;
 import io.clustercontroller.models.ClusterHealthInfo;
@@ -53,6 +55,27 @@ public class HealthHandler {
             return ResponseEntity.ok(clusterInformationJson);             
         } catch (Exception e) {
             log.error("Error getting cluster information for cluster '{}': {}", clusterId, e.getMessage());
+            return ResponseEntity.status(500).body(ErrorResponse.internalError(e.getMessage()));
+        }
+    }
+    
+    /**
+     * Set/update cluster information for the specified cluster.
+     * PUT /{clusterId}
+     */
+    @PutMapping("/")
+    public ResponseEntity<Object> setClusterInformation(
+            @PathVariable String clusterId,
+            @RequestBody ClusterInformationRequest request) {
+        try {            
+            log.info("Setting cluster information for cluster '{}'", clusterId);
+            healthManager.setClusterInformation(clusterId, request);
+            return ResponseEntity.ok().body(ClusterInformationResponse.success());             
+        } catch (IllegalArgumentException e) {
+            log.error("Invalid cluster information for cluster '{}': {}", clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.badRequest(e.getMessage()));
+        } catch (Exception e) {
+            log.error("Error setting cluster information for cluster '{}': {}", clusterId, e.getMessage());
             return ResponseEntity.status(500).body(ErrorResponse.internalError(e.getMessage()));
         }
     }   

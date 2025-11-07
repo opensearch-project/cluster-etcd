@@ -1,6 +1,7 @@
 package io.clustercontroller.health;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.clustercontroller.api.models.requests.ClusterInformationRequest;
 import io.clustercontroller.enums.HealthState;
 import io.clustercontroller.enums.ShardState;
 import io.clustercontroller.models.ClusterHealthInfo;
@@ -257,5 +258,177 @@ class ClusterHealthManagerTest {
         
         // Verify metadata store was queried
         verify(metadataStore).getAssignedController(testClusterId);
+    }
+
+    @Test
+    void testGetClusterInformation_WithVersion() throws Exception {
+        // Given
+        String controllerName = "controller-1";
+        ClusterControllerAssignment assignment = new ClusterControllerAssignment();
+        assignment.setController(controllerName);
+        assignment.setCluster(testClusterId);
+        
+        // Mock version from registry
+        ClusterInformation.Version version = new ClusterInformation.Version();
+        version.setNumber("3.2.0");
+        version.setDistribution("opensearch");
+        version.setBuildType("tar");
+        version.setHash("abc123");
+        
+        when(metadataStore.getAssignedController(testClusterId)).thenReturn(assignment);
+        when(metadataStore.getClusterVersion(testClusterId)).thenReturn(version);
+        
+        // When
+        String infoJson = clusterHealthManager.getClusterInformation(testClusterId);
+        ClusterInformation info = objectMapper.readValue(infoJson, ClusterInformation.class);
+        
+        // Then
+        assertThat(info).isNotNull();
+        assertThat(info.getClusterName()).isEqualTo(testClusterId);
+        assertThat(info.getName()).isEqualTo(controllerName);
+        assertThat(info.getVersion()).isNotNull();
+        assertThat(info.getVersion().getNumber()).isEqualTo("3.2.0");
+        assertThat(info.getVersion().getDistribution()).isEqualTo("opensearch");
+        assertThat(info.getVersion().getBuildType()).isEqualTo("tar");
+        assertThat(info.getVersion().getHash()).isEqualTo("abc123");
+
+        // Verify metadata store calls
+        verify(metadataStore).getAssignedController(testClusterId);
+        verify(metadataStore).getClusterVersion(testClusterId);
+    }
+
+    @Test
+    void testGetClusterInformation_WithoutVersion() throws Exception {
+        // Given
+        String controllerName = "controller-1";
+        ClusterControllerAssignment assignment = new ClusterControllerAssignment();
+        assignment.setController(controllerName);
+        assignment.setCluster(testClusterId);
+        
+        when(metadataStore.getAssignedController(testClusterId)).thenReturn(assignment);
+        when(metadataStore.getClusterVersion(testClusterId)).thenReturn(null);
+        
+        // When
+        String infoJson = clusterHealthManager.getClusterInformation(testClusterId);
+        ClusterInformation info = objectMapper.readValue(infoJson, ClusterInformation.class);
+        
+        // Then
+        assertThat(info).isNotNull();
+        assertThat(info.getClusterName()).isEqualTo(testClusterId);
+        assertThat(info.getName()).isEqualTo(controllerName);
+        assertThat(info.getVersion()).isNull();
+
+        // Verify metadata store calls
+        verify(metadataStore).getAssignedController(testClusterId);
+        verify(metadataStore).getClusterVersion(testClusterId);
+    }
+
+    @Test
+    void testGetClusterInformation_VersionRetrievalFails() throws Exception {
+        // Given
+        String controllerName = "controller-1";
+        ClusterControllerAssignment assignment = new ClusterControllerAssignment();
+        assignment.setController(controllerName);
+        assignment.setCluster(testClusterId);
+        
+        when(metadataStore.getAssignedController(testClusterId)).thenReturn(assignment);
+        when(metadataStore.getClusterVersion(testClusterId))
+            .thenThrow(new RuntimeException("Failed to read version"));
+        
+        // When - should not throw, version is optional
+        String infoJson = clusterHealthManager.getClusterInformation(testClusterId);
+        ClusterInformation info = objectMapper.readValue(infoJson, ClusterInformation.class);
+        
+        // Then - should succeed without version
+        assertThat(info).isNotNull();
+        assertThat(info.getClusterName()).isEqualTo(testClusterId);
+        assertThat(info.getName()).isEqualTo(controllerName);
+        assertThat(info.getVersion()).isNull();
+
+        // Verify metadata store calls
+        verify(metadataStore).getAssignedController(testClusterId);
+        verify(metadataStore).getClusterVersion(testClusterId);
+    }
+
+    @Test
+    void testSetClusterInformation_Success() throws Exception {
+        // Given
+        ClusterInformation.Version version = new ClusterInformation.Version();
+        version.setNumber("3.2.0");
+        version.setDistribution("opensearch");
+        version.setBuildType("tar");
+        
+        ClusterInformationRequest request = ClusterInformationRequest.builder()
+            .version(version)
+            .build();
+        
+        // When
+        clusterHealthManager.setClusterInformation(testClusterId, request);
+        
+        // Then
+        verify(metadataStore).setClusterVersion(eq(testClusterId), any(ClusterInformation.Version.class));
+    }
+
+    @Test
+    void testSetClusterInformation_ExtractsVersion() throws Exception {
+        // Given
+        ClusterInformation.Version version = new ClusterInformation.Version();
+        version.setNumber("3.2.0");
+        version.setDistribution("opensearch");
+        version.setBuildType("tar");
+        version.setHash("abc123");
+        
+        ClusterInformationRequest request = ClusterInformationRequest.builder()
+            .version(version)
+            .build();
+        
+        // When
+        clusterHealthManager.setClusterInformation(testClusterId, request);
+        
+        // Then - verify version was passed to metadataStore
+        verify(metadataStore).setClusterVersion(eq(testClusterId), argThat(v -> 
+            v != null &&
+            "3.2.0".equals(v.getNumber()) &&
+            "opensearch".equals(v.getDistribution()) &&
+            "tar".equals(v.getBuildType()) &&
+            "abc123".equals(v.getHash())
+        ));
+    }
+
+    @Test
+    void testSetClusterInformation_NullVersion() throws Exception {
+        // Given - request without version
+        ClusterInformationRequest request = ClusterInformationRequest.builder()
+            .build();
+        
+        // When/Then
+        assertThatThrownBy(() -> clusterHealthManager.setClusterInformation(testClusterId, request))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("Version information is required");
+        
+        // Verify no call to metadataStore
+        verify(metadataStore, never()).setClusterVersion(any(), any());
+    }
+
+    @Test
+    void testSetClusterInformation_MetadataStoreThrowsException() throws Exception {
+        // Given
+        ClusterInformation.Version version = new ClusterInformation.Version();
+        version.setNumber("3.2.0");
+        
+        ClusterInformationRequest request = ClusterInformationRequest.builder()
+            .version(version)
+            .build();
+        
+        doThrow(new RuntimeException("etcd write failed"))
+            .when(metadataStore).setClusterVersion(any(), any());
+        
+        // When/Then
+        assertThatThrownBy(() -> clusterHealthManager.setClusterInformation(testClusterId, request))
+            .isInstanceOf(Exception.class)
+            .hasMessageContaining("Failed to set cluster information");
+        
+        // Verify call was attempted
+        verify(metadataStore).setClusterVersion(eq(testClusterId), any(ClusterInformation.Version.class));
     }
 }

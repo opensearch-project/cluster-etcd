@@ -9,6 +9,7 @@ import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.Template;
 import io.clustercontroller.models.ClusterControllerAssignment;
+import io.clustercontroller.models.ClusterInformation;
 import io.clustercontroller.models.CoordinatorGoalState;
 import java.util.List;
 import java.util.Map;
@@ -259,4 +260,26 @@ public interface MetadataStore {
      * Get the controller ID assigned to a cluster.
      */
     ClusterControllerAssignment getAssignedController(String clusterId) throws Exception;
+    
+    /**
+     * Get cluster version from the cluster registry path.
+     * This retrieves only the version information from cluster metadata.
+     * Path: /multi-cluster/clusters/<cluster-id>/metadata
+     * 
+     * @param clusterId the cluster ID
+     * @return Version object, or null if not found
+     * @throws Exception if there's an error retrieving the data
+     */
+    ClusterInformation.Version getClusterVersion(String clusterId) throws Exception;
+    
+    /**
+     * Set cluster version at the cluster registry path.
+     * This updates only the version field in the existing cluster metadata, preserving all other fields.
+     * Path: /multi-cluster/clusters/<cluster-id>/metadata
+     * 
+     * @param clusterId the cluster ID
+     * @param version the version information to store
+     * @throws Exception if there's an error storing the data
+     */
+    void setClusterVersion(String clusterId, ClusterInformation.Version version) throws Exception;
 }
