@@ -178,14 +178,16 @@ class GroupAwareBinPackingEngineTest {
     }
 
     @Test
-    void testReplicaAllocation_FiltersUnhealthyNodes() {
+    void testReplicaAllocation_IncludesAllNodesFromDiscovery() {
         // Given: Index config requires 1 group for shard 0
         Index indexConfig = createIndexWithGroupCount(List.of(1));
         
         // Given: No planned allocation
         ShardAllocation currentPlanned = null;
         
-        // Given: group-1 has 2 healthy nodes and 1 unhealthy node
+        // Given: group-1 has 2 GREEN nodes and 1 RED node
+        // ALL nodes were found by Discovery → ALL should be allocated
+        // (Discovery already filtered truly dead/unreachable nodes)
         List<SearchUnit> allNodes = new ArrayList<>();
         allNodes.add(createHealthyNode("node-group-1-0", "group-1", "SEARCH_REPLICA"));
         allNodes.add(createHealthyNode("node-group-1-1", "group-1", "SEARCH_REPLICA"));
@@ -196,10 +198,11 @@ class GroupAwareBinPackingEngineTest {
             0, "test-index", indexConfig, allNodes, NodeRole.REPLICA, currentPlanned
         );
 
-        // Then: Should return only healthy nodes from group-1
-        assertThat(result).hasSize(2);
+        // Then: Should return ALL nodes from group-1 (including RED node)
+        // If Discovery found it → it's available → allocate to it
+        assertThat(result).hasSize(3);
         assertThat(result).extracting(SearchUnit::getName)
-            .containsExactlyInAnyOrder("node-group-1-0", "node-group-1-1");
+            .containsExactlyInAnyOrder("node-group-1-0", "node-group-1-1", "node-group-1-2");
     }
 
     @Test

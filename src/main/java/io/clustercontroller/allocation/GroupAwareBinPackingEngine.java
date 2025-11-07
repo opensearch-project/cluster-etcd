@@ -237,7 +237,16 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
     }
     
     /**
-     * Validate existing ingesters are still healthy.
+     * Validate existing ingesters still exist (discovered by controller).
+     * 
+     * We only check node existence, not health status:
+     * - If Discovery found the node → it's alive and responding → keep it (stable allocation)
+     * - If Discovery didn't find the node → it's dead/unreachable → re-allocate
+     * 
+     * We don't check health status (GREEN/YELLOW/RED) because:
+     * - During shard initialization, nodes are YELLOW (not GREEN)
+     * - Checking for GREEN would cause unnecessary re-allocation churn
+     * - Discovery already filters out truly unhealthy/dead nodes
      */
     private List<SearchUnit> validateExistingIngesters(List<String> ingesterNames, List<SearchUnit> allNodes) {
         List<SearchUnit> validNodes = new ArrayList<>();
@@ -248,10 +257,13 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
                 .findFirst()
                 .orElse(null);
             
-            if (node != null && node.getStatePulled() == io.clustercontroller.enums.HealthState.GREEN) {
+            if (node != null) {
+                // Node exists in discovery → keep it for stable allocation
                 validNodes.add(node);
+                log.debug("PRIMARY allocation: ingester {} exists - stable allocation", nodeName);
             } else {
-                log.warn("PRIMARY allocation: ingester {} is unhealthy or missing", nodeName);
+                // Node missing from discovery → re-allocate
+                log.warn("PRIMARY allocation: ingester {} is missing from discovery - will re-allocate", nodeName);
             }
         }
         
@@ -376,6 +388,7 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
         additionalGroups.forEach(group -> allSelectedGroupIds.add(group.getGroupId()));
         
         // Return nodes from all groups (current + new)
+        // Discovery already filtered healthy nodes - if it's in allNodes, it's healthy!
         return getNodesFromGroupIds(allSelectedGroupIds, allNodes, shardId, indexName, targetRole);
     }
     
@@ -419,10 +432,18 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
     /**
      * Get eligible nodes from specific group IDs.
      * 
-     * Finds all nodes belonging to the specified groups and applies HealthDecider.
+     * This is used for STABLE ALLOCATION of replicas. We only check node existence, not health:
+     * - If Discovery found the node → it's alive and responding → keep it (stable allocation)
+     * - If Discovery didn't find the node → it's dead/unreachable → skip it
+     * 
+     * We don't apply health deciders here because:
+     * - This method is only called during stable allocation (groups already correctly allocated)
+     * - During shard initialization, nodes are YELLOW (not GREEN)
+     * - Checking for GREEN would cause unnecessary re-allocation churn
+     * - Discovery already filters out truly unhealthy/dead nodes
      * 
      * @param groupIds Set of group IDs to get nodes from
-     * @param allNodes All nodes in the cluster
+     * @param allNodes All nodes in the cluster (already filtered by Discovery)
      * @param shardId Shard ID
      * @param indexName Index name
      * @param targetRole Target role
@@ -434,33 +455,27 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
             return List.of();
         }
         
-        String shardIdStr = String.valueOf(shardId);
         List<SearchUnit> eligibleNodes = new ArrayList<>();
         
         // Find all nodes that belong to the specified groups
+        // Only check existence - if Discovery found it, it's alive (stable allocation)
         for (SearchUnit node : allNodes) {
             if (node.getShardId() == null || !groupIds.contains(node.getShardId())) {
                 continue; // Node doesn't belong to any of the selected groups
             }
             
-            // Apply deciders (HealthDecider)
-            boolean canAllocate = true;
-            for (AllocationDecider decider : replicaDeciders) {
-                Decision decision = decider.canAllocate(shardIdStr, node, indexName, targetRole);
-                if (decision == Decision.NO) {
-                    canAllocate = false;
-                    break;
-                }
-            }
-            
-            if (canAllocate) {
-                eligibleNodes.add(node);
-            }
+            // Node exists and belongs to the group → add it (stable allocation)
+            eligibleNodes.add(node);
+            log.trace("REPLICA stable allocation: node {} from group {} exists - keeping", 
+                     node.getName(), node.getShardId());
         }
         
         if (eligibleNodes.isEmpty()) {
-            log.warn("No eligible nodes found in groups {} after applying deciders for shard {}/{}", 
+            log.warn("No nodes found in groups {} for shard {}/{} (nodes missing from discovery)", 
                     groupIds, indexName, shardId);
+        } else {
+            log.debug("REPLICA stable allocation for shard {}/{}: returning {} nodes from {} groups", 
+                     indexName, shardId, eligibleNodes.size(), groupIds.size());
         }
         
         return eligibleNodes;

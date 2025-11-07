@@ -3,6 +3,7 @@ package io.clustercontroller.orchestration;
 import io.clustercontroller.enums.NodeRole;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexShardProgress;
+import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
@@ -35,6 +36,10 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
         log.info("Starting rolling update orchestration for cluster: {}", clusterId);
         
         try {
+            // PHASE 1: Cleanup stale goal states (instant deletion, no orchestration)
+            cleanupStaleGoalStates(clusterId);
+            
+            // PHASE 2: Orchestrate new goal states (rolling update)
             // Get all index configs to iterate over indexes and shards
             List<Index> indexConfigs = metadataStore.getAllIndexConfigs(clusterId);
             
@@ -246,5 +251,123 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
         current.getLocalShards().computeIfAbsent(indexName, k -> new HashMap<>()).put(shardId, role);
         
         return current;
+    }
+    
+    /**
+     * Cleanup phase: Remove stale goal states that are no longer in planned allocations.
+     * This is executed instantly (no orchestration) for ALL nodes.
+     * 
+     * Logic:
+     * 1. Get all nodes that have goal states
+     * 2. For each node, check its goal state
+     * 3. For each index/shard in the goal state:
+     *    - Verify if this node is still in the planned allocation
+     *    - If NOT, remove it immediately
+     * 
+     * @param clusterId the cluster ID to cleanup
+     */
+    private void cleanupStaleGoalStates(String clusterId) {
+        log.info("Starting goal state cleanup phase for cluster: {}", clusterId);
+        
+        try {
+            // Get all search units (nodes) in the cluster
+            List<SearchUnit> allNodes = metadataStore.getAllSearchUnits(clusterId);
+            
+            int totalCleaned = 0;
+            for (SearchUnit node : allNodes) {
+                try {
+                    int cleaned = cleanupNodeGoalState(clusterId, node.getName());
+                    totalCleaned += cleaned;
+                } catch (Exception e) {
+                    log.error("Failed to cleanup goal state for node {}: {}", node.getName(), e.getMessage(), e);
+                }
+            }
+            
+            if (totalCleaned > 0) {
+                log.info("Cleanup phase completed: removed {} stale goal state entries", totalCleaned);
+            } else {
+                log.debug("Cleanup phase completed: no stale goal states found");
+            }
+            
+        } catch (Exception e) {
+            log.error("Failed to cleanup goal states for cluster {}: {}", clusterId, e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Cleanup goal state for a single node
+     * 
+     * @param clusterId the cluster ID
+     * @param nodeId the node ID to cleanup
+     * @return number of index/shard entries removed
+     */
+    private int cleanupNodeGoalState(String clusterId, String nodeId) throws Exception {
+        // Get current goal state for the node
+        SearchUnitGoalState goalState = metadataStore.getSearchUnitGoalState(clusterId, nodeId);
+        
+        if (goalState == null || goalState.getLocalShards().isEmpty()) {
+            return 0; // No goal state to cleanup
+        }
+        
+        Map<String, Map<String, String>> localShards = goalState.getLocalShards();
+        Map<String, Map<String, String>> shardsToKeep = new HashMap<>();
+        int removedCount = 0;
+        
+        // Iterate through all index/shards in the current goal state
+        for (Map.Entry<String, Map<String, String>> indexEntry : localShards.entrySet()) {
+            String indexName = indexEntry.getKey();
+            Map<String, String> shards = indexEntry.getValue();
+            Map<String, String> shardsToKeepForIndex = new HashMap<>();
+            
+            for (Map.Entry<String, String> shardEntry : shards.entrySet()) {
+                String shardId = shardEntry.getKey();
+                String role = shardEntry.getValue();
+                
+                // Check if this node is still in the planned allocation for this index/shard
+                ShardAllocation planned = metadataStore.getPlannedAllocation(clusterId, indexName, shardId);
+                
+                if (planned == null) {
+                    // No planned allocation exists - remove from goal state
+                    log.info("Removing stale goal state: node={}, index/shard={}/{} (no planned allocation)", 
+                            nodeId, indexName, shardId);
+                    removedCount++;
+                    continue;
+                }
+                
+                // Check if node is in the planned allocation based on role
+                boolean isInPlannedAllocation = false;
+                if (NodeRole.PRIMARY.getValue().equals(role)) {
+                    isInPlannedAllocation = planned.getIngestSUs().contains(nodeId);
+                } else if (NodeRole.REPLICA.getValue().equals(role)) {
+                    isInPlannedAllocation = planned.getSearchSUs().contains(nodeId);
+                }
+                
+                if (isInPlannedAllocation) {
+                    // Keep this shard in goal state
+                    shardsToKeepForIndex.put(shardId, role);
+                } else {
+                    // Remove from goal state
+                    log.info("Removing stale goal state: node={}, index/shard={}/{}, role={} (not in planned allocation)", 
+                            nodeId, indexName, shardId, role);
+                    removedCount++;
+                }
+            }
+            
+            // Only keep index entry if it has shards
+            if (!shardsToKeepForIndex.isEmpty()) {
+                shardsToKeep.put(indexName, shardsToKeepForIndex);
+            }
+        }
+        
+        // If any changes were made, update the goal state
+        if (removedCount > 0) {
+            SearchUnitGoalState updatedGoalState = new SearchUnitGoalState();
+            updatedGoalState.setLocalShards(shardsToKeep);
+            metadataStore.setSearchUnitGoalState(clusterId, nodeId, updatedGoalState);
+            log.debug("Updated goal state for node {} after cleanup: {} index/shard entries removed", 
+                    nodeId, removedCount);
+        }
+        
+        return removedCount;
     }
 }
