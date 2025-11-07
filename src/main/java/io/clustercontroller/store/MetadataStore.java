@@ -271,15 +271,4 @@ public interface MetadataStore {
      * @throws Exception if there's an error retrieving the data
      */
     ClusterInformation.Version getClusterVersion(String clusterId) throws Exception;
-    
-    /**
-     * Set cluster version at the cluster registry path.
-     * This updates only the version field in the existing cluster metadata, preserving all other fields.
-     * Path: /multi-cluster/clusters/<cluster-id>/metadata
-     * 
-     * @param clusterId the cluster ID
-     * @param version the version information to store
-     * @throws Exception if there's an error storing the data
-     */
-    void setClusterVersion(String clusterId, ClusterInformation.Version version) throws Exception;
 }

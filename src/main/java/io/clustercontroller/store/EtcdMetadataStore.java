@@ -1174,45 +1174,4 @@ public class EtcdMetadataStore implements MetadataStore {
             throw e;
         }
     }
-    
-    @Override
-    public void setClusterVersion(String clusterId, ClusterInformation.Version version) throws Exception {
-        log.debug("Setting cluster version at registry path for cluster '{}'", clusterId);
-        
-        try {
-            String clusterRegistryPath = pathResolver.getClusterRegistryPath(clusterId);
-            
-            // Read existing cluster metadata to preserve other fields
-            GetResponse response = executeEtcdGet(clusterRegistryPath);
-            
-            Map<String, Object> existingMetadata;
-            if (!response.getKvs().isEmpty()) {
-                String existingJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
-                // Parse as generic Map to preserve all existing fields
-                existingMetadata = objectMapper.readValue(existingJson, Map.class);
-                log.debug("Found existing cluster metadata for cluster '{}'", clusterId);
-            } else {
-                // No existing metadata, create new map
-                existingMetadata = new HashMap<>();
-                log.debug("No existing cluster metadata for cluster '{}', creating new", clusterId);
-            }
-            
-            // Update only the version field
-            if (version != null) {
-                // Convert version object to Map for JSON serialization
-                Map<String, Object> versionMap = objectMapper.convertValue(version, Map.class);
-                existingMetadata.put("version", versionMap);
-                log.debug("Updated version field for cluster '{}': {}", clusterId, version.getNumber());
-            }
-            
-            // Write back the updated metadata
-            String json = objectMapper.writeValueAsString(existingMetadata);
-            executeEtcdPut(clusterRegistryPath, json);
-            log.info("Successfully set cluster version at registry for cluster '{}'", clusterId);
-            
-        } catch (Exception e) {
-            log.error("Failed to set cluster version at registry for '{}': {}", clusterId, e.getMessage(), e);
-            throw new Exception("Failed to set cluster version in etcd: " + e.getMessage(), e);
-        }
-    }
 }
