@@ -71,10 +71,9 @@ public class CoordinatorSelector {
     /**
      * Check if a coordinator is healthy.
      * 
-     * Health checks:
-     * 1. Basic validation (host, port)
-     * 2. Actual state exists in etcd (coordinator is sending heartbeats)
-     * 3. Health state is not RED (based on resource usage and heartbeat freshness)
+     * Basic health checks for coordinators from /coordinators/ path:
+     * 1. Has valid host
+     * 2. Has valid port
      *
      * @param clusterId Cluster ID
      * @param coordinator SearchUnit to check
@@ -92,31 +91,9 @@ public class CoordinatorSelector {
             return false;
         }
         
-        // Check actual health state from etcd
-        try {
-            SearchUnitActualState actualState = metadataStore.getSearchUnitActualState(clusterId, coordinator.getName());
-            
-            if (actualState == null) {
-                log.debug("Coordinator '{}' has no actual state (no heartbeat)", coordinator.getName());
-                return false;
-            }
-            
-            // Derive health state (checks resource usage, heartbeat freshness)
-            HealthState healthState = actualState.deriveNodeState();
-            
-            if (healthState == HealthState.RED) {
-                log.debug("Coordinator '{}' is RED (unhealthy)", coordinator.getName());
-                return false;
-            }
-            
-            log.debug("Coordinator '{}' is healthy (state: {})", coordinator.getName(), healthState);
-            return true;
-            
-        } catch (Exception e) {
-            log.warn("Failed to check health for coordinator '{}': {}", coordinator.getName(), e.getMessage());
-            // If we can't check health, consider it unhealthy to be safe
-            return false;
-        }
+        log.debug("Coordinator '{}' is healthy at {}:{}", 
+                coordinator.getName(), coordinator.getHost(), coordinator.getPortHttp());
+        return true;
     }
 
     /**

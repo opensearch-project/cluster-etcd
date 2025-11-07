@@ -18,6 +18,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
+import io.clustercontroller.enums.HealthState;
 import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.models.ClusterControllerAssignment;
 import io.clustercontroller.util.EnvironmentUtils;
@@ -323,6 +324,18 @@ public class EtcdMetadataStore implements MetadataStore {
                     continue;
                 }
                 
+                // Parse actual-state to check health
+                SearchUnitActualState actualState = objectMapper.readValue(value, SearchUnitActualState.class);
+                HealthState healthState = actualState.deriveNodeState();
+                
+                // Filter out RED (unhealthy) coordinators
+                if (healthState == HealthState.RED) {
+                    log.debug("Skipping unhealthy coordinator '{}': state=RED", actualState.getNodeName());
+                    continue;
+                }
+                
+                log.debug("Coordinator '{}' health state: {}", actualState.getNodeName(), healthState);
+                
                 // Convert actual-state to SearchUnit
                 SearchUnit coordinator = new SearchUnit();
                 coordinator.setName(json.has("nodeName") ? json.get("nodeName").asText() : "unknown");
@@ -332,8 +345,8 @@ public class EtcdMetadataStore implements MetadataStore {
                 coordinator.setClusterName(clusterId);
                 
                 coordinators.add(coordinator);
-                log.debug("Found coordinator: {} at {}:{}", 
-                        coordinator.getName(), coordinator.getHost(), coordinator.getPortHttp());
+                log.debug("Found healthy coordinator: {} at {}:{} (state={})", 
+                        coordinator.getName(), coordinator.getHost(), coordinator.getPortHttp(), healthState);
             }
             
             log.debug("Retrieved {} coordinators from etcd", coordinators.size());
