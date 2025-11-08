@@ -323,7 +323,7 @@ class GroupAwareBinPackingEngineTest {
         // Given: Index config with null shardGroupsAllocateCount (defaults to 1)
         Index indexConfig = new Index();
         IndexSettings settings = new IndexSettings();
-        settings.setShardGroupsAllocateCount(null); // Default should be 1
+        settings.setNumGroupsPerShard(null); // Default should be 1
         indexConfig.setSettings(settings);
         
         // Given: No planned allocation
@@ -354,7 +354,7 @@ class GroupAwareBinPackingEngineTest {
     private Index createIndexWithGroupCount(List<Integer> groupCounts) {
         Index index = new Index();
         IndexSettings settings = new IndexSettings();
-        settings.setShardGroupsAllocateCount(groupCounts);
+        settings.setNumGroupsPerShard(groupCounts);
         index.setSettings(settings);
         return index;
     }

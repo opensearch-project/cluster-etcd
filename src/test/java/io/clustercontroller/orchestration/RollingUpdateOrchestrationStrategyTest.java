@@ -2,6 +2,7 @@ package io.clustercontroller.orchestration;
 
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
+import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
@@ -891,8 +892,8 @@ class RollingUpdateOrchestrationStrategyTest {
     }
     
     // Helper method to create SearchUnit
-    private io.clustercontroller.models.SearchUnit createSearchUnit(String nodeId) {
-        io.clustercontroller.models.SearchUnit node = new io.clustercontroller.models.SearchUnit();
+    private SearchUnit createSearchUnit(String nodeId) {
+        SearchUnit node = new SearchUnit();
         node.setName(nodeId);
         return node;
     }

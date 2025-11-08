@@ -346,7 +346,7 @@ class ShardAllocatorTest {
         index.setIndexName(indexName);
         index.setSettings(new io.clustercontroller.models.IndexSettings());
         index.getSettings().setShardReplicaCount(shardReplicaCount);
-        index.getSettings().setShardGroupsAllocateCount(shardGroupsAllocateCount);
+        index.getSettings().setNumGroupsPerShard(shardGroupsAllocateCount);
         index.getSettings().setNumberOfShards(shardReplicaCount.size());
         return index;
     }
@@ -558,7 +558,7 @@ class ShardAllocatorTest {
         // Given: Index with 3 shards, different group counts per shard
         // Shard 0: 2 groups, Shard 1: 3 groups, Shard 2: 2 groups
         Index index = createIndex("bp-stable", Arrays.asList(1, 1, 1));  // Replica count IGNORED
-        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3, 2)); // Group counts per shard
+        index.getSettings().setNumGroupsPerShard(Arrays.asList(2, 3, 2)); // Group counts per shard
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
         
         // Given: Existing planned allocations for 3 shards
@@ -749,7 +749,7 @@ class ShardAllocatorTest {
         // Shard 0: 1 group → 2 groups (scale up)
         // Shard 1: 2 groups → 4 groups (scale up)
         Index index = createIndex("bp-scaleup", Arrays.asList(3, 3));
-        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 4)); // New desired group counts
+        index.getSettings().setNumGroupsPerShard(Arrays.asList(2, 4)); // New desired group counts
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
         
         // Given: Existing planned allocations
@@ -897,7 +897,7 @@ class ShardAllocatorTest {
         // Given: Index with 2 shards, different group requirements
         // Shard 0: needs 2 groups, Shard 1: needs 3 groups
         Index index = createIndex("bp-initial", Arrays.asList(3, 3));
-        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3));
+        index.getSettings().setNumGroupsPerShard(Arrays.asList(2, 3));
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
         
         // Given: No existing planned allocations (brand new index)
@@ -1042,11 +1042,11 @@ class ShardAllocatorTest {
         // Given: 2 indexes with multiple shards, different group configurations
         // Index1: 2 shards → Shard 0: 2 groups, Shard 1: 3 groups
         Index index1 = createIndex("multi-index1", Arrays.asList(1, 1));
-        index1.getSettings().setShardGroupsAllocateCount(Arrays.asList(2, 3));
+        index1.getSettings().setNumGroupsPerShard(Arrays.asList(2, 3));
         
         // Index2: 2 shards → Shard 0: 1 group, Shard 1: 2 groups
         Index index2 = createIndex("multi-index2", Arrays.asList(1, 1));
-        index2.getSettings().setShardGroupsAllocateCount(Arrays.asList(1, 2));
+        index2.getSettings().setNumGroupsPerShard(Arrays.asList(1, 2));
         
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index1, index2));
         
@@ -1372,8 +1372,8 @@ class ShardAllocatorTest {
         
         // Given: Index with multi-writer configuration (2 ingester groups per shard)
         Index index = createIndex("multi-writer-index", Arrays.asList(3));
-        index.getSettings().setIngestGroupsAllocateCount(Arrays.asList(2));  // ← Multi-writer: 2 ingesters!
-        index.getSettings().setShardGroupsAllocateCount(Arrays.asList(2));    // 2 replica groups
+        index.getSettings().setNumIngestGroupsPerShard(Arrays.asList(2));  // ← Multi-writer: 2 ingesters!
+        index.getSettings().setNumGroupsPerShard(Arrays.asList(2));    // 2 replica groups
         when(metadataStore.getAllIndexConfigs(testClusterId)).thenReturn(Arrays.asList(index));
         
         // Given: No existing planned allocations

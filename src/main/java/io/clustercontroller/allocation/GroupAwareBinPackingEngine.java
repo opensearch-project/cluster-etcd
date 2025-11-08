@@ -217,9 +217,9 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
         int desiredGroupCount = 1;
         
         if (indexConfig != null && indexConfig.getSettings() != null 
-            && indexConfig.getSettings().getIngestGroupsAllocateCount() != null 
-            && shardId < indexConfig.getSettings().getIngestGroupsAllocateCount().size()) {
-            desiredGroupCount = indexConfig.getSettings().getIngestGroupsAllocateCount().get(shardId);
+            && indexConfig.getSettings().getNumIngestGroupsPerShard() != null 
+            && shardId < indexConfig.getSettings().getNumIngestGroupsPerShard().size()) {
+            desiredGroupCount = indexConfig.getSettings().getNumIngestGroupsPerShard().get(shardId);
         }
         
         log.debug("Desired ingester group count for shard {}: {}", shardId, desiredGroupCount);
@@ -302,9 +302,9 @@ public class GroupAwareBinPackingEngine implements AllocationDecisionEngine {
         // Step 1: Calculate desired number of groups from index config
         int desiredGroupCount = 1; // default
         if (indexConfig != null && indexConfig.getSettings() != null 
-            && indexConfig.getSettings().getShardGroupsAllocateCount() != null 
-            && shardId < indexConfig.getSettings().getShardGroupsAllocateCount().size()) {
-            desiredGroupCount = indexConfig.getSettings().getShardGroupsAllocateCount().get(shardId);
+            && indexConfig.getSettings().getNumGroupsPerShard() != null 
+            && shardId < indexConfig.getSettings().getNumGroupsPerShard().size()) {
+            desiredGroupCount = indexConfig.getSettings().getNumGroupsPerShard().get(shardId);
         }
         
         int currentGroupCount = currentGroupIds.size();

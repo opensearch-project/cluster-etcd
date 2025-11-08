@@ -202,9 +202,9 @@ public class ShardAllocator {
         int desiredCount = 1;
         
         if (indexConfig != null && indexConfig.getSettings() != null 
-            && indexConfig.getSettings().getIngestGroupsAllocateCount() != null 
-            && shardId < indexConfig.getSettings().getIngestGroupsAllocateCount().size()) {
-            desiredCount = indexConfig.getSettings().getIngestGroupsAllocateCount().get(shardId);
+            && indexConfig.getSettings().getNumIngestGroupsPerShard() != null 
+            && shardId < indexConfig.getSettings().getNumIngestGroupsPerShard().size()) {
+            desiredCount = indexConfig.getSettings().getNumIngestGroupsPerShard().get(shardId);
         }
         
         return desiredCount;
