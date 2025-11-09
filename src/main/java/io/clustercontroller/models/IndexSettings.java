@@ -18,11 +18,11 @@ public class IndexSettings {
     @JsonProperty("shard_replica_count")
     private List<Integer> shardReplicaCount;
     
-    @JsonProperty("shard_groups_allocate_count")
-    private List<Integer> shardGroupsAllocateCount;
+    @JsonProperty("num_groups_per_shard")
+    private List<Integer> numGroupsPerShard;
     
-    @JsonProperty("ingest_groups_allocate_count")
-    private List<Integer> ingestGroupsAllocateCount;
+    @JsonProperty("num_ingest_groups_per_shard")
+    private List<Integer> numIngestGroupsPerShard;
 
     @JsonProperty("pause_pull_ingestion")
     private Boolean pausePullIngestion;

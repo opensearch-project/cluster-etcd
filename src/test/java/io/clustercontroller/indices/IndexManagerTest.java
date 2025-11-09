@@ -577,4 +577,56 @@ class IndexManagerTest {
         // Should preserve shard_replica_count from existing settings
         assertThat(mergedSettings).contains("\"shard_replica_count\"");
     }
+
+    @Test
+    void testCreateIndex_FiltersControllerSpecificSettings() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String createIndexRequestJson = """
+            {
+                "settings": {
+                    "number_of_shards": 3,
+                    "number_of_replicas": 2,
+                    "num_groups_per_shard": [2, 2, 1],
+                    "shard_replica_count": [2, 2, 2],
+                    "num_ingest_groups_per_shard": [1, 1, 1],
+                    "refresh_interval": "30s",
+                    "max_result_window": 10000,
+                    "remote_store.enabled": true
+                }
+            }
+            """;
+
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any())).thenReturn("doc-id");
+
+        // When
+        indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
+
+        // Then - verify controller-specific settings are stored in /conf
+        ArgumentCaptor<String> confCaptor = ArgumentCaptor.forClass(String.class);
+        verify(metadataStore).createIndexConfig(eq(clusterId), eq(indexName), confCaptor.capture());
+        
+        String confJson = confCaptor.getValue();
+        assertThat(confJson).contains("\"num_groups_per_shard\"");
+        assertThat(confJson).contains("\"shard_replica_count\"");
+
+        // Then - verify controller-specific settings are filtered from /settings
+        ArgumentCaptor<String> settingsCaptor = ArgumentCaptor.forClass(String.class);
+        verify(metadataStore).setIndexSettings(eq(clusterId), eq(indexName), settingsCaptor.capture());
+        
+        String settingsJson = settingsCaptor.getValue();
+        // Should NOT contain controller-specific settings
+        assertThat(settingsJson).doesNotContain("num_groups_per_shard");
+        assertThat(settingsJson).doesNotContain("shard_replica_count");
+        assertThat(settingsJson).doesNotContain("num_ingest_groups_per_shard");
+        
+        // Should contain OpenSearch-native settings
+        assertThat(settingsJson).contains("\"number_of_shards\":3");
+        assertThat(settingsJson).contains("\"number_of_replicas\":2");
+        assertThat(settingsJson).contains("\"refresh_interval\":\"30s\"");
+        assertThat(settingsJson).contains("\"max_result_window\":10000");
+        assertThat(settingsJson).contains("\"remote_store.enabled\":true");
+    }
 }

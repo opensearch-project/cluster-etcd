@@ -121,9 +121,9 @@ public class IndexManager {
         log.info("CreateIndex - Using {} shards with replica count: {}", numberOfShards, shardReplicaCount);
         
         // Extract shard groups allocate count: prefer num_groups_per_shard if present, otherwise fallback to shardReplicaCount
-        List<Integer> shardGroupsAllocateCount = extractShardGroupsAllocateCount(finalSettings, numberOfShards, shardReplicaCount);
+        List<Integer> numGroupsPerShard = extractNumGroupsPerShard(finalSettings, numberOfShards, shardReplicaCount);
         
-        log.info("CreateIndex - Using {} shards with groups allocate count: {}", numberOfShards, shardGroupsAllocateCount);
+        log.info("CreateIndex - Using {} shards with groups allocate count: {}", numberOfShards, numGroupsPerShard);
         
         // Create the new Index configuration
         Index newIndex = new Index();
@@ -132,7 +132,7 @@ public class IndexManager {
         newIndex.setSettings(new IndexSettings());
         newIndex.getSettings().setNumberOfShards(numberOfShards);
         newIndex.getSettings().setShardReplicaCount(shardReplicaCount);
-        newIndex.getSettings().setShardGroupsAllocateCount(shardGroupsAllocateCount);
+        newIndex.getSettings().setNumGroupsPerShard(numGroupsPerShard);
         
         // Store the index configuration
         String indexConfigJson = objectMapper.writeValueAsString(newIndex);
@@ -148,10 +148,12 @@ public class IndexManager {
         }
         
         // Store settings (from templates and user request)
+        // Filter out controller-specific settings before storing (these are only in /conf, not in /settings)
         if (!finalSettings.isEmpty()) {
-            String settingsJson = objectMapper.writeValueAsString(finalSettings);
+            Map<String, Object> opensearchOnlySettings = filterControllerSpecificSettings(finalSettings);
+            String settingsJson = objectMapper.writeValueAsString(opensearchOnlySettings);
             metadataStore.setIndexSettings(clusterId, indexName, settingsJson);
-            log.info("CreateIndex - Set settings for index '{}'", indexName);
+            log.info("CreateIndex - Set OpenSearch-native settings for index '{}'", indexName);
         }
         
         // TODO: Handle aliases when alias support is implemented
@@ -322,6 +324,24 @@ public class IndexManager {
     }
 
     /**
+     * Filter out controller-specific settings that should not be sent to OpenSearch datanodes.
+     * Only keeps pure OpenSearch settings.
+     */
+    private Map<String, Object> filterControllerSpecificSettings(Map<String, Object> settings) {
+        Map<String, Object> filtered = new HashMap<>(settings);
+        
+        // Remove controller-specific settings
+        filtered.remove("num_groups_per_shard");
+        filtered.remove("shard_replica_count");
+        filtered.remove("num_ingest_groups_per_shard");
+        
+        log.debug("Filtered controller-specific settings. Original keys: {}, Filtered keys: {}", 
+                 settings.keySet(), filtered.keySet());
+        
+        return filtered;
+    }
+
+    /**
      * Extract the number of shards from the settings map.
      * Returns 1 as default if not specified or if parsing fails.
      */
@@ -438,7 +458,7 @@ public class IndexManager {
      * Prefers num_groups_per_shard if present, otherwise falls back to shardReplicaCount.
      * Returns a list with values from shardReplicaCount if not specified or if parsing fails.
      */
-    private List<Integer> extractShardGroupsAllocateCount(Map<String, Object> settings, int numberOfShards, List<Integer> shardReplicaCount) {
+    private List<Integer> extractNumGroupsPerShard(Map<String, Object> settings, int numberOfShards, List<Integer> shardReplicaCount) {
         List<Integer> result = new ArrayList<>();
         
         if (settings == null || settings.isEmpty()) {
@@ -517,9 +537,9 @@ public class IndexManager {
             log.debug("Updating shard_replica_count");
         }
         
-        if (newSettings.getShardGroupsAllocateCount() != null) {
-            oldSettings.setShardGroupsAllocateCount(newSettings.getShardGroupsAllocateCount());
-            log.debug("Updating shard_groups_allocate_count");
+        if (newSettings.getNumGroupsPerShard() != null) {
+            oldSettings.setNumGroupsPerShard(newSettings.getNumGroupsPerShard());
+            log.debug("Updating num_groups_per_shard");
         }
         
         if (newSettings.getPausePullIngestion() != null) {

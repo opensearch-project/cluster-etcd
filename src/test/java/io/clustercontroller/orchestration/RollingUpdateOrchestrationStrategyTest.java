@@ -2,6 +2,7 @@ package io.clustercontroller.orchestration;
 
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
+import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
@@ -622,6 +623,237 @@ class RollingUpdateOrchestrationStrategyTest {
         // The orchestration should complete without throwing (resilient behavior)
     }
 
+    // ========== CLEANUP TESTS ==========
+    
+    @Test
+    void testCleanupStaleGoalStates_RemovesNodeNotInPlannedAllocation() throws Exception {
+        // Given: Node has goal state for a shard that is NO LONGER in planned allocation
+        String clusterId = "test-cluster";
+        String nodeId = "node1";
+        
+        // Node has goal state for index1/shard0
+        SearchUnitGoalState goalState = createGoalStateWithShard("index1", "0", "PRIMARY");
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
+        
+        // But no planned allocation exists for index1/shard0
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(null);
+        
+        // Mock empty index configs for main orchestration
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        
+        // When
+        strategy.orchestrate(clusterId);
+        
+        // Then: Stale goal state should be removed
+        verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq(nodeId), argThat(gs -> 
+            gs.getLocalShards() == null || gs.getLocalShards().isEmpty()
+        ));
+    }
+    
+    @Test
+    void testCleanupStaleGoalStates_KeepsNodeInPlannedAllocation() throws Exception {
+        // Given: Node has goal state that IS in planned allocation
+        String clusterId = "test-cluster";
+        String nodeId = "node1";
+        
+        // Node has goal state for index1/shard0 as PRIMARY
+        SearchUnitGoalState goalState = createGoalStateWithShard("index1", "0", "PRIMARY");
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
+        
+        // Planned allocation includes this node for index1/shard0 as PRIMARY
+        ShardAllocation planned = new ShardAllocation();
+        planned.setIngestSUs(Arrays.asList(nodeId));
+        planned.setSearchSUs(Arrays.asList());
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(planned);
+        
+        // Mock empty index configs for main orchestration
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        
+        // When
+        strategy.orchestrate(clusterId);
+        
+        // Then: Goal state should NOT be modified (no cleanup call for this node)
+        verify(metadataStore, never()).setSearchUnitGoalState(eq(clusterId), eq(nodeId), any());
+    }
+    
+    @Test
+    void testCleanupStaleGoalStates_HandlesMixedValidAndStaleEntries() throws Exception {
+        // Given: Node has MULTIPLE goal states - some valid, some stale
+        String clusterId = "test-cluster";
+        String nodeId = "node1";
+        
+        // Node has goal state for 2 shards: index1/shard0 (valid) and index2/shard0 (stale)
+        SearchUnitGoalState goalState = new SearchUnitGoalState();
+        Map<String, Map<String, String>> localShards = new HashMap<>();
+        
+        Map<String, String> index1Shards = new HashMap<>();
+        index1Shards.put("0", "PRIMARY");
+        localShards.put("index1", index1Shards);
+        
+        Map<String, String> index2Shards = new HashMap<>();
+        index2Shards.put("0", "SEARCH_REPLICA");
+        localShards.put("index2", index2Shards);
+        
+        goalState.setLocalShards(localShards);
+        
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
+        
+        // Planned allocation: index1/shard0 includes node1, but index2/shard0 does NOT
+        ShardAllocation planned1 = new ShardAllocation();
+        planned1.setIngestSUs(Arrays.asList(nodeId));
+        planned1.setSearchSUs(Arrays.asList());
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(planned1);
+        
+        ShardAllocation planned2 = new ShardAllocation();
+        planned2.setIngestSUs(Arrays.asList());
+        planned2.setSearchSUs(Arrays.asList("node2", "node3")); // node1 NOT in planned allocation
+        when(metadataStore.getPlannedAllocation(clusterId, "index2", "0")).thenReturn(planned2);
+        
+        // Mock empty index configs for main orchestration
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        
+        // When
+        strategy.orchestrate(clusterId);
+        
+        // Then: Cleanup should remove index2/shard0 but keep index1/shard0
+        verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq(nodeId), argThat(gs -> {
+            Map<String, Map<String, String>> shards = gs.getLocalShards();
+            // Should have index1 but NOT index2
+            return shards.containsKey("index1") && !shards.containsKey("index2");
+        }));
+    }
+    
+    @Test
+    void testCleanupStaleGoalStates_HandlesEmptyGoalState() throws Exception {
+        // Given: Node has empty goal state
+        String clusterId = "test-cluster";
+        String nodeId = "node1";
+        
+        SearchUnitGoalState emptyGoalState = new SearchUnitGoalState();
+        emptyGoalState.setLocalShards(new HashMap<>());
+        
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(emptyGoalState);
+        
+        // Mock empty index configs for main orchestration
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        
+        // When
+        strategy.orchestrate(clusterId);
+        
+        // Then: No cleanup should be performed (nothing to clean)
+        verify(metadataStore, never()).setSearchUnitGoalState(eq(clusterId), eq(nodeId), any());
+    }
+    
+    @Test
+    void testCleanupStaleGoalStates_HandlesNullGoalState() throws Exception {
+        // Given: Node has null goal state
+        String clusterId = "test-cluster";
+        String nodeId = "node1";
+        
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(null);
+        
+        // Mock empty index configs for main orchestration
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        
+        // When
+        strategy.orchestrate(clusterId);
+        
+        // Then: No cleanup should be performed (nothing to clean)
+        verify(metadataStore, never()).setSearchUnitGoalState(eq(clusterId), eq(nodeId), any());
+    }
+    
+    @Test
+    void testCleanupStaleGoalStates_WorksForBothPrimaryAndReplica() throws Exception {
+        // Given: Multiple nodes with both PRIMARY and REPLICA roles
+        String clusterId = "test-cluster";
+        String primaryNode = "primary-node";
+        String replicaNode = "replica-node";
+        
+        // Primary node has stale goal state
+        SearchUnitGoalState primaryGoalState = createGoalStateWithShard("index1", "0", "PRIMARY");
+        when(metadataStore.getSearchUnitGoalState(clusterId, primaryNode)).thenReturn(primaryGoalState);
+        
+        // Replica node has stale goal state
+        SearchUnitGoalState replicaGoalState = createGoalStateWithShard("index1", "0", "SEARCH_REPLICA");
+        when(metadataStore.getSearchUnitGoalState(clusterId, replicaNode)).thenReturn(replicaGoalState);
+        
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(primaryNode), createSearchUnit(replicaNode)));
+        
+        // No planned allocation exists for index1/shard0
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(null);
+        
+        // Mock empty index configs for main orchestration
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        
+        // When
+        strategy.orchestrate(clusterId);
+        
+        // Then: Both PRIMARY and REPLICA stale goal states should be removed
+        verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq(primaryNode), argThat(gs -> 
+            gs.getLocalShards() == null || gs.getLocalShards().isEmpty()
+        ));
+        verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq(replicaNode), argThat(gs -> 
+            gs.getLocalShards() == null || gs.getLocalShards().isEmpty()
+        ));
+    }
+    
+    @Test
+    void testCleanupStaleGoalStates_HandlesNodeNotInAnyPlannedAllocation() throws Exception {
+        // Given: Node has goal states for multiple shards, NONE in planned allocation
+        String clusterId = "test-cluster";
+        String nodeId = "node1";
+        
+        // Node has goal states for 3 different shards
+        SearchUnitGoalState goalState = new SearchUnitGoalState();
+        Map<String, Map<String, String>> localShards = new HashMap<>();
+        
+        Map<String, String> index1Shards = new HashMap<>();
+        index1Shards.put("0", "PRIMARY");
+        index1Shards.put("1", "PRIMARY");
+        localShards.put("index1", index1Shards);
+        
+        Map<String, String> index2Shards = new HashMap<>();
+        index2Shards.put("0", "SEARCH_REPLICA");
+        localShards.put("index2", index2Shards);
+        
+        goalState.setLocalShards(localShards);
+        
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
+        
+        // None of the planned allocations include this node
+        ShardAllocation planned1_0 = new ShardAllocation();
+        planned1_0.setIngestSUs(Arrays.asList("other-node"));
+        planned1_0.setSearchSUs(Arrays.asList());
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(planned1_0);
+        
+        ShardAllocation planned1_1 = new ShardAllocation();
+        planned1_1.setIngestSUs(Arrays.asList("another-node"));
+        planned1_1.setSearchSUs(Arrays.asList());
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "1")).thenReturn(planned1_1);
+        
+        ShardAllocation planned2_0 = new ShardAllocation();
+        planned2_0.setIngestSUs(Arrays.asList());
+        planned2_0.setSearchSUs(Arrays.asList("replica-1", "replica-2"));
+        when(metadataStore.getPlannedAllocation(clusterId, "index2", "0")).thenReturn(planned2_0);
+        
+        // Mock empty index configs for main orchestration
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        
+        // When
+        strategy.orchestrate(clusterId);
+        
+        // Then: ALL goal states should be removed (node not in any planned allocation)
+        verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq(nodeId), argThat(gs -> 
+            gs.getLocalShards() == null || gs.getLocalShards().isEmpty()
+        ));
+    }
+
     // Helper methods
     private SearchUnitGoalState createGoalStateWithShard(String indexName, String shardId, String role) {
         SearchUnitGoalState goalState = new SearchUnitGoalState();
@@ -657,5 +889,12 @@ class RollingUpdateOrchestrationStrategyTest {
         index.setSettings(settings);
         
         return index;
+    }
+    
+    // Helper method to create SearchUnit
+    private SearchUnit createSearchUnit(String nodeId) {
+        SearchUnit node = new SearchUnit();
+        node.setName(nodeId);
+        return node;
     }
 }
