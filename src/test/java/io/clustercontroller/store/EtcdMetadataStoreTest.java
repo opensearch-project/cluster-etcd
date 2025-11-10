@@ -2,7 +2,6 @@ package io.clustercontroller.store;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.clustercontroller.models.ClusterControllerAssignment;
-import io.clustercontroller.models.ClusterInformation;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.SearchUnit;
@@ -343,15 +342,15 @@ public class EtcdMetadataStoreTest {
     public void testDeleteSearchUnit() throws Exception {
         EtcdMetadataStore store = newStore();
 
-        // Mock successful delete - we don't need to check the response since method returns void
-        when(mockKv.delete(any(ByteSequence.class)))
+        // Mock successful prefix delete for search unit (conf, goal-state, actual-state)
+        when(mockKv.delete(any(ByteSequence.class), any()))
                 .thenReturn(CompletableFuture.completedFuture(mock(DeleteResponse.class)));
 
         // Call delete method
         store.deleteSearchUnit(CLUSTER, "node6");
         
-        // Verify etcd delete was called with correct parameters
-        verify(mockKv).delete(any(ByteSequence.class));
+        // Verify etcd prefix delete was called with correct parameters
+        verify(mockKv).delete(any(ByteSequence.class), any());
     }
 
     @Test
@@ -359,7 +358,7 @@ public class EtcdMetadataStoreTest {
         EtcdMetadataStore store = newStore();
 
         // Mock etcd failure
-        when(mockKv.delete(any(ByteSequence.class)))
+        when(mockKv.delete(any(ByteSequence.class), any()))
                 .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd timeout")));
 
         // Verify exception is propagated

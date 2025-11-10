@@ -206,6 +206,7 @@ public class Discovery {
                     
                     if (shouldDelete) {
                         log.info("Discovery - Deleting search unit '{}' due to: {}", unitName, reason);
+                        // Delete the entire search unit (conf, actual-state, goal-state) with single call
                         metadataStore.deleteSearchUnit(clusterName, unitName);
                         deletedCount++;
                     }

@@ -633,7 +633,7 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Node has goal state for index1/shard0
         SearchUnitGoalState goalState = createGoalStateWithShard("index1", "0", "PRIMARY");
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
         
         // But no planned allocation exists for index1/shard0
@@ -659,7 +659,7 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Node has goal state for index1/shard0 as PRIMARY
         SearchUnitGoalState goalState = createGoalStateWithShard("index1", "0", "PRIMARY");
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
         
         // Planned allocation includes this node for index1/shard0 as PRIMARY
@@ -698,7 +698,7 @@ class RollingUpdateOrchestrationStrategyTest {
         
         goalState.setLocalShards(localShards);
         
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
         
         // Planned allocation: index1/shard0 includes node1, but index2/shard0 does NOT
@@ -735,7 +735,7 @@ class RollingUpdateOrchestrationStrategyTest {
         SearchUnitGoalState emptyGoalState = new SearchUnitGoalState();
         emptyGoalState.setLocalShards(new HashMap<>());
         
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(emptyGoalState);
         
         // Mock empty index configs for main orchestration
@@ -754,7 +754,7 @@ class RollingUpdateOrchestrationStrategyTest {
         String clusterId = "test-cluster";
         String nodeId = "node1";
         
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(null);
         
         // Mock empty index configs for main orchestration
@@ -782,7 +782,7 @@ class RollingUpdateOrchestrationStrategyTest {
         SearchUnitGoalState replicaGoalState = createGoalStateWithShard("index1", "0", "SEARCH_REPLICA");
         when(metadataStore.getSearchUnitGoalState(clusterId, replicaNode)).thenReturn(replicaGoalState);
         
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(primaryNode), createSearchUnit(replicaNode)));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(primaryNode, replicaNode));
         
         // No planned allocation exists for index1/shard0
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(null);
@@ -823,7 +823,7 @@ class RollingUpdateOrchestrationStrategyTest {
         
         goalState.setLocalShards(localShards);
         
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(createSearchUnit(nodeId)));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
         
         // None of the planned allocations include this node
@@ -850,6 +850,33 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Then: ALL goal states should be removed (node not in any planned allocation)
         verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq(nodeId), argThat(gs -> 
+            gs.getLocalShards() == null || gs.getLocalShards().isEmpty()
+        ));
+    }
+    
+    @Test
+    void testCleanupStaleGoalStates_HandlesDecommissionedNodes() throws Exception {
+        // Given: A decommissioned node (no conf file) still has goal states
+        String clusterId = "test-cluster";
+        String decommissionedNode = "decommissioned-node";
+        
+        // Node is in getAllNodesWithGoalStates (has goal state) but NOT in getAllSearchUnits (no conf)
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(decommissionedNode));
+        
+        SearchUnitGoalState goalState = createGoalStateWithShard("index1", "0", "PRIMARY");
+        when(metadataStore.getSearchUnitGoalState(clusterId, decommissionedNode)).thenReturn(goalState);
+        
+        // No planned allocation exists for this node
+        when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(null);
+        
+        // Mock empty index configs for main orchestration
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        
+        // When
+        strategy.orchestrate(clusterId);
+        
+        // Then: Goal state should be cleaned up even though node has no conf file
+        verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq(decommissionedNode), argThat(gs -> 
             gs.getLocalShards() == null || gs.getLocalShards().isEmpty()
         ));
     }
