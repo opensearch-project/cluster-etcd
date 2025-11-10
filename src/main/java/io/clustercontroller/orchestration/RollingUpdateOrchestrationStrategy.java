@@ -270,16 +270,17 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
         log.info("Starting goal state cleanup phase for cluster: {}", clusterId);
         
         try {
-            // Get all search units (nodes) in the cluster
-            List<SearchUnit> allNodes = metadataStore.getAllSearchUnits(clusterId);
+            // Get ALL nodes that have goal states (including decommissioned nodes without conf files)
+            // This ensures we clean up orphaned goal states from deleted/decommissioned nodes
+            List<String> allNodeNames = metadataStore.getAllNodesWithGoalStates(clusterId);
             
             int totalCleaned = 0;
-            for (SearchUnit node : allNodes) {
+            for (String nodeName : allNodeNames) {
                 try {
-                    int cleaned = cleanupNodeGoalState(clusterId, node.getName());
+                    int cleaned = cleanupNodeGoalState(clusterId, nodeName);
                     totalCleaned += cleaned;
                 } catch (Exception e) {
-                    log.error("Failed to cleanup goal state for node {}: {}", node.getName(), e.getMessage(), e);
+                    log.error("Failed to cleanup goal state for node {}: {}", nodeName, e.getMessage(), e);
                 }
             }
             

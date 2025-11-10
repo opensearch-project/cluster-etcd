@@ -9,8 +9,8 @@ import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.Template;
 import io.clustercontroller.models.ClusterControllerAssignment;
-import io.clustercontroller.models.ClusterInformation;
 import io.clustercontroller.models.CoordinatorGoalState;
+import io.clustercontroller.models.ClusterInformation;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -97,6 +97,13 @@ public interface MetadataStore {
      * Get search unit goal state
      */
     SearchUnitGoalState getSearchUnitGoalState(String clusterId, String unitName) throws Exception;
+    
+    /**
+     * Get all node names that have goal states (includes nodes without conf files)
+     * This is useful for cleanup operations where we need to process ALL nodes with goal states,
+     * not just active nodes returned by getAllSearchUnits()
+     */
+    List<String> getAllNodesWithGoalStates(String clusterId) throws Exception;
     
     /**
      * Get search unit actual state
@@ -216,23 +223,14 @@ public interface MetadataStore {
     void setActualAllocation(String clusterId, String indexName, String shardId, ShardAllocation allocation) throws Exception;
     
     /**
-     * Get all actual allocations for a specific index
+     * Get all actual allocations for an index
      */
     List<ShardAllocation> getAllActualAllocations(String clusterId, String indexName) throws Exception;
     
-    // =================================================================
-    // COORDINATOR GOAL STATE OPERATIONS
-    // =================================================================
-    
     /**
-     * Get coordinator goal state for the default coordinator group
+     * Delete actual allocation for a specific shard
      */
-    CoordinatorGoalState getCoordinatorGoalState(String clusterId) throws Exception;
-    
-    /**
-     * Set coordinator goal state for the default coordinator group
-     */
-    void setCoordinatorGoalState(String clusterId, CoordinatorGoalState goalState) throws Exception;
+    void deleteActualAllocation(String clusterId, String indexName, String shardId) throws Exception;
     
     // =================================================================
     // CLUSTER OPERATIONS
@@ -262,11 +260,17 @@ public interface MetadataStore {
     ClusterControllerAssignment getAssignedController(String clusterId) throws Exception;
     
     /**
-     * Get cluster version from the cluster registry path.
-     * This retrieves only the version information from cluster metadata.
-     * Path: /multi-cluster/clusters/<cluster-id>/metadata
-     * 
-     * @param clusterId the cluster ID
+     * Set coordinator goal state for the default coordinator group
+     */
+    void setCoordinatorGoalState(String clusterId, CoordinatorGoalState goalState) throws Exception;
+    
+    /**
+     * Get coordinator goal state for the default coordinator group
+     */
+    CoordinatorGoalState getCoordinatorGoalState(String clusterId) throws Exception;
+    
+    /**
+     * Get cluster version information
      * @return Version object, or null if not found
      * @throws Exception if there's an error retrieving the data
      */

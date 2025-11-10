@@ -343,13 +343,19 @@ public class EtcdMetadataStore implements MetadataStore {
     }
     
     public void deleteSearchUnit(String clusterId, String unitName) throws Exception {
-        log.info("Deleting search unit {} from etcd", unitName);
+        log.info("Deleting search unit {} (all state: conf, goal-state, actual-state) from etcd", unitName);
         
         try {
-            String unitPath = pathResolver.getSearchUnitConfPath(clusterId, unitName);
-            executeEtcdDelete(unitPath);
+            // Delete the entire search unit node prefix to remove conf, goal-state, and actual-state
+            String unitPrefix = pathResolver.getSearchUnitsPrefix(clusterId) + PATH_DELIMITER + unitName;
             
-            log.info("Successfully deleted search unit {} from etcd", unitName);
+            ByteSequence prefixBytes = ByteSequence.from(unitPrefix + PATH_DELIMITER, UTF_8);
+            kvClient.delete(
+                prefixBytes,
+                DeleteOption.newBuilder().withPrefix(prefixBytes).build()
+            ).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            log.info("Successfully deleted search unit {} and all its state from etcd", unitName);
             
         } catch (Exception e) {
             log.error("Failed to delete search unit {} from etcd: {}", unitName, e.getMessage(), e);
@@ -476,6 +482,50 @@ public class EtcdMetadataStore implements MetadataStore {
         putFuture.get();
         
         log.debug("Successfully set actual state for search unit {}", unitName);
+    }
+
+    public List<String> getAllNodesWithGoalStates(String clusterId) throws Exception {
+        log.debug("Getting all nodes with goal states from etcd");
+        
+        String prefix = pathResolver.getSearchUnitsPrefix(clusterId);
+        GetOption option = GetOption.newBuilder().withPrefix(ByteSequence.from(prefix, UTF_8)).build();
+        CompletableFuture<GetResponse> getFuture = kvClient.get(ByteSequence.from(prefix, UTF_8), option);
+        GetResponse response = getFuture.get();
+        
+        List<String> nodeNames = new ArrayList<>();
+        
+        for (KeyValue kv : response.getKvs()) {
+            String key = kv.getKey().toString(UTF_8);
+            
+            String relativePath = key.substring(prefix.length());
+            if (relativePath.startsWith("/")) {
+                relativePath = relativePath.substring(1);
+            }
+            String[] parts = relativePath.split("/");
+            if (parts.length >= 2 && "goal-state".equals(parts[1])) {
+                String unitName = parts[0];
+                nodeNames.add(unitName);
+                log.debug("Found goal-state for node: {} (key: {})", unitName, key);
+            }
+        }
+        
+        log.debug("Retrieved {} nodes with goal states from etcd", nodeNames.size());
+        return nodeNames;
+    }
+    
+    public void deleteActualAllocation(String clusterId, String indexName, String shardId) throws Exception {
+        log.info("Deleting actual allocation for {}/{} from etcd", indexName, shardId);
+        
+        try {
+            String actualAllocationPath = pathResolver.getShardActualAllocationPath(clusterId, indexName, shardId);
+            executeEtcdDelete(actualAllocationPath);
+            
+            log.info("Successfully deleted actual allocation for {}/{} from etcd", indexName, shardId);
+            
+        } catch (Exception e) {
+            log.error("Failed to delete actual allocation for {}/{} from etcd: {}", indexName, shardId, e.getMessage(), e);
+            throw new Exception("Failed to delete actual allocation from etcd", e);
+        }
     }
     // =================================================================
     // INDEX CONFIGURATIONS OPERATIONS

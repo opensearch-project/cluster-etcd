@@ -249,6 +249,7 @@ public class ActualAllocationUpdater {
     
     /**
      * Clean up actual allocations for shards that no longer exist on any search unit
+     * Also cleans up actual allocations for deleted indices (indices without configs)
      * Uses the already-collected actual allocation data for efficiency
      */
     private void cleanupStaleActualAllocations(String clusterId, Map<String, Map<String, Set<String>>> currentActualAllocations) throws Exception {
@@ -256,8 +257,13 @@ public class ActualAllocationUpdater {
         
         // Get all index configurations to know what indices exist
         List<Index> indexConfigs = metadataStore.getAllIndexConfigs(clusterId);
+        Set<String> existingIndexNames = indexConfigs.stream()
+            .map(Index::getIndexName)
+            .collect(java.util.stream.Collectors.toSet());
+        
         int totalCleanups = 0;
         
+        // PHASE 1: Clean up stale allocations for EXISTING indices
         for (Index indexConfig : indexConfigs) {
             String indexName = indexConfig.getIndexName();
             
@@ -290,6 +296,38 @@ public class ActualAllocationUpdater {
                 log.error("ActualAllocationUpdater - Error cleaning up actual allocations for index {}: {}", 
                     indexName, e.getMessage(), e);
                 // Continue with other indexes
+            }
+        }
+        
+        // PHASE 2: Clean up actual allocations for DELETED indices (orphaned entries)
+        // These are indices that have actual-allocations in etcd but no config (index was deleted)
+        Set<String> indicesWithActualAllocations = new HashSet<>(currentActualAllocations.keySet());
+        
+        for (String indexName : indicesWithActualAllocations) {
+            if (!existingIndexNames.contains(indexName)) {
+                // This index is deleted but still has actual-allocation entries (orphaned)
+                log.info("ActualAllocationUpdater - Found orphaned actual-allocations for deleted index: {}", indexName);
+                
+                try {
+                    // Get all actual allocations for this deleted index
+                    List<ShardAllocation> orphanedAllocations = metadataStore.getAllActualAllocations(clusterId, indexName);
+                    
+                    for (ShardAllocation allocation : orphanedAllocations) {
+                        String shardId = allocation.getShardId();
+                        
+                        // Delete the actual allocation entry completely
+                        metadataStore.deleteActualAllocation(clusterId, indexName, shardId);
+                        totalCleanups++;
+                        
+                        log.info("ActualAllocationUpdater - Deleted orphaned actual allocation for deleted index {}/{}", 
+                            indexName, shardId);
+                    }
+                    
+                } catch (Exception e) {
+                    log.error("ActualAllocationUpdater - Error cleaning up orphaned actual allocations for deleted index {}: {}", 
+                        indexName, e.getMessage(), e);
+                    // Continue with other indexes
+                }
             }
         }
         
