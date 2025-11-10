@@ -340,7 +340,8 @@ public class EtcdMetadataStore implements MetadataStore {
                 SearchUnit coordinator = new SearchUnit();
                 coordinator.setName(json.has("nodeName") ? json.get("nodeName").asText() : "unknown");
                 coordinator.setHost(json.has("address") ? json.get("address").asText() : "");
-                coordinator.setPortHttp(9200);
+                int port = json.has("port") ? json.get("port").asInt() : 9200;
+                coordinator.setPortHttp(port);
                 coordinator.setRole("COORDINATOR");
                 coordinator.setClusterName(clusterId);
                 
