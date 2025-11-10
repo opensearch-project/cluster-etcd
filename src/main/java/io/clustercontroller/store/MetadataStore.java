@@ -14,6 +14,7 @@ import io.clustercontroller.models.ClusterInformation;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Abstraction layer for metadata storage supporting different backends (etcd, redis, etc.)
@@ -231,6 +232,12 @@ public interface MetadataStore {
      * Delete actual allocation for a specific shard
      */
     void deleteActualAllocation(String clusterId, String indexName, String shardId) throws Exception;
+    
+    /**
+     * Get all index names that have actual-allocation entries in etcd.
+     * This is used for cleanup operations to find orphaned allocations.
+     */
+    Set<String> getAllIndicesWithActualAllocations(String clusterId) throws Exception;
     
     // =================================================================
     // CLUSTER OPERATIONS

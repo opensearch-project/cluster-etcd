@@ -56,6 +56,10 @@ class ActualAllocationUpdaterCleanupTest {
         Index indexConfig = createIndex(indexName, 2);
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
         
+        // Mock that the index has actual-allocation entries in etcd
+        when(metadataStore.getAllIndicesWithActualAllocations(clusterId))
+            .thenReturn(Collections.singleton(indexName));
+        
         // Stored actual allocations in etcd (stale)
         ShardAllocation storedShard0 = createShardAllocation("0", Arrays.asList("node1"), Arrays.asList());
         ShardAllocation storedShard1 = createShardAllocation("1", Arrays.asList("node1"), Arrays.asList());
@@ -91,6 +95,10 @@ class ActualAllocationUpdaterCleanupTest {
         
         // NO config exists for deleted-index (this makes it a deleted index)
         when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Collections.emptyList());
+        
+        // Mock that the deleted index has actual-allocation entries in etcd
+        when(metadataStore.getAllIndicesWithActualAllocations(clusterId))
+            .thenReturn(Collections.singleton(deletedIndex));
         
         // The deleted index has actual allocations stored in etcd (orphaned entries)
         ShardAllocation shard0 = createShardAllocation("0", Arrays.asList("node1"), Arrays.asList());

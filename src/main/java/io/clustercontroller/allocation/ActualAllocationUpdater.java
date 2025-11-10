@@ -301,7 +301,8 @@ public class ActualAllocationUpdater {
         
         // PHASE 2: Clean up actual allocations for DELETED indices (orphaned entries)
         // These are indices that have actual-allocations in etcd but no config (index was deleted)
-        Set<String> indicesWithActualAllocations = new HashSet<>(currentActualAllocations.keySet());
+        // NOTE: We need to check ALL indices with actual-allocations in etcd, not just those reported by search units
+        Set<String> indicesWithActualAllocations = getAllIndicesWithActualAllocations(clusterId);
         
         for (String indexName : indicesWithActualAllocations) {
             if (!existingIndexNames.contains(indexName)) {
@@ -335,6 +336,15 @@ public class ActualAllocationUpdater {
     }
     
     // (standalone cleanup wrapper removed; no external callers)
+    
+    /**
+     * Get all indices that have actual-allocation entries in etcd.
+     * This is needed for PHASE 2 cleanup to find orphaned allocations for deleted indices
+     * that are no longer being reported by any search units.
+     */
+    private Set<String> getAllIndicesWithActualAllocations(String clusterId) throws Exception {
+        return metadataStore.getAllIndicesWithActualAllocations(clusterId);
+    }
     
     /**
      * Determines if a search unit is a coordinator node

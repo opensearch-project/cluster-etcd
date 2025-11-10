@@ -527,6 +527,51 @@ public class EtcdMetadataStore implements MetadataStore {
             throw new Exception("Failed to delete actual allocation from etcd", e);
         }
     }
+    
+    @Override
+    public Set<String> getAllIndicesWithActualAllocations(String clusterId) throws Exception {
+        log.debug("Getting all indices with actual-allocation entries from etcd");
+        
+        Set<String> indicesWithAllocations = new HashSet<>();
+        
+        try {
+            String indicesPrefix = pathResolver.getIndicesPrefix(clusterId);
+            ByteSequence prefixBytes = ByteSequence.from(indicesPrefix, UTF_8);
+            GetOption getOption = GetOption.newBuilder()
+                    .withPrefix(prefixBytes)
+                    .build();
+            
+            GetResponse response = kvClient.get(prefixBytes, getOption)
+                    .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            for (KeyValue kv : response.getKvs()) {
+                String key = kv.getKey().toString(UTF_8);
+                
+                // Look for keys ending with "/actual-allocation"
+                if (key.endsWith("/" + Constants.SUFFIX_ACTUAL_ALLOCATION)) {
+                    // Extract index name from key pattern: /cluster/indices/INDEX_NAME/SHARD_ID/actual-allocation
+                    String relativePath = key.substring(indicesPrefix.length());
+                    if (relativePath.startsWith("/")) {
+                        relativePath = relativePath.substring(1);
+                    }
+                    
+                    String[] parts = relativePath.split("/");
+                    if (parts.length >= 3 && Constants.SUFFIX_ACTUAL_ALLOCATION.equals(parts[2])) {
+                        String indexName = parts[0];
+                        indicesWithAllocations.add(indexName);
+                        log.debug("Found actual-allocation for index: {} (key: {})", indexName, key);
+                    }
+                }
+            }
+            
+            log.debug("Found {} indices with actual-allocation entries in etcd", indicesWithAllocations.size());
+            return indicesWithAllocations;
+            
+        } catch (Exception e) {
+            log.error("Failed to get indices with actual allocations from etcd: {}", e.getMessage(), e);
+            throw e;
+        }
+    }
     // =================================================================
     // INDEX CONFIGURATIONS OPERATIONS
     // =================================================================
