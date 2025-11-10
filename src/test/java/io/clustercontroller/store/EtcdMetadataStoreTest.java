@@ -1074,6 +1074,136 @@ public class EtcdMetadataStoreTest {
         verify(mockKv).get(any(ByteSequence.class));
     }
 
+    // ------------------------- getClusterVersion tests -------------------------
+
+    @Test
+    public void testGetClusterVersion_Success() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getClusterRegistryPath(clusterId))
+            .thenReturn("/multi-cluster/clusters/test-cluster/metadata");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        // Mock GetResponse with cluster metadata containing version
+        String metadataJson = "{"
+            + "\"cluster_id\":\"test-cluster\","
+            + "\"created_at\":\"2024-01-01\","
+            + "\"version\":{"
+            + "\"number\":\"3.2.0\","
+            + "\"distribution\":\"opensearch\","
+            + "\"build_type\":\"tar\","
+            + "\"build_hash\":\"abc123\""
+            + "}"
+            + "}";
+        
+        KeyValue mockKeyValue = mock(KeyValue.class);
+        when(mockKeyValue.getValue()).thenReturn(ByteSequence.from(metadataJson, UTF_8));
+        
+        GetResponse mockResponse = mock(GetResponse.class);
+        when(mockResponse.getKvs()).thenReturn(List.of(mockKeyValue));
+
+        when(mockKv.get(any(ByteSequence.class)))
+            .thenReturn(CompletableFuture.completedFuture(mockResponse));
+
+        // Execute
+        io.clustercontroller.models.ClusterInformation.Version result = store.getClusterVersion(clusterId);
+
+        // Verify
+        assertThat(result).isNotNull();
+        assertThat(result.getNumber()).isEqualTo("3.2.0");
+        assertThat(result.getDistribution()).isEqualTo("opensearch");
+        assertThat(result.getBuildType()).isEqualTo("tar");
+        assertThat(result.getHash()).isEqualTo("abc123");
+        
+        verify(mockKv).get(any(ByteSequence.class));
+    }
+
+    @Test
+    public void testGetClusterVersion_NotFound() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getClusterRegistryPath(clusterId))
+            .thenReturn("/multi-cluster/clusters/test-cluster/metadata");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        // Mock GetResponse with empty result
+        GetResponse mockResponse = mock(GetResponse.class);
+        when(mockResponse.getKvs()).thenReturn(Collections.emptyList());
+
+        when(mockKv.get(any(ByteSequence.class)))
+            .thenReturn(CompletableFuture.completedFuture(mockResponse));
+
+        // Execute
+        io.clustercontroller.models.ClusterInformation.Version result = store.getClusterVersion(clusterId);
+
+        // Verify
+        assertThat(result).isNull();
+        verify(mockKv).get(any(ByteSequence.class));
+    }
+
+    @Test
+    public void testGetClusterVersion_NoVersionField() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getClusterRegistryPath(clusterId))
+            .thenReturn("/multi-cluster/clusters/test-cluster/metadata");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        // Mock GetResponse with cluster metadata but no version field
+        String metadataJson = "{"
+            + "\"cluster_id\":\"test-cluster\","
+            + "\"created_at\":\"2024-01-01\""
+            + "}";
+        
+        KeyValue mockKeyValue = mock(KeyValue.class);
+        when(mockKeyValue.getValue()).thenReturn(ByteSequence.from(metadataJson, UTF_8));
+        
+        GetResponse mockResponse = mock(GetResponse.class);
+        when(mockResponse.getKvs()).thenReturn(List.of(mockKeyValue));
+
+        when(mockKv.get(any(ByteSequence.class)))
+            .thenReturn(CompletableFuture.completedFuture(mockResponse));
+
+        // Execute
+        io.clustercontroller.models.ClusterInformation.Version result = store.getClusterVersion(clusterId);
+
+        // Verify
+        assertThat(result).isNull();
+        verify(mockKv).get(any(ByteSequence.class));
+    }
+
+    @Test
+    public void testGetClusterVersion_EtcdException() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+
+        // Mock path resolver
+        EtcdPathResolver mockPathResolver = mock(EtcdPathResolver.class);
+        when(mockPathResolver.getClusterRegistryPath(clusterId))
+            .thenReturn("/multi-cluster/clusters/test-cluster/metadata");
+        setPrivateField(store, "pathResolver", mockPathResolver);
+
+        // Mock etcd failure
+        when(mockKv.get(any(ByteSequence.class)))
+            .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd connection error")));
+
+        // Verify exception is thrown
+        assertThatThrownBy(() -> store.getClusterVersion(clusterId))
+            .isInstanceOf(Exception.class)
+            .hasMessageContaining("etcd connection error");
+        
+        verify(mockKv).get(any(ByteSequence.class));
+    }
+
     // ------------------------- reflection util -------------------------
 
     private static void setPrivateField(Object target, String fieldName, Object value) throws Exception {
