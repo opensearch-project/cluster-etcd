@@ -97,7 +97,7 @@ public class CoordinatorSelector {
     }
 
     /**
-     * Build the full HTTP URL for a coordinator.
+     * Build the full HTTPS URL for a coordinator.
      *
      * @param coordinator SearchUnit
      * @return Full URL (e.g., "http://10.0.0.5:9200")

@@ -1,9 +1,14 @@
 package io.clustercontroller.proxy;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.*;
-import org.springframework.web.client.RestTemplate;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.Map;
 
 /**
@@ -13,10 +18,14 @@ import java.util.Map;
 @Slf4j
 public class HttpForwarder {
 
-    private final RestTemplate restTemplate;
+    private final HttpClient httpClient;
 
     public HttpForwarder() {
-        this.restTemplate = new RestTemplate();
+        // Simple HttpClient with basic timeouts
+        this.httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(30))
+            .followRedirects(HttpClient.Redirect.NEVER)
+            .build();
     }
 
     /**
@@ -41,32 +50,59 @@ public class HttpForwarder {
             String targetUrl = coordinatorUrl + path;
             log.info("Forwarding {} request to: {}", method, targetUrl);
 
-            // Build HTTP headers
-            HttpHeaders httpHeaders = new HttpHeaders();
+            // Build HTTP request
+            HttpRequest.Builder requestBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(targetUrl))
+                .timeout(Duration.ofSeconds(60));
+
+            // Add headers (filter out restricted headers that HttpClient sets automatically)
             if (headers != null) {
-                headers.forEach(httpHeaders::set);
+                headers.forEach((key, value) -> {
+                    if (!isRestrictedHeader(key)) {
+                        requestBuilder.header(key, value);
+                    }
+                });
+            }
+            
+            requestBuilder.header("Accept", "application/json");
+
+            // Set method and body
+            if (body != null && !body.isEmpty()) {
+                requestBuilder.header("Content-Type", "application/json");
+                requestBuilder.method(method, HttpRequest.BodyPublishers.ofString(body));
+            } else {
+                requestBuilder.method(method, HttpRequest.BodyPublishers.noBody());
             }
 
-            // Build HTTP entity with headers and body
-            HttpEntity<String> entity = new HttpEntity<>(body, httpHeaders);
+            HttpRequest request = requestBuilder.build();
 
             // Make HTTP call
-            ResponseEntity<String> response = restTemplate.exchange(
-                targetUrl,
-                HttpMethod.valueOf(method),
-                entity,
-                String.class
-            );
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
-            log.info("Received response from coordinator: status={}", response.getStatusCode());
-            return response;
+            log.info("Response: status={}", response.statusCode());
+
+            // Convert to Spring ResponseEntity
+            return ResponseEntity
+                .status(response.statusCode())
+                .body(response.body());
 
         } catch (Exception e) {
             log.error("Error forwarding request to {}: {}", coordinatorUrl, e.getMessage(), e);
-            // Return error response
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body("Error forwarding request: " + e.getMessage());
         }
     }
-}
 
+    /**
+     * Check if a header is restricted by Java's HttpClient.
+     * These headers are set automatically and cannot be overridden.
+     */
+    private boolean isRestrictedHeader(String headerName) {
+        String lower = headerName.toLowerCase();
+        return lower.equals("connection") ||
+               lower.equals("content-length") ||
+               lower.equals("expect") ||
+               lower.equals("host") ||
+               lower.equals("upgrade");
+    }
+}

@@ -59,13 +59,13 @@ public class CoordinatorProxy {
 
             // Step 3: Build proxy response
             ProxyResponse proxyResponse = ProxyResponse.builder()
-                    .status(response.getStatusCodeValue())
+                    .status(response.getStatusCode().value())
                     .body(response.getBody())
                     .coordinator(coordinator.getName())
                     .build();
 
             log.info("Successfully proxied request to coordinator '{}', status: {}", 
-                    coordinator.getName(), response.getStatusCodeValue());
+                    coordinator.getName(), response.getStatusCode().value());
 
             return proxyResponse;
 
