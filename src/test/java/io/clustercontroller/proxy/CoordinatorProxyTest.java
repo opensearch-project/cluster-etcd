@@ -45,7 +45,7 @@ class CoordinatorProxyTest {
         headers.put("RPC-Caller", "test-user");
 
         SearchUnit coordinator = createSearchUnit("coord-1", "10.0.0.1");
-        String coordinatorUrl = "https://10.0.0.1:9200";
+        String coordinatorUrl = "http://10.0.0.1:9200";
 
         ResponseEntity<String> httpResponse = ResponseEntity.ok("{\"took\": 15, \"hits\": {}}");
 
@@ -85,7 +85,7 @@ class CoordinatorProxyTest {
     void testForwardRequest_HttpForwardingFails() throws Exception {
         // Given
         SearchUnit coordinator = createSearchUnit("coord-1", "10.0.0.1");
-        String coordinatorUrl = "https://10.0.0.1:9200";
+        String coordinatorUrl = "http://10.0.0.1:9200";
 
         when(coordinatorSelector.selectCoordinator(testClusterId)).thenReturn(coordinator);
         when(coordinatorSelector.buildCoordinatorUrl(coordinator)).thenReturn(coordinatorUrl);
@@ -108,7 +108,7 @@ class CoordinatorProxyTest {
         Map<String, String> headers = new HashMap<>();
 
         SearchUnit coordinator = createSearchUnit("coord-2", "10.0.0.2");
-        String coordinatorUrl = "https://10.0.0.2:9200";
+        String coordinatorUrl = "http://10.0.0.2:9200";
 
         ResponseEntity<String> httpResponse = ResponseEntity.ok("{\"results\": []}");
 
@@ -127,7 +127,7 @@ class CoordinatorProxyTest {
     @Test
     void testForwardRequest_NonOkStatus() throws Exception {
         SearchUnit coordinator = createSearchUnit("coord-1", "10.0.0.1");
-        String coordinatorUrl = "https://10.0.0.1:9200";
+        String coordinatorUrl = "http://10.0.0.1:9200";
 
         ResponseEntity<String> httpResponse = ResponseEntity.status(HttpStatus.NOT_FOUND)
             .body("{\"error\": \"Index not found\"}");

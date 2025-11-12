@@ -4,15 +4,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.Map;
 
@@ -26,29 +21,10 @@ public class HttpForwarder {
     private final HttpClient httpClient;
 
     public HttpForwarder() {
-        // HttpClient with SSL trust for HTTPS coordinators
         this.httpClient = HttpClient.newBuilder()
-            .sslContext(createTrustAllSslContext())
             .connectTimeout(Duration.ofSeconds(30))
             .followRedirects(HttpClient.Redirect.NEVER)
             .build();
-    }
-
-    private SSLContext createTrustAllSslContext() {
-        try {
-            TrustManager[] trustAllCerts = new TrustManager[]{
-                new X509TrustManager() {
-                    public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
-                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
-                }
-            };
-            SSLContext sslContext = SSLContext.getInstance("TLS");
-            sslContext.init(null, trustAllCerts, new SecureRandom());
-            return sslContext;
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to create SSL context", e);
-        }
     }
 
     /**
