@@ -172,7 +172,7 @@ class CoordinatorSelectorTest {
 
         String url = coordinatorSelector.buildCoordinatorUrl(coordinator);
 
-        assertThat(url).isEqualTo("http://10.0.0.1:9200");
+        assertThat(url).isEqualTo("https://10.0.0.1:9200");
     }
 
     // Helper methods

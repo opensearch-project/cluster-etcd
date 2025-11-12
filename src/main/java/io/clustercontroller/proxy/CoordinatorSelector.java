@@ -100,9 +100,9 @@ public class CoordinatorSelector {
      * Build the full HTTPS URL for a coordinator.
      *
      * @param coordinator SearchUnit
-     * @return Full URL (e.g., "http://10.0.0.5:9200")
+     * @return Full URL (e.g., "https://10.0.0.5:9200")
      */
     public String buildCoordinatorUrl(SearchUnit coordinator) {
-        return "http://" + coordinator.getHost() + ":" + coordinator.getPortHttp();
+        return "https://" + coordinator.getHost() + ":" + coordinator.getPortHttp();
     }
 }
