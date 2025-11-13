@@ -213,11 +213,25 @@ public final class ETCDStateDeserializer {
         for (Map.Entry<String, Object> entry : remoteClustersConfig.entrySet()) {
             String alias = entry.getKey();
             Map<String, Object> config = (Map<String, Object>) entry.getValue();
-            if (config.containsKey("seeds")) {
+            Map<String, Object> remoteSettings = new HashMap<>();
+            
+            // Check if mode is specified (proxy mode or seed mode)
+            String mode = config.containsKey("mode") ? (String) config.get("mode") : "sniff";
+            
+            if ("proxy".equalsIgnoreCase(mode)) {
+                // Proxy mode configuration
+                if (config.containsKey("proxy_address")) {
+                    String proxyAddress = (String) config.get("proxy_address");
+                    remoteSettings.put("cluster.remote." + alias + ".mode", "proxy");
+                    remoteSettings.put("cluster.remote." + alias + ".proxy_address", proxyAddress);
+                    remoteClusters.put(alias, remoteSettings);
+                } else {
+                    LOGGER.warn("Proxy mode specified for remote cluster '{}' but proxy_address is missing", alias);
+                }
+            } else if (config.containsKey("seeds")) {
+                // Seed mode configuration (default/sniff mode)
                 List<String> seeds = (List<String>) config.get("seeds");
-                String settingKey = "cluster.remote." + alias + ".seeds";
-                Map<String, Object> remoteSettings = new HashMap<>();
-                remoteSettings.put(settingKey, seeds);
+                remoteSettings.put("cluster.remote." + alias + ".seeds", seeds);
                 remoteClusters.put(alias, remoteSettings);
             }
         }
