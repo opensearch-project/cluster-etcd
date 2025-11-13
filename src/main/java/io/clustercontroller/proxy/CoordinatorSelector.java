@@ -105,4 +105,4 @@ public class CoordinatorSelector {
     public String buildCoordinatorUrl(SearchUnit coordinator) {
         return "http://" + coordinator.getHost() + ":" + coordinator.getPortHttp();
     }
-
+}
