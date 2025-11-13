@@ -301,7 +301,11 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                                 "seeds": [
                                   "10.0.2.20:9300"
                                 ]
-                              }
+                              },
+                              "cluster_three": {
+                                "mode": "proxy",
+                                "proxy_address": "remote-cluster-proxy:8030"
+                               }
                             }
                           }
                         }
@@ -319,6 +323,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     assertNotNull(persistentSettings);
                     List<String> clusterOneSeeds = persistentSettings.getAsList("cluster.remote.cluster_one.seeds");
                     List<String> clusterTwoSeeds = persistentSettings.getAsList("cluster.remote.cluster_two.seeds");
+                    String clusterThreeMode = persistentSettings.get("cluster.remote.cluster_three.mode");
+                    String clusterThreeProxyAddress = persistentSettings.get("cluster.remote.cluster_three.proxy_address");
 
                     assertEquals(2, clusterOneSeeds.size());
                     assertEquals("10.0.1.10:9300", clusterOneSeeds.get(0));
@@ -326,79 +332,10 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
                     assertEquals(1, clusterTwoSeeds.size());
                     assertEquals("10.0.2.20:9300", clusterTwoSeeds.get(0));
-                });
-            } finally {
-                threadPool.shutdown();
-            }
-        }
-    }
 
-    public void testETCDWatcherCoordinatorNodeWithRemoteClustersProxyMode() throws IOException, ExecutionException, InterruptedException {
-        String clusterName = "test-cluster";
-        String nodeName = "test-coordinator-node-ccs-proxy";
-        Settings localNodeSettings = Settings.builder().put("cluster.name", clusterName).put("node.name", nodeName).build();
-        DiscoveryNode localNode = DiscoveryNode.createLocal(
-            localNodeSettings,
-            new TransportAddress(TransportAddress.META_ADDRESS, 9200),
-            nodeName
-        );
+                    assertEquals("proxy", clusterThreeMode);
+                    assertEquals("remote-cluster-proxy:8030", clusterThreeProxyAddress);
 
-        MockNodeStateApplier mockNodeStateApplier = new MockNodeStateApplier();
-        String configPath = ETCDPathUtils.buildSearchUnitGoalStatePath(localNode, clusterName);
-
-        try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
-            etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
-            try (
-                Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build();
-                ETCDWatcher etcdWatcher = new ETCDWatcher(
-                    localNode,
-                    ByteSequence.from(configPath, StandardCharsets.UTF_8),
-                    mockNodeStateApplier,
-                    etcdClient,
-                    threadPool,
-                    clusterName
-                )
-            ) {
-                // Add coordinator node configuration with both seed and proxy mode remote clusters
-                etcdPut(etcdClient, configPath, """
-                        {
-                          "remote_shards": {
-                            "indices": {},
-                            "remote_clusters": {
-                              "c1": {
-                                "seeds": ["127.0.0.1:9310"]
-                              },
-                              "c2": {
-                                "mode": "proxy",
-                                "proxy_address": "remote-cluster-proxy:8300"
-                              }
-                            }
-                          }
-                        }
-                    """);
-
-                // Verify coordinator node state is applied and contains both seed and proxy mode configurations
-                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
-                    assertNotNull(mockNodeStateApplier.appliedNodeState);
-                    assertTrue(mockNodeStateApplier.appliedNodeState instanceof CoordinatorNodeState);
-                    CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) mockNodeStateApplier.appliedNodeState;
-                    ClusterState clusterState = coordinatorNodeState.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
-
-                    // Verify persistent settings contain the remote cluster configurations
-                    Settings persistentSettings = clusterState.metadata().persistentSettings();
-                    assertNotNull(persistentSettings);
-
-                    // Verify seed mode cluster (c1)
-                    List<String> c1Seeds = persistentSettings.getAsList("cluster.remote.c1.seeds");
-                    assertEquals(1, c1Seeds.size());
-                    assertEquals("127.0.0.1:9310", c1Seeds.get(0));
-
-                    // Verify proxy mode cluster (c2)
-                    String c2Mode = persistentSettings.get("cluster.remote.c2.mode");
-                    String c2ProxyAddress = persistentSettings.get("cluster.remote.c2.proxy_address");
-                    assertEquals("proxy", c2Mode);
-                    assertEquals("remote-cluster-proxy:8300", c2ProxyAddress);
                 });
             } finally {
                 threadPool.shutdown();
