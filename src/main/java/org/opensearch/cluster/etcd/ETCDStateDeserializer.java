@@ -216,7 +216,7 @@ public final class ETCDStateDeserializer {
             Map<String, Object> remoteSettings = new HashMap<>();
 
             // Check if mode is specified (proxy mode or seed mode)
-            String mode = config.containsKey("mode") ? (String) config.get("mode") : "sniff";
+            String mode = config.getOrDefault("mode", "sniff").toString();
 
             if ("proxy".equalsIgnoreCase(mode)) {
                 // Proxy mode configuration
