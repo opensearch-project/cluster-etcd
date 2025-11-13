@@ -50,7 +50,7 @@ public class ETCDHeartbeat {
     private final String nodeId;
     private final String ephemeralId;
     private final String address;
-    private final int port;
+    private final Integer httpPort;
     private final String clusterlessRole;
     private final String clusterlessShardId;
     private final Client etcdClient;
@@ -82,7 +82,21 @@ public class ETCDHeartbeat {
         this.nodeId = localNode.getId();
         this.ephemeralId = localNode.getEphemeralId();
         this.address = localNode.getAddress().getAddress();
-        this.port = localNode.getAddress().getPort();
+
+        // Get HTTP port from settings (prefer http.publish_port, fall back to http.port)
+        Settings settings = clusterService.getSettings();
+        Integer httpPortValue = null;
+        if (settings.hasValue("http.publish_port")) {
+            httpPortValue = settings.getAsInt("http.publish_port", null);
+        } else if (settings.hasValue("http.port")) {
+            String httpPortSetting = settings.get("http.port");
+            try {
+                httpPortValue = Integer.parseInt(httpPortSetting);
+            } catch (NumberFormatException e) {
+                logger.debug("Could not parse http.port setting: {}", httpPortSetting);
+            }
+        }
+        this.httpPort = httpPortValue;
 
         this.clusterlessRole = localNode.getAttributes()
             .getOrDefault(
@@ -157,7 +171,12 @@ public class ETCDHeartbeat {
             heartbeatData.put("nodeId", nodeId);
             heartbeatData.put("ephemeralId", ephemeralId);
             heartbeatData.put("address", address);
-            heartbeatData.put("port", port);
+
+            // Add HTTP port if available
+            if (httpPort != null) {
+                heartbeatData.put("httpPort", httpPort);
+            }
+
             heartbeatData.put("heartbeatIntervalMillis", heartbeatIntervalMillis);
 
             // Add cloud native node attributes

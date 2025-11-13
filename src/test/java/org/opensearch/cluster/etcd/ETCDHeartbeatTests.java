@@ -193,6 +193,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(clusterService.getClusterName()).thenReturn(new ClusterName("test-cluster"));
         when(clusterService.state()).thenThrow(new RuntimeException("Cluster service error"));
 
+        // Mock settings with HTTP port
+        Settings settings = Settings.builder().put("http.port", "9200").build();
+        when(clusterService.getSettings()).thenReturn(settings);
+
         when(etcdClient.getKVClient()).thenReturn(kvClient);
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
@@ -228,6 +232,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         // Create empty cluster state
         ClusterState clusterState = ClusterState.builder(new ClusterName("test-cluster")).build();
         when(clusterService.state()).thenReturn(clusterState);
+
+        // Mock settings with HTTP port
+        Settings settings = Settings.builder().put("http.port", "9200").build();
+        when(clusterService.getSettings()).thenReturn(settings);
 
         return clusterService;
     }
@@ -276,6 +284,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         when(clusterService.state()).thenReturn(clusterState);
 
+        // Mock settings with HTTP port
+        Settings settings = Settings.builder().put("http.port", "9200").build();
+        when(clusterService.getSettings()).thenReturn(settings);
+
         return clusterService;
     }
 
@@ -319,7 +331,13 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertEquals("nodeId should match", localNode.getId(), heartbeatData.get("nodeId"));
                     assertEquals("ephemeralId should match", localNode.getEphemeralId(), heartbeatData.get("ephemeralId"));
                     assertEquals("address should match", localNode.getAddress().getAddress(), heartbeatData.get("address"));
-                    assertEquals("port should match", localNode.getAddress().getPort(), ((Number) heartbeatData.get("port")).intValue());
+
+                    // Verify httpPort is present and valid
+                    assertTrue("httpPort should be present", heartbeatData.containsKey("httpPort"));
+                    assertTrue("httpPort should be a number", heartbeatData.get("httpPort") instanceof Number);
+                    int httpPort = ((Number) heartbeatData.get("httpPort")).intValue();
+                    assertTrue("httpPort should be valid", httpPort > 0 && httpPort < 65536);
+
                     assertEquals(
                         "heartbeatIntervalMillis should be 100",
                         100,
@@ -550,11 +568,11 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
                     // Verify all numeric fields are actually numbers
                     assertTrue("timestamp should be a number", heartbeatData.get("timestamp") instanceof Number);
-                    assertTrue("port should be a number", heartbeatData.get("port") instanceof Number);
                     assertTrue(
                         "heartbeatIntervalMillis should be a number",
                         heartbeatData.get("heartbeatIntervalMillis") instanceof Number
                     );
+                    assertTrue("httpPort should be a number", heartbeatData.get("httpPort") instanceof Number);
                     assertTrue("cpuUsedPercent should be a number", heartbeatData.get("cpuUsedPercent") instanceof Number);
                     assertTrue("memoryUsedPercent should be a number", heartbeatData.get("memoryUsedPercent") instanceof Number);
                     assertTrue("memoryMaxMB should be a number", heartbeatData.get("memoryMaxMB") instanceof Number);
