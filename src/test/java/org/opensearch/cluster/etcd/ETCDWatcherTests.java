@@ -388,12 +388,12 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     // Verify persistent settings contain the remote cluster configurations
                     Settings persistentSettings = clusterState.metadata().persistentSettings();
                     assertNotNull(persistentSettings);
-                    
+
                     // Verify seed mode cluster (c1)
                     List<String> c1Seeds = persistentSettings.getAsList("cluster.remote.c1.seeds");
                     assertEquals(1, c1Seeds.size());
                     assertEquals("127.0.0.1:9310", c1Seeds.get(0));
-                    
+
                     // Verify proxy mode cluster (c2)
                     String c2Mode = persistentSettings.get("cluster.remote.c2.mode");
                     String c2ProxyAddress = persistentSettings.get("cluster.remote.c2.proxy_address");

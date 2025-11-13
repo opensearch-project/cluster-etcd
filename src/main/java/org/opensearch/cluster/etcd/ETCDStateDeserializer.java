@@ -214,10 +214,10 @@ public final class ETCDStateDeserializer {
             String alias = entry.getKey();
             Map<String, Object> config = (Map<String, Object>) entry.getValue();
             Map<String, Object> remoteSettings = new HashMap<>();
-            
+
             // Check if mode is specified (proxy mode or seed mode)
             String mode = config.containsKey("mode") ? (String) config.get("mode") : "sniff";
-            
+
             if ("proxy".equalsIgnoreCase(mode)) {
                 // Proxy mode configuration
                 if (config.containsKey("proxy_address")) {
