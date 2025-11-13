@@ -171,12 +171,12 @@ public class ETCDHeartbeat {
             heartbeatData.put("nodeId", nodeId);
             heartbeatData.put("ephemeralId", ephemeralId);
             heartbeatData.put("address", address);
-            
+
             // Add HTTP port if available
             if (httpPort != null) {
                 heartbeatData.put("httpPort", httpPort);
             }
-            
+
             heartbeatData.put("heartbeatIntervalMillis", heartbeatIntervalMillis);
 
             // Add cloud native node attributes

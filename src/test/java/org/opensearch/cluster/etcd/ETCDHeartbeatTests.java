@@ -192,7 +192,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         // Mock cluster service to throw exception when getting state
         when(clusterService.getClusterName()).thenReturn(new ClusterName("test-cluster"));
         when(clusterService.state()).thenThrow(new RuntimeException("Cluster service error"));
-        
+
         // Mock settings with HTTP port
         Settings settings = Settings.builder().put("http.port", "9200").build();
         when(clusterService.getSettings()).thenReturn(settings);
@@ -331,13 +331,13 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertEquals("nodeId should match", localNode.getId(), heartbeatData.get("nodeId"));
                     assertEquals("ephemeralId should match", localNode.getEphemeralId(), heartbeatData.get("ephemeralId"));
                     assertEquals("address should match", localNode.getAddress().getAddress(), heartbeatData.get("address"));
-                    
+
                     // Verify httpPort is present and valid
                     assertTrue("httpPort should be present", heartbeatData.containsKey("httpPort"));
                     assertTrue("httpPort should be a number", heartbeatData.get("httpPort") instanceof Number);
                     int httpPort = ((Number) heartbeatData.get("httpPort")).intValue();
                     assertTrue("httpPort should be valid", httpPort > 0 && httpPort < 65536);
-                    
+
                     assertEquals(
                         "heartbeatIntervalMillis should be 100",
                         100,
