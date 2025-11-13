@@ -1,6 +1,7 @@
 package io.clustercontroller.indices;
 
 import io.clustercontroller.models.IndexSettings;
+import io.clustercontroller.models.TypeMapping;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.templates.TemplateManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -11,7 +12,9 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -628,5 +631,142 @@ class IndexManagerTest {
         assertThat(settingsJson).contains("\"refresh_interval\":\"30s\"");
         assertThat(settingsJson).contains("\"max_result_window\":10000");
         assertThat(settingsJson).contains("\"remote_store.enabled\":true");
+    }
+
+    // ========== getIndex Tests ==========
+
+    @Test
+    void testGetIndex_Success_WithSettingsAndMappings() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+
+        IndexSettings mockSettings = new IndexSettings();
+        mockSettings.setNumberOfShards(3);
+        mockSettings.setShardReplicaCount(List.of(2, 2, 2));
+        mockSettings.setPausePullIngestion(true);
+
+        TypeMapping mockMappings = new TypeMapping();
+        Map<String, Object> properties = new HashMap<>();
+        properties.put("field1", Map.of("type", "text"));
+        mockMappings.setProperties(properties);
+
+        // Mock dependencies
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(mockSettings);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(mockMappings);
+
+        // When
+        String result = indexManager.getIndex(clusterId, indexName);
+
+        // Then
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + indexName + "\"");
+        assertThat(result).contains("\"number_of_shards\":3");
+        assertThat(result).contains("\"pause_pull_ingestion\":true");
+        assertThat(result).contains("\"properties\"");
+        assertThat(result).contains("\"field1\"");
+
+        verify(metadataStore).getIndexSettings(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+    }
+
+    @Test
+    void testGetIndex_Success_WithoutSettingsAndMappings() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+
+        // Mock dependencies - neither settings nor mappings exist
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
+
+        // When
+        String result = indexManager.getIndex(clusterId, indexName);
+
+        // Then
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + indexName + "\"");
+        assertThat(result).contains("\"index_name\":\"" + indexName + "\"");
+        
+        verify(metadataStore).getIndexSettings(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+    }
+
+    @Test
+    void testGetIndex_EmptyClusterId() throws Exception {
+        // Given
+        String clusterId = "";
+        String indexName = "test-index";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.getIndex(clusterId, indexName))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Cluster ID cannot be null or empty");
+
+        verify(metadataStore, never()).getIndexSettings(any(), any());
+        verify(metadataStore, never()).getIndexMappings(any(), any());
+    }
+
+    @Test
+    void testGetIndex_EmptyIndexName() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.getIndex(clusterId, indexName))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Index name cannot be null or empty");
+
+        verify(metadataStore, never()).getIndexSettings(any(), any());
+        verify(metadataStore, never()).getIndexMappings(any(), any());
+    }
+
+    @Test
+    void testGetIndex_MetadataStoreException_OnGetSettings() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+
+        // Mock dependencies - throw exception on getSettings
+        when(metadataStore.getIndexSettings(clusterId, indexName))
+                .thenThrow(new RuntimeException("Database connection failed"));
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
+
+        // When - should continue gracefully even if settings fail
+        String result = indexManager.getIndex(clusterId, indexName);
+
+        // Then - should still return basic index structure without settings
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + indexName + "\"");
+        
+        verify(metadataStore).getIndexSettings(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+    }
+
+    @Test
+    void testGetIndex_MetadataStoreException_OnGetMappings() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+
+        IndexSettings mockSettings = new IndexSettings();
+        mockSettings.setNumberOfShards(1);
+
+        // Mock dependencies - throw exception on getMappings
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(mockSettings);
+        when(metadataStore.getIndexMappings(clusterId, indexName))
+                .thenThrow(new RuntimeException("Mapping retrieval failed"));
+
+        // When - should continue gracefully even if mappings fail
+        String result = indexManager.getIndex(clusterId, indexName);
+
+        // Then - should return index with settings but without mappings
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + indexName + "\"");
+        assertThat(result).contains("\"number_of_shards\":1");
+        
+        verify(metadataStore).getIndexSettings(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
     }
 }

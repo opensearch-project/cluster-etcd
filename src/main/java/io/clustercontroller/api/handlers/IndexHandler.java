@@ -78,9 +78,9 @@ public class IndexHandler {
             log.info("Getting index '{}' from cluster '{}'", index, clusterId);
             String indexInfo = indexManager.getIndex(clusterId, index);
             return ResponseEntity.ok(indexInfo);
-        } catch (UnsupportedOperationException e) {
-            log.error("Error getting index '{}' from cluster '{}': {}", index, clusterId, e.getMessage());
-            return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Get index"));
+        } catch (IllegalArgumentException e) {
+            log.error("Invalid request for index '{}' from cluster '{}': {}", index, clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.badRequest(e.getMessage()));
         } catch (Exception e) {
             log.error("Error getting index '{}' from cluster '{}': {}", index, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));

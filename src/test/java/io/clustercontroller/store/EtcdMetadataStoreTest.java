@@ -8,6 +8,7 @@ import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitGoalState;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.TaskMetadata;
+import io.clustercontroller.models.TypeMapping;
 import io.etcd.jetcd.*;
 import io.etcd.jetcd.kv.DeleteResponse;
 import io.etcd.jetcd.kv.GetResponse;
@@ -24,6 +25,7 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -673,6 +675,124 @@ public class EtcdMetadataStoreTest {
         assertThat(result.getNumberOfShards()).isNull(); // No default value
         assertThat(result.getShardReplicaCount()).isNull();
         assertThat(result.getPausePullIngestion()).isNull();
+    }
+
+    // ------------------------- getIndexMappings tests -------------------------
+
+    @Test
+    public void testGetIndexMappingsFound() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        
+        // Create sample mappings JSON
+        Map<String, Object> properties = new HashMap<>();
+        properties.put("field1", Map.of("type", "text"));
+        properties.put("field2", Map.of("type", "keyword"));
+        
+        Map<String, Object> mappingsMap = new HashMap<>();
+        mappingsMap.put("properties", properties);
+        mappingsMap.put("dynamic", "strict");
+        
+        String mappingsJson = new ObjectMapper().writeValueAsString(mappingsMap);
+
+        // Mock successful get response
+        GetResponse resp = mockGetResponse(Collections.singletonList(mockKv(mappingsJson)));
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(resp));
+
+        // Execute
+        TypeMapping result = store.getIndexMappings(clusterId, indexName);
+
+        // Verify
+        assertThat(result).isNotNull();
+        assertThat(result.getProperties()).isNotNull();
+        assertThat(result.getProperties()).hasSize(2);
+        assertThat(result.getProperties()).containsKey("field1");
+        assertThat(result.getProperties()).containsKey("field2");
+        assertThat(result.getDynamic()).isEqualTo("strict");
+
+        // Verify the get call was made with correct key
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).get(keyCaptor.capture());
+
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        assertThat(capturedKey).contains("test-cluster/indices/test-index/mappings");
+    }
+
+    @Test
+    public void testGetIndexMappingsNotFound() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String indexName = "non-existent-index";
+
+        // Mock empty response (index mappings not found)
+        GetResponse resp = mockGetResponse(Collections.emptyList());
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(resp));
+
+        // Execute
+        TypeMapping result = store.getIndexMappings(clusterId, indexName);
+
+        // Verify
+        assertThat(result).isNull();
+
+        // Verify the get call was made with correct key
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).get(keyCaptor.capture());
+
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        assertThat(capturedKey).contains("test-cluster/indices/non-existent-index/mappings");
+    }
+
+    @Test
+    public void testGetIndexMappingsWithException() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+
+        // Mock etcd failure
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.failedFuture(new RuntimeException("etcd connection timeout")));
+
+        // Verify exception is propagated
+        assertThatThrownBy(() -> store.getIndexMappings(clusterId, indexName))
+                .isInstanceOf(Exception.class)
+                .hasMessageContaining("etcd connection timeout");
+
+        // Verify the get call was made
+        verify(mockKv).get(any(ByteSequence.class));
+    }
+
+    @Test
+    public void testGetIndexMappingsWithEmptyMappings() throws Exception {
+        EtcdMetadataStore store = newStore();
+        String clusterId = "test-cluster";
+        String indexName = "empty-mappings-index";
+        String emptyMappings = "{}";
+
+        // Mock successful get response with empty mappings
+        GetResponse resp = mockGetResponse(Collections.singletonList(mockKv(emptyMappings)));
+        when(mockKv.get(any(ByteSequence.class)))
+                .thenReturn(CompletableFuture.completedFuture(resp));
+
+        // Execute
+        TypeMapping result = store.getIndexMappings(clusterId, indexName);
+
+        // Verify - empty JSON {} will parse to a TypeMapping object with empty properties (initialized to new HashMap)
+        assertThat(result).isNotNull();
+        assertThat(result.getProperties()).isNotNull();
+        assertThat(result.getProperties()).isEmpty();
+        assertThat(result.getDynamic()).isNull();
+        assertThat(result.getDateDetection()).isNull();
+        assertThat(result.getNumericDetection()).isNull();
+
+        // Verify the get call was made with correct key
+        ArgumentCaptor<ByteSequence> keyCaptor = ArgumentCaptor.forClass(ByteSequence.class);
+        verify(mockKv).get(keyCaptor.capture());
+
+        String capturedKey = keyCaptor.getValue().toString(UTF_8);
+        assertThat(capturedKey).contains("test-cluster/indices/empty-mappings-index/mappings");
     }
 
     // ------------------------- lifecycle -------------------------

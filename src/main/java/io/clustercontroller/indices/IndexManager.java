@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import io.clustercontroller.models.Index;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.clustercontroller.models.Template;
+import io.clustercontroller.models.TypeMapping;
 import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.models.IndexSettings;
@@ -198,12 +199,48 @@ public class IndexManager {
     }
     
     /**
-     * Get index information.
+     * Get index information including settings, mappings, and aliases.
      */
-    public String getIndex(String clusterId, String indexName) {
-        log.info("Getting index information for: {}", indexName);
-        // TODO: Implement get index logic
-        throw new UnsupportedOperationException("Get index not yet implemented");
+    public String getIndex(String clusterId, String indexName) throws Exception {
+        log.info("Getting index information for '{}' from cluster '{}'", indexName, clusterId);
+        
+        // Validate input parameters
+        if (clusterId == null || clusterId.trim().isEmpty()) {
+            throw new IllegalArgumentException("Cluster ID cannot be null or empty");
+        }
+        if (indexName == null || indexName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Index name cannot be null or empty");
+        }
+
+        // Parse the Index configuration
+        Index index = new Index();
+        index.setIndexName(indexName);
+
+        try {
+            IndexSettings settings = metadataStore.getIndexSettings(clusterId, indexName);
+            if (settings != null) {
+                index.setSettings(settings);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to get settings for index '{}': {}", indexName, e.getMessage());
+        }
+        
+        try {
+            TypeMapping mappings = metadataStore.getIndexMappings(clusterId, indexName);
+            if (mappings != null) {
+                index.setMappings(mappings);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to get mappings for index '{}': {}", indexName, e.getMessage());
+        }
+
+        
+        // TODO: Add aliases when alias support is implemented
+        // index.setAliases(aliases);
+        
+        // Wrap the response in the index name
+        log.info("Successfully retrieved index information for '{}' from cluster '{}'", indexName, clusterId);
+        return objectMapper.writeValueAsString(index);
     }
     
     /**
@@ -303,10 +340,32 @@ public class IndexManager {
     /**
      * Get index mappings.
      */
-    public String getMapping(String clusterId, String indexName) {
-        log.info("Getting mapping for index: {}", indexName);
-        // TODO: Implement get mapping logic
-        throw new UnsupportedOperationException("Get mapping not yet implemented");
+    public String getMapping(String clusterId, String indexName) throws Exception {
+        log.info("Getting mapping for index '{}' from cluster '{}'", indexName, clusterId);
+        
+        // Validate input parameters
+        if (clusterId == null || clusterId.trim().isEmpty()) {
+            throw new IllegalArgumentException("Cluster ID cannot be null or empty");
+        }
+        if (indexName == null || indexName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Index name cannot be null or empty");
+        }
+        
+        // Check if index exists
+        if (!metadataStore.getIndexConfig(clusterId, indexName).isPresent()) {
+            throw new IllegalArgumentException("Index '" + indexName + "' does not exist in cluster '" + clusterId + "'");
+        }
+        
+        // Get mappings from metadata store
+        TypeMapping mappings = metadataStore.getIndexMappings(clusterId, indexName);
+        if (mappings == null) {
+            log.warn("No mappings found for index '{}' in cluster '{}'", indexName, clusterId);
+            // Return empty mappings structure
+            return objectMapper.writeValueAsString(new TypeMapping());
+        }
+        
+        log.info("Successfully retrieved mappings for index '{}' from cluster '{}'", indexName, clusterId);
+        return objectMapper.writeValueAsString(mappings);
     }
     
     /**

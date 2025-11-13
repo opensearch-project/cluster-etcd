@@ -25,4 +25,10 @@ public class Index {
     
     @JsonProperty("settings")
     private IndexSettings settings;
+
+    @JsonProperty("mappings")
+    private TypeMapping mappings;
+
+    @JsonProperty("aliases")
+    private Map<String, Object> aliases;
 } 

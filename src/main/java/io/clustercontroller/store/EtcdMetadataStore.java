@@ -3,6 +3,7 @@ package io.clustercontroller.store;
 import io.clustercontroller.election.LeaderElection;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
+import io.clustercontroller.models.TypeMapping;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.Template;
 import io.clustercontroller.models.CoordinatorGoalState;
@@ -689,6 +690,31 @@ public class EtcdMetadataStore implements MetadataStore {
         } catch (Exception e) {
             log.error("Failed to set index mappings for {} in etcd: {}", indexName, e.getMessage(), e);
             throw new Exception("Failed to set index mappings in etcd", e);
+        }
+    }
+    
+    @Override
+    public TypeMapping getIndexMappings(String clusterId, String indexName) throws Exception {
+        log.debug("Getting index mappings for {} from etcd", indexName);
+        
+        try {
+            String mappingsPath = pathResolver.getIndexMappingsPath(clusterId, indexName);
+            GetResponse response = executeEtcdGet(mappingsPath);
+            
+            if (response.getKvs().isEmpty()) {
+                log.debug("No mappings found for index {} in cluster {}", indexName, clusterId);
+                return null;
+            }
+            
+            String mappingsJson = response.getKvs().get(0).getValue().toString(StandardCharsets.UTF_8);
+            log.debug("Retrieved mappings for index {}: {}", indexName, mappingsJson);
+            
+            // Parse JSON to TypeMapping object
+            return objectMapper.readValue(mappingsJson, TypeMapping.class);
+            
+        } catch (Exception e) {
+            log.error("Failed to get index mappings for {} from etcd: {}", indexName, e.getMessage(), e);
+            throw e;
         }
     }
     

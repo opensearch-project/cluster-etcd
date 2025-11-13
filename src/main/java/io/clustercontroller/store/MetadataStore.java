@@ -8,6 +8,7 @@ import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.Template;
+import io.clustercontroller.models.TypeMapping;
 import io.clustercontroller.models.ClusterControllerAssignment;
 import io.clustercontroller.models.CoordinatorGoalState;
 import io.clustercontroller.models.ClusterInformation;
@@ -163,6 +164,11 @@ public interface MetadataStore {
      * Set index settings
      */
     void setIndexSettings(String clusterId, String indexName, String settings) throws Exception;
+    
+    /**
+     * Get index mappings
+     */
+    TypeMapping getIndexMappings(String clusterId, String indexName) throws Exception;
     
     /**
      * Delete all keys with the given prefix

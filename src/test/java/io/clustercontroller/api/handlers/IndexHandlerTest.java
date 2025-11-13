@@ -142,21 +142,38 @@ class IndexHandlerTest {
     }
 
     @Test
-    void testGetIndex_NotImplemented() {
+    void testGetIndex_Success() throws Exception {
         // Given
-        when(indexManager.getIndex(anyString(), anyString()))
-            .thenThrow(new UnsupportedOperationException("Not implemented"));
+        String expectedIndexJson = "{\"test-index\":{\"settings\":{},\"mappings\":{}}}";
+        when(indexManager.getIndex(anyString(), anyString())).thenReturn(expectedIndexJson);
 
         // When
         ResponseEntity<Object> response = indexHandler.getIndex(testClusterId, testIndexName);
 
         // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isEqualTo(expectedIndexJson);
+
+        verify(indexManager).getIndex(testClusterId, testIndexName);
+    }
+
+    @Test
+    void testGetIndex_IndexNotFound() throws Exception {
+        // Given
+        when(indexManager.getIndex(anyString(), anyString()))
+            .thenThrow(new IllegalArgumentException("Index 'test-index' does not exist"));
+
+        // When
+        ResponseEntity<Object> response = indexHandler.getIndex(testClusterId, testIndexName);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
 
         ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
-        assertThat(errorResponse.getStatus()).isEqualTo(501);
+        assertThat(errorResponse.getError()).isEqualTo("bad_request");
+        assertThat(errorResponse.getReason()).contains("does not exist");
+        assertThat(errorResponse.getStatus()).isEqualTo(400);
     }
 
     @Test
@@ -236,21 +253,38 @@ class IndexHandlerTest {
     }
 
     @Test
-    void testGetIndexMapping_NotImplemented() {
+    void testGetIndexMapping_Success() throws Exception {
         // Given
-        when(indexManager.getMapping(anyString(), anyString()))
-            .thenThrow(new UnsupportedOperationException("Not implemented"));
+        String expectedMappings = "{\"properties\":{\"title\":{\"type\":\"text\"}}}";
+        when(indexManager.getMapping(anyString(), anyString())).thenReturn(expectedMappings);
 
         // When
         ResponseEntity<Object> response = indexHandler.getIndexMapping(testClusterId, testIndexName);
 
         // Then
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isEqualTo(expectedMappings);
+
+        verify(indexManager).getMapping(testClusterId, testIndexName);
+    }
+
+    @Test
+    void testGetIndexMapping_IndexNotFound() throws Exception {
+        // Given
+        when(indexManager.getMapping(anyString(), anyString()))
+            .thenThrow(new IllegalArgumentException("Index 'test-index' does not exist"));
+
+        // When
+        ResponseEntity<Object> response = indexHandler.getIndexMapping(testClusterId, testIndexName);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
 
         ErrorResponse errorResponse = (ErrorResponse) response.getBody();
-        assertThat(errorResponse.getError()).isEqualTo("not_implemented");
-        assertThat(errorResponse.getStatus()).isEqualTo(501);
+        assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
+        assertThat(errorResponse.getReason()).contains("does not exist");
+        assertThat(errorResponse.getStatus()).isEqualTo(500);
     }
 
     @Test
