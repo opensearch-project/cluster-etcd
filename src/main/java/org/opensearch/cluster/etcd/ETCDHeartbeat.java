@@ -45,7 +45,7 @@ public class ETCDHeartbeat {
     private static final long DEFAULT_HEARTBEAT_INTERVAL_MILLIS = 5000; // 5 seconds
     private static final String CLUSTERLESS_ROLE_ATTRIBUTE = "clusterless_role";
     private static final String CLUSTERLESS_SHARD_ID_ATTRIBUTE = "clusterless_shard_id";
-    
+
     static final String TIMESTAMP = "timestamp";
     static final String NODE_NAME = "nodeName";
     static final String NODE_ID = "nodeId";
@@ -74,7 +74,7 @@ public class ETCDHeartbeat {
     static final String ALLOCATION_ID = "allocationId";
     static final String CURRENT_NODE_ID = "currentNodeId";
     static final String CURRENT_NODE_NAME = "currentNodeName";
-    
+
     private final Logger logger = LogManager.getLogger(getClass());
     private final String nodeName;
     private final String nodeId;

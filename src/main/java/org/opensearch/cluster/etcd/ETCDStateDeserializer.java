@@ -670,7 +670,9 @@ public final class ETCDStateDeserializer {
             List<NodeShardAllocation> replicaAllocations = new ArrayList<>();
             List<NodeShardAllocation> primaryAllocations = new ArrayList<>();
             if (healthMap.containsKey(ETCDHeartbeat.NODE_ROUTING)) {
-                Map<String, List<Map<String, Object>>> nodeRouting = (Map<String, List<Map<String, Object>>>) healthMap.get(ETCDHeartbeat.NODE_ROUTING);
+                Map<String, List<Map<String, Object>>> nodeRouting = (Map<String, List<Map<String, Object>>>) healthMap.get(
+                    ETCDHeartbeat.NODE_ROUTING
+                );
                 for (Map.Entry<String, List<Map<String, Object>>> entry : nodeRouting.entrySet()) {
                     String indexName = entry.getKey();
                     List<Map<String, Object>> shardRouting = entry.getValue();
