@@ -155,7 +155,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
                 "nodeId": "node1-id",
                 "ephemeralId": "node1-ephemeral",
                 "address": "127.0.0.1",
-                "port": 9200,
+                "transportPort": 9200,
                 "timestamp": 1750099493841,
                 "heartbeatIntervalSeconds": 5,
                 "nodeRouting": {
@@ -225,7 +225,7 @@ public class ETCDStateDeserializerTests extends OpenSearchTestCase {
                 "nodeId": "node2-id",
                 "ephemeralId": "node2-ephemeral",
                 "address": "127.0.0.1",
-                "port": 9201,
+                "transportPort": 9201,
                 "timestamp": 1750099493842,
                 "heartbeatIntervalSeconds": 5,
                 "nodeRouting": {
