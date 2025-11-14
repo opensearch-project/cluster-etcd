@@ -50,6 +50,7 @@ public class ETCDHeartbeat {
     private final String nodeId;
     private final String ephemeralId;
     private final String address;
+    private final int transportPort;
     private final Integer httpPort;
     private final String clusterlessRole;
     private final String clusterlessShardId;
@@ -82,6 +83,7 @@ public class ETCDHeartbeat {
         this.nodeId = localNode.getId();
         this.ephemeralId = localNode.getEphemeralId();
         this.address = localNode.getAddress().getAddress();
+        this.transportPort = localNode.getAddress().getPort();
 
         // Get HTTP port from settings (prefer http.publish_port, fall back to http.port)
         Settings settings = clusterService.getSettings();
@@ -171,6 +173,7 @@ public class ETCDHeartbeat {
             heartbeatData.put("nodeId", nodeId);
             heartbeatData.put("ephemeralId", ephemeralId);
             heartbeatData.put("address", address);
+            heartbeatData.put("transportPort", transportPort);
 
             // Add HTTP port if available
             if (httpPort != null) {
