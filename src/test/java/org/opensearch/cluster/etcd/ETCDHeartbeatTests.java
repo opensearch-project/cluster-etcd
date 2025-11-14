@@ -49,7 +49,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.opensearch.cluster.etcd.ETCDHeartbeat.*;
 import static org.testcontainers.shaded.org.awaitility.Awaitility.await;
 
 @ThreadLeakFilters(filters = { TestContainerThreadLeakFilter.class })
@@ -327,42 +326,42 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify required fields are present
-                    assertTrue("timestamp should be present", heartbeatData.containsKey(TIMESTAMP));
-                    assertEquals("nodeName should match", nodeName, heartbeatData.get(NODE_NAME));
-                    assertEquals("nodeId should match", localNode.getId(), heartbeatData.get(NODE_ID));
-                    assertEquals("ephemeralId should match", localNode.getEphemeralId(), heartbeatData.get(EPHEMERAL_ID));
-                    assertEquals("address should match", localNode.getAddress().getAddress(), heartbeatData.get(ADDRESS));
+                    assertTrue("timestamp should be present", heartbeatData.containsKey(ETCDHeartbeat.TIMESTAMP));
+                    assertEquals("nodeName should match", nodeName, heartbeatData.get(ETCDHeartbeat.NODE_NAME));
+                    assertEquals("nodeId should match", localNode.getId(), heartbeatData.get(ETCDHeartbeat.NODE_ID));
+                    assertEquals("ephemeralId should match", localNode.getEphemeralId(), heartbeatData.get(ETCDHeartbeat.EPHEMERAL_ID));
+                    assertEquals("address should match", localNode.getAddress().getAddress(), heartbeatData.get(ETCDHeartbeat.ADDRESS));
                     assertEquals(
                         "transportPort should match",
                         localNode.getAddress().getPort(),
-                        ((Number) heartbeatData.get(TRANSPORT_PORT)).intValue()
+                        ((Number) heartbeatData.get(ETCDHeartbeat.TRANSPORT_PORT)).intValue()
                     );
 
                     // Verify httpPort is present and valid
-                    assertTrue("httpPort should be present", heartbeatData.containsKey(HTTP_PORT));
-                    assertTrue("httpPort should be a number", heartbeatData.get(HTTP_PORT) instanceof Number);
-                    int httpPort = ((Number) heartbeatData.get(HTTP_PORT)).intValue();
+                    assertTrue("httpPort should be present", heartbeatData.containsKey(ETCDHeartbeat.HTTP_PORT));
+                    assertTrue("httpPort should be a number", heartbeatData.get(ETCDHeartbeat.HTTP_PORT) instanceof Number);
+                    int httpPort = ((Number) heartbeatData.get(ETCDHeartbeat.HTTP_PORT)).intValue();
                     assertTrue("httpPort should be valid", httpPort > 0 && httpPort < 65536);
 
                     assertEquals(
                         "heartbeatIntervalMillis should be 100",
                         100,
-                        ((Number) heartbeatData.get(HEARTBEAT_INTERVAL_MILLIS)).intValue()
+                        ((Number) heartbeatData.get(ETCDHeartbeat.HEARTBEAT_INTERVAL_MILLIS)).intValue()
                     );
 
                     // Verify system metrics are present (values may vary)
-                    assertTrue("cpuUsedPercent should be present", heartbeatData.containsKey(CPU_USED_PERCENT));
-                    assertTrue("memoryUsedPercent should be present", heartbeatData.containsKey(MEMORY_USED_PERCENT));
-                    assertTrue("memoryMaxMB should be present", heartbeatData.containsKey(MEMORY_MAX_MB));
-                    assertTrue("memoryUsedMB should be present", heartbeatData.containsKey(MEMORY_USED_MB));
-                    assertTrue("heapMaxMB should be present", heartbeatData.containsKey(HEAP_MAX_MB));
-                    assertTrue("heapUsedMB should be present", heartbeatData.containsKey(HEAP_USED_MB));
-                    assertTrue("heapUsedPercent should be present", heartbeatData.containsKey(HEAP_USED_PERCENT));
-                    assertTrue("diskTotalMB should be present", heartbeatData.containsKey(DISK_TOTAL_MB));
-                    assertTrue("diskAvailableMB should be present", heartbeatData.containsKey(DISK_AVAILABLE_MB));
+                    assertTrue("cpuUsedPercent should be present", heartbeatData.containsKey(ETCDHeartbeat.CPU_USED_PERCENT));
+                    assertTrue("memoryUsedPercent should be present", heartbeatData.containsKey(ETCDHeartbeat.MEMORY_USED_PERCENT));
+                    assertTrue("memoryMaxMB should be present", heartbeatData.containsKey(ETCDHeartbeat.MEMORY_MAX_MB));
+                    assertTrue("memoryUsedMB should be present", heartbeatData.containsKey(ETCDHeartbeat.MEMORY_USED_MB));
+                    assertTrue("heapMaxMB should be present", heartbeatData.containsKey(ETCDHeartbeat.HEAP_MAX_MB));
+                    assertTrue("heapUsedMB should be present", heartbeatData.containsKey(ETCDHeartbeat.HEAP_USED_MB));
+                    assertTrue("heapUsedPercent should be present", heartbeatData.containsKey(ETCDHeartbeat.HEAP_USED_PERCENT));
+                    assertTrue("diskTotalMB should be present", heartbeatData.containsKey(ETCDHeartbeat.DISK_TOTAL_MB));
+                    assertTrue("diskAvailableMB should be present", heartbeatData.containsKey(ETCDHeartbeat.DISK_AVAILABLE_MB));
 
                     // Verify timestamp is recent (within last 10 seconds)
-                    long timestamp = ((Number) heartbeatData.get(TIMESTAMP)).longValue();
+                    long timestamp = ((Number) heartbeatData.get(ETCDHeartbeat.TIMESTAMP)).longValue();
                     long now = System.currentTimeMillis();
                     assertTrue("timestamp should be recent", Math.abs(now - timestamp) < 10000);
                 });
@@ -405,9 +404,9 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify routing information is present
-                    assertTrue("nodeRouting should be present", heartbeatData.containsKey(NODE_ROUTING));
+                    assertTrue("nodeRouting should be present", heartbeatData.containsKey(ETCDHeartbeat.NODE_ROUTING));
                     @SuppressWarnings("unchecked")
-                    Map<String, Object> nodeRouting = (Map<String, Object>) heartbeatData.get(NODE_ROUTING);
+                    Map<String, Object> nodeRouting = (Map<String, Object>) heartbeatData.get(ETCDHeartbeat.NODE_ROUTING);
 
                     // Verify the test index routing is present
                     assertTrue("test-index routing should be present", nodeRouting.containsKey("test-index"));
@@ -417,13 +416,13 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
                     // Verify shard information structure
                     Map<String, Object> shardInfo = indexShards.getFirst();
-                    assertTrue("shardId should be present", shardInfo.containsKey(SHARD_ID));
-                    assertTrue("shard role should be present", shardInfo.containsKey(ROLE));
-                    assertTrue("state should be present", shardInfo.containsKey(STATE));
-                    assertTrue("relocating should be present", shardInfo.containsKey(RELOCATING));
-                    assertTrue("allocationId should be present", shardInfo.containsKey(ALLOCATION_ID));
-                    assertTrue("currentNodeId should be present", shardInfo.containsKey(CURRENT_NODE_ID));
-                    assertTrue("currentNodeName should be present", shardInfo.containsKey(CURRENT_NODE_NAME));
+                    assertTrue("shardId should be present", shardInfo.containsKey(ETCDHeartbeat.SHARD_ID));
+                    assertTrue("shard role should be present", shardInfo.containsKey(ETCDHeartbeat.ROLE));
+                    assertTrue("state should be present", shardInfo.containsKey(ETCDHeartbeat.STATE));
+                    assertTrue("relocating should be present", shardInfo.containsKey(ETCDHeartbeat.RELOCATING));
+                    assertTrue("allocationId should be present", shardInfo.containsKey(ETCDHeartbeat.ALLOCATION_ID));
+                    assertTrue("currentNodeId should be present", shardInfo.containsKey(ETCDHeartbeat.CURRENT_NODE_ID));
+                    assertTrue("currentNodeName should be present", shardInfo.containsKey(ETCDHeartbeat.CURRENT_NODE_NAME));
                 });
 
                 threadPool.shutdown();
@@ -466,7 +465,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                 // Get first timestamp
                 KeyValue firstKv = etcdClient.getKVClient().get(key).get().getKvs().getFirst();
                 Map<String, Object> firstHeartbeat = parseHeartbeatJson(firstKv.getValue());
-                long firstTimestamp = ((Number) firstHeartbeat.get(TIMESTAMP)).longValue();
+                long firstTimestamp = ((Number) firstHeartbeat.get(ETCDHeartbeat.TIMESTAMP)).longValue();
 
                 // Wait for subsequent heartbeats (should be updated within 500ms given 200ms interval + buffer)
                 await().atMost(500, TimeUnit.MILLISECONDS).untilAsserted(() -> {
@@ -475,7 +474,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
                     KeyValue kv = kvs.getFirst();
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
-                    long currentTimestamp = ((Number) heartbeatData.get(TIMESTAMP)).longValue();
+                    long currentTimestamp = ((Number) heartbeatData.get(ETCDHeartbeat.TIMESTAMP)).longValue();
 
                     assertTrue("Timestamp should be updated", currentTimestamp > firstTimestamp);
                 });
@@ -525,13 +524,13 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                 // Get the timestamp after stopping
                 KeyValue finalKv = etcdClient.getKVClient().get(key).get().getKvs().getFirst();
                 Map<String, Object> finalHeartbeat = parseHeartbeatJson(finalKv.getValue());
-                long finalTimestamp = ((Number) finalHeartbeat.get(TIMESTAMP)).longValue();
+                long finalTimestamp = ((Number) finalHeartbeat.get(ETCDHeartbeat.TIMESTAMP)).longValue();
 
                 // Wait another interval and verify no new updates
                 Thread.sleep(200); // Wait another 200ms
                 KeyValue laterKv = etcdClient.getKVClient().get(key).get().getKvs().getFirst();
                 Map<String, Object> laterHeartbeat = parseHeartbeatJson(laterKv.getValue());
-                long laterTimestamp = ((Number) laterHeartbeat.get(TIMESTAMP)).longValue();
+                long laterTimestamp = ((Number) laterHeartbeat.get(ETCDHeartbeat.TIMESTAMP)).longValue();
 
                 assertEquals("No new heartbeats should be published after stop", finalTimestamp, laterTimestamp);
             } finally {
@@ -573,43 +572,52 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify all numeric fields are actually numbers
-                    assertTrue("timestamp should be a number", heartbeatData.get(TIMESTAMP) instanceof Number);
-                    assertTrue("transportPort should be a number", heartbeatData.get(TRANSPORT_PORT) instanceof Number);
+                    assertTrue("timestamp should be a number", heartbeatData.get(ETCDHeartbeat.TIMESTAMP) instanceof Number);
+                    assertTrue("transportPort should be a number", heartbeatData.get(ETCDHeartbeat.TRANSPORT_PORT) instanceof Number);
                     assertTrue(
                         "heartbeatIntervalMillis should be a number",
-                        heartbeatData.get(HEARTBEAT_INTERVAL_MILLIS) instanceof Number
+                        heartbeatData.get(ETCDHeartbeat.HEARTBEAT_INTERVAL_MILLIS) instanceof Number
                     );
-                    assertTrue("httpPort should be a number", heartbeatData.get(HTTP_PORT) instanceof Number);
-                    assertTrue("cpuUsedPercent should be a number", heartbeatData.get(CPU_USED_PERCENT) instanceof Number);
-                    assertTrue("memoryUsedPercent should be a number", heartbeatData.get(MEMORY_USED_PERCENT) instanceof Number);
-                    assertTrue("memoryMaxMB should be a number", heartbeatData.get(MEMORY_MAX_MB) instanceof Number);
-                    assertTrue("memoryUsedMB should be a number", heartbeatData.get(MEMORY_USED_MB) instanceof Number);
-                    assertTrue("heapMaxMB should be a number", heartbeatData.get(HEAP_MAX_MB) instanceof Number);
-                    assertTrue("heapUsedMB should be a number", heartbeatData.get(HEAP_USED_MB) instanceof Number);
-                    assertTrue("heapUsedPercent should be a number", heartbeatData.get(HEAP_USED_PERCENT) instanceof Number);
-                    assertTrue("diskTotalMB should be a number", heartbeatData.get(DISK_TOTAL_MB) instanceof Number);
-                    assertTrue("diskAvailableMB should be a number", heartbeatData.get(DISK_AVAILABLE_MB) instanceof Number);
+                    assertTrue("httpPort should be a number", heartbeatData.get(ETCDHeartbeat.HTTP_PORT) instanceof Number);
+                    assertTrue("cpuUsedPercent should be a number", heartbeatData.get(ETCDHeartbeat.CPU_USED_PERCENT) instanceof Number);
+                    assertTrue(
+                        "memoryUsedPercent should be a number",
+                        heartbeatData.get(ETCDHeartbeat.MEMORY_USED_PERCENT) instanceof Number
+                    );
+                    assertTrue("memoryMaxMB should be a number", heartbeatData.get(ETCDHeartbeat.MEMORY_MAX_MB) instanceof Number);
+                    assertTrue("memoryUsedMB should be a number", heartbeatData.get(ETCDHeartbeat.MEMORY_USED_MB) instanceof Number);
+                    assertTrue("heapMaxMB should be a number", heartbeatData.get(ETCDHeartbeat.HEAP_MAX_MB) instanceof Number);
+                    assertTrue("heapUsedMB should be a number", heartbeatData.get(ETCDHeartbeat.HEAP_USED_MB) instanceof Number);
+                    assertTrue("heapUsedPercent should be a number", heartbeatData.get(ETCDHeartbeat.HEAP_USED_PERCENT) instanceof Number);
+                    assertTrue("diskTotalMB should be a number", heartbeatData.get(ETCDHeartbeat.DISK_TOTAL_MB) instanceof Number);
+                    assertTrue("diskAvailableMB should be a number", heartbeatData.get(ETCDHeartbeat.DISK_AVAILABLE_MB) instanceof Number);
 
                     // Verify string fields are strings
-                    assertTrue("nodeName should be a string", heartbeatData.get(NODE_NAME) instanceof String);
-                    assertTrue("nodeId should be a string", heartbeatData.get(NODE_ID) instanceof String);
-                    assertTrue("ephemeralId should be a string", heartbeatData.get(EPHEMERAL_ID) instanceof String);
-                    assertTrue("address should be a string", heartbeatData.get(ADDRESS) instanceof String);
+                    assertTrue("nodeName should be a string", heartbeatData.get(ETCDHeartbeat.NODE_NAME) instanceof String);
+                    assertTrue("nodeId should be a string", heartbeatData.get(ETCDHeartbeat.NODE_ID) instanceof String);
+                    assertTrue("ephemeralId should be a string", heartbeatData.get(ETCDHeartbeat.EPHEMERAL_ID) instanceof String);
+                    assertTrue("address should be a string", heartbeatData.get(ETCDHeartbeat.ADDRESS) instanceof String);
 
                     // Verify nodeRouting structure if present
-                    if (heartbeatData.containsKey(NODE_ROUTING)) {
-                        assertTrue("nodeRouting should be a map", heartbeatData.get(NODE_ROUTING) instanceof Map);
+                    if (heartbeatData.containsKey(ETCDHeartbeat.NODE_ROUTING)) {
+                        assertTrue("nodeRouting should be a map", heartbeatData.get(ETCDHeartbeat.NODE_ROUTING) instanceof Map);
                     }
 
                     // Verify metric values are reasonable (non-negative)
-                    assertTrue("cpuUsedPercent should be non-negative", ((Number) heartbeatData.get(CPU_USED_PERCENT)).intValue() >= 0);
+                    assertTrue(
+                        "cpuUsedPercent should be non-negative",
+                        ((Number) heartbeatData.get(ETCDHeartbeat.CPU_USED_PERCENT)).intValue() >= 0
+                    );
                     assertTrue(
                         "memoryUsedPercent should be non-negative",
-                        ((Number) heartbeatData.get(MEMORY_USED_PERCENT)).intValue() >= 0
+                        ((Number) heartbeatData.get(ETCDHeartbeat.MEMORY_USED_PERCENT)).intValue() >= 0
                     );
-                    assertTrue("heapUsedPercent should be non-negative", ((Number) heartbeatData.get(HEAP_USED_PERCENT)).intValue() >= 0);
-                    assertTrue("memoryMaxMB should be positive", ((Number) heartbeatData.get(MEMORY_MAX_MB)).longValue() > 0);
-                    assertTrue("heapMaxMB should be positive", ((Number) heartbeatData.get(HEAP_MAX_MB)).longValue() > 0);
+                    assertTrue(
+                        "heapUsedPercent should be non-negative",
+                        ((Number) heartbeatData.get(ETCDHeartbeat.HEAP_USED_PERCENT)).intValue() >= 0
+                    );
+                    assertTrue("memoryMaxMB should be positive", ((Number) heartbeatData.get(ETCDHeartbeat.MEMORY_MAX_MB)).longValue() > 0);
+                    assertTrue("heapMaxMB should be positive", ((Number) heartbeatData.get(ETCDHeartbeat.HEAP_MAX_MB)).longValue() > 0);
                 });
             } finally {
                 threadPool.shutdown();
@@ -669,8 +677,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify clusterless attributes are present
-                    assertEquals("clusterlessRole should be 'primary'", "primary", heartbeatData.get(CLUSTERLESS_ROLE));
-                    assertEquals("clusterlessShardId should be '00'", "00", heartbeatData.get(CLUSTERLESS_SHARD_ID));
+                    assertEquals("clusterlessRole should be 'primary'", "primary", heartbeatData.get(ETCDHeartbeat.CLUSTERLESS_ROLE));
+                    assertEquals("clusterlessShardId should be '00'", "00", heartbeatData.get(ETCDHeartbeat.CLUSTERLESS_SHARD_ID));
                 });
             } finally {
                 threadPool.shutdown();
@@ -713,8 +721,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     Map<String, Object> heartbeatData = parseHeartbeatJson(kv.getValue());
 
                     // Verify clusterless attributes are not present
-                    assertFalse("clusterlessRole should not be present", heartbeatData.containsKey(CLUSTERLESS_ROLE));
-                    assertFalse("clusterlessShardId should not be present", heartbeatData.containsKey(CLUSTERLESS_SHARD_ID));
+                    assertFalse("clusterlessRole should not be present", heartbeatData.containsKey(ETCDHeartbeat.CLUSTERLESS_ROLE));
+                    assertFalse("clusterlessShardId should not be present", heartbeatData.containsKey(ETCDHeartbeat.CLUSTERLESS_SHARD_ID));
                 });
             } finally {
                 threadPool.shutdown();
