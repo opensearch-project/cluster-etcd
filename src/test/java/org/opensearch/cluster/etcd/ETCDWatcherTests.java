@@ -301,7 +301,11 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                                 "seeds": [
                                   "10.0.2.20:9300"
                                 ]
-                              }
+                              },
+                              "cluster_three": {
+                                "mode": "proxy",
+                                "proxy_address": "remote-cluster-proxy:8030"
+                               }
                             }
                           }
                         }
@@ -319,6 +323,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     assertNotNull(persistentSettings);
                     List<String> clusterOneSeeds = persistentSettings.getAsList("cluster.remote.cluster_one.seeds");
                     List<String> clusterTwoSeeds = persistentSettings.getAsList("cluster.remote.cluster_two.seeds");
+                    String clusterThreeMode = persistentSettings.get("cluster.remote.cluster_three.mode");
+                    String clusterThreeProxyAddress = persistentSettings.get("cluster.remote.cluster_three.proxy_address");
 
                     assertEquals(2, clusterOneSeeds.size());
                     assertEquals("10.0.1.10:9300", clusterOneSeeds.get(0));
@@ -326,6 +332,10 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
                     assertEquals(1, clusterTwoSeeds.size());
                     assertEquals("10.0.2.20:9300", clusterTwoSeeds.get(0));
+
+                    assertEquals("proxy", clusterThreeMode);
+                    assertEquals("remote-cluster-proxy:8030", clusterThreeProxyAddress);
+
                 });
             } finally {
                 threadPool.shutdown();
