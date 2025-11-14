@@ -331,8 +331,12 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertEquals("nodeId should match", localNode.getId(), heartbeatData.get("nodeId"));
                     assertEquals("ephemeralId should match", localNode.getEphemeralId(), heartbeatData.get("ephemeralId"));
                     assertEquals("address should match", localNode.getAddress().getAddress(), heartbeatData.get("address"));
-                    assertEquals("transportPort should match", localNode.getAddress().getPort(), ((Number) heartbeatData.get("transportPort")).intValue());
-                    
+                    assertEquals(
+                        "transportPort should match",
+                        localNode.getAddress().getPort(),
+                        ((Number) heartbeatData.get("transportPort")).intValue()
+                    );
+
                     // Verify httpPort is present and valid
                     assertTrue("httpPort should be present", heartbeatData.containsKey("httpPort"));
                     assertTrue("httpPort should be a number", heartbeatData.get("httpPort") instanceof Number);
