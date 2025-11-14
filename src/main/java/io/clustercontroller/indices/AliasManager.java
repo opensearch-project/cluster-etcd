@@ -56,6 +56,10 @@ public class AliasManager {
         // Store alias configuration for persistence and rebuilding
         Object targetValue = targetIndices.size() == 1 ? targetIndices.get(0) : targetIndices;
         Alias alias = new Alias(aliasName, targetValue);
+        String timestamp = java.time.Instant.now().toString();
+        alias.setCreatedAt(timestamp);
+        alias.setUpdatedAt(timestamp);
+        
         metadataStore.setAlias(clusterId, aliasName, alias);
         log.info("AliasManager - Stored alias config for '{}'", aliasName);
         
