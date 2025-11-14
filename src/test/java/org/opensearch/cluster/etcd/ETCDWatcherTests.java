@@ -168,7 +168,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                         "nodeId": "remote-node-id-1",
                         "ephemeralId": "ephemeral-id-1",
                         "address": "192.168.1.1",
-                        "port": 9300,
+                        "transportPort": 9300,
                         "timestamp": 1750099493841,
                         "heartbeatIntervalSeconds": 5
                     }
@@ -178,7 +178,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                         "nodeId": "remote-node-id-2",
                         "ephemeralId": "ephemeral-id-2",
                         "address": "192.168.1.2",
-                        "port": 9300,
+                        "transportPort": 9300,
                         "timestamp": 1750099493841,
                         "heartbeatIntervalSeconds": 5
                     }

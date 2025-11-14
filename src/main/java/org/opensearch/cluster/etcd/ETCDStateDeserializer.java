@@ -104,7 +104,7 @@ import java.util.concurrent.ExecutionException;
  *   "nodeId": "unique-node-id",
  *   "ephemeralId": "ephemeral-id-123",
  *   "address": "xxx.xxx.x.xxx",
- *   "port": xxxx,
+ *   "transportPort": xxxx,
  *   "timestamp": 1750099493841,
  *   "heartbeatIntervalSeconds": 5
  * }
@@ -663,23 +663,23 @@ public final class ETCDStateDeserializer {
         ) {
             Map<String, Object> healthMap = parser.map();
 
-            String nodeId = (String) healthMap.get("nodeId");
-            String ephemeralId = (String) healthMap.get("ephemeralId");
-            String address = (String) healthMap.get("address");
-            int port = ((Number) healthMap.get("port")).intValue();
+            String nodeId = (String) healthMap.get(ETCDHeartbeat.NODE_ID);
+            String ephemeralId = (String) healthMap.get(ETCDHeartbeat.EPHEMERAL_ID);
+            String address = (String) healthMap.get(ETCDHeartbeat.ADDRESS);
+            int port = ((Number) healthMap.get(ETCDHeartbeat.TRANSPORT_PORT)).intValue();
             List<NodeShardAllocation> replicaAllocations = new ArrayList<>();
             List<NodeShardAllocation> primaryAllocations = new ArrayList<>();
-            if (healthMap.containsKey("nodeRouting")) {
-                Map<String, List<Map<String, Object>>> nodeRouting = (Map<String, List<Map<String, Object>>>) healthMap.get("nodeRouting");
+            if (healthMap.containsKey(ETCDHeartbeat.NODE_ROUTING)) {
+                Map<String, List<Map<String, Object>>> nodeRouting = (Map<String, List<Map<String, Object>>>) healthMap.get(ETCDHeartbeat.NODE_ROUTING);
                 for (Map.Entry<String, List<Map<String, Object>>> entry : nodeRouting.entrySet()) {
                     String indexName = entry.getKey();
                     List<Map<String, Object>> shardRouting = entry.getValue();
                     for (Map<String, Object> shardEntry : shardRouting) {
-                        if (shardEntry.get("currentNodeId").equals(nodeId)) {
-                            int shardNum = (int) shardEntry.get("shardId");
-                            String role = (String) shardEntry.get("role");
-                            String allocationId = (String) shardEntry.get("allocationId");
-                            String state = (String) shardEntry.get("state");
+                        if (shardEntry.get(ETCDHeartbeat.CURRENT_NODE_ID).equals(nodeId)) {
+                            int shardNum = (int) shardEntry.get(ETCDHeartbeat.SHARD_ID);
+                            String role = (String) shardEntry.get(ETCDHeartbeat.ROLE);
+                            String allocationId = (String) shardEntry.get(ETCDHeartbeat.ALLOCATION_ID);
+                            String state = (String) shardEntry.get(ETCDHeartbeat.STATE);
                             if ("replica".equalsIgnoreCase(role)) {
                                 replicaAllocations.add(new NodeShardAllocation(indexName, shardNum, allocationId, state));
                             } else if ("primary".equalsIgnoreCase(role)) {
