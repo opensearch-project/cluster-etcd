@@ -45,11 +45,42 @@ public class ETCDHeartbeat {
     private static final long DEFAULT_HEARTBEAT_INTERVAL_MILLIS = 5000; // 5 seconds
     private static final String CLUSTERLESS_ROLE_ATTRIBUTE = "clusterless_role";
     private static final String CLUSTERLESS_SHARD_ID_ATTRIBUTE = "clusterless_shard_id";
+
+    static final String TIMESTAMP = "timestamp";
+    static final String NODE_NAME = "nodeName";
+    static final String NODE_ID = "nodeId";
+    static final String EPHEMERAL_ID = "ephemeralId";
+    static final String ADDRESS = "address";
+    static final String TRANSPORT_PORT = "transportPort";
+    static final String HTTP_PORT = "httpPort";
+    static final String HEARTBEAT_INTERVAL_MILLIS = "heartbeatIntervalMillis";
+    static final String CLUSTERLESS_ROLE = "clusterlessRole";
+    static final String CLUSTERLESS_SHARD_ID = "clusterlessShardId";
+    static final String CPU_USED_PERCENT = "cpuUsedPercent";
+    static final String MEMORY_USED_PERCENT = "memoryUsedPercent";
+    static final String MEMORY_MAX_MB = "memoryMaxMB";
+    static final String MEMORY_USED_MB = "memoryUsedMB";
+    static final String HEAP_MAX_MB = "heapMaxMB";
+    static final String HEAP_USED_MB = "heapUsedMB";
+    static final String HEAP_USED_PERCENT = "heapUsedPercent";
+    static final String DISK_TOTAL_MB = "diskTotalMB";
+    static final String DISK_AVAILABLE_MB = "diskAvailableMB";
+    static final String NODE_ROUTING = "nodeRouting";
+    static final String SHARD_ID = "shardId";
+    static final String ROLE = "role";
+    static final String STATE = "state";
+    static final String RELOCATING = "relocating";
+    static final String RELOCATING_NODE_ID = "relocatingNodeId";
+    static final String ALLOCATION_ID = "allocationId";
+    static final String CURRENT_NODE_ID = "currentNodeId";
+    static final String CURRENT_NODE_NAME = "currentNodeName";
+
     private final Logger logger = LogManager.getLogger(getClass());
     private final String nodeName;
     private final String nodeId;
     private final String ephemeralId;
     private final String address;
+    private final int transportPort;
     private final Integer httpPort;
     private final String clusterlessRole;
     private final String clusterlessShardId;
@@ -82,6 +113,7 @@ public class ETCDHeartbeat {
         this.nodeId = localNode.getId();
         this.ephemeralId = localNode.getEphemeralId();
         this.address = localNode.getAddress().getAddress();
+        this.transportPort = localNode.getAddress().getPort();
 
         // Get HTTP port from settings (prefer http.publish_port, fall back to http.port)
         Settings settings = clusterService.getSettings();
@@ -166,41 +198,42 @@ public class ETCDHeartbeat {
 
             // Build heartbeat data as a Map
             Map<String, Object> heartbeatData = new HashMap<>();
-            heartbeatData.put("timestamp", System.currentTimeMillis());
-            heartbeatData.put("nodeName", nodeName);
-            heartbeatData.put("nodeId", nodeId);
-            heartbeatData.put("ephemeralId", ephemeralId);
-            heartbeatData.put("address", address);
+            heartbeatData.put(TIMESTAMP, System.currentTimeMillis());
+            heartbeatData.put(NODE_NAME, nodeName);
+            heartbeatData.put(NODE_ID, nodeId);
+            heartbeatData.put(EPHEMERAL_ID, ephemeralId);
+            heartbeatData.put(ADDRESS, address);
+            heartbeatData.put(TRANSPORT_PORT, transportPort);
 
             // Add HTTP port if available
             if (httpPort != null) {
-                heartbeatData.put("httpPort", httpPort);
+                heartbeatData.put(HTTP_PORT, httpPort);
             }
 
-            heartbeatData.put("heartbeatIntervalMillis", heartbeatIntervalMillis);
+            heartbeatData.put(HEARTBEAT_INTERVAL_MILLIS, heartbeatIntervalMillis);
 
             // Add cloud native node attributes
             if (clusterlessRole != null) {
-                heartbeatData.put("clusterlessRole", clusterlessRole);
+                heartbeatData.put(CLUSTERLESS_ROLE, clusterlessRole);
             }
             if (clusterlessShardId != null) {
-                heartbeatData.put("clusterlessShardId", clusterlessShardId);
+                heartbeatData.put(CLUSTERLESS_SHARD_ID, clusterlessShardId);
             }
-            heartbeatData.put("cpuUsedPercent", cpuPercent);
-            heartbeatData.put("memoryUsedPercent", memoryPercent);
-            heartbeatData.put("memoryMaxMB", memoryMax.getMb());
-            heartbeatData.put("memoryUsedMB", memoryUsed.getMb());
-            heartbeatData.put("heapMaxMB", heapMax.getMb());
-            heartbeatData.put("heapUsedMB", heapUsed.getMb());
-            heartbeatData.put("heapUsedPercent", heapUsedPercent);
-            heartbeatData.put("diskTotalMB", diskTotalMB);
-            heartbeatData.put("diskAvailableMB", diskAvailableMB);
+            heartbeatData.put(CPU_USED_PERCENT, cpuPercent);
+            heartbeatData.put(MEMORY_USED_PERCENT, memoryPercent);
+            heartbeatData.put(MEMORY_MAX_MB, memoryMax.getMb());
+            heartbeatData.put(MEMORY_USED_MB, memoryUsed.getMb());
+            heartbeatData.put(HEAP_MAX_MB, heapMax.getMb());
+            heartbeatData.put(HEAP_USED_MB, heapUsed.getMb());
+            heartbeatData.put(HEAP_USED_PERCENT, heapUsedPercent);
+            heartbeatData.put(DISK_TOTAL_MB, diskTotalMB);
+            heartbeatData.put(DISK_AVAILABLE_MB, diskAvailableMB);
 
             // Add node shard routing information
             try {
                 ClusterState clusterState = clusterService.state();
                 Map<String, List<Map<String, Object>>> nodeRoutingMap = getNodeRoutingMap(clusterState);
-                heartbeatData.put("nodeRouting", nodeRoutingMap);
+                heartbeatData.put(NODE_ROUTING, nodeRoutingMap);
             } catch (Exception e) {
                 logger.error("Failed to get node routing information", e);
             }
@@ -241,7 +274,7 @@ public class ETCDHeartbeat {
                 // Include all shards regardless of which node they're assigned to
                 for (ShardRouting shardRouting : shardRoutingTable) {
                     Map<String, Object> shardInfo = new HashMap<>();
-                    shardInfo.put("shardId", shardId);
+                    shardInfo.put(SHARD_ID, shardId);
                     String role;
                     if (shardRouting.primary()) {
                         role = "primary";
@@ -250,15 +283,15 @@ public class ETCDHeartbeat {
                     } else {
                         role = "replica";
                     }
-                    shardInfo.put("role", role);
-                    shardInfo.put("state", shardRouting.state().name());
-                    shardInfo.put("relocating", shardRouting.relocating());
+                    shardInfo.put(ROLE, role);
+                    shardInfo.put(STATE, shardRouting.state().name());
+                    shardInfo.put(RELOCATING, shardRouting.relocating());
                     if (shardRouting.relocating()) {
-                        shardInfo.put("relocatingNodeId", shardRouting.relocatingNodeId());
+                        shardInfo.put(RELOCATING_NODE_ID, shardRouting.relocatingNodeId());
                     }
-                    shardInfo.put("allocationId", shardRouting.allocationId().getId());
-                    shardInfo.put("currentNodeId", shardRouting.currentNodeId());
-                    shardInfo.put("currentNodeName", clusterState.nodes().get(shardRouting.currentNodeId()).getName());
+                    shardInfo.put(ALLOCATION_ID, shardRouting.allocationId().getId());
+                    shardInfo.put(CURRENT_NODE_ID, shardRouting.currentNodeId());
+                    shardInfo.put(CURRENT_NODE_NAME, clusterState.nodes().get(shardRouting.currentNodeId()).getName());
                     allShards.add(shardInfo);
                 }
             }
