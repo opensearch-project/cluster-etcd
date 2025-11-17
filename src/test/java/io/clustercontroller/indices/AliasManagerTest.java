@@ -58,7 +58,9 @@ public class AliasManagerTest {
         verify(metadataStore).setAlias(eq(testClusterId), eq(aliasName),
             argThat(alias -> {
                 return aliasName.equals(alias.getAliasName()) &&
-                       indexName.equals(alias.getTargetIndices());
+                       indexName.equals(alias.getTargetIndices()) &&
+                       alias.getCreatedAt() != null &&
+                       alias.getUpdatedAt() != null;
             }));
         
         // Assert - verify coordinator goal state is updated
@@ -90,7 +92,9 @@ public class AliasManagerTest {
             argThat(alias -> {
                 return aliasName.equals(alias.getAliasName()) &&
                        alias.getTargetIndices() instanceof List &&
-                       ((List<?>) alias.getTargetIndices()).containsAll(Arrays.asList("test-monday", "test-tuesday"));
+                       ((List<?>) alias.getTargetIndices()).containsAll(Arrays.asList("test-monday", "test-tuesday")) &&
+                       alias.getCreatedAt() != null &&
+                       alias.getUpdatedAt() != null;
             }));
         
         // Assert - verify coordinator goal state is updated
