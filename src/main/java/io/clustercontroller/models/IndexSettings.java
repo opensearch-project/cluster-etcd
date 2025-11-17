@@ -1,6 +1,7 @@
 package io.clustercontroller.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import java.util.ArrayList;
@@ -11,6 +12,7 @@ import java.util.List;
  */
 @Data
 @NoArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class IndexSettings {
     @JsonProperty("number_of_shards")
     private Integer numberOfShards;
@@ -26,4 +28,10 @@ public class IndexSettings {
 
     @JsonProperty("pause_pull_ingestion")
     private Boolean pausePullIngestion;
+
+    @JsonProperty("refresh_interval")
+    private String refreshInterval;
+
+    @JsonProperty("number_of_replicas")
+    private Integer numberOfReplicas;
 }

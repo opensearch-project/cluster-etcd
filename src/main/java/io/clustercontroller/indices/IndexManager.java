@@ -212,35 +212,45 @@ public class IndexManager {
             throw new IllegalArgumentException("Index name cannot be null or empty");
         }
 
-        // Parse the Index configuration
-        Index index = new Index();
-        index.setIndexName(indexName);
-
+        // Build response structure matching OpenSearch GET index API format
+        Map<String, Object> indexResponse = new HashMap<>();
+        
+        // Get settings and nest under "index" key
+        Map<String, Object> settingsWrapper = new HashMap<>();
         try {
             IndexSettings settings = metadataStore.getIndexSettings(clusterId, indexName);
             if (settings != null) {
-                index.setSettings(settings);
+                // Nest settings under "index" key to match OpenSearch format
+                settingsWrapper.put("index", settings);
             }
         } catch (Exception e) {
             log.warn("Failed to get settings for index '{}': {}", indexName, e.getMessage());
         }
+        indexResponse.put("settings", settingsWrapper);
         
+        // Get mappings
         try {
             TypeMapping mappings = metadataStore.getIndexMappings(clusterId, indexName);
             if (mappings != null) {
-                index.setMappings(mappings);
+                indexResponse.put("mappings", mappings);
+            } else {
+                indexResponse.put("mappings", new HashMap<>());
             }
         } catch (Exception e) {
             log.warn("Failed to get mappings for index '{}': {}", indexName, e.getMessage());
+            indexResponse.put("mappings", new HashMap<>());
         }
 
+        // Add aliases (empty for now)
+        // TODO: Implement alias retrieval when alias support is added
+        indexResponse.put("aliases", new HashMap<>());
         
-        // TODO: Add aliases when alias support is implemented
-        // index.setAliases(aliases);
+        // Wrap the response with index name as key
+        Map<String, Object> response = new HashMap<>();
+        response.put(indexName, indexResponse);
         
-        // Wrap the response in the index name
         log.info("Successfully retrieved index information for '{}' from cluster '{}'", indexName, clusterId);
-        return objectMapper.writeValueAsString(index);
+        return objectMapper.writeValueAsString(response);
     }
     
     /**

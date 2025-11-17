@@ -6,6 +6,7 @@ import lombok.NoArgsConstructor;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 
 /**
  * Index represents index configuration stored in etcd at:
@@ -15,7 +16,7 @@ import java.util.Map;
 @NoArgsConstructor
 public class Index {
     @JsonProperty("id")
-    private String id;
+    private String id = "";
     
     @JsonProperty("index_name")
     private String indexName;
@@ -30,5 +31,5 @@ public class Index {
     private TypeMapping mappings;
 
     @JsonProperty("aliases")
-    private Map<String, Object> aliases;
+    private Map<String, Object> aliases = new HashMap<>();
 } 

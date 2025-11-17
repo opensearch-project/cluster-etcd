@@ -685,8 +685,11 @@ class IndexManagerTest {
 
         // Then
         assertThat(result).isNotNull();
+        // Check response structure: { "test-index": { "settings": {}, "mappings": {}, "aliases": {} } }
         assertThat(result).contains("\"" + indexName + "\"");
-        assertThat(result).contains("\"index_name\":\"" + indexName + "\"");
+        assertThat(result).contains("\"settings\"");
+        assertThat(result).contains("\"mappings\"");
+        assertThat(result).contains("\"aliases\"");
         
         verify(metadataStore).getIndexSettings(clusterId, indexName);
         verify(metadataStore).getIndexMappings(clusterId, indexName);
