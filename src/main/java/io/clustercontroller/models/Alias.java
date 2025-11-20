@@ -3,6 +3,7 @@ package io.clustercontroller.models;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -12,6 +13,7 @@ import java.util.List;
  * Stored at /aliases/{clusterId}/{aliasName}/conf
  */
 @Data
+@NoArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class Alias {
     
@@ -22,18 +24,10 @@ public class Alias {
     private Object targetIndices; // Can be String (single) or List<String> (multiple)
     
     @JsonProperty("created_at")
-    private String createdAt;
+    private String createdAt = java.time.OffsetDateTime.now().toString();
     
     @JsonProperty("updated_at")
-    private String updatedAt;
-    
-    public Alias() {
-    }
-    
-    public Alias(String aliasName, Object targetIndices) {
-        this.aliasName = aliasName;
-        this.targetIndices = targetIndices;
-    }
+    private String updatedAt = java.time.OffsetDateTime.now().toString();
     
     /**
      * Get target indices as a list (whether stored as String or List)
