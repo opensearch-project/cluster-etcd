@@ -1,5 +1,6 @@
 package io.clustercontroller.models;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
@@ -32,6 +33,7 @@ public class Alias {
     /**
      * Get target indices as a list (whether stored as String or List)
      */
+    @JsonIgnore
     public List<String> getTargetIndicesAsList() {
         if (targetIndices instanceof String) {
             List<String> list = new ArrayList<>();
