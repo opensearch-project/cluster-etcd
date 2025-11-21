@@ -8,6 +8,7 @@ import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.Template;
 import io.clustercontroller.models.CoordinatorGoalState;
 import io.clustercontroller.models.ClusterInformation;
+import io.clustercontroller.models.Alias;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -1212,6 +1213,90 @@ public class EtcdMetadataStore implements MetadataStore {
             this.coordinatorGoalStateUnit = searchUnit;
         }
         log.info("Coordinator goal state path configured to group='{}', unit='{}'", this.coordinatorGoalStateGroup, this.coordinatorGoalStateUnit);
+    }
+    
+    // =================================================================
+    // ALIAS CONFIGURATION OPERATIONS
+    // =================================================================
+    
+    @Override
+    public Alias getAlias(String clusterId, String aliasName) throws Exception {
+        String path = pathResolver.getAliasConfPath(clusterId, aliasName);
+        
+        try {
+            ByteSequence key = ByteSequence.from(path, UTF_8);
+            GetResponse response = kvClient.get(key).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            if (response.getKvs().isEmpty()) {
+                return null;
+            }
+            
+            String json = response.getKvs().get(0).getValue().toString(UTF_8);
+            return objectMapper.readValue(json, Alias.class);
+            
+        } catch (Exception e) {
+            log.error("Failed to get alias for '{}': {}", aliasName, e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    @Override
+    public void setAlias(String clusterId, String aliasName, Alias alias) throws Exception {
+        String path = pathResolver.getAliasConfPath(clusterId, aliasName);
+        
+        try {
+            String json = objectMapper.writeValueAsString(alias);
+            executeEtcdPut(path, json);
+            log.debug("Set alias for '{}': {}", aliasName, alias);
+            
+        } catch (Exception e) {
+            log.error("Failed to set alias for '{}': {}", aliasName, e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    @Override
+    public void deleteAlias(String clusterId, String aliasName) throws Exception {
+        String path = pathResolver.getAliasConfPath(clusterId, aliasName);
+        
+        try {
+            ByteSequence key = ByteSequence.from(path, UTF_8);
+            kvClient.delete(key).get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            log.info("Deleted alias for '{}'", aliasName);
+            
+        } catch (Exception e) {
+            log.error("Failed to delete alias for '{}': {}", aliasName, e.getMessage(), e);
+            throw e;
+        }
+    }
+    
+    @Override
+    public List<Alias> getAllAliases(String clusterId) throws Exception {
+        String prefix = pathResolver.getAliasesPrefix(clusterId);
+        
+        try {
+            ByteSequence prefixKey = ByteSequence.from(prefix + "/", UTF_8);
+            GetOption option = GetOption.newBuilder()
+                .withPrefix(prefixKey)
+                .build();
+            
+            GetResponse response = kvClient.get(prefixKey, option)
+                .get(ETCD_OPERATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            
+            List<Alias> aliases = new ArrayList<>();
+            for (KeyValue kv : response.getKvs()) {
+                String json = kv.getValue().toString(UTF_8);
+                Alias alias = objectMapper.readValue(json, Alias.class);
+                aliases.add(alias);
+            }
+            
+            log.debug("Retrieved {} aliases for cluster '{}'", aliases.size(), clusterId);
+            return aliases;
+            
+        } catch (Exception e) {
+            log.error("Failed to get all aliases: {}", e.getMessage(), e);
+            throw e;
+        }
     }
 
     @Override

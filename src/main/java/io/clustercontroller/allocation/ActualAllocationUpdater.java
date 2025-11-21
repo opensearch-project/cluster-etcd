@@ -385,12 +385,19 @@ public class ActualAllocationUpdater {
         // Get all index configurations that still exist
         List<Index> indexConfigs = metadataStore.getAllIndexConfigs(clusterId);
         
-        // Build the new coordinator goal state structure (with null-safety guards)
+        // Get all alias configurations
+        List<Alias> aliases = metadataStore.getAllAliases(clusterId);
+        
+        // Build new coordinator goal state from scratch
         CoordinatorGoalState coordinatorGoalState = new CoordinatorGoalState();
+        
+        // Ensure remote_shards structure exists (with null-safety guards)
         if (coordinatorGoalState.getRemoteShards() == null) {
             coordinatorGoalState.setRemoteShards(new CoordinatorGoalState.RemoteShards());
         }
         CoordinatorGoalState.RemoteShards remoteShards = coordinatorGoalState.getRemoteShards();
+        
+        // Initialize indices map (will be rebuilt)
         if (remoteShards.getIndices() == null) {
             remoteShards.setIndices(new HashMap<>());
         }
@@ -485,6 +492,21 @@ public class ActualAllocationUpdater {
             indices.put(indexName, indexShardRouting);
         }
         
+        // Rebuild aliases from alias configurations
+        Map<String, Object> aliasMap = remoteShards.getAliases();
+        if (aliasMap == null) {
+            aliasMap = new HashMap<>();
+            remoteShards.setAliases(aliasMap);
+        }
+        
+        for (Alias alias : aliases) {
+            String aliasName = alias.getAliasName();
+            Object targetIndices = alias.getTargetIndices();
+            aliasMap.put(aliasName, targetIndices);
+            log.debug("ActualAllocationUpdater - Rebuilt alias '{}' -> {}", aliasName, targetIndices);
+        }
+        
+        log.info("ActualAllocationUpdater - Rebuilt {} aliases in coordinator goal state", aliasMap.size());
         
         // Update the coordinator goal state in etcd
         try {

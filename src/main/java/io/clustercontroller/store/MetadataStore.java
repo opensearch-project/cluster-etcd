@@ -12,6 +12,7 @@ import io.clustercontroller.models.TypeMapping;
 import io.clustercontroller.models.ClusterControllerAssignment;
 import io.clustercontroller.models.CoordinatorGoalState;
 import io.clustercontroller.models.ClusterInformation;
+import io.clustercontroller.models.Alias;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -244,6 +245,30 @@ public interface MetadataStore {
      * This is used for cleanup operations to find orphaned allocations.
      */
     Set<String> getAllIndicesWithActualAllocations(String clusterId) throws Exception;
+    
+    // =================================================================
+    // Alias Configuration Operations
+    // =================================================================
+    
+    /**
+     * Get alias configuration
+     */
+    Alias getAlias(String clusterId, String aliasName) throws Exception;
+    
+    /**
+     * Set alias configuration
+     */
+    void setAlias(String clusterId, String aliasName, Alias alias) throws Exception;
+    
+    /**
+     * Delete alias configuration
+     */
+    void deleteAlias(String clusterId, String aliasName) throws Exception;
+    
+    /**
+     * Get all alias configurations for a cluster
+     */
+    List<Alias> getAllAliases(String clusterId) throws Exception;
     
     // =================================================================
     // CLUSTER OPERATIONS
