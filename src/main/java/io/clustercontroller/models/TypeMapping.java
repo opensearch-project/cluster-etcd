@@ -74,9 +74,10 @@ public class TypeMapping {
     /**
      * Metadata field configuration.
      * Additional metadata about the document.
+     * Can store IndexMetadata or any other metadata object.
      */
     @JsonProperty("_meta")
-    private Map<String, Object> meta;
+    private Object meta;
     
     /**
      * Field names configuration.

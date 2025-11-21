@@ -42,6 +42,7 @@ public class IndexHandler {
     /**
      * Create a new index in the specified cluster.
      * PUT /{clusterId}/{index}
+     * Returns the created index information including settings, mappings, and aliases.
      */
     @PutMapping("/{index}")
     public ResponseEntity<Object> createIndex(
@@ -51,12 +52,11 @@ public class IndexHandler {
         try {
             log.info("Creating index '{}' in cluster '{}'", index, clusterId);
             String indexConfig = (request != null) ? objectMapper.writeValueAsString(request) : "{}";
-            indexManager.createIndex(clusterId, index, indexConfig);
-            return ResponseEntity.status(HttpStatus.CREATED).body(IndexResponse.builder()
-                .acknowledged(true)
-                .shardsAcknowledged(true)
-                .index(index)
-                .build());
+            String indexInfo = indexManager.createIndex(clusterId, index, indexConfig);
+            
+            // Parse and return the index information
+            Object indexResponse = objectMapper.readValue(indexInfo, Object.class);
+            return ResponseEntity.status(HttpStatus.CREATED).body(indexResponse);
         } catch (UnsupportedOperationException e) {
             log.error("Error creating index '{}' in cluster '{}': {}", index, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Index creation"));
@@ -202,6 +202,32 @@ public class IndexHandler {
             return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Update index mapping"));
         } catch (Exception e) {
             log.error("Error updating mapping for index '{}' in cluster '{}': {}", index, clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
+        }
+    }
+
+      /**
+     * Update index metadata in the specified cluster.
+     * PUT /{clusterId}/{index}/_metadata
+     */
+    @PutMapping("/{index}/_metadata")
+    public ResponseEntity<Object> updateIndexMetadata(
+            @PathVariable String clusterId,
+            @PathVariable String index,
+            @RequestBody String metadataJson) {
+        try {
+            log.info("Updating metadata for index '{}' in cluster '{}'", index, clusterId);
+            indexManager.updateMetadata(clusterId, index, metadataJson);
+            return ResponseEntity.ok(IndexResponse.builder()
+                .acknowledged(true)
+                .shardsAcknowledged(true)
+                .index(index)
+                .build());
+        } catch (IllegalArgumentException e) {
+            log.error("Invalid request for updating metadata for index '{}' in cluster '{}': {}", index, clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.badRequest(e.getMessage()));
+        } catch (Exception e) {
+            log.error("Error updating metadata for index '{}' in cluster '{}': {}", index, clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
         }
     }

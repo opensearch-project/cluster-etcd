@@ -1,5 +1,6 @@
 package io.clustercontroller.indices;
 
+import io.clustercontroller.models.IndexMetadata;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.TypeMapping;
 import io.clustercontroller.store.MetadataStore;
@@ -54,12 +55,18 @@ class IndexManagerTest {
             }
             """;
 
+        String expectedIndexResponse = "{\"test-index\":{\"settings\":{},\"mappings\":{},\"aliases\":{}}}";
+
         // Mock dependencies
-        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.getIndexConfig(clusterId, indexName))
+            .thenReturn(Optional.empty())  // First call during creation check
+            .thenReturn(Optional.of("config"));  // Second call during getIndex
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-123");
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
 
         // When
-        indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
+        String result = indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
 
         // Then
         ArgumentCaptor<String> indexConfigCaptor = ArgumentCaptor.forClass(String.class);
@@ -72,6 +79,11 @@ class IndexManagerTest {
         // Verify that setIndexMappings and setIndexSettings are called with correct values
         verify(metadataStore).setIndexMappings(clusterId, indexName, "{\"properties\":{\"field1\":{\"type\":\"text\"}}}");
         verify(metadataStore).setIndexSettings(clusterId, indexName, "{\"number_of_shards\":1}");
+        
+        // Verify that getIndex was called and returned the created index information
+        assertThat(result).isNotNull();
+        assertThat(result).contains(indexName);
+        verify(metadataStore, times(2)).getIndexConfig(clusterId, indexName);
     }
 
 
@@ -85,8 +97,12 @@ class IndexManagerTest {
             }
             """;
 
-        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.getIndexConfig(clusterId, indexName))
+            .thenReturn(Optional.empty())  // First call during creation check
+            .thenReturn(Optional.of("config"));  // Second call during getIndex
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-123");
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
 
         // When
         indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
@@ -117,14 +133,31 @@ class IndexManagerTest {
             }
             """;
 
+        // Mock getIndexConfig to return existing config (called twice: once in createIndex, once in getIndex)
         when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        
+        // Mock getIndexSettings and getIndexMappings (called by getIndex)
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
 
         // When
-        indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
+        String result = indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
 
-        // Then
+        // Then - should not create new index but return existing index information
         verify(metadataStore, never()).createIndexConfig(any(), any(), any());
         verify(metadataStore, never()).getAllSearchUnits(any());
+        
+        // Verify getIndex was called to return existing index information
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + indexName + "\""); // Should contain index name as JSON key
+        assertThat(result).contains("settings");
+        assertThat(result).contains("mappings");
+        assertThat(result).contains("aliases");
+        
+        // Verify getIndexConfig was called twice (once in createIndex check, once in getIndex)
+        verify(metadataStore, times(2)).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).getIndexSettings(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
     }
 
     @Test
@@ -205,8 +238,12 @@ class IndexManagerTest {
         String indexName = "test-index";
         String createIndexRequestJson = "{}"; // Empty JSON should use defaults
 
-        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.getIndexConfig(clusterId, indexName))
+            .thenReturn(Optional.empty())  // First call during creation check
+            .thenReturn(Optional.of("config"));  // Second call during getIndex
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-789");
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
 
         // When
         indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
@@ -230,8 +267,12 @@ class IndexManagerTest {
             }
             """;
 
-        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.getIndexConfig(clusterId, indexName))
+            .thenReturn(Optional.empty())  // First call during creation check
+            .thenReturn(Optional.of("config"));  // Second call during getIndex
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-999");
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
 
         // When
         indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
@@ -252,8 +293,12 @@ class IndexManagerTest {
                 "settings": {"number_of_shards": 3, "number_of_replicas": 1}
             }
             """;
-        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.getIndexConfig(clusterId, indexName))
+            .thenReturn(Optional.empty())  // First call during creation check
+            .thenReturn(Optional.of("config"));  // Second call during getIndex
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-456");
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
 
         // When
         indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
@@ -273,8 +318,12 @@ class IndexManagerTest {
                 "settings": {"invalid_field": "invalid_value"}
             }
             """;
-        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.getIndexConfig(clusterId, indexName))
+            .thenReturn(Optional.empty())  // First call during creation check
+            .thenReturn(Optional.of("config"));  // Second call during getIndex
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any(String.class))).thenReturn("doc-id-789");
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
 
         // When
         indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
@@ -601,8 +650,12 @@ class IndexManagerTest {
             }
             """;
 
-        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+        when(metadataStore.getIndexConfig(clusterId, indexName))
+            .thenReturn(Optional.empty())  // First call during creation check
+            .thenReturn(Optional.of("config"));  // Second call during getIndex
         when(metadataStore.createIndexConfig(eq(clusterId), eq(indexName), any())).thenReturn("doc-id");
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
 
         // When
         indexManager.createIndex(clusterId, indexName, createIndexRequestJson);
@@ -652,6 +705,7 @@ class IndexManagerTest {
         mockMappings.setProperties(properties);
 
         // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
         when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(mockSettings);
         when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(mockMappings);
 
@@ -666,6 +720,7 @@ class IndexManagerTest {
         assertThat(result).contains("\"properties\"");
         assertThat(result).contains("\"field1\"");
 
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
         verify(metadataStore).getIndexMappings(clusterId, indexName);
     }
@@ -677,6 +732,7 @@ class IndexManagerTest {
         String indexName = "test-index";
 
         // Mock dependencies - neither settings nor mappings exist
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
         when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
         when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
 
@@ -691,6 +747,7 @@ class IndexManagerTest {
         assertThat(result).contains("\"mappings\"");
         assertThat(result).contains("\"aliases\"");
         
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
         verify(metadataStore).getIndexMappings(clusterId, indexName);
     }
@@ -732,6 +789,7 @@ class IndexManagerTest {
         String indexName = "test-index";
 
         // Mock dependencies - throw exception on getSettings
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
         when(metadataStore.getIndexSettings(clusterId, indexName))
                 .thenThrow(new RuntimeException("Database connection failed"));
         when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
@@ -743,6 +801,7 @@ class IndexManagerTest {
         assertThat(result).isNotNull();
         assertThat(result).contains("\"" + indexName + "\"");
         
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
         verify(metadataStore).getIndexMappings(clusterId, indexName);
     }
@@ -757,6 +816,7 @@ class IndexManagerTest {
         mockSettings.setNumberOfShards(1);
 
         // Mock dependencies - throw exception on getMappings
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
         when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(mockSettings);
         when(metadataStore.getIndexMappings(clusterId, indexName))
                 .thenThrow(new RuntimeException("Mapping retrieval failed"));
@@ -769,7 +829,451 @@ class IndexManagerTest {
         assertThat(result).contains("\"" + indexName + "\"");
         assertThat(result).contains("\"number_of_shards\":1");
         
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
         verify(metadataStore).getIndexMappings(clusterId, indexName);
+    }
+
+    @Test
+    void testGetIndex_WithMetadata() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+
+        IndexSettings mockSettings = new IndexSettings();
+        mockSettings.setNumberOfShards(3);
+
+        // Create mappings with _meta field containing metadata
+        TypeMapping mockMappings = new TypeMapping();
+        Map<String, Object> properties = new HashMap<>();
+        properties.put("field1", Map.of("type", "text"));
+        mockMappings.setProperties(properties);
+
+        IndexMetadata mockMetadata = IndexMetadata.builder()
+                .isIndexTemplateType(true)
+                .idField("uuid")
+                .versionField("timestamp")
+                .build();
+        mockMappings.setMeta(mockMetadata);
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(mockSettings);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(mockMappings);
+
+        // When
+        String result = indexManager.getIndex(clusterId, indexName);
+
+        // Then
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + indexName + "\"");
+        assertThat(result).contains("\"_meta\"");
+        assertThat(result).contains("\"id_field\":\"uuid\"");
+        assertThat(result).contains("\"version_field\":\"timestamp\"");
+        assertThat(result).contains("\"is_index_template_type\":true");
+
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).getIndexSettings(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+    }
+
+    @Test
+    void testGetIndex_WithoutMetadata() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+
+        // Mappings without _meta field
+        TypeMapping mockMappings = new TypeMapping();
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(mockMappings);
+
+        // When
+        String result = indexManager.getIndex(clusterId, indexName);
+
+        // Then - should not contain _meta field
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + indexName + "\"");
+        // _meta should not be present when metadata is not set
+        assertThat(mockMappings.getMeta()).isNull();
+
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+    }
+
+    // ========== updateMetadata Tests ==========
+
+    @Test
+    void testUpdateMetadata_Success() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String metadataJson = """
+            {
+                "is_index_template_type": true,
+                "id_field": "uuid",
+                "version_field": "timestamp"
+            }
+            """;
+
+        TypeMapping existingMappings = new TypeMapping();
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(existingMappings);
+        doNothing().when(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When
+        indexManager.updateMetadata(clusterId, indexName, metadataJson);
+
+        // Then
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        
+        // Verify setIndexMappings was called with mappings containing _meta
+        ArgumentCaptor<String> mappingsCaptor = ArgumentCaptor.forClass(String.class);
+        verify(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), mappingsCaptor.capture());
+        
+        String capturedMappings = mappingsCaptor.getValue();
+        assertThat(capturedMappings).contains("_meta");
+        assertThat(capturedMappings).contains("id_field");
+        assertThat(capturedMappings).contains("uuid");
+    }
+
+    @Test
+    void testUpdateMetadata_ComplexMetadata() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String complexMetadataJson = """
+            {
+                "is_index_template_type": true,
+                "aliases": [
+                    {
+                        "name": "active_alias",
+                        "match_strategy": "LATEST"
+                    },
+                    {
+                        "name": "passive_alias",
+                        "match_strategy": "PREVIOUS"
+                    }
+                ],
+                "id_field": "uuid",
+                "version_field": "timestamp",
+                "batch_ingestion_source": {
+                    "hive_table": "db.table",
+                    "partition_keys": ["date", "hour"],
+                    "sql": "SELECT * FROM db.table"
+                },
+                "live_ingestion_source": {
+                    "kafka_topic": "topic1",
+                    "cluster": "kafka-cluster"
+                }
+            }
+            """;
+
+        TypeMapping existingMappings = new TypeMapping();
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(existingMappings);
+        doNothing().when(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When
+        indexManager.updateMetadata(clusterId, indexName, complexMetadataJson);
+
+        // Then
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        
+        // Verify complex metadata is stored in _meta
+        ArgumentCaptor<String> mappingsCaptor = ArgumentCaptor.forClass(String.class);
+        verify(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), mappingsCaptor.capture());
+        
+        String capturedMappings = mappingsCaptor.getValue();
+        assertThat(capturedMappings).contains("_meta");
+        assertThat(capturedMappings).contains("active_alias");
+        assertThat(capturedMappings).contains("passive_alias");
+        assertThat(capturedMappings).contains("batch_ingestion_source");
+        assertThat(capturedMappings).contains("live_ingestion_source");
+    }
+
+    @Test
+    void testUpdateMetadata_EmptyClusterId() throws Exception {
+        // Given
+        String clusterId = "";
+        String indexName = "test-index";
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, metadataJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Cluster ID cannot be null or empty");
+
+        verify(metadataStore, never()).setIndexMappings(any(), any(), any());
+    }
+
+    @Test
+    void testUpdateMetadata_EmptyIndexName() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "";
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, metadataJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Index name cannot be null or empty");
+
+        verify(metadataStore, never()).setIndexMappings(any(), any(), any());
+    }
+
+    @Test
+    void testUpdateMetadata_EmptyMetadataJson() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String metadataJson = "";
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, metadataJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Metadata JSON cannot be null or empty");
+
+        verify(metadataStore, never()).setIndexMappings(any(), any(), any());
+    }
+
+    @Test
+    void testUpdateMetadata_IndexDoesNotExist() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "non-existent-index";
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+
+        // Mock dependencies - index doesn't exist
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.empty());
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, metadataJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Index 'non-existent-index' not found");
+
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore, never()).setIndexMappings(any(), any(), any());
+    }
+
+    @Test
+    void testUpdateMetadata_InvalidJsonFormat() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String invalidMetadataJson = "invalid json format";
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, invalidMetadataJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Invalid metadata JSON format");
+
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore, never()).setIndexMappings(any(), any(), any());
+    }
+
+    @Test
+    void testUpdateMetadata_MalformedJson() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String malformedJson = "{\"id_field\": \"uuid\",}"; // Trailing comma
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, malformedJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Invalid metadata JSON format");
+
+        verify(metadataStore, never()).setIndexMappings(any(), any(), any());
+    }
+
+    @Test
+    void testUpdateMetadata_MetadataStoreException() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+
+        TypeMapping existingMappings = new TypeMapping();
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(existingMappings);
+        doThrow(new RuntimeException("Etcd write failed"))
+                .when(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, metadataJson))
+                .isInstanceOf(Exception.class)
+                .hasMessage("Failed to store index metadata in mappings");
+
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        verify(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), any(String.class));
+    }
+
+    @Test
+    void testUpdateMetadata_NullMetadataJson() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String metadataJson = null;
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, metadataJson))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Metadata JSON cannot be null or empty");
+
+        verify(metadataStore, never()).setIndexMappings(any(), any(), any());
+    }
+
+    @Test
+    void testUpdateMetadata_WithAliases() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String metadataJson = """
+            {
+                "aliases": [
+                    {
+                        "name": "usecase_active_alias",
+                        "match_strategy": "LATEST"
+                    },
+                    {
+                        "name": "usecase_passive_alias",
+                        "match_strategy": "PREVIOUS"
+                    }
+                ]
+            }
+            """;
+
+        TypeMapping existingMappings = new TypeMapping();
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(existingMappings);
+        doNothing().when(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When
+        indexManager.updateMetadata(clusterId, indexName, metadataJson);
+
+        // Then
+        verify(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), any(String.class));
+    }
+
+    @Test
+    void testUpdateMetadata_WithIngestionSources() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String metadataJson = """
+            {
+                "batch_ingestion_source": {
+                    "hive_table": "sia.geosemantic_sia_schema",
+                    "partition_keys": ["document_type"],
+                    "sql": "SELECT msg.uuid, msg.timestamp FROM sia.geosemantic_sia_schema"
+                },
+                "live_ingestion_source": {
+                    "kafka_topic": "open-search-pull-ingestion-test",
+                    "cluster": "kloak-phx-lossless2"
+                }
+            }
+            """;
+
+        TypeMapping existingMappings = new TypeMapping();
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(existingMappings);
+        doNothing().when(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When
+        indexManager.updateMetadata(clusterId, indexName, metadataJson);
+
+        // Then
+        verify(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), any(String.class));
+    }
+
+    @Test
+    void testUpdateMetadata_IndexConfigCheckException() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+
+        // Mock dependencies - exception when checking index existence
+        when(metadataStore.getIndexConfig(clusterId, indexName))
+                .thenThrow(new RuntimeException("Etcd connection failed"));
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, metadataJson))
+                .isInstanceOf(Exception.class)
+                .hasMessage("Failed to verify index existence");
+
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore, never()).setIndexMappings(any(), any(), any());
+    }
+    
+    @Test
+    void testUpdateMetadata_GetMappingsException() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+
+        // Mock dependencies - exception when getting mappings
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexMappings(clusterId, indexName))
+                .thenThrow(new RuntimeException("Etcd read failed"));
+
+        // When & Then
+        assertThatThrownBy(() -> indexManager.updateMetadata(clusterId, indexName, metadataJson))
+                .isInstanceOf(Exception.class)
+                .hasMessage("Failed to retrieve existing mappings");
+
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        verify(metadataStore, never()).setIndexMappings(any(), any(), any());
+    }
+    
+    @Test
+    void testUpdateMetadata_NoExistingMappings() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+
+        // Mock dependencies - no existing mappings
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("existing-config"));
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(null);
+        doNothing().when(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), any(String.class));
+
+        // When
+        indexManager.updateMetadata(clusterId, indexName, metadataJson);
+
+        // Then - should create new TypeMapping and set _meta
+        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        
+        ArgumentCaptor<String> mappingsCaptor = ArgumentCaptor.forClass(String.class);
+        verify(metadataStore).setIndexMappings(eq(clusterId), eq(indexName), mappingsCaptor.capture());
+        
+        String capturedMappings = mappingsCaptor.getValue();
+        assertThat(capturedMappings).contains("_meta");
+        assertThat(capturedMappings).contains("id_field");
     }
 }

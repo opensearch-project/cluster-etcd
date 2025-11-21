@@ -13,6 +13,9 @@ import org.mockito.MockitoAnnotations;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -41,23 +44,24 @@ class IndexHandlerTest {
     void testCreateIndex_Success() throws Exception {
         // Given
         IndexRequest request = IndexRequest.builder().build();
+        String indexInfoJson = "{\"test-index\":{\"settings\":{},\"mappings\":{},\"aliases\":{}}}";
+        Map<String, Object> expectedResponse = new HashMap<>();
+        expectedResponse.put("test-index", new HashMap<>());
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doNothing().when(indexManager).createIndex(anyString(), anyString(), anyString());
+        when(indexManager.createIndex(anyString(), anyString(), anyString())).thenReturn(indexInfoJson);
+        when(objectMapper.readValue(eq(indexInfoJson), eq(Object.class))).thenReturn(expectedResponse);
 
         // When
         ResponseEntity<Object> response = indexHandler.createIndex(testClusterId, testIndexName, request);
 
         // Then
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(response.getBody()).isInstanceOf(IndexResponse.class);
-
-        IndexResponse indexResponse = (IndexResponse) response.getBody();
-        assertThat(indexResponse.isAcknowledged()).isTrue();
-        assertThat(indexResponse.isShardsAcknowledged()).isTrue();
-        assertThat(indexResponse.getIndex()).isEqualTo(testIndexName);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody()).isInstanceOf(Map.class);
 
         verify(indexManager).createIndex(testClusterId, testIndexName, "{}");
+        verify(objectMapper).readValue(eq(indexInfoJson), eq(Object.class));
     }
 
     @Test
@@ -66,8 +70,8 @@ class IndexHandlerTest {
         IndexRequest request = IndexRequest.builder().build();
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doThrow(new UnsupportedOperationException("Not implemented"))
-            .when(indexManager).createIndex(anyString(), anyString(), anyString());
+        when(indexManager.createIndex(anyString(), anyString(), anyString()))
+            .thenThrow(new UnsupportedOperationException("Not implemented"));
 
         // When
         ResponseEntity<Object> response = indexHandler.createIndex(testClusterId, testIndexName, request);
@@ -87,8 +91,8 @@ class IndexHandlerTest {
         IndexRequest request = IndexRequest.builder().build();
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doThrow(new RuntimeException("Database error"))
-            .when(indexManager).createIndex(anyString(), anyString(), anyString());
+        when(indexManager.createIndex(anyString(), anyString(), anyString()))
+            .thenThrow(new RuntimeException("Database error"));
 
         // When
         ResponseEntity<Object> response = indexHandler.createIndex(testClusterId, testIndexName, request);
@@ -158,6 +162,24 @@ class IndexHandlerTest {
     }
 
     @Test
+    void testGetIndex_WithMetadata() throws Exception {
+        // Given
+        String expectedIndexJson = "{\"test-index\":{\"settings\":{},\"mappings\":{\"_meta\":{\"id_field\":\"uuid\"}},\"aliases\":{}}}";
+        when(indexManager.getIndex(anyString(), anyString())).thenReturn(expectedIndexJson);
+
+        // When
+        ResponseEntity<Object> response = indexHandler.getIndex(testClusterId, testIndexName);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isEqualTo(expectedIndexJson);
+        assertThat(response.getBody().toString()).contains("_meta");
+        assertThat(response.getBody().toString()).contains("id_field");
+
+        verify(indexManager).getIndex(testClusterId, testIndexName);
+    }
+
+    @Test
     void testGetIndex_IndexNotFound() throws Exception {
         // Given
         when(indexManager.getIndex(anyString(), anyString()))
@@ -174,6 +196,25 @@ class IndexHandlerTest {
         assertThat(errorResponse.getError()).isEqualTo("bad_request");
         assertThat(errorResponse.getReason()).contains("does not exist");
         assertThat(errorResponse.getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void testGetIndex_InternalError() throws Exception {
+        // Given
+        when(indexManager.getIndex(anyString(), anyString()))
+            .thenThrow(new RuntimeException("Etcd connection failed"));
+
+        // When
+        ResponseEntity<Object> response = indexHandler.getIndex(testClusterId, testIndexName);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
+        assertThat(errorResponse.getReason()).contains("Etcd connection failed");
+        assertThat(errorResponse.getStatus()).isEqualTo(500);
     }
 
     @Test
@@ -308,14 +349,121 @@ class IndexHandlerTest {
     }
 
     @Test
+    void testUpdateIndexMetadata_Success() throws Exception {
+        // Given
+        String metadataJson = "{\"id_field\":\"uuid\",\"version_field\":\"timestamp\"}";
+        doNothing().when(indexManager).updateMetadata(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response = indexHandler.updateIndexMetadata(testClusterId, testIndexName, metadataJson);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isInstanceOf(IndexResponse.class);
+
+        IndexResponse indexResponse = (IndexResponse) response.getBody();
+        assertThat(indexResponse.isAcknowledged()).isTrue();
+        assertThat(indexResponse.isShardsAcknowledged()).isTrue();
+        assertThat(indexResponse.getIndex()).isEqualTo(testIndexName);
+
+        verify(indexManager).updateMetadata(testClusterId, testIndexName, metadataJson);
+    }
+
+    @Test
+    void testUpdateIndexMetadata_IndexNotFound() throws Exception {
+        // Given
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+        doThrow(new IllegalArgumentException("Index 'test-index' not found"))
+            .when(indexManager).updateMetadata(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response = indexHandler.updateIndexMetadata(testClusterId, testIndexName, metadataJson);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("bad_request");
+        assertThat(errorResponse.getReason()).contains("not found");
+        assertThat(errorResponse.getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void testUpdateIndexMetadata_InvalidJson() throws Exception {
+        // Given
+        String invalidMetadataJson = "{invalid json}";
+        doThrow(new IllegalArgumentException("Invalid metadata JSON format"))
+            .when(indexManager).updateMetadata(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response = indexHandler.updateIndexMetadata(testClusterId, testIndexName, invalidMetadataJson);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("bad_request");
+        assertThat(errorResponse.getReason()).contains("Invalid metadata JSON");
+        assertThat(errorResponse.getStatus()).isEqualTo(400);
+    }
+
+    @Test
+    void testUpdateIndexMetadata_InternalError() throws Exception {
+        // Given
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+        doThrow(new RuntimeException("Etcd write failed"))
+            .when(indexManager).updateMetadata(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response = indexHandler.updateIndexMetadata(testClusterId, testIndexName, metadataJson);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+
+        ErrorResponse errorResponse = (ErrorResponse) response.getBody();
+        assertThat(errorResponse.getError()).isEqualTo("internal_server_error");
+        assertThat(errorResponse.getReason()).contains("Etcd write failed");
+        assertThat(errorResponse.getStatus()).isEqualTo(500);
+    }
+
+    @Test
+    void testUpdateIndexMetadata_ComplexMetadata() throws Exception {
+        // Given - Complex metadata with aliases and ingestion sources
+        String complexMetadataJson = "{"
+            + "\"is_index_template_type\":true,"
+            + "\"aliases\":[{\"name\":\"active_alias\",\"match_strategy\":\"LATEST\"}],"
+            + "\"id_field\":\"uuid\","
+            + "\"version_field\":\"timestamp\","
+            + "\"batch_ingestion_source\":{\"hive_table\":\"db.table\"},"
+            + "\"live_ingestion_source\":{\"kafka_topic\":\"topic1\",\"cluster\":\"kafka-cluster\"}"
+            + "}";
+        doNothing().when(indexManager).updateMetadata(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response = indexHandler.updateIndexMetadata(testClusterId, testIndexName, complexMetadataJson);
+
+        // Then
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isInstanceOf(IndexResponse.class);
+
+        verify(indexManager).updateMetadata(testClusterId, testIndexName, complexMetadataJson);
+    }
+
+    @Test
     void testMultiClusterSupport() throws Exception {
         // Test that different cluster IDs are handled properly
         String cluster1 = "cluster1";
         String cluster2 = "cluster2";
         IndexRequest request = IndexRequest.builder().build();
+        String indexInfoJson = "{\"test-index\":{\"settings\":{},\"mappings\":{},\"aliases\":{}}}";
+        Map<String, Object> expectedResponse = new HashMap<>();
 
         when(objectMapper.writeValueAsString(any())).thenReturn("{}");
-        doNothing().when(indexManager).createIndex(anyString(), anyString(), anyString());
+        when(indexManager.createIndex(anyString(), anyString(), anyString())).thenReturn(indexInfoJson);
+        when(objectMapper.readValue(eq(indexInfoJson), eq(Object.class))).thenReturn(expectedResponse);
 
         // When
         ResponseEntity<Object> response1 = indexHandler.createIndex(cluster1, testIndexName, request);
@@ -327,5 +475,26 @@ class IndexHandlerTest {
 
         verify(indexManager).createIndex(cluster1, testIndexName, "{}");
         verify(indexManager).createIndex(cluster2, testIndexName, "{}");
+    }
+
+    @Test
+    void testMultiClusterSupport_Metadata() throws Exception {
+        // Test that metadata updates work across different clusters
+        String cluster1 = "cluster1";
+        String cluster2 = "cluster2";
+        String metadataJson = "{\"id_field\":\"uuid\"}";
+
+        doNothing().when(indexManager).updateMetadata(anyString(), anyString(), anyString());
+
+        // When
+        ResponseEntity<Object> response1 = indexHandler.updateIndexMetadata(cluster1, testIndexName, metadataJson);
+        ResponseEntity<Object> response2 = indexHandler.updateIndexMetadata(cluster2, testIndexName, metadataJson);
+
+        // Then
+        assertThat(response1.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response2.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        verify(indexManager).updateMetadata(cluster1, testIndexName, metadataJson);
+        verify(indexManager).updateMetadata(cluster2, testIndexName, metadataJson);
     }
 }

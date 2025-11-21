@@ -8,6 +8,7 @@ import io.clustercontroller.models.TypeMapping;
 import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.models.IndexSettings;
+import io.clustercontroller.models.IndexMetadata;
 import io.clustercontroller.templates.TemplateManager;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -17,6 +18,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Manages index lifecycle operations.
@@ -40,7 +42,7 @@ public class IndexManager {
         this.pathResolver = EtcdPathResolver.getInstance();
     }
     
-    public void createIndex(String clusterId, String indexName, String indexConfig) throws Exception {
+    public String createIndex(String clusterId, String indexName, String indexConfig) throws Exception {
         log.info("Creating index {} in cluster {} with config: {}", indexName, clusterId, indexConfig);
         
         // Parse the JSON input to extract index configuration (settings and mappings only)
@@ -55,8 +57,8 @@ public class IndexManager {
         
         // Check if index already exists
         if (metadataStore.getIndexConfig(clusterId, indexName).isPresent()) {
-            log.info("CreateIndex - Index '{}' already exists, skipping creation", indexName);
-            return;
+            log.info("CreateIndex - Index '{}' already exists, returning existing index information", indexName);
+            return getIndex(clusterId, indexName);
         }
         
         // Step 1: Find and apply matching templates
@@ -162,6 +164,10 @@ public class IndexManager {
             log.info("CreateIndex - Aliases defined for index '{}': {} (alias creation not yet implemented)", 
                 indexName, finalAliases.keySet());
         }
+        
+        // Return the created index information
+        log.info("CreateIndex - Retrieving created index information for '{}'", indexName);
+        return getIndex(clusterId, indexName);
     }
     
     public void deleteIndex(String clusterId, String indexName) throws Exception {
@@ -210,6 +216,11 @@ public class IndexManager {
         }
         if (indexName == null || indexName.trim().isEmpty()) {
             throw new IllegalArgumentException("Index name cannot be null or empty");
+        }
+
+          if (!metadataStore.getIndexConfig(clusterId, indexName).isPresent()) {
+            log.warn("GetIndex - Index '{}' not found in cluster '{}', nothing to get", indexName, clusterId);
+            return "";
         }
 
         // Build response structure matching OpenSearch GET index API format
@@ -619,6 +630,76 @@ public class IndexManager {
         log.debug("Merged IndexSettings: result={}", oldSettings);
         
         return oldSettings;
+    }
+
+    /**
+     * Update index metadata.
+     * Stores metadata as _meta field in index mappings.
+     * Metadata includes template type, aliases, ingestion sources, etc.
+     */
+    public void updateMetadata(String clusterId, String indexName, String metadataJson) throws Exception {
+        log.info("Updating metadata for index '{}' in cluster '{}'", indexName, clusterId);
+        
+        // Validate input
+        if (clusterId == null || clusterId.trim().isEmpty()) {
+            throw new IllegalArgumentException("Cluster ID cannot be null or empty");
+        }
+        if (indexName == null || indexName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Index name cannot be null or empty");
+        }
+        if (metadataJson == null || metadataJson.trim().isEmpty()) {
+            throw new IllegalArgumentException("Metadata JSON cannot be null or empty");
+        }
+        
+        // Validate that index exists
+        try {
+            Optional<String> indexConfig = metadataStore.getIndexConfig(clusterId, indexName);
+            if (indexConfig.isEmpty()) {
+                log.warn("Index '{}' not found in cluster '{}'", indexName, clusterId);
+                throw new IllegalArgumentException("Index '" + indexName + "' not found");
+            }
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("Failed to verify index existence for '{}': {}", indexName, e.getMessage(), e);
+            throw new Exception("Failed to verify index existence", e);
+        }
+        
+        // Parse and validate the metadata JSON
+        IndexMetadata metadata;
+        try {
+            metadata = objectMapper.readValue(metadataJson, IndexMetadata.class);
+        } catch (Exception e) {
+            log.error("Invalid metadata JSON format: {}", e.getMessage(), e);
+            throw new IllegalArgumentException("Invalid metadata JSON format: " + e.getMessage(), e);
+        }
+        
+        // Get existing mappings or create new one
+        TypeMapping mappings;
+        try {
+            mappings = metadataStore.getIndexMappings(clusterId, indexName);
+            if (mappings == null) {
+                mappings = new TypeMapping();
+                log.debug("No existing mappings found, creating new TypeMapping for index '{}'", indexName);
+            }
+        } catch (Exception e) {
+            log.error("Failed to get existing mappings for '{}': {}", indexName, e.getMessage(), e);
+            throw new Exception("Failed to retrieve existing mappings", e);
+        }
+        
+        // Set metadata as _meta field in mappings
+        mappings.setMeta(metadata);
+        
+        // Store updated mappings back to etcd
+        try {
+            String mappingsJson = objectMapper.writeValueAsString(mappings);
+            metadataStore.setIndexMappings(clusterId, indexName, mappingsJson);
+            log.info("Successfully updated metadata in _meta field for index '{}' in cluster '{}'", indexName, clusterId);
+        } catch (Exception e) {
+            log.error("Failed to store updated mappings for index '{}' in cluster '{}': {}", 
+                     indexName, clusterId, e.getMessage(), e);
+            throw new Exception("Failed to store index metadata in mappings", e);
+        }
     }
 
     /**
