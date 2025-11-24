@@ -7,6 +7,7 @@ import io.clustercontroller.api.models.requests.AliasAction;
 import io.clustercontroller.api.models.responses.BulkAliasResponse;
 import io.clustercontroller.models.CoordinatorGoalState;
 import io.clustercontroller.models.Alias;
+import io.clustercontroller.models.Index;
 import io.clustercontroller.store.MetadataStore;
 import lombok.extern.slf4j.Slf4j;
 
@@ -82,15 +83,15 @@ public class AliasManager {
             throw new Exception("Alias '" + aliasName + "' not found in cluster '" + clusterId + "'");
         }
         
-        // If no specific index provided, delete the entire alias
-        if (indexName == null || indexName.trim().isEmpty()) {
-            deleteEntireAlias(clusterId, aliasName, goalState);
-            return;
-        }
-        
-        // Remove specific index from alias
+        // Get current target indices
         Object currentTarget = goalState.getRemoteShards().getAliases().get(aliasName);
         List<String> targetIndices = getTargetIndicesAsList(currentTarget);
+        
+        // If no specific index provided, delete the entire alias
+        if (indexName == null || indexName.trim().isEmpty()) {
+            deleteEntireAlias(clusterId, aliasName, targetIndices, goalState);
+            return;
+        }
         
         if (!targetIndices.contains(indexName)) {
             throw new Exception("Alias '" + aliasName + "' does not point to index '" + indexName + "'");
@@ -99,6 +100,9 @@ public class AliasManager {
         targetIndices.remove(indexName);
         log.info("AliasManager - Removed index '{}' from alias '{}'. Remaining indices: {}", 
                  indexName, aliasName, targetIndices);
+        
+        // Remove alias from the index's configuration
+        removeAliasFromIndexConfig(clusterId, indexName, aliasName);
         
         // Update or delete alias based on remaining indices
         updateRemainingIndices(clusterId, aliasName, targetIndices, goalState);
@@ -374,6 +378,11 @@ public class AliasManager {
         // Update coordinator goal state for instant availability
         goalState.getRemoteShards().getAliases().put(aliasName, targetValue);
         saveCoordinatorGoalState(clusterId, goalState);
+        
+        // Update each target index's configuration to include this alias
+        for (String indexName : targetIndices) {
+            addAliasToIndexConfig(clusterId, indexName, aliasName);
+        }
     }
     
     /**
@@ -381,11 +390,19 @@ public class AliasManager {
      * 
      * @param clusterId The cluster ID
      * @param aliasName The alias name
+     * @param targetIndices The indices currently pointed to by the alias
      * @param goalState The coordinator goal state to update
      * @throws Exception if deletion fails
      */
-    private void deleteEntireAlias(String clusterId, String aliasName, CoordinatorGoalState goalState) throws Exception {
+    private void deleteEntireAlias(String clusterId, String aliasName, List<String> targetIndices, 
+                                   CoordinatorGoalState goalState) throws Exception {
         log.info("AliasManager - Deleting entire alias '{}' (no specific index provided)", aliasName);
+        
+        // Remove alias from each target index's configuration
+        for (String indexName : targetIndices) {
+            removeAliasFromIndexConfig(clusterId, indexName, aliasName);
+        }
+        
         metadataStore.deleteAlias(clusterId, aliasName);
         goalState.getRemoteShards().getAliases().remove(aliasName);
         saveCoordinatorGoalState(clusterId, goalState);
@@ -418,6 +435,71 @@ public class AliasManager {
             // Multiple indices remain, keep as list
             updateAliasTarget(clusterId, aliasName, targetIndices, goalState);
             log.info("AliasManager - Alias '{}' now points to {} indices", aliasName, targetIndices.size());
+        }
+    }
+    
+    /**
+     * Helper method to add an alias to an index's configuration
+     * Updates the index's aliases map in etcd
+     * 
+     * @param clusterId The cluster ID
+     * @param indexName The index name
+     * @param aliasName The alias to add
+     */
+    private void addAliasToIndexConfig(String clusterId, String indexName, String aliasName) {
+        try {
+            Optional<String> indexConfigOpt = metadataStore.getIndexConfig(clusterId, indexName);
+            if (indexConfigOpt.isPresent()) {
+                Index index = objectMapper.readValue(indexConfigOpt.get(), Index.class);
+                
+                // Add alias to index's aliases map
+                if (index.getAliases() == null) {
+                    index.setAliases(new HashMap<>());
+                }
+                index.getAliases().put(aliasName, new HashMap<>()); // Empty config object
+                
+                // Save updated index config
+                String updatedConfig = objectMapper.writeValueAsString(index);
+                metadataStore.updateIndexConfig(clusterId, indexName, updatedConfig);
+                log.debug("AliasManager - Added alias '{}' to index '{}' configuration", aliasName, indexName);
+            } else {
+                log.warn("AliasManager - Index '{}' not found when adding alias '{}'", indexName, aliasName);
+            }
+        } catch (Exception e) {
+            log.error("AliasManager - Failed to add alias '{}' to index '{}' configuration: {}", 
+                     aliasName, indexName, e.getMessage());
+        }
+    }
+    
+    /**
+     * Helper method to remove an alias from an index's configuration
+     * Updates the index's aliases map in etcd
+     * 
+     * @param clusterId The cluster ID
+     * @param indexName The index name
+     * @param aliasName The alias to remove
+     */
+    private void removeAliasFromIndexConfig(String clusterId, String indexName, String aliasName) {
+        try {
+            Optional<String> indexConfigOpt = metadataStore.getIndexConfig(clusterId, indexName);
+            if (indexConfigOpt.isPresent()) {
+                Index index = objectMapper.readValue(indexConfigOpt.get(), Index.class);
+                
+                // Remove alias from index's aliases map
+                if (index.getAliases() != null) {
+                    index.getAliases().remove(aliasName);
+                    
+                    // Save updated index config
+                    String updatedConfig = objectMapper.writeValueAsString(index);
+                    metadataStore.updateIndexConfig(clusterId, indexName, updatedConfig);
+                    log.debug("AliasManager - Removed alias '{}' from index '{}' configuration", aliasName, indexName);
+                }
+            } else {
+                log.warn("AliasManager - Index '{}' not found when removing alias '{}'", indexName, aliasName);
+            }
+        } catch (Exception e) {
+            log.error("AliasManager - Failed to remove alias '{}' from index '{}' configuration: {}", 
+                     aliasName, indexName, e.getMessage());
         }
     }
 }
