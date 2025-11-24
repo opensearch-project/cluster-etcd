@@ -1,6 +1,8 @@
 package io.clustercontroller.indices;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.clustercontroller.api.models.requests.AliasAction;
+import io.clustercontroller.api.models.responses.BulkAliasResponse;
 import io.clustercontroller.models.CoordinatorGoalState;
 import io.clustercontroller.models.Alias;
 import io.clustercontroller.store.MetadataStore;
@@ -170,16 +172,15 @@ public class AliasManagerTest {
         
         when(metadataStore.getCoordinatorGoalState(testClusterId)).thenReturn(existingGoalState);
         
-        // Act
-        aliasManager.deleteAlias(testClusterId, aliasName, indexName);
-        
-        // Assert - should not throw exception, just log warning
-        verify(metadataStore, never()).setCoordinatorGoalState(eq(testClusterId), any());
+        // Act & Assert - should throw exception for non-existent alias
+        Exception exception = assertThrows(Exception.class, 
+            () -> aliasManager.deleteAlias(testClusterId, aliasName, indexName));
+        assertTrue(exception.getMessage().contains("not found"));
     }
     
     @Test
     void testCreateAlias_UpdateExisting() throws Exception {
-        // Arrange - simulates updating an existing alias
+        // Arrange - simulates updating an existing alias by adding another index to it
         String aliasName = "logs-current";
         String oldIndexName = "test-monday";
         String newIndexName = "test-tuesday";
@@ -191,15 +192,19 @@ public class AliasManagerTest {
         when(metadataStore.getCoordinatorGoalState(testClusterId)).thenReturn(existingGoalState);
         doNothing().when(metadataStore).setCoordinatorGoalState(eq(testClusterId), any(CoordinatorGoalState.class));
         
-        // Act - createAlias acts as upsert
+        // Act - createAlias merges new index with existing (not replaces)
         aliasManager.createAlias(testClusterId, aliasName, newIndexName, aliasConfig);
         
-        // Assert
+        // Assert - should merge both indices
         verify(metadataStore).setCoordinatorGoalState(eq(testClusterId),
             argThat(goalState -> {
                 Map<String, Object> aliases = goalState.getRemoteShards().getAliases();
-                return aliases.containsKey(aliasName) && 
-                       newIndexName.equals(aliases.get(aliasName));
+                Object target = aliases.get(aliasName);
+                // Should be a list containing both old and new indices
+                return target instanceof List &&
+                       ((List<?>) target).contains(oldIndexName) &&
+                       ((List<?>) target).contains(newIndexName) &&
+                       ((List<?>) target).size() == 2;
             }));
     }
     
@@ -391,8 +396,6 @@ public class AliasManagerTest {
         String aliasName = "logs-all";
         List<String> indices = new ArrayList<>(Arrays.asList("test-monday", "test-tuesday", "test-wednesday"));
         
-        when(metadataStore.getIndexConfig(eq(testClusterId), eq("test-wednesday"))).thenReturn(Optional.of("{}"));
-        
         CoordinatorGoalState existingGoalState = new CoordinatorGoalState();
         existingGoalState.getRemoteShards().getAliases().put(aliasName, indices);
         
@@ -484,7 +487,7 @@ public class AliasManagerTest {
     @Test
     void testApplyAliasActions_AddAndRemoveActions() throws Exception {
         // Arrange
-        when(metadataStore.getIndexConfig(eq(testClusterId), eq("test-wednesday"))).thenReturn(Optional.of("{}"));
+        when(metadataStore.getIndexConfig(eq(testClusterId), eq("test-tuesday"))).thenReturn(Optional.of("{}"));
         
         CoordinatorGoalState existingGoalState = new CoordinatorGoalState();
         existingGoalState.getRemoteShards().getAliases().put("old-alias", "test-monday");
@@ -495,31 +498,31 @@ public class AliasManagerTest {
         doNothing().when(metadataStore).setCoordinatorGoalState(anyString(), any(CoordinatorGoalState.class));
         
         // Create actions
-        List<Map<String, Map<String, String>>> actions = new ArrayList<>();
+        List<AliasAction> actions = new ArrayList<>();
         
         // Action 1: Add new alias
-        Map<String, Map<String, String>> addAction = new HashMap<>();
-        Map<String, String> addDetails = new HashMap<>();
-        addDetails.put("index", "test-tuesday");
-        addDetails.put("alias", "new-alias");
-        addAction.put("add", addDetails);
+        AliasAction.AliasActionDetails addDetails = new AliasAction.AliasActionDetails();
+        addDetails.setIndex("test-tuesday");
+        addDetails.setAlias("new-alias");
+        AliasAction addAction = new AliasAction();
+        addAction.setAdd(addDetails);
         actions.add(addAction);
         
         // Action 2: Remove old alias
-        Map<String, Map<String, String>> removeAction = new HashMap<>();
-        Map<String, String> removeDetails = new HashMap<>();
-        removeDetails.put("index", "test-monday");
-        removeDetails.put("alias", "old-alias");
-        removeAction.put("remove", removeDetails);
+        AliasAction.AliasActionDetails removeDetails = new AliasAction.AliasActionDetails();
+        removeDetails.setIndex("test-monday");
+        removeDetails.setAlias("old-alias");
+        AliasAction removeAction = new AliasAction();
+        removeAction.setRemove(removeDetails);
         actions.add(removeAction);
         
         // Act
-        Map<String, Object> result = aliasManager.applyAliasActions(testClusterId, actions);
+        BulkAliasResponse result = aliasManager.applyAliasActions(testClusterId, actions);
         
         // Assert
-        assertTrue((Boolean) result.get("acknowledged"));
-        assertEquals(2, result.get("actionsCompleted"));
-        assertEquals(0, result.get("actionsFailed"));
+        assertTrue(result.isAcknowledged());
+        assertEquals(2, result.getActionsCompleted());
+        assertEquals(0, result.getActionsFailed());
     }
     
     @Test
@@ -531,73 +534,63 @@ public class AliasManagerTest {
         doNothing().when(metadataStore).setAlias(anyString(), anyString(), any(Alias.class));
         doNothing().when(metadataStore).setCoordinatorGoalState(anyString(), any(CoordinatorGoalState.class));
         
-        List<Map<String, Map<String, String>>> actions = new ArrayList<>();
+        List<AliasAction> actions = new ArrayList<>();
         
         // Action 1: Valid add
-        Map<String, Map<String, String>> validAction = new HashMap<>();
-        Map<String, String> validDetails = new HashMap<>();
-        validDetails.put("index", "test-monday");
-        validDetails.put("alias", "valid-alias");
-        validAction.put("add", validDetails);
+        AliasAction.AliasActionDetails validDetails = new AliasAction.AliasActionDetails();
+        validDetails.setIndex("test-monday");
+        validDetails.setAlias("valid-alias");
+        AliasAction validAction = new AliasAction();
+        validAction.setAdd(validDetails);
         actions.add(validAction);
         
         // Action 2: Invalid add (nonexistent index)
-        Map<String, Map<String, String>> invalidAction = new HashMap<>();
-        Map<String, String> invalidDetails = new HashMap<>();
-        invalidDetails.put("index", "nonexistent");
-        invalidDetails.put("alias", "invalid-alias");
-        invalidAction.put("add", invalidDetails);
+        AliasAction.AliasActionDetails invalidDetails = new AliasAction.AliasActionDetails();
+        invalidDetails.setIndex("nonexistent");
+        invalidDetails.setAlias("invalid-alias");
+        AliasAction invalidAction = new AliasAction();
+        invalidAction.setAdd(invalidDetails);
         actions.add(invalidAction);
         
         // Act
-        Map<String, Object> result = aliasManager.applyAliasActions(testClusterId, actions);
+        BulkAliasResponse result = aliasManager.applyAliasActions(testClusterId, actions);
         
         // Assert
-        assertFalse((Boolean) result.get("acknowledged")); // Should be false due to failure
-        assertEquals(1, result.get("actionsCompleted"));
-        assertEquals(1, result.get("actionsFailed"));
-        assertTrue(result.containsKey("errors"));
-        @SuppressWarnings("unchecked")
-        List<String> errors = (List<String>) result.get("errors");
-        assertFalse(errors.isEmpty());
+        assertFalse(result.isAcknowledged()); // Should be false due to failure
+        assertEquals(1, result.getActionsCompleted());
+        assertEquals(1, result.getActionsFailed());
     }
     
     @Test
     void testApplyAliasActions_UnknownActionType() throws Exception {
         // Arrange
-        when(metadataStore.getCoordinatorGoalState(testClusterId)).thenReturn(new CoordinatorGoalState());
+        List<AliasAction> actions = new ArrayList<>();
         
-        List<Map<String, Map<String, String>>> actions = new ArrayList<>();
-        
-        // Unknown action type
-        Map<String, Map<String, String>> unknownAction = new HashMap<>();
-        Map<String, String> details = new HashMap<>();
-        details.put("index", "test-monday");
-        details.put("alias", "some-alias");
-        unknownAction.put("unknown", details); // Neither "add" nor "remove"
+        // Unknown action type (neither add nor remove set)
+        AliasAction unknownAction = new AliasAction();
+        // Don't set add or remove, leaving both null
         actions.add(unknownAction);
         
         // Act
-        Map<String, Object> result = aliasManager.applyAliasActions(testClusterId, actions);
+        BulkAliasResponse result = aliasManager.applyAliasActions(testClusterId, actions);
         
         // Assert
-        assertFalse((Boolean) result.get("acknowledged"));
-        assertEquals(0, result.get("actionsCompleted"));
-        assertEquals(1, result.get("actionsFailed"));
-        assertTrue(result.containsKey("errors"));
+        assertFalse(result.isAcknowledged());
+        assertEquals(0, result.getActionsCompleted());
+        assertEquals(1, result.getActionsFailed());
     }
     
     @Test
     void testApplyAliasActions_EmptyActionsList() throws Exception {
         // Arrange
-        List<Map<String, Map<String, String>>> actions = new ArrayList<>();
+        List<AliasAction> actions = new ArrayList<>();
         
         // Act
-        Map<String, Object> result = aliasManager.applyAliasActions(testClusterId, actions);
+        BulkAliasResponse result = aliasManager.applyAliasActions(testClusterId, actions);
         
         // Assert
-        assertTrue((Boolean) result.get("acknowledged"));
-        assertEquals(0, result.get("actionsCompleted"));
-        assertEquals(0, result.get("actionsFailed"));
+        assertTrue(result.isAcknowledged());
+        assertEquals(0, result.getActionsCompleted());
+        assertEquals(0, result.getActionsFailed());
     }
 }

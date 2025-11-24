@@ -3,6 +3,8 @@ package io.clustercontroller.indices;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import io.clustercontroller.api.models.requests.AliasAction;
+import io.clustercontroller.api.models.responses.BulkAliasResponse;
 import io.clustercontroller.models.CoordinatorGoalState;
 import io.clustercontroller.models.Alias;
 import io.clustercontroller.store.MetadataStore;
@@ -63,14 +65,7 @@ public class AliasManager {
             // Alias exists - merge with existing indices
             log.info("AliasManager - Alias '{}' already exists, adding new indices to it", aliasName);
             
-            if (existingTarget instanceof String) {
-                String existingIndex = (String) existingTarget;
-                finalTargetIndices.add(existingIndex);
-            } else if (existingTarget instanceof List) {
-                @SuppressWarnings("unchecked")
-                List<String> existingIndices = (List<String>) existingTarget;
-                finalTargetIndices.addAll(existingIndices);
-            }
+            finalTargetIndices.addAll(getTargetIndicesAsList(existingTarget));
             
             // Add new indices (avoid duplicates)
             for (String newIndex : newIndices) {
@@ -135,59 +130,31 @@ public class AliasManager {
             return;
         }
         
-        // Handle alias pointing to multiple indices
-        if (currentTarget instanceof List) {
-            @SuppressWarnings("unchecked")
-            List<String> targetIndices = new ArrayList<>((List<String>) currentTarget);
-            
-            if (!targetIndices.contains(indexName)) {
-                throw new Exception("Alias '" + aliasName + "' does not point to index '" + indexName + "'");
-            }
-            
-            targetIndices.remove(indexName);
-            log.info("AliasManager - Removed index '{}' from alias '{}'. Remaining indices: {}", 
-                     indexName, aliasName, targetIndices);
-            
-            if (targetIndices.isEmpty()) {
-                // No indices left, delete the entire alias
-                log.info("AliasManager - No indices left for alias '{}', deleting entirely", aliasName);
-                metadataStore.deleteAlias(clusterId, aliasName);
-                goalState.getRemoteShards().getAliases().remove(aliasName);
-            } else if (targetIndices.size() == 1) {
-                // Only one index remains, store as string
-                String remainingIndex = targetIndices.get(0);
-                Alias alias = new Alias();
-                alias.setAliasName(aliasName);
-                alias.setTargetIndices(remainingIndex);
-                metadataStore.setAlias(clusterId, aliasName, alias);
-                goalState.getRemoteShards().getAliases().put(aliasName, remainingIndex);
-                log.info("AliasManager - Alias '{}' now points to single index: {}", aliasName, remainingIndex);
-            } else {
-                // Multiple indices remain, keep as list
-                Alias alias = new Alias();
-                alias.setAliasName(aliasName);
-                alias.setTargetIndices(targetIndices);
-                metadataStore.setAlias(clusterId, aliasName, alias);
-                goalState.getRemoteShards().getAliases().put(aliasName, targetIndices);
-                log.info("AliasManager - Alias '{}' now points to {} indices", aliasName, targetIndices.size());
-            }
-        } 
-        // Handle alias pointing to single index
-        else if (currentTarget instanceof String) {
-            String currentIndex = (String) currentTarget;
-            
-            if (!currentIndex.equals(indexName)) {
-                throw new Exception("Alias '" + aliasName + "' points to '" + currentIndex + 
-                                  "', not '" + indexName + "'");
-            }
-            
-            // Single index matches, delete the entire alias
-            log.info("AliasManager - Alias '{}' only points to '{}', deleting entire alias", 
-                     aliasName, indexName);
+        // Get current target indices as a list
+        List<String> targetIndices = getTargetIndicesAsList(currentTarget);
+        
+        if (!targetIndices.contains(indexName)) {
+            throw new Exception("Alias '" + aliasName + "' does not point to index '" + indexName + "'");
+        }
+        
+        targetIndices.remove(indexName);
+        log.info("AliasManager - Removed index '{}' from alias '{}'. Remaining indices: {}", 
+                 indexName, aliasName, targetIndices);
+        
+        if (targetIndices.isEmpty()) {
+            // No indices left, delete the entire alias
+            log.info("AliasManager - No indices left for alias '{}', deleting entirely", aliasName);
             metadataStore.deleteAlias(clusterId, aliasName);
             goalState.getRemoteShards().getAliases().remove(aliasName);
+        } else if (targetIndices.size() == 1) {
+            // Only one index remains, store as string
+            String remainingIndex = targetIndices.get(0);
+            updateAliasTarget(clusterId, aliasName, remainingIndex, goalState);
+            log.info("AliasManager - Alias '{}' now points to single index: {}", aliasName, remainingIndex);
         } else {
-            throw new Exception("Invalid alias target type: " + currentTarget.getClass().getName());
+            // Multiple indices remain, keep as list
+            updateAliasTarget(clusterId, aliasName, targetIndices, goalState);
+            log.info("AliasManager - Alias '{}' now points to {} indices", aliasName, targetIndices.size());
         }
         
         saveCoordinatorGoalState(clusterId, goalState);
@@ -307,31 +274,28 @@ public class AliasManager {
      * 
      * @param clusterId The cluster ID
      * @param actions List of actions (add or remove)
-     * @return Map with operation results
+     * @return Response with operation results
      * @throws Exception if applying actions fails
      */
-    public Map<String, Object> applyAliasActions(String clusterId, List<Map<String, Map<String, String>>> actions) throws Exception {
+    public BulkAliasResponse applyAliasActions(String clusterId, List<AliasAction> actions) throws Exception {
         log.info("AliasManager - Executing bulk alias operations for cluster '{}', {} actions", clusterId, actions.size());
         
         int completed = 0;
         int failed = 0;
-        List<String> errors = new ArrayList<>();
         
-        for (Map<String, Map<String, String>> action : actions) {
+        for (AliasAction action : actions) {
             try {
-                if (action.containsKey("add")) {
-                    Map<String, String> addDetails = action.get("add");
-                    String index = addDetails.get("index");
-                    String alias = addDetails.get("alias");
+                if (action.getAdd() != null) {
+                    String index = action.getAdd().getIndex();
+                    String alias = action.getAdd().getAlias();
                     
                     log.debug("AliasManager - Bulk add: alias '{}' -> index '{}'", alias, index);
                     createAlias(clusterId, alias, index, "{}");
                     completed++;
                     
-                } else if (action.containsKey("remove")) {
-                    Map<String, String> removeDetails = action.get("remove");
-                    String index = removeDetails.get("index");
-                    String alias = removeDetails.get("alias");
+                } else if (action.getRemove() != null) {
+                    String index = action.getRemove().getIndex();
+                    String alias = action.getRemove().getAlias();
                     
                     log.debug("AliasManager - Bulk remove: alias '{}' from index '{}'", alias, index);
                     deleteAlias(clusterId, alias, index);
@@ -340,25 +304,55 @@ public class AliasManager {
                 } else {
                     log.warn("AliasManager - Unknown action type in bulk operation");
                     failed++;
-                    errors.add("Unknown action type");
                 }
             } catch (Exception e) {
                 log.error("AliasManager - Failed to execute bulk action: {}", e.getMessage());
                 failed++;
-                errors.add(e.getMessage());
             }
         }
         
         log.info("AliasManager - Bulk operation completed: {} succeeded, {} failed", completed, failed);
         
-        Map<String, Object> result = new HashMap<>();
-        result.put("acknowledged", failed == 0);
-        result.put("actionsCompleted", completed);
-        result.put("actionsFailed", failed);
-        if (!errors.isEmpty()) {
-            result.put("errors", errors);
+        return BulkAliasResponse.builder()
+            .acknowledged(failed == 0)
+            .actionsCompleted(completed)
+            .actionsFailed(failed)
+            .build();
+    }
+    
+    /**
+     * Helper method to update alias target indices in both etcd and coordinator goal state
+     * 
+     * @param clusterId The cluster ID
+     * @param aliasName The alias name
+     * @param targetIndices The target indices (String for single index, List for multiple)
+     * @param goalState The coordinator goal state to update
+     * @throws Exception if update fails
+     */
+    private void updateAliasTarget(String clusterId, String aliasName, Object targetIndices, CoordinatorGoalState goalState) throws Exception {
+        Alias alias = new Alias();
+        alias.setAliasName(aliasName);
+        alias.setTargetIndices(targetIndices);
+        metadataStore.setAlias(clusterId, aliasName, alias);
+        goalState.getRemoteShards().getAliases().put(aliasName, targetIndices);
+        log.debug("AliasManager - Updated alias target for '{}' to: {}", aliasName, targetIndices);
+    }
+    
+    /**
+     * Helper method to convert alias target to a list of indices
+     * Handles both String (single index) and List (multiple indices) formats
+     * 
+     * @param target The alias target (String or List<String>)
+     * @return List of target indices
+     */
+    private List<String> getTargetIndicesAsList(Object target) {
+        if (target instanceof String) {
+            return new ArrayList<>(Collections.singletonList((String) target));
+        } else if (target instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<String> list = (List<String>) target;
+            return new ArrayList<>(list);
         }
-        
-        return result;
+        return new ArrayList<>();
     }
 }

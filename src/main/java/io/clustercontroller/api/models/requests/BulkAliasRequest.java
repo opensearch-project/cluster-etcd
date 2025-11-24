@@ -9,9 +9,19 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 /**
- * Represents a single action in an alias operation.
- * Each action can be either "add" or "remove".
+ * Request model for bulk alias operations.
+ * Contains a list of actions to add or remove aliases.
+ * 
+ * Example:
+ * {
+ *   "actions": [
+ *     {"add": {"index": "logs_2024", "alias": "current_logs"}},
+ *     {"remove": {"index": "logs_2023", "alias": "current_logs"}}
+ *   ]
+ * }
  */
 @Data
 @Builder
@@ -20,21 +30,7 @@ import lombok.NoArgsConstructor;
 @JsonInclude(JsonInclude.Include.NON_EMPTY)
 @JsonIgnoreProperties(ignoreUnknown = true)
 @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
-public class AliasAction {
+public class BulkAliasRequest {
     
-    private AliasActionDetails add;
-    private AliasActionDetails remove;
-    
-    @Data
-    @Builder
-    @NoArgsConstructor
-    @AllArgsConstructor
-    @JsonInclude(JsonInclude.Include.NON_EMPTY)
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    @JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
-    public static class AliasActionDetails {
-        private String index;
-        private String alias;
-    }
+    private List<AliasAction> actions;
 }
-

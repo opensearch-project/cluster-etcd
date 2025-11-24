@@ -1,10 +1,10 @@
 package io.clustercontroller.api.handlers;
 
 import io.clustercontroller.api.models.requests.AliasRequest;
-import io.clustercontroller.api.models.requests.AliasActionsRequest;
+import io.clustercontroller.api.models.requests.BulkAliasRequest;
 import io.clustercontroller.api.models.requests.AliasAction;
 import io.clustercontroller.api.models.responses.AliasResponse;
-import io.clustercontroller.api.models.responses.AliasActionsResponse;
+import io.clustercontroller.api.models.responses.BulkAliasResponse;
 import io.clustercontroller.api.models.responses.ErrorResponse;
 import io.clustercontroller.indices.AliasManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -154,7 +154,7 @@ public class AliasHandler {
     @PostMapping("/_aliases")
     public ResponseEntity<Object> updateAlias(
             @PathVariable String clusterId,
-            @RequestBody AliasActionsRequest request) {
+            @RequestBody BulkAliasRequest request) {
         try {
             if (request.getActions() == null || request.getActions().isEmpty()) {
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST)
@@ -163,45 +163,7 @@ public class AliasHandler {
             
             log.info("Executing bulk alias operations in cluster '{}', {} actions", clusterId, request.getActions().size());
             
-            // Convert AliasAction objects to the format expected by AliasManager
-            List<Map<String, Map<String, String>>> actions = request.getActions().stream()
-                .map(action -> {
-                    Map<String, Map<String, String>> actionMap = new HashMap<>();
-                    
-                    if (action.getAdd() != null) {
-                        Map<String, String> addDetails = new HashMap<>();
-                        addDetails.put("index", action.getAdd().getIndex());
-                        addDetails.put("alias", action.getAdd().getAlias());
-                        actionMap.put("add", addDetails);
-                    } else if (action.getRemove() != null) {
-                        Map<String, String> removeDetails = new HashMap<>();
-                        removeDetails.put("index", action.getRemove().getIndex());
-                        removeDetails.put("alias", action.getRemove().getAlias());
-                        actionMap.put("remove", removeDetails);
-                    }
-                    
-                    return actionMap;
-                })
-                .collect(Collectors.toList());
-            
-            Map<String, Object> result = aliasManager.applyAliasActions(clusterId, actions);
-            
-            // Build response
-            AliasActionsResponse response = AliasActionsResponse.builder()
-                .acknowledged((Boolean) result.get("acknowledged"))
-                .actionsCompleted((Integer) result.get("actionsCompleted"))
-                .actionsFailed((Integer) result.get("actionsFailed"))
-                .build();
-            
-            // If there were failures, include error details in the response
-            if (result.containsKey("errors")) {
-                Map<String, Object> responseWithErrors = new HashMap<>();
-                responseWithErrors.put("acknowledged", response.isAcknowledged());
-                responseWithErrors.put("actions_completed", response.getActionsCompleted());
-                responseWithErrors.put("actions_failed", response.getActionsFailed());
-                responseWithErrors.put("errors", result.get("errors"));
-                return ResponseEntity.ok(responseWithErrors);
-            }
+            BulkAliasResponse response = aliasManager.applyAliasActions(clusterId, request.getActions());
             
             return ResponseEntity.ok(response);
             
