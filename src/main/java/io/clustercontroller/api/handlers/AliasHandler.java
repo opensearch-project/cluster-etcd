@@ -1,7 +1,10 @@
 package io.clustercontroller.api.handlers;
 
 import io.clustercontroller.api.models.requests.AliasRequest;
+import io.clustercontroller.api.models.requests.BulkAliasRequest;
+import io.clustercontroller.api.models.requests.AliasAction;
 import io.clustercontroller.api.models.responses.AliasResponse;
+import io.clustercontroller.api.models.responses.BulkAliasResponse;
 import io.clustercontroller.api.models.responses.ErrorResponse;
 import io.clustercontroller.indices.AliasManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -9,6 +12,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * REST API handler for index alias operations with multi-cluster support.
@@ -22,6 +28,7 @@ import org.springframework.web.bind.annotation.*;
  * - DELETE /{clusterId}/{index}/_alias/{alias} - Remove an alias from an index
  * - GET /{clusterId}/_alias/{alias} - Get information about an alias
  * - GET /{clusterId}/{index}/_alias - Get all aliases for an index
+ * - POST /{clusterId}/_aliases - Bulk add/remove operations for aliases
  */
 @Slf4j
 @RestController
@@ -128,6 +135,43 @@ public class AliasHandler {
             return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).body(ErrorResponse.notImplemented("Get index aliases"));
         } catch (Exception e) {
             log.error("Error getting aliases for index '{}' from cluster '{}': {}", index, clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
+        }
+    }
+    
+    /**
+     * Update aliases using bulk operations (add/remove multiple aliases) in the specified cluster.
+     * POST /{clusterId}/_aliases
+     * 
+     * Request body example:
+     * {
+     *   "actions": [
+     *     {"add": {"index": "logs_2024", "alias": "current_logs"}},
+     *     {"remove": {"index": "logs_2023", "alias": "current_logs"}}
+     *   ]
+     * }
+     */
+    @PostMapping("/_aliases")
+    public ResponseEntity<Object> updateAlias(
+            @PathVariable String clusterId,
+            @RequestBody BulkAliasRequest request) {
+        try {
+            if (request.getActions() == null || request.getActions().isEmpty()) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(ErrorResponse.badRequest("Actions array is required and cannot be empty"));
+            }
+            
+            log.info("Executing bulk alias operations in cluster '{}', {} actions", clusterId, request.getActions().size());
+            
+            BulkAliasResponse response = aliasManager.updateAliases(clusterId, request.getActions());
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (IllegalArgumentException e) {
+            log.error("Invalid request for bulk alias operations in cluster '{}': {}", clusterId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ErrorResponse.badRequest(e.getMessage()));
+        } catch (Exception e) {
+            log.error("Error executing bulk alias operations in cluster '{}': {}", clusterId, e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(ErrorResponse.internalError(e.getMessage()));
         }
     }
