@@ -517,7 +517,7 @@ public class AliasManagerTest {
         actions.add(removeAction);
         
         // Act
-        BulkAliasResponse result = aliasManager.applyAliasActions(testClusterId, actions);
+        BulkAliasResponse result = aliasManager.updateAliases(testClusterId, actions);
         
         // Assert
         assertTrue(result.isAcknowledged());
@@ -553,7 +553,7 @@ public class AliasManagerTest {
         actions.add(invalidAction);
         
         // Act
-        BulkAliasResponse result = aliasManager.applyAliasActions(testClusterId, actions);
+        BulkAliasResponse result = aliasManager.updateAliases(testClusterId, actions);
         
         // Assert
         assertFalse(result.isAcknowledged()); // Should be false due to failure
@@ -572,7 +572,7 @@ public class AliasManagerTest {
         actions.add(unknownAction);
         
         // Act
-        BulkAliasResponse result = aliasManager.applyAliasActions(testClusterId, actions);
+        BulkAliasResponse result = aliasManager.updateAliases(testClusterId, actions);
         
         // Assert
         assertFalse(result.isAcknowledged());
@@ -586,7 +586,7 @@ public class AliasManagerTest {
         List<AliasAction> actions = new ArrayList<>();
         
         // Act
-        BulkAliasResponse result = aliasManager.applyAliasActions(testClusterId, actions);
+        BulkAliasResponse result = aliasManager.updateAliases(testClusterId, actions);
         
         // Assert
         assertTrue(result.isAcknowledged());

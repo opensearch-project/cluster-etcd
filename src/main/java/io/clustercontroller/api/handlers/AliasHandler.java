@@ -163,7 +163,7 @@ public class AliasHandler {
             
             log.info("Executing bulk alias operations in cluster '{}', {} actions", clusterId, request.getActions().size());
             
-            BulkAliasResponse response = aliasManager.applyAliasActions(clusterId, request.getActions());
+            BulkAliasResponse response = aliasManager.updateAliases(clusterId, request.getActions());
             
             return ResponseEntity.ok(response);
             

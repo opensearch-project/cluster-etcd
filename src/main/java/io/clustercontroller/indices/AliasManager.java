@@ -270,14 +270,14 @@ public class AliasManager {
     }
     
     /**
-     * Applies multiple alias actions (add/remove) in a single operation
+     * Updates aliases using multiple actions (add/remove) in a single operation
      * 
      * @param clusterId The cluster ID
      * @param actions List of actions (add or remove)
      * @return Response with operation results
      * @throws Exception if applying actions fails
      */
-    public BulkAliasResponse applyAliasActions(String clusterId, List<AliasAction> actions) throws Exception {
+    public BulkAliasResponse updateAliases(String clusterId, List<AliasAction> actions) throws Exception {
         log.info("AliasManager - Executing bulk alias operations for cluster '{}', {} actions", clusterId, actions.size());
         
         int completed = 0;
