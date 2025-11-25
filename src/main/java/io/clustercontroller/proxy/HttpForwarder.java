@@ -91,9 +91,10 @@ public class HttpForwarder {
             return responseBuilder.body(response.body());
 
         } catch (Exception e) {
-            log.error("Error forwarding request to {}: {}", coordinatorUrl, e.getMessage(), e);
+            String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            log.error("Error forwarding request to {}: {}", coordinatorUrl, errorMsg, e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body("Error forwarding request: " + e.getMessage());
+                .body("Error forwarding request: " + errorMsg);
         }
     }
 
