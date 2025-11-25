@@ -299,20 +299,24 @@ public class EtcdMetadataStore implements MetadataStore {
     
     @Override
     public List<SearchUnit> getAllCoordinators(String clusterId) throws Exception {
-        log.debug("Getting all coordinators from etcd");
+        log.info("Getting all coordinators from etcd for cluster: {}", clusterId);
         List<SearchUnit> coordinators = new ArrayList<>();
         
         try {
             // Query etcd for all coordinators using existing helper
             String coordinatorsPrefix = pathResolver.getCoordinatorsPrefix(clusterId);
+            log.info("Querying etcd with prefix: {}", coordinatorsPrefix);
             GetResponse response = executeEtcdPrefixQuery(coordinatorsPrefix);
+            log.info("Found {} keys in etcd for coordinators prefix", response.getKvs().size());
             
             // Parse each coordinator actual-state entry
             for (KeyValue kv : response.getKvs()) {
                 String key = kv.getKey().toString(StandardCharsets.UTF_8);
                 String value = kv.getValue().toString(StandardCharsets.UTF_8);
+                log.debug("Processing etcd key: {}", key);
                 
                 if (!key.endsWith("/actual-state")) {
+                    log.debug("Skipping non-actual-state key: {}", key);
                     continue;
                 }
                 
@@ -321,8 +325,12 @@ public class EtcdMetadataStore implements MetadataStore {
                 // Verify it's a coordinator by checking clusterlessRole
                 String role = json.has("clusterlessRole") ? json.get("clusterlessRole").asText() : "";
                 if (!"coordinator".equals(role)) {
+                    log.debug("Skipping non-coordinator with role: {}", role);
                     continue;
                 }
+                
+                String nodeName = json.has("nodeName") ? json.get("nodeName").asText() : "unknown";
+                log.info("Processing coordinator: {}", nodeName);
                 
                 // Parse actual-state to check health
                 SearchUnitActualState actualState = objectMapper.readValue(value, SearchUnitActualState.class);
@@ -330,35 +338,49 @@ public class EtcdMetadataStore implements MetadataStore {
                 
                 // Filter out RED (unhealthy) coordinators
                 if (healthState == HealthState.RED) {
-                    log.debug("Skipping unhealthy coordinator '{}': state=RED", actualState.getNodeName());
+                    log.warn("Skipping unhealthy coordinator '{}': state=RED", actualState.getNodeName());
                     continue;
                 }
                 
-                log.debug("Coordinator '{}' health state: {}", actualState.getNodeName(), healthState);
+                log.info("Coordinator '{}' health state: {}", actualState.getNodeName(), healthState);
                 
                 // Skip coordinators without httpPort field (not properly configured)
                 if (!json.has("httpPort")) {
-                    log.debug("Skipping coordinator '{}': missing httpPort field", actualState.getNodeName());
+                    log.warn("Skipping coordinator '{}': missing httpPort field", actualState.getNodeName());
                     continue;
                 }
                 
+                // Log the raw data from etcd for debugging
+                String address = json.has("address") ? json.get("address").asText() : "";
+                int httpPort = json.get("httpPort").asInt();
+                log.info("Coordinator '{}' etcd data: address='{}', httpPort={}", nodeName, address, httpPort);
+                
                 // Convert actual-state to SearchUnit
                 SearchUnit coordinator = new SearchUnit();
-                coordinator.setName(json.has("nodeName") ? json.get("nodeName").asText() : "unknown");
-                coordinator.setHost(json.has("address") ? json.get("address").asText() : "");
-                int httpPort = json.get("httpPort").asInt();
+                coordinator.setName(nodeName);
+                coordinator.setHost(address);
                 coordinator.setPortHttp(httpPort);
                 int transportPort = json.has("transportPort") ? json.get("transportPort").asInt() : 9300;
                 coordinator.setPortTransport(transportPort);
                 coordinator.setRole("COORDINATOR");
                 coordinator.setClusterName(clusterId);
                 
+                // Validate before adding
+                if (address == null || address.trim().isEmpty()) {
+                    log.error("Coordinator '{}' has invalid/empty address! Skipping. Raw value from etcd: '{}'", 
+                            nodeName, address);
+                    continue;
+                }
+                
                 coordinators.add(coordinator);
-                log.debug("Found healthy coordinator: {} at {}:{} (state={})", 
+                log.info("Added coordinator to list: {} at {}:{} (health={})", 
                         coordinator.getName(), coordinator.getHost(), coordinator.getPortHttp(), healthState);
             }
             
-            log.debug("Retrieved {} coordinators from etcd", coordinators.size());
+            log.info("Retrieved {} coordinators from etcd for cluster '{}'", coordinators.size(), clusterId);
+            if (coordinators.isEmpty()) {
+                log.warn("No valid coordinators found in etcd for cluster '{}'", clusterId);
+            }
             return coordinators;
             
         } catch (Exception e) {

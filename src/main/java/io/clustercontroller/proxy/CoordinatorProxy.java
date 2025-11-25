@@ -39,16 +39,29 @@ public class CoordinatorProxy {
             String body,
             Map<String, String> headers) {
 
+        SearchUnit selectedCoordinator = null;
         try {
-            log.info("Proxying {} request for cluster '{}', path: {}", method, clusterId, path);
+            log.info("========================================");
+            log.info("PROXY REQUEST STARTED");
+            log.info("Cluster ID: {}", clusterId);
+            log.info("Method: {}", method);
+            log.info("Path: {}", path);
+            log.info("Body present: {}", body != null && !body.isEmpty());
+            log.info("Headers: {}", headers != null ? headers.size() : 0);
+            log.info("========================================");
 
             // Step 1: Select a healthy coordinator
-            SearchUnit coordinator = coordinatorSelector.selectCoordinator(clusterId);
-            String coordinatorUrl = coordinatorSelector.buildCoordinatorUrl(coordinator);
+            log.info("Step 1: Selecting coordinator for cluster '{}'", clusterId);
+            selectedCoordinator = coordinatorSelector.selectCoordinator(clusterId);
+            log.info("Step 1: Coordinator selected: '{}'", selectedCoordinator.getName());
+            
+            // Step 2: Build coordinator URL
+            log.info("Step 2: Building coordinator URL");
+            String coordinatorUrl = coordinatorSelector.buildCoordinatorUrl(selectedCoordinator);
+            log.info("Step 2: Coordinator URL built: {}", coordinatorUrl);
 
-            log.info("Selected coordinator '{}' at {}", coordinator.getName(), coordinatorUrl);
-
-            // Step 2: Forward request to coordinator
+            // Step 3: Forward request to coordinator
+            log.info("Step 3: Forwarding request to coordinator via HTTP");
             ResponseEntity<String> response = httpForwarder.forward(
                     coordinatorUrl,
                     method,
@@ -56,26 +69,53 @@ public class CoordinatorProxy {
                     body,
                     headers
             );
+            log.info("Step 3: HTTP forward completed with status: {}", response.getStatusCode());
 
-            // Step 3: Build proxy response
+            // Step 4: Build proxy response
+            log.info("Step 4: Building proxy response");
             ProxyResponse proxyResponse = ProxyResponse.builder()
                     .status(response.getStatusCode().value())
                     .body(response.getBody())
-                    .coordinator(coordinator.getName())
+                    .coordinator(selectedCoordinator.getName())
                     .build();
 
-            log.info("Successfully proxied request to coordinator '{}', status: {}", 
-                    coordinator.getName(), response.getStatusCode().value());
+            log.info("========================================");
+            log.info("PROXY REQUEST COMPLETED SUCCESSFULLY");
+            log.info("Coordinator: {}", selectedCoordinator.getName());
+            log.info("Status: {}", response.getStatusCode().value());
+            log.info("Response body size: {} bytes", response.getBody() != null ? response.getBody().length() : 0);
+            log.info("========================================");
 
             return proxyResponse;
 
-        } catch (Exception e) {
-            log.error("Error proxying request for cluster '{}': {}", clusterId, e.getMessage(), e);
+        } catch (IllegalArgumentException e) {
+            log.error("========================================");
+            log.error("PROXY REQUEST FAILED: Invalid Configuration");
+            log.error("Cluster: {}", clusterId);
+            log.error("Coordinator: {}", selectedCoordinator != null ? selectedCoordinator.getName() : "unknown");
+            log.error("Error: {}", e.getMessage());
+            log.error("========================================");
             
-            // Return error response
+            return ProxyResponse.builder()
+                    .status(503)
+                    .error("Invalid coordinator configuration: " + e.getMessage())
+                    .coordinator(selectedCoordinator != null ? selectedCoordinator.getName() : "unknown")
+                    .build();
+        } catch (Exception e) {
+            log.error("========================================");
+            log.error("PROXY REQUEST FAILED: Exception");
+            log.error("Cluster: {}", clusterId);
+            log.error("Coordinator: {}", selectedCoordinator != null ? selectedCoordinator.getName() : "unknown");
+            log.error("Exception type: {}", e.getClass().getName());
+            log.error("Error message: {}", e.getMessage());
+            log.error("Stack trace:", e);
+            log.error("========================================");
+            
+            // Return error response with coordinator info if available
             return ProxyResponse.builder()
                     .status(500)
                     .error("Error proxying request: " + e.getMessage())
+                    .coordinator(selectedCoordinator != null ? selectedCoordinator.getName() : "unknown")
                     .build();
         }
     }
