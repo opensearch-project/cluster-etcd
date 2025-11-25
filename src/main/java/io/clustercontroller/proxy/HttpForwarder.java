@@ -62,12 +62,9 @@ public class HttpForwarder {
                     }
                 });
             }
-            
-            requestBuilder.header("Accept", "application/json");
 
             // Set method and body
             if (body != null && !body.isEmpty()) {
-                requestBuilder.header("Content-Type", "application/json");
                 requestBuilder.method(method, HttpRequest.BodyPublishers.ofString(body));
             } else {
                 requestBuilder.method(method, HttpRequest.BodyPublishers.noBody());
@@ -80,10 +77,18 @@ public class HttpForwarder {
 
             log.info("Response: status={}", response.statusCode());
 
-            // Convert to Spring ResponseEntity
-            return ResponseEntity
-                .status(response.statusCode())
-                .body(response.body());
+            // Convert to Spring ResponseEntity and forward response headers
+            ResponseEntity.BodyBuilder responseBuilder = ResponseEntity.status(response.statusCode());
+            
+            // Forward response headers from coordinator to client
+            response.headers().map().forEach((headerName, headerValues) -> {
+                // Forward all response headers
+                for (String headerValue : headerValues) {
+                    responseBuilder.header(headerName, headerValue);
+                }
+            });
+            
+            return responseBuilder.body(response.body());
 
         } catch (Exception e) {
             log.error("Error forwarding request to {}: {}", coordinatorUrl, e.getMessage(), e);
