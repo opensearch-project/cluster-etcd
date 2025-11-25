@@ -9,6 +9,7 @@ import io.clustercontroller.store.EtcdPathResolver;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.IndexMetadata;
+import io.clustercontroller.models.Alias;
 import io.clustercontroller.templates.TemplateManager;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -223,7 +224,97 @@ public class IndexManager {
             return "";
         }
 
-        // Build response structure matching OpenSearch GET index API format
+        // Get mappings first to build index -> aliases map
+        TypeMapping mappings = null;
+        try {
+            mappings = metadataStore.getIndexMappings(clusterId, indexName);
+        } catch (Exception e) {
+            log.warn("Failed to get mappings for index '{}': {}", indexName, e.getMessage());
+        }
+
+        // Build index -> aliases map from the requested index's metadata
+        Map<String, List<String>> indexToAliasesMap = buildIndexToAliasesMap(clusterId, mappings);
+        
+        // Build response with all indices from indexToAliasesMap
+        Map<String, Object> response = new HashMap<>();
+        
+        // Add the requested index
+        Map<String, Object> indexResponse = buildSingleIndexResponse(clusterId, indexName, indexToAliasesMap);
+        response.put(indexName, indexResponse);
+        
+        // Add all other indices that share aliases
+        for (String otherIndexName : indexToAliasesMap.keySet()) {
+            if (otherIndexName.equals(indexName)) {
+                continue;
+            }
+            try {
+                // Check if the other index exists
+                if (metadataStore.getIndexConfig(clusterId, otherIndexName).isPresent()) {
+                    Map<String, Object> otherIndexResponse = buildSingleIndexResponse(clusterId, otherIndexName, indexToAliasesMap);
+                    response.put(otherIndexName, otherIndexResponse);
+                    log.debug("Added index '{}' to response", otherIndexName);
+                }
+            } catch (Exception e) {
+                log.warn("Failed to get information for index '{}': {}", otherIndexName, e.getMessage());
+            }            
+        }
+        
+        log.info("Successfully retrieved index information for '{}' and {} related indices from cluster '{}'", 
+                indexName, response.size() - 1, clusterId);
+        return objectMapper.writeValueAsString(response);
+    }
+    
+    /**
+     * Helper method to build index -> aliases map from index mappings metadata.
+     */
+    private Map<String, List<String>> buildIndexToAliasesMap(String clusterId, TypeMapping mappings) {
+        Map<String, List<String>> indexToAliasesMap = new HashMap<>();
+        
+        if (mappings == null || mappings.getMeta() == null) {
+            return indexToAliasesMap;
+        }
+        
+        try {
+            IndexMetadata metadata = objectMapper.convertValue(mappings.getMeta(), IndexMetadata.class);
+            if (metadata == null || metadata.getAliases() == null) {
+                return indexToAliasesMap;
+            }
+                
+            for (IndexMetadata.AliasConfig aliasConfig : metadata.getAliases()) {
+                String aliasName = aliasConfig.getName();
+                if (aliasName == null || aliasName.trim().isEmpty()) {
+                    continue;
+                }
+                
+                try {
+                    Alias alias = metadataStore.getAlias(clusterId, aliasName);
+                    if (alias == null) {
+                        continue;
+                    }
+                    List<String> targetIndices = alias.getTargetIndicesAsList();
+                    // Build index -> aliases map (inverse of alias -> indices)
+                    // computeIfAbsent: if index exists, get the list; if not, create a new list
+                    // Then append the alias to that list
+                    for (String targetIndex : targetIndices) {
+                        indexToAliasesMap.computeIfAbsent(targetIndex, k -> new ArrayList<>()).add(aliasName);
+                    }
+                    log.debug("Alias '{}' maps to indices: {}", aliasName, targetIndices);
+                } catch (Exception e) {
+                    log.warn("Failed to get alias '{}' configuration: {}", aliasName, e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to build index to aliases map: {}", e.getMessage());
+        }
+
+        return indexToAliasesMap;
+    }
+    
+    /**
+     * Helper method to build response for a single index (settings, mappings, aliases).
+     */
+    private Map<String, Object> buildSingleIndexResponse(String clusterId, String indexName, 
+                                                         Map<String, List<String>> indexToAliasesMap) {
         Map<String, Object> indexResponse = new HashMap<>();
         
         // Get settings and nest under "index" key
@@ -239,29 +330,31 @@ public class IndexManager {
         }
         indexResponse.put("settings", settingsWrapper);
         
-        // Get mappings
+        // Get mappings from metadata store
+        TypeMapping mappings = null;
         try {
-            TypeMapping mappings = metadataStore.getIndexMappings(clusterId, indexName);
-            if (mappings != null) {
-                indexResponse.put("mappings", mappings);
-            } else {
-                indexResponse.put("mappings", new HashMap<>());
-            }
+            mappings = metadataStore.getIndexMappings(clusterId, indexName);
         } catch (Exception e) {
             log.warn("Failed to get mappings for index '{}': {}", indexName, e.getMessage());
+        }
+        
+        if (mappings != null) {
+            indexResponse.put("mappings", mappings);
+        } else {
             indexResponse.put("mappings", new HashMap<>());
         }
-
-        // Add aliases (empty for now)
-        // TODO: Implement alias retrieval when alias support is added
-        indexResponse.put("aliases", new HashMap<>());
         
-        // Wrap the response with index name as key
-        Map<String, Object> response = new HashMap<>();
-        response.put(indexName, indexResponse);
+        // Add aliases (OpenSearch format: alias_name -> {})
+        Map<String, Object> aliasesMap = new HashMap<>();
+        List<String> aliasesForIndex = indexToAliasesMap.get(indexName);
+        if (aliasesForIndex != null) {
+            for (String aliasName : aliasesForIndex) {
+                aliasesMap.put(aliasName, new HashMap<>());
+            }
+        }
+        indexResponse.put("aliases", aliasesMap);
         
-        log.info("Successfully retrieved index information for '{}' from cluster '{}'", indexName, clusterId);
-        return objectMapper.writeValueAsString(response);
+        return indexResponse;
     }
     
     /**
