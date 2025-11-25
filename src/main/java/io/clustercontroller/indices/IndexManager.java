@@ -75,7 +75,7 @@ public class IndexManager {
                 
                 // Select highest priority template
                 Template.TemplateDefinition selectedTemplate = templateManager.selectHighestPriorityTemplate(matchingTemplates);
-                
+
                 // Apply template settings, mappings, and aliases
                 if (selectedTemplate.getSettings() != null) {
                     finalSettings.putAll(selectedTemplate.getSettings());
@@ -275,7 +275,14 @@ public class IndexManager {
         }
         
         try {
-            IndexMetadata metadata = objectMapper.convertValue(mappings.getMeta(), IndexMetadata.class);
+            // Unwrap metadata from "index_metadata" key
+            Map<String, Object> metaMap = mappings.getMeta();
+            Object indexMetadataObj = metaMap.get("index_metadata");
+            if (indexMetadataObj == null) {
+                return indexToAliasesMap;
+            }
+            
+            IndexMetadata metadata = objectMapper.convertValue(indexMetadataObj, IndexMetadata.class);
             if (metadata == null || metadata.getAliases() == null) {
                 return indexToAliasesMap;
             }
@@ -780,8 +787,10 @@ public class IndexManager {
             throw new Exception("Failed to retrieve existing mappings", e);
         }
         
-        // Set metadata as _meta field in mappings
-        mappings.setMeta(metadata);
+        // Wrap metadata in "index_metadata" key and set as _meta field in mappings
+        Map<String, Object> wrappedMeta = new HashMap<>();
+        wrappedMeta.put("index_metadata", metadata);
+        mappings.setMeta(wrappedMeta);
         
         // Store updated mappings back to etcd
         try {

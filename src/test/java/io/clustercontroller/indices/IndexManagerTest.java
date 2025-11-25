@@ -855,7 +855,10 @@ class IndexManagerTest {
                 .idField("uuid")
                 .versionField("timestamp")
                 .build();
-        mockMappings.setMeta(mockMetadata);
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta = new HashMap<>();
+        wrappedMeta.put("index_metadata", mockMetadata);
+        mockMappings.setMeta(wrappedMeta);
 
         // Mock dependencies
         when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
@@ -922,7 +925,10 @@ class IndexManagerTest {
         IndexMetadata metadata1 = IndexMetadata.builder()
                 .aliases(List.of(aliasConfig))
                 .build();
-        mappings1.setMeta(metadata1);
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta1 = new HashMap<>();
+        wrappedMeta1.put("index_metadata", metadata1);
+        mappings1.setMeta(wrappedMeta1);
 
         // Create alias object that points to both indices (use List, not comma-separated string)
         Alias alias = new Alias();
@@ -977,7 +983,10 @@ class IndexManagerTest {
         IndexMetadata metadata1 = IndexMetadata.builder()
                 .aliases(List.of(aliasConfig1, aliasConfig2))
                 .build();
-        mappings1.setMeta(metadata1);
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta1 = new HashMap<>();
+        wrappedMeta1.put("index_metadata", metadata1);
+        mappings1.setMeta(wrappedMeta1);
 
         // alias1 points to index1 and index2
         Alias aliasObj1 = new Alias();
@@ -1034,7 +1043,10 @@ class IndexManagerTest {
         IndexMetadata metadata1 = IndexMetadata.builder()
                 .aliases(List.of(aliasConfig))
                 .build();
-        mappings1.setMeta(metadata1);
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta1 = new HashMap<>();
+        wrappedMeta1.put("index_metadata", metadata1);
+        mappings1.setMeta(wrappedMeta1);
 
         // Alias points to index1 and non-existent index2
         Alias alias = new Alias();
@@ -1075,7 +1087,10 @@ class IndexManagerTest {
         IndexMetadata metadata = IndexMetadata.builder()
                 .aliases(List.of(aliasConfig))
                 .build();
-        mappings.setMeta(metadata);
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta = new HashMap<>();
+        wrappedMeta.put("index_metadata", metadata);
+        mappings.setMeta(wrappedMeta);
 
         // Mock dependencies
         when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
@@ -1106,7 +1121,10 @@ class IndexManagerTest {
                 .isIndexTemplateType(true)
                 .idField("uuid")
                 .build(); // No aliases
-        mappings.setMeta(metadata);
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta = new HashMap<>();
+        wrappedMeta.put("index_metadata", metadata);
+        mappings.setMeta(wrappedMeta);
 
         // Mock dependencies
         when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
