@@ -1,7 +1,7 @@
 # Application Configuration
 etcd:
   endpoints:
-    - http://localhost:27227
+    - http://localhost:2379
 
 task:
   intervalSeconds: 30
