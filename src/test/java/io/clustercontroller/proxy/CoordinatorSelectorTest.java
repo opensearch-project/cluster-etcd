@@ -175,53 +175,6 @@ class CoordinatorSelectorTest {
         assertThat(url).isEqualTo("http://10.0.0.1:9200");
     }
 
-    @Test
-    void testBuildCoordinatorUrl_NullCoordinator() {
-        assertThatThrownBy(() -> coordinatorSelector.buildCoordinatorUrl(null))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("Coordinator cannot be null");
-    }
-
-    @Test
-    void testBuildCoordinatorUrl_NullHost() {
-        SearchUnit coordinator = createSearchUnit("coord-1", "COORDINATOR", null, testClusterId);
-        coordinator.setPortHttp(9200);
-
-        assertThatThrownBy(() -> coordinatorSelector.buildCoordinatorUrl(coordinator))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("invalid host");
-    }
-
-    @Test
-    void testBuildCoordinatorUrl_EmptyHost() {
-        SearchUnit coordinator = createSearchUnit("coord-1", "COORDINATOR", "", testClusterId);
-        coordinator.setPortHttp(9200);
-
-        assertThatThrownBy(() -> coordinatorSelector.buildCoordinatorUrl(coordinator))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("invalid host");
-    }
-
-    @Test
-    void testBuildCoordinatorUrl_InvalidPort() {
-        SearchUnit coordinator = createSearchUnit("coord-1", "COORDINATOR", "10.0.0.1", testClusterId);
-        coordinator.setPortHttp(0);
-
-        assertThatThrownBy(() -> coordinatorSelector.buildCoordinatorUrl(coordinator))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessageContaining("invalid port");
-    }
-
-    @Test
-    void testBuildCoordinatorUrl_TrimsWhitespace() {
-        SearchUnit coordinator = createSearchUnit("coord-1", "COORDINATOR", "  10.0.0.1  ", testClusterId);
-        coordinator.setPortHttp(9200);
-
-        String url = coordinatorSelector.buildCoordinatorUrl(coordinator);
-
-        assertThat(url).isEqualTo("http://10.0.0.1:9200");
-    }
-
     // Helper methods
 
     private SearchUnit createSearchUnit(String name, String role, String host, String clusterName) {

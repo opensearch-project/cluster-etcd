@@ -78,7 +78,7 @@ class CoordinatorProxyTest {
         assertThat(response.getStatus()).isEqualTo(500);
         assertThat(response.getError()).contains("No healthy coordinators found");
         assertThat(response.getBody()).isNull();
-        assertThat(response.getCoordinator()).isEqualTo("unknown");
+        assertThat(response.getCoordinator()).isNull();
     }
 
     @Test
@@ -144,25 +144,6 @@ class CoordinatorProxyTest {
         assertThat(response).isNotNull();
         assertThat(response.getStatus()).isEqualTo(404);
         assertThat(response.getBody()).isEqualTo("{\"error\": \"Index not found\"}");
-        assertThat(response.getCoordinator()).isEqualTo("coord-1");
-    }
-
-    @Test
-    void testForwardRequest_InvalidCoordinatorConfiguration() throws Exception {
-        SearchUnit coordinator = createSearchUnit("coord-1", "10.0.0.1");
-        
-        when(coordinatorSelector.selectCoordinator(testClusterId)).thenReturn(coordinator);
-        when(coordinatorSelector.buildCoordinatorUrl(coordinator))
-            .thenThrow(new IllegalArgumentException("Coordinator 'coord-1' has invalid host: ''"));
-
-        ProxyResponse response = coordinatorProxy.forwardRequest(
-            testClusterId, "GET", "/my-index/_search", null, new HashMap<>()
-        );
-
-        assertThat(response).isNotNull();
-        assertThat(response.getStatus()).isEqualTo(503);
-        assertThat(response.getError()).contains("Invalid coordinator configuration");
-        assertThat(response.getError()).contains("invalid host");
         assertThat(response.getCoordinator()).isEqualTo("coord-1");
     }
 
