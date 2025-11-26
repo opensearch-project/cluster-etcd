@@ -21,6 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static io.clustercontroller.config.Constants.INDEX_METADATA;
+
 /**
  * Manages index lifecycle operations.
  * Internal component used by TaskManager.
@@ -242,22 +244,8 @@ public class IndexManager {
         Map<String, Object> indexResponse = buildSingleIndexResponse(clusterId, indexName, indexToAliasesMap);
         response.put(indexName, indexResponse);
         
-        // Add all other indices that share aliases
-        for (String otherIndexName : indexToAliasesMap.keySet()) {
-            if (otherIndexName.equals(indexName)) {
-                continue;
-            }
-            try {
-                // Check if the other index exists
-                if (metadataStore.getIndexConfig(clusterId, otherIndexName).isPresent()) {
-                    Map<String, Object> otherIndexResponse = buildSingleIndexResponse(clusterId, otherIndexName, indexToAliasesMap);
-                    response.put(otherIndexName, otherIndexResponse);
-                    log.debug("Added index '{}' to response", otherIndexName);
-                }
-            } catch (Exception e) {
-                log.warn("Failed to get information for index '{}': {}", otherIndexName, e.getMessage());
-            }            
-        }
+        // Add all other indices that share aliases with the requested index. This is needed to switch the alias in unified ingestion.
+        addRelatedIndices(clusterId, indexName, indexToAliasesMap, response);
         
         log.info("Successfully retrieved index information for '{}' and {} related indices from cluster '{}'", 
                 indexName, response.size() - 1, clusterId);
@@ -277,7 +265,7 @@ public class IndexManager {
         try {
             // Unwrap metadata from "index_metadata" key
             Map<String, Object> metaMap = mappings.getMeta();
-            Object indexMetadataObj = metaMap.get("index_metadata");
+            Object indexMetadataObj = metaMap.get(INDEX_METADATA);
             if (indexMetadataObj == null) {
                 return indexToAliasesMap;
             }
@@ -362,6 +350,30 @@ public class IndexManager {
         indexResponse.put("aliases", aliasesMap);
         
         return indexResponse;
+    }
+    
+    /**
+     * Helper method to add related indices that share aliases with the requested index.
+     * Iterates through the index-to-aliases map and adds all indices except the requested one.
+     */
+    private void addRelatedIndices(String clusterId, String requestedIndexName, 
+                                   Map<String, List<String>> indexToAliasesMap, 
+                                   Map<String, Object> response) {
+        for (String otherIndexName : indexToAliasesMap.keySet()) {
+            if (otherIndexName.equals(requestedIndexName)) {
+                continue;
+            }
+            try {
+                // Check if the other index exists
+                if (metadataStore.getIndexConfig(clusterId, otherIndexName).isPresent()) {
+                    Map<String, Object> otherIndexResponse = buildSingleIndexResponse(clusterId, otherIndexName, indexToAliasesMap);
+                    response.put(otherIndexName, otherIndexResponse);
+                    log.debug("Added related index '{}' to response", otherIndexName);
+                }
+            } catch (Exception e) {
+                log.warn("Failed to get information for related index '{}': {}", otherIndexName, e.getMessage());
+            }
+        }
     }
     
     /**
@@ -789,7 +801,7 @@ public class IndexManager {
         
         // Wrap metadata in "index_metadata" key and set as _meta field in mappings
         Map<String, Object> wrappedMeta = new HashMap<>();
-        wrappedMeta.put("index_metadata", metadata);
+        wrappedMeta.put(INDEX_METADATA, metadata);
         mappings.setMeta(wrappedMeta);
         
         // Store updated mappings back to etcd

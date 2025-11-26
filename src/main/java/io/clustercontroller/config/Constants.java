@@ -84,4 +84,7 @@ public final class Constants {
     // Shard/Node role string constants (as reported in actual state payloads)
     public static final String ROLE_PRIMARY = "primary";
     public static final String ROLE_SEARCH_REPLICA = "search_replica";
+
+    // Index specific constants
+    public static final String INDEX_METADATA = "index_metadata";
 }
