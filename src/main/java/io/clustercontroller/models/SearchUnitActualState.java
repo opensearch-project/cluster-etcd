@@ -21,8 +21,11 @@ public class SearchUnitActualState {
     @JsonProperty("address") 
     private String address;
     
-    @JsonProperty("port")
-    private int port;
+    @JsonProperty("httpPort")
+    private int httpPort;  
+    
+    @JsonProperty("transportPort")
+    private int transportPort;  
     
     @JsonProperty("nodeId")
     private String nodeId;
