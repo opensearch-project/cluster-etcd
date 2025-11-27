@@ -1,5 +1,6 @@
 package io.clustercontroller.indices;
 
+import io.clustercontroller.models.Alias;
 import io.clustercontroller.models.IndexMetadata;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.TypeMapping;
@@ -157,7 +158,7 @@ class IndexManagerTest {
         // Verify getIndexConfig was called twice (once in createIndex check, once in getIndex)
         verify(metadataStore, times(2)).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
-        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        verify(metadataStore, times(2)).getIndexMappings(clusterId, indexName); // Called twice: once in getIndex, once in buildSingleIndexResponse
     }
 
     @Test
@@ -722,7 +723,7 @@ class IndexManagerTest {
 
         verify(metadataStore).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
-        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        verify(metadataStore, times(2)).getIndexMappings(clusterId, indexName); // Called twice: once in getIndex, once in buildSingleIndexResponse
     }
 
     @Test
@@ -749,7 +750,7 @@ class IndexManagerTest {
         
         verify(metadataStore).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
-        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        verify(metadataStore, times(2)).getIndexMappings(clusterId, indexName); // Called twice: once in getIndex, once in buildSingleIndexResponse
     }
 
     @Test
@@ -803,7 +804,7 @@ class IndexManagerTest {
         
         verify(metadataStore).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
-        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        verify(metadataStore, times(2)).getIndexMappings(clusterId, indexName); // Called twice: once in getIndex, once in buildSingleIndexResponse
     }
 
     @Test
@@ -831,7 +832,7 @@ class IndexManagerTest {
         
         verify(metadataStore).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
-        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        verify(metadataStore, times(2)).getIndexMappings(clusterId, indexName); // Called twice: once in getIndex, once in buildSingleIndexResponse
     }
 
     @Test
@@ -843,7 +844,7 @@ class IndexManagerTest {
         IndexSettings mockSettings = new IndexSettings();
         mockSettings.setNumberOfShards(3);
 
-        // Create mappings with _meta field containing metadata
+        // Create mappings with _meta field containing metadata (without aliases)
         TypeMapping mockMappings = new TypeMapping();
         Map<String, Object> properties = new HashMap<>();
         properties.put("field1", Map.of("type", "text"));
@@ -854,7 +855,10 @@ class IndexManagerTest {
                 .idField("uuid")
                 .versionField("timestamp")
                 .build();
-        mockMappings.setMeta(mockMetadata);
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta = new HashMap<>();
+        wrappedMeta.put("index_metadata", mockMetadata);
+        mockMappings.setMeta(wrappedMeta);
 
         // Mock dependencies
         when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
@@ -874,7 +878,7 @@ class IndexManagerTest {
 
         verify(metadataStore).getIndexConfig(clusterId, indexName);
         verify(metadataStore).getIndexSettings(clusterId, indexName);
-        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        verify(metadataStore, times(2)).getIndexMappings(clusterId, indexName); // Called twice: once in getIndex, once in buildSingleIndexResponse
     }
 
     @Test
@@ -901,7 +905,242 @@ class IndexManagerTest {
         assertThat(mockMappings.getMeta()).isNull();
 
         verify(metadataStore).getIndexConfig(clusterId, indexName);
-        verify(metadataStore).getIndexMappings(clusterId, indexName);
+        verify(metadataStore, times(2)).getIndexMappings(clusterId, indexName); // Called twice: once in getIndex, once in buildSingleIndexResponse
+    }
+
+    @Test
+    void testGetIndex_WithAliases_ReturnsRelatedIndices() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String index1 = "test-index-1";
+        String index2 = "test-index-2";
+        String aliasName = "test-alias";
+
+        // Create mappings with alias metadata for index1
+        TypeMapping mappings1 = new TypeMapping();
+        IndexMetadata.AliasConfig aliasConfig = IndexMetadata.AliasConfig.builder()
+                .name(aliasName)
+                .matchStrategy("LATEST")
+                .build();
+        IndexMetadata metadata1 = IndexMetadata.builder()
+                .aliases(List.of(aliasConfig))
+                .build();
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta1 = new HashMap<>();
+        wrappedMeta1.put("index_metadata", metadata1);
+        mappings1.setMeta(wrappedMeta1);
+
+        // Create alias object that points to both indices (use List, not comma-separated string)
+        Alias alias = new Alias();
+        alias.setTargetIndices(List.of(index1, index2));
+
+        // Mock dependencies for index1
+        when(metadataStore.getIndexConfig(clusterId, index1)).thenReturn(Optional.of("config1"));
+        when(metadataStore.getIndexSettings(clusterId, index1)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, index1)).thenReturn(mappings1);
+        when(metadataStore.getAlias(clusterId, aliasName)).thenReturn(alias);
+
+        // Mock dependencies for index2 (will be fetched because it shares the alias)
+        when(metadataStore.getIndexConfig(clusterId, index2)).thenReturn(Optional.of("config2"));
+        when(metadataStore.getIndexSettings(clusterId, index2)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, index2)).thenReturn(new TypeMapping());
+
+        // When
+        String result = indexManager.getIndex(clusterId, index1);
+
+        // Then - should return both indices
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + index1 + "\"");
+        assertThat(result).contains("\"" + index2 + "\"");
+        assertThat(result).contains("\"aliases\"");
+        assertThat(result).contains("\"" + aliasName + "\"");
+
+        verify(metadataStore).getIndexConfig(clusterId, index1);
+        verify(metadataStore).getIndexConfig(clusterId, index2);
+        verify(metadataStore).getAlias(clusterId, aliasName);
+    }
+
+    @Test
+    void testGetIndex_WithMultipleAliases_ReturnsAllRelatedIndices() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String index1 = "test-index-1";
+        String index2 = "test-index-2";
+        String index3 = "test-index-3";
+        String alias1 = "alias-1";
+        String alias2 = "alias-2";
+
+        // Create mappings with multiple aliases for index1
+        TypeMapping mappings1 = new TypeMapping();
+        IndexMetadata.AliasConfig aliasConfig1 = IndexMetadata.AliasConfig.builder()
+                .name(alias1)
+                .matchStrategy("LATEST")
+                .build();
+        IndexMetadata.AliasConfig aliasConfig2 = IndexMetadata.AliasConfig.builder()
+                .name(alias2)
+                .matchStrategy("PREVIOUS")
+                .build();
+        IndexMetadata metadata1 = IndexMetadata.builder()
+                .aliases(List.of(aliasConfig1, aliasConfig2))
+                .build();
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta1 = new HashMap<>();
+        wrappedMeta1.put("index_metadata", metadata1);
+        mappings1.setMeta(wrappedMeta1);
+
+        // alias1 points to index1 and index2
+        Alias aliasObj1 = new Alias();
+        aliasObj1.setTargetIndices(List.of(index1, index2));
+
+        // alias2 points to index1 and index3
+        Alias aliasObj2 = new Alias();
+        aliasObj2.setTargetIndices(List.of(index1, index3));
+
+        // Mock dependencies for index1
+        when(metadataStore.getIndexConfig(clusterId, index1)).thenReturn(Optional.of("config1"));
+        when(metadataStore.getIndexSettings(clusterId, index1)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, index1)).thenReturn(mappings1);
+        when(metadataStore.getAlias(clusterId, alias1)).thenReturn(aliasObj1);
+        when(metadataStore.getAlias(clusterId, alias2)).thenReturn(aliasObj2);
+
+        // Mock dependencies for index2 and index3
+        when(metadataStore.getIndexConfig(clusterId, index2)).thenReturn(Optional.of("config2"));
+        when(metadataStore.getIndexSettings(clusterId, index2)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, index2)).thenReturn(new TypeMapping());
+
+        when(metadataStore.getIndexConfig(clusterId, index3)).thenReturn(Optional.of("config3"));
+        when(metadataStore.getIndexSettings(clusterId, index3)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, index3)).thenReturn(new TypeMapping());
+
+        // When
+        String result = indexManager.getIndex(clusterId, index1);
+
+        // Then - should return all three indices
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + index1 + "\"");
+        assertThat(result).contains("\"" + index2 + "\"");
+        assertThat(result).contains("\"" + index3 + "\"");
+
+        verify(metadataStore).getIndexConfig(clusterId, index1);
+        verify(metadataStore).getIndexConfig(clusterId, index2);
+        verify(metadataStore).getIndexConfig(clusterId, index3);
+    }
+
+    @Test
+    void testGetIndex_WithAliases_SkipsNonExistentIndices() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String index1 = "test-index-1";
+        String index2 = "non-existent-index";
+        String aliasName = "test-alias";
+
+        // Create mappings with alias metadata
+        TypeMapping mappings1 = new TypeMapping();
+        IndexMetadata.AliasConfig aliasConfig = IndexMetadata.AliasConfig.builder()
+                .name(aliasName)
+                .matchStrategy("LATEST")
+                .build();
+        IndexMetadata metadata1 = IndexMetadata.builder()
+                .aliases(List.of(aliasConfig))
+                .build();
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta1 = new HashMap<>();
+        wrappedMeta1.put("index_metadata", metadata1);
+        mappings1.setMeta(wrappedMeta1);
+
+        // Alias points to index1 and non-existent index2
+        Alias alias = new Alias();
+        alias.setTargetIndices(List.of(index1, index2));
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, index1)).thenReturn(Optional.of("config1"));
+        when(metadataStore.getIndexSettings(clusterId, index1)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, index1)).thenReturn(mappings1);
+        when(metadataStore.getAlias(clusterId, aliasName)).thenReturn(alias);
+        when(metadataStore.getIndexConfig(clusterId, index2)).thenReturn(Optional.empty()); // doesn't exist
+
+        // When
+        String result = indexManager.getIndex(clusterId, index1);
+
+        // Then - should return only index1
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + index1 + "\"");
+        assertThat(result).doesNotContain("\"" + index2 + "\"");
+
+        verify(metadataStore).getIndexConfig(clusterId, index1);
+        verify(metadataStore).getIndexConfig(clusterId, index2);
+    }
+
+    @Test
+    void testGetIndex_WithAliases_HandlesAliasRetrievalFailure() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String aliasName = "test-alias";
+
+        // Create mappings with alias metadata
+        TypeMapping mappings = new TypeMapping();
+        IndexMetadata.AliasConfig aliasConfig = IndexMetadata.AliasConfig.builder()
+                .name(aliasName)
+                .matchStrategy("LATEST")
+                .build();
+        IndexMetadata metadata = IndexMetadata.builder()
+                .aliases(List.of(aliasConfig))
+                .build();
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta = new HashMap<>();
+        wrappedMeta.put("index_metadata", metadata);
+        mappings.setMeta(wrappedMeta);
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(mappings);
+        when(metadataStore.getAlias(clusterId, aliasName)).thenThrow(new RuntimeException("Etcd error"));
+
+        // When - should handle gracefully
+        String result = indexManager.getIndex(clusterId, indexName);
+
+        // Then - should still return the requested index
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + indexName + "\"");
+
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore).getAlias(clusterId, aliasName);
+    }
+
+    @Test
+    void testGetIndex_NoAliases_ReturnsOnlyRequestedIndex() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+
+        // Create mappings without aliases
+        TypeMapping mappings = new TypeMapping();
+        IndexMetadata metadata = IndexMetadata.builder()
+                .isIndexTemplateType(true)
+                .idField("uuid")
+                .build(); // No aliases
+        // Wrap metadata in "index_metadata" key
+        Map<String, Object> wrappedMeta = new HashMap<>();
+        wrappedMeta.put("index_metadata", metadata);
+        mappings.setMeta(wrappedMeta);
+
+        // Mock dependencies
+        when(metadataStore.getIndexConfig(clusterId, indexName)).thenReturn(Optional.of("config"));
+        when(metadataStore.getIndexSettings(clusterId, indexName)).thenReturn(null);
+        when(metadataStore.getIndexMappings(clusterId, indexName)).thenReturn(mappings);
+
+        // When
+        String result = indexManager.getIndex(clusterId, indexName);
+
+        // Then - should return only the requested index
+        assertThat(result).isNotNull();
+        assertThat(result).contains("\"" + indexName + "\"");
+        assertThat(result).contains("\"aliases\":{}"); // empty aliases
+
+        verify(metadataStore).getIndexConfig(clusterId, indexName);
+        verify(metadataStore, never()).getAlias(any(), any()); // No alias calls
     }
 
     // ========== updateMetadata Tests ==========
