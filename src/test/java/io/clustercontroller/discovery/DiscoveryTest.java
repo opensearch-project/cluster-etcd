@@ -178,7 +178,7 @@ class DiscoveryTest {
     void testFetchSearchUnitsFromEtcd_HandlesNullRoleAndShardId() throws Exception {
         // Given
         Map<String, SearchUnitActualState> actualStates = new HashMap<>();
-        SearchUnitActualState state = createHealthyActualState("test-node", "10.0.1.5", 9200);
+        SearchUnitActualState state = createHealthyActualState("test-node", "10.0.1.5", 9200, 9300);
         state.setRole(null); // null role
         state.setShardId(null); // null shard id
         actualStates.put("test-node", state);
@@ -204,7 +204,7 @@ class DiscoveryTest {
     @Test
     void testConvertActualStateToSearchUnit_CoordinatorNode() throws Exception {
         // Given
-        SearchUnitActualState actualState = createHealthyActualState("coordinator-node-1", "10.0.1.1", 9200);
+        SearchUnitActualState actualState = createHealthyActualState("coordinator-node-1", "10.0.1.1", 9200, 9300);
         actualState.setRole("COORDINATOR");
         actualState.setShardId("COORDINATOR");
         actualState.setClusterName("test-cluster");
@@ -229,7 +229,7 @@ class DiscoveryTest {
     @Test
     void testConvertActualStateToSearchUnit_PrimaryNode() throws Exception {
         // Given
-        SearchUnitActualState actualState = createHealthyActualState("primary-node-1", "10.0.1.2", 9200);
+        SearchUnitActualState actualState = createHealthyActualState("primary-node-1", "10.0.1.2", 9200, 9300);
         actualState.setRole("PRIMARY");
         actualState.setShardId("shard-1");
         actualState.setClusterName("test-cluster");
@@ -252,7 +252,7 @@ class DiscoveryTest {
     @Test
     void testConvertActualStateToSearchUnit_ReplicaNode() throws Exception {
         // Given
-        SearchUnitActualState actualState = createHealthyActualState("replica-node-1", "10.0.1.3", 9200);
+        SearchUnitActualState actualState = createHealthyActualState("replica-node-1", "10.0.1.3", 9200, 9300);
         actualState.setRole("SEARCH_REPLICA");
         actualState.setShardId("shard-2");
         actualState.setClusterName("test-cluster");
@@ -275,7 +275,7 @@ class DiscoveryTest {
     @Test
     void testConvertActualStateToSearchUnit_UnhealthyNode() throws Exception {
         // Given
-        SearchUnitActualState actualState = createUnhealthyActualState("unhealthy-node-1", "10.0.1.4", 9200);
+        SearchUnitActualState actualState = createUnhealthyActualState("unhealthy-node-1", "10.0.1.4", 9200, 9300);
         actualState.setRole("PRIMARY");
         actualState.setShardId("shard-1");
         actualState.setClusterName("test-cluster");
@@ -300,21 +300,21 @@ class DiscoveryTest {
         Map<String, SearchUnitActualState> actualStates = new HashMap<>();
         
                 // Coordinator node
-        SearchUnitActualState coordinatorState = createHealthyActualState("coordinator-node-1", "10.0.1.1", 9200);
+        SearchUnitActualState coordinatorState = createHealthyActualState("coordinator-node-1", "10.0.1.1", 9200, 9300);
         coordinatorState.setRole("COORDINATOR");
         coordinatorState.setShardId("COORDINATOR");
         coordinatorState.setClusterName("test-cluster");
         actualStates.put("coordinator-node-1", coordinatorState);
         
         // Primary node  
-        SearchUnitActualState primaryState = createHealthyActualState("primary-node-1", "10.0.1.2", 9200);
+        SearchUnitActualState primaryState = createHealthyActualState("primary-node-1", "10.0.1.2", 9200, 9300);
         primaryState.setRole("PRIMARY");
         primaryState.setShardId("shard-1");
         primaryState.setClusterName("test-cluster");
         actualStates.put("primary-node-1", primaryState);
         
         // Replica node
-        SearchUnitActualState replicaState = createHealthyActualState("replica-node-1", "10.0.1.3", 9200);
+        SearchUnitActualState replicaState = createHealthyActualState("replica-node-1", "10.0.1.3", 9200, 9300);
         replicaState.setRole("SEARCH_REPLICA");
         replicaState.setShardId("shard-2");
         replicaState.setClusterName("test-cluster");
@@ -323,11 +323,12 @@ class DiscoveryTest {
         return actualStates;
     }
     
-    private SearchUnitActualState createHealthyActualState(String nodeName, String address, int port) {
+    private SearchUnitActualState createHealthyActualState(String nodeName, String address, int httpPort, int transportPort) {
         SearchUnitActualState state = new SearchUnitActualState();
         state.setNodeName(nodeName);
         state.setAddress(address);
-        state.setPort(port);
+        state.setHttpPort(httpPort);
+        state.setTransportPort(transportPort);
         state.setNodeId("node-id-" + nodeName);
         state.setEphemeralId("ephemeral-" + nodeName);
         
@@ -347,8 +348,8 @@ class DiscoveryTest {
         return state;
     }
     
-    private SearchUnitActualState createUnhealthyActualState(String nodeName, String address, int port) {
-        SearchUnitActualState state = createHealthyActualState(nodeName, address, port);
+    private SearchUnitActualState createUnhealthyActualState(String nodeName, String address, int httpPort, int transportPort) {
+        SearchUnitActualState state = createHealthyActualState(nodeName, address, httpPort, transportPort);
         
         // Set unhealthy resource metrics (memory >= 90% or disk <= 1024MB available)
         state.setMemoryUsedPercent(95);  // This will make isHealthy() return false

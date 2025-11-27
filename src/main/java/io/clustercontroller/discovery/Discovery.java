@@ -146,7 +146,8 @@ public class Discovery {
         // Basic node identification
         searchUnit.setName(unitName);
         searchUnit.setHost(actualState.getAddress());
-        searchUnit.setPortHttp(actualState.getPort());
+        searchUnit.setPortHttp(actualState.getHttpPort());
+        searchUnit.setPortTransport(actualState.getTransportPort());
         
         // Extract role, shard_id, and cluster_name directly from actual state (populated by worker)
         searchUnit.setRole(actualState.getRole());
