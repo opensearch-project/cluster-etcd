@@ -9,17 +9,14 @@ import org.opensearch.action.ActionRequest;
 import org.opensearch.action.admin.cluster.health.ClusterHealthAction;
 import org.opensearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.opensearch.action.support.ActionFilter;
-import org.opensearch.action.support.ActionFilterChain;
 import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadRequest;
 import org.opensearch.action.support.clustermanager.ClusterManagerNodeRequest;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.core.action.ActionListener;
-import org.opensearch.core.action.ActionResponse;
 import org.opensearch.core.rest.RestStatus;
-import org.opensearch.tasks.Task;
 
-public class ClusterManagerActionFilter implements ActionFilter {
+public class ClusterManagerActionFilter extends ActionFilter.Simple {
     private final ClusterService clusterService;
 
     public ClusterManagerActionFilter(ClusterService clusterService) {
@@ -31,14 +28,9 @@ public class ClusterManagerActionFilter implements ActionFilter {
         return 0;
     }
 
+    @SuppressWarnings("unchecked")
     @Override
-    public <Request extends ActionRequest, Response extends ActionResponse> void apply(
-        Task task,
-        String action,
-        Request request,
-        ActionListener<Response> listener,
-        ActionFilterChain<Request, Response> chain
-    ) {
+    public boolean apply(String action, ActionRequest request, ActionListener<?> listener) {
 
         if (action.equals(ClusterHealthAction.NAME)) {
             ActionListener<ClusterHealthResponse> clusterHealthResponseListener = (ActionListener<ClusterHealthResponse>) listener;
@@ -50,7 +42,7 @@ public class ClusterManagerActionFilter implements ActionFilter {
                 clusterState
             );
             clusterHealthResponseListener.onResponse(clusterHealthResponse);
-            return;
+            return false;
         }
         if (request instanceof ClusterManagerNodeReadRequest<?> r) {
             r.local(true);
@@ -58,8 +50,8 @@ public class ClusterManagerActionFilter implements ActionFilter {
             listener.onFailure(
                 new OpenSearchStatusException("Cannot execute action {} on clusterless node", RestStatus.BAD_REQUEST, action)
             );
-            return;
+            return false;
         }
-        chain.proceed(task, action, request, listener);
+        return true;
     }
 }
