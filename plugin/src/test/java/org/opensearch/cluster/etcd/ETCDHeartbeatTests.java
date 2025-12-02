@@ -11,6 +11,7 @@ import io.etcd.jetcd.KV;
 import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.launcher.Etcd;
 import io.etcd.jetcd.launcher.EtcdCluster;
+import org.opensearch.Version;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -257,7 +258,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         Index index = new Index("test-index", "test-index-uuid");
         IndexMetadata indexMetadata = IndexMetadata.builder("test-index")
             .settings(
-                Settings.builder().put("index.version.created", 1).put("index.number_of_shards", 1).put("index.number_of_replicas", 0)
+                Settings.builder()
+                    .put("index.version.created", Version.CURRENT)
+                    .put("index.number_of_shards", 1)
+                    .put("index.number_of_replicas", 0)
             )
             .build();
 
