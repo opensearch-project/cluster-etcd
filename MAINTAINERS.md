@@ -6,6 +6,7 @@ This document contains a list of maintainers in this repo. See [opensearch-proje
 
 | Maintainer            | GitHub ID                                         | Affiliation |
 |-----------------------|---------------------------------------------------|-------------|
-| Michael Froh          | [msfroh](https://github.com/msfroh)               | Uber        |
 | Darby Clement         | [darbyclement](https://github.com/darbyclement)   | Uber        |
+| George Zhai           | [GeorgeZhai](https://github.com/GeorgeZhai)       | Uber        |
 | Krina Patel           | [krinanp](https://github.com/krinanp)             | Uber        |
+| Michael Froh          | [msfroh](https://github.com/msfroh)               | Uber        |
