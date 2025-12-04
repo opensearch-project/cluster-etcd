@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /*
  * MetricsProvider is a utility class for creating and managing various types of metrics
@@ -23,6 +24,7 @@ public class MetricsProvider {
 
     private final MeterRegistry registry;
     private final String hostname;
+    private final Map<String, AtomicDouble> gaugeCache = new ConcurrentHashMap<>();
 
     @Autowired
     public MetricsProvider(
@@ -34,37 +36,50 @@ public class MetricsProvider {
     }
 
     /**
-     * Create or retrieve a Counter metric with the given name and tags.
+     * Creates or retrieves a Counter metric with the given name and tags.
      *
      * @param name the name of the counter
      * @param tags a map of tag keys to tag values
      * @return the Counter instance
      */
     public Counter counter(String name, Map<String, String> tags) {
+        tags.put(HOST_NAME_TAG, hostname);
         return Counter.builder(name).tags(mapToTagArray(tags)).register(registry);
     }
 
     /**
-     * Create a Gauge metric with the given name, initial value, and tags.
+     * Gets or creates a Gauge metric that can be updated.
+     * Returns the same AtomicDouble for identical name+tags combinations.
+     * This allows updating the gauge value by calling .set() on the returned AtomicDouble.
      *
      * @param name the name of the gauge
+     * @param value the value of the gauge
      * @param tags a map of tag keys to tag values
      * @return the AtomicDouble instance representing the gauge value
      */
-    public AtomicDouble gauge(String name, Map<String, String> tags) {
-        AtomicDouble myGaugeValue = new AtomicDouble(0);
-        Gauge.builder(name, myGaugeValue::get).tags(mapToTagArray(tags)).register(registry);
-        return myGaugeValue;
+    public AtomicDouble gauge(String name, double value, Map<String, String> tags) {
+        tags.put(HOST_NAME_TAG, hostname);
+        String cacheKey = buildCacheKey(name, tags);
+        AtomicDouble gauge = gaugeCache.computeIfAbsent(cacheKey, k -> {
+            AtomicDouble gaugeValue = new AtomicDouble(value);
+            Gauge.builder(name, gaugeValue::get)
+                .tags(mapToTagArray(tags))
+                .register(registry);
+            return gaugeValue;
+        });
+        gauge.set(value);
+        return gauge;
     }
 
     /**
-     * Create or retrieve a Timer metric with the given name and tags.
+     * Creates or retrieves a Timer metric with the given name and tags.
      *
      * @param name the name of the timer
      * @param tags a map of tag keys to tag values
      * @return the Timer instance
      */
     public Timer timer(String name, Map<String, String> tags) {
+        tags.put(HOST_NAME_TAG, hostname);
         return Timer.builder(name)
             .tags(mapToTagArray(tags))
             .publishPercentileHistogram()
@@ -73,20 +88,33 @@ public class MetricsProvider {
     }
 
     /**
-     * Convert a map of tags to an array of alternating keys and values, including hostname.
+     * Builds a cache key from metric name and tags for gauge reuse.
+     *
+     * @param name the metric name
+     * @param tags the metric tags
+     * @return a unique cache key
+     */
+    private String buildCacheKey(String name, Map<String, String> tags) {
+        StringBuilder key = new StringBuilder(name);
+        tags.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .forEach(e -> key.append(":").append(e.getKey()).append("=").append(e.getValue()));
+        return key.toString();
+    }
+
+    /**
+     * Converts a map of tags to an array of alternating keys and values, including hostname.
      *
      * @param tags the map of tags
      * @return array of alternating keys and values
      */
     private String[] mapToTagArray(Map<String, String> tags) {
-        String[] tagArray = new String[(tags.size() + 1) * 2];    
+        String[] tagArray = new String[tags.size() * 2];
         int index = 0;
         for (Map.Entry<String, String> entry : tags.entrySet()) {
             tagArray[index++] = entry.getKey();
             tagArray[index++] = entry.getValue();
         }
-        tagArray[index++] = HOST_NAME_TAG;
-        tagArray[index] = hostname;
         return tagArray;
     }
 }

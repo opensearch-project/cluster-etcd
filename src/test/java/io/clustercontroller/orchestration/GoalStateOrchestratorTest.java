@@ -1,5 +1,6 @@
 package io.clustercontroller.orchestration;
 
+import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.store.MetadataStore;
@@ -20,11 +21,14 @@ class GoalStateOrchestratorTest {
     @Mock
     private MetadataStore metadataStore;
 
+    @Mock
+    private MetricsProvider metricsProvider;
+
     private GoalStateOrchestrator orchestrator;
 
     @BeforeEach
     void setUp() {
-        orchestrator = new GoalStateOrchestrator(metadataStore);
+        orchestrator = new GoalStateOrchestrator(metadataStore, metricsProvider);
     }
 
     @Test
