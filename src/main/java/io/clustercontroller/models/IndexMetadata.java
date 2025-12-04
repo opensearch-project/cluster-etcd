@@ -1,6 +1,7 @@
 package io.clustercontroller.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
@@ -15,6 +16,7 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class IndexMetadata {
     
     @JsonProperty("is_index_template_type")
@@ -43,6 +45,7 @@ public class IndexMetadata {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class AliasConfig {
         @JsonProperty("name")
         private String name;
@@ -58,6 +61,7 @@ public class IndexMetadata {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class BatchIngestionSource {
         @JsonProperty("hive_table")
         private String hiveTable;
@@ -67,6 +71,9 @@ public class IndexMetadata {
         
         @JsonProperty("sql")
         private String sql;
+
+        @JsonProperty("primary_key")
+        private String primaryKey;
     }
     
     /**
@@ -76,6 +83,7 @@ public class IndexMetadata {
     @NoArgsConstructor
     @AllArgsConstructor
     @Builder
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class LiveIngestionSource {
         @JsonProperty("kafka_topic")
         private String kafkaTopic;
