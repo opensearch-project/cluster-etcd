@@ -43,6 +43,7 @@ import java.util.function.Supplier;
 
 public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPlugin {
     private static final AtomicReference<GuiceHolder> GUICE_HOLDER_REF = new AtomicReference<>();
+    private org.opensearch.transport.client.Client openSearchClient;
     private ClusterService clusterService;
     private ETCDWatcher etcdWatcher;
     private Client etcdClient;
@@ -66,6 +67,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
         this.clusterService = clusterService;
         this.nodeEnvironment = nodeEnvironment;
         this.threadPool = threadPool;
+        this.openSearchClient = client;
         return Collections.emptySet();
     }
 
@@ -92,7 +94,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
                 clusterName
             );
 
-            new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool).start();
+            new ETCDHeartbeat(localNode, etcdClient, openSearchClient, nodeEnvironment, clusterService, threadPool).start();
         } catch (IOException | ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
         }

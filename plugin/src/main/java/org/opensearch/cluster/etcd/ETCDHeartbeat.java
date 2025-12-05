@@ -5,9 +5,15 @@
 package org.opensearch.cluster.etcd;
 
 import io.etcd.jetcd.Client;
+import org.opensearch.action.admin.cluster.node.stats.NodeStats;
+import org.opensearch.action.admin.cluster.node.stats.NodesStatsRequest;
+import org.opensearch.action.admin.cluster.node.stats.NodesStatsResponse;
+import org.opensearch.action.admin.indices.stats.CommonStatsFlags;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.unit.ByteSizeValue;
+import org.opensearch.core.xcontent.ToXContent;
+import org.opensearch.indices.NodeIndicesStats;
 import org.opensearch.monitor.fs.FsProbe;
 import java.io.IOException;
 import org.opensearch.monitor.fs.FsInfo;
@@ -36,6 +42,7 @@ import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.threadpool.ExecutorBuilder;
 import org.opensearch.threadpool.FixedExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
+import org.opensearch.transport.client.Requests;
 
 import java.util.List;
 import java.util.ArrayList;
@@ -45,6 +52,11 @@ public class ETCDHeartbeat {
     private static final long DEFAULT_HEARTBEAT_INTERVAL_MILLIS = 5000; // 5 seconds
     private static final String CLUSTERLESS_ROLE_ATTRIBUTE = "clusterless_role";
     private static final String CLUSTERLESS_SHARD_ID_ATTRIBUTE = "clusterless_shard_id";
+
+    // The following are needed to fetch and publish shard stats
+    private static final NodesStatsRequest NODES_STATS_REQUEST = Requests.nodesStatsRequest()
+        .indices(new CommonStatsFlags(CommonStatsFlags.Flag.Docs).setLevels(new String[] { "shards" }));
+    private static final ToXContent.MapParams STATS_PARAMS = new ToXContent.MapParams(Map.of("level", "shards"));
 
     static final String TIMESTAMP = "timestamp";
     static final String NODE_NAME = "nodeName";
@@ -74,6 +86,7 @@ public class ETCDHeartbeat {
     static final String ALLOCATION_ID = "allocationId";
     static final String CURRENT_NODE_ID = "currentNodeId";
     static final String CURRENT_NODE_NAME = "currentNodeName";
+    static final String STATS = "stats";
 
     private final Logger logger = LogManager.getLogger(getClass());
     private final String nodeName;
@@ -85,6 +98,7 @@ public class ETCDHeartbeat {
     private final String clusterlessRole;
     private final String clusterlessShardId;
     private final Client etcdClient;
+    private final org.opensearch.transport.client.Client openSearchClient;
     private final ThreadPool threadPool;
     private final ByteSequence nodeStateKey;
     private final NodeEnvironment nodeEnvironment;
@@ -94,16 +108,18 @@ public class ETCDHeartbeat {
     public ETCDHeartbeat(
         DiscoveryNode localNode,
         Client etcdClient,
+        org.opensearch.transport.client.Client openSearchClient,
         NodeEnvironment nodeEnvironment,
         ClusterService clusterService,
         ThreadPool threadPool
     ) {
-        this(localNode, etcdClient, nodeEnvironment, clusterService, threadPool, DEFAULT_HEARTBEAT_INTERVAL_MILLIS);
+        this(localNode, etcdClient, openSearchClient, nodeEnvironment, clusterService, threadPool, DEFAULT_HEARTBEAT_INTERVAL_MILLIS);
     }
 
     public ETCDHeartbeat(
         DiscoveryNode localNode,
         Client etcdClient,
+        org.opensearch.transport.client.Client openSearchClient,
         NodeEnvironment nodeEnvironment,
         ClusterService clusterService,
         ThreadPool threadPool,
@@ -141,6 +157,7 @@ public class ETCDHeartbeat {
                 localNode.getAttributes().get(CLUSTERLESS_SHARD_ID_ATTRIBUTE) // DefaultValue: Fall back to generic key
             );
         this.etcdClient = etcdClient;
+        this.openSearchClient = openSearchClient;
         this.threadPool = threadPool;
         String clusterName = clusterService.getClusterName().value();
         String statePath = ETCDPathUtils.buildSearchUnitActualStatePath(localNode, clusterName);
@@ -238,19 +255,29 @@ public class ETCDHeartbeat {
                 logger.error("Failed to get node routing information", e);
             }
 
+            NodesStatsResponse nodesStatsResponse = openSearchClient.admin().cluster().nodesStats(NODES_STATS_REQUEST).actionGet();
+            NodeStats nodeStats = nodesStatsResponse.getNodes().getFirst();
+            NodeIndicesStats nodeIndicesStats = nodeStats.getIndices();
+
             // Publish to ETCD
             KV kvClient = etcdClient.getKVClient();
 
             // Convert Map to JSON using XContent
             ByteArrayOutputStream jsonStream = new ByteArrayOutputStream();
             try (XContentBuilder jsonBuilder = XContentType.JSON.contentBuilder(jsonStream)) {
-                jsonBuilder.map(heartbeatData);
+                jsonBuilder.startObject();
+                jsonBuilder.mapContents(heartbeatData);
+                if (nodeIndicesStats != null) {
+                    jsonBuilder.startObject(STATS);
+                    nodeIndicesStats.toXContent(jsonBuilder, STATS_PARAMS);
+                    jsonBuilder.endObject();
+                }
+                jsonBuilder.endObject();
             }
             byte[] jsonBytes = jsonStream.toByteArray();
 
             ByteSequence value = ByteSequence.from(jsonBytes);
             kvClient.put(nodeStateKey, value).get();
-
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
