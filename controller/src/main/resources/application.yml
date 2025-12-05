@@ -1,0 +1,22 @@
+# Application Configuration
+etcd:
+  endpoints:
+    - http://localhost:2379
+
+task:
+  intervalSeconds: 30
+
+# Coordinator goal state location
+coordinator_goal_state:
+  search_unit_group: coordinators
+  search_unit: default-coordinator
+
+# Multi-Cluster Controller Configuration
+controller:
+  # Controller ID - REQUIRED: reads from NODE_NAME environment variable
+  id: ${NODE_NAME}
+  ttl:
+    seconds: 60
+  keepalive:
+    interval:
+      seconds: 10
