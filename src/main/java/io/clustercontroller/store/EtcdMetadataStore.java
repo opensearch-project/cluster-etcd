@@ -336,12 +336,6 @@ public class EtcdMetadataStore implements MetadataStore {
                     continue;
                 }
                 
-                // Skip coordinators without httpPort field (not properly configured)
-                if (!json.has("httpPort")) {
-                    log.debug("Skipping coordinator '{}': missing httpPort field", actualState.getNodeName());
-                    continue;
-                }
-                
                 // Convert actual-state to SearchUnit
                 String address = json.has("address") ? json.get("address").asText() : "";
                 int httpPort = json.get("httpPort").asInt();
