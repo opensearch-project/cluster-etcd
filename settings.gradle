@@ -6,7 +6,8 @@
 rootProject.name = 'cluster-etcd'
 
 List projects = [
-  'plugin'
+  'plugin',
+  'controller'
 ]
 
 include projects.toArray(new String[0]) as Iterable<String>

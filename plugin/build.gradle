@@ -7,64 +7,7 @@
  */
 import org.opensearch.gradle.test.RestIntegTestTask
 
-buildscript {
-    ext {
-        opensearch_version = System.getProperty("opensearch.version", "3.4.0-SNAPSHOT")
-        version_qualifier = System.getProperty("build.version_qualifier", "")
-        buildVersionQualifier = System.getProperty("build.version_qualifier", "")
-        isSnapshot = "true" == System.getProperty("build.snapshot", "true")
-        version_tokens = opensearch_version.tokenize('-')
-        opensearch_build = version_tokens[0] + '.0'
-        plugin_no_snapshot = opensearch_build
-        if (buildVersionQualifier) {
-            opensearch_build += "-${buildVersionQualifier}"
-            plugin_no_snapshot += "-${buildVersionQualifier}"
-        }
-        if (isSnapshot) {
-            opensearch_build += "-SNAPSHOT"
-        }
-        opensearch_group = "org.opensearch"
-        opensearch_no_snapshot = opensearch_build.replace("-SNAPSHOT","")
-    }
-    repositories {
-        mavenLocal()
-        maven { url "https://ci.opensearch.org/ci/dbc/snapshots/maven/" }
-        mavenCentral()
-        maven { url "https://plugins.gradle.org/m2/" }
-    }
-    dependencies {
-        classpath "${opensearch_group}.gradle:build-tools:${opensearch_version}"
-        classpath "com.diffplug.spotless:spotless-plugin-gradle:8.1.0"
-    }
-}
-
-plugins {
-    id 'com.avast.gradle.docker-compose' version '0.17.20' // Or latest version
-}
-
-
-allprojects {
-    version = opensearch_version.tokenize('-')[0] + '.0'
-    if (version_qualifier) {
-        version += "-${version_qualifier}"
-    }
-    if (isSnapshot) {
-        version += "-SNAPSHOT"
-    }
-}
-
-repositories {
-    mavenLocal()
-    maven { url "https://ci.opensearch.org/ci/dbc/snapshots/maven/" }
-    mavenCentral()
-    maven { url "https://plugins.gradle.org/m2/" }
-}
-
-apply plugin: 'opensearch.opensearchplugin'
-apply plugin: 'opensearch.java-agent'
-apply plugin: 'com.diffplug.spotless'
-apply plugin: 'opensearch.pluginzip'
-apply from: rootProject.file('gradle/formatting.gradle')
+// OpenSearch plugins are now applied in root build.gradle
 
 opensearchplugin {
   name = project.rootProject.name
@@ -236,8 +179,8 @@ versions << [
   'docker': '3.3.6',
   'ducttape': '1.0.8',
   'failsafe': '3.3.2',
-  'jetcd': '0.8.5',
-  'vertx': '4.5.14',
+  'jetcd': rootProject.ext.commonVersions.jetcd,
+  'vertx': '5.0.5',
   'testcontainers': '1.19.7'
 ]
 
@@ -285,6 +228,7 @@ dependencies {
   implementation "io.netty:netty-transport-native-unix-common:${versions.netty}"
   implementation 'io.perfmark:perfmark-api:0.27.0'
   implementation "io.vertx:vertx-core:${versions.vertx}"
+  implementation "io.vertx:vertx-core-logging:${versions.vertx}"
   implementation "io.vertx:vertx-grpc:${versions.vertx}"
   testImplementation "org.apache.commons:commons-compress:${versions.commonscompress}"
   testImplementation "org.rnorth.duct-tape:duct-tape:${versions.ducttape}"
@@ -354,7 +298,6 @@ thirdPartyAudit {
      'com.fasterxml.jackson.databind.JsonSerializer',
      'com.fasterxml.jackson.databind.ObjectMapper',
      'com.fasterxml.jackson.databind.ObjectWriter',
-     'com.fasterxml.jackson.databind.SerializationFeature',
      'com.fasterxml.jackson.databind.SerializerProvider',
      'com.fasterxml.jackson.databind.module.SimpleModule',
      'com.google.gson.Gson',
@@ -367,10 +310,13 @@ thirdPartyAudit {
      'com.google.gson.JsonPrimitive',
      'io.netty.channel.epoll.Epoll',
      'io.netty.channel.epoll.EpollChannelOption',
-     'io.netty.channel.epoll.EpollEventLoopGroup',
+     'io.netty.channel.epoll.EpollIoHandler',
      'io.netty.channel.kqueue.KQueue',
      'io.netty.channel.kqueue.KQueueChannelOption',
-     'io.netty.channel.kqueue.KQueueEventLoopGroup',
+     'io.netty.channel.kqueue.KQueueIoHandler',
+     'io.netty.channel.uring.IoUring',
+     'io.netty.channel.uring.IoUringChannelOption',
+     'io.netty.channel.uring.IoUringIoHandler',
      'io.netty.handler.codec.haproxy.HAProxyMessage',
      'io.netty.handler.codec.haproxy.HAProxyProxiedProtocol',
      'io.netty.handler.codec.haproxy.HAProxyProxiedProtocol$TransportProtocol',
