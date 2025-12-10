@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
+import org.yaml.snakeyaml.LoaderOptions;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -51,7 +52,7 @@ public class ClusterControllerConfig {
 
 
     private ConfigModel loadYamlConfig() {
-        Yaml yaml = new Yaml(new Constructor(ConfigModel.class));
+        Yaml yaml = new Yaml(new Constructor(ConfigModel.class, new LoaderOptions()));
         InputStream inputStream = null;
         String loadedFrom = "";
 

@@ -1,0 +1,79 @@
+/*
+ *  Copyright OpenSearch Contributors
+ *  SPDX-License-Identifier: Apache-2.0
+ */
+
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.3.6' apply false
+}
+
+group = 'io.clustercontroller'
+version = '0.1.0-SNAPSHOT'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+String spring_boot_version = '3.5.8'
+
+dependencies {
+    // Use Spring Boot BOM
+    implementation platform("org.springframework.boot:spring-boot-dependencies:${spring_boot_version}")
+    
+    // Spring Boot
+    implementation "org.springframework.boot:spring-boot-starter-web:${spring_boot_version}"
+    implementation "org.springframework.boot:spring-boot-starter-actuator:${spring_boot_version}"
+    
+    // JSON Processing
+    implementation "com.fasterxml.jackson.core:jackson-databind:${rootProject.ext.commonVersions.jackson}"
+    implementation "com.fasterxml.jackson.datatype:jackson-datatype-jsr310:${rootProject.ext.commonVersions.jackson}"
+    
+    // Logging
+    implementation 'ch.qos.logback:logback-classic:1.5.15'
+    implementation 'org.slf4j:slf4j-api:2.0.16'
+    
+    // Lombok (shared version for JDK 25 compatibility)
+    compileOnly "org.projectlombok:lombok:${rootProject.ext.commonVersions.lombok}"
+    annotationProcessor "org.projectlombok:lombok:${rootProject.ext.commonVersions.lombok}"
+    
+    // etcd client (shared version with plugin)
+    implementation "io.etcd:jetcd-core:${rootProject.ext.commonVersions.jetcd}"
+    
+    // YAML Processing
+    implementation 'org.yaml:snakeyaml:2.3'
+    
+    // Prometheus metrics
+    implementation 'io.micrometer:micrometer-registry-prometheus:1.14.3'
+    
+    // Test Dependencies (Mockito version aligned with plugin's transitive dependency)
+    testImplementation "org.springframework.boot:spring-boot-starter-test:${spring_boot_version}"
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.11.4'
+    testImplementation 'org.junit.platform:junit-platform-launcher:6.0.1'
+    testImplementation "org.mockito:mockito-core:${rootProject.ext.commonVersions.mockito}"
+    testImplementation "org.mockito:mockito-junit-jupiter:${rootProject.ext.commonVersions.mockito}"
+    testImplementation 'org.assertj:assertj-core:3.27.3'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+// Add main class for Spring Boot application
+tasks.register('bootJar', Jar) {
+    archiveClassifier = 'boot'
+    from sourceSets.main.output
+    manifest {
+        attributes(
+            'Main-Class': 'org.springframework.boot.loader.JarLauncher',
+            'Start-Class': 'io.clustercontroller.ClusterControllerApplication'
+        )
+    }
+}
