@@ -7,6 +7,7 @@ import io.clustercontroller.discovery.Discovery;
 import io.clustercontroller.health.ClusterHealthManager;
 import io.clustercontroller.indices.AliasManager;
 import io.clustercontroller.indices.IndexManager;
+import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.orchestration.GoalStateOrchestrator;
 import io.clustercontroller.templates.TemplateManager;
 import io.clustercontroller.store.MetadataStore;
@@ -122,9 +123,9 @@ public class ClusterControllerApplication {
      * GoalStateOrchestrator bean for orchestrating goal states from planned allocations.
      */
     @Bean
-    public GoalStateOrchestrator goalStateOrchestrator(MetadataStore metadataStore) {
+    public GoalStateOrchestrator goalStateOrchestrator(MetadataStore metadataStore, MetricsProvider metricsProvider) {
         log.info("Initializing GoalStateOrchestrator with RollingUpdateOrchestrationStrategy");
-        return new GoalStateOrchestrator(metadataStore);
+        return new GoalStateOrchestrator(metadataStore, metricsProvider);
     }
 
     /**

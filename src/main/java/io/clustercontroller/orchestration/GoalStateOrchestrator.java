@@ -1,8 +1,8 @@
 package io.clustercontroller.orchestration;
 
+import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.store.MetadataStore;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 
 /**
  * Main orchestrator that coordinates goal state updates from planned allocations
@@ -13,10 +13,10 @@ public class GoalStateOrchestrator {
     private final MetadataStore metadataStore;
     private final GoalStateOrchestrationStrategy strategy;
     
-    public GoalStateOrchestrator(MetadataStore metadataStore) {
+    public GoalStateOrchestrator(MetadataStore metadataStore, MetricsProvider metricsProvider) {
         this.metadataStore = metadataStore;
         // TODO: Make orchestration strategy configurable via application properties
-        this.strategy = new RollingUpdateOrchestrationStrategy(metadataStore);
+        this.strategy = new RollingUpdateOrchestrationStrategy(metadataStore, metricsProvider);
     }
     
     /**

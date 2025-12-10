@@ -1,5 +1,7 @@
 package io.clustercontroller.orchestration;
 
+import com.google.common.util.concurrent.AtomicDouble;
+import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.SearchUnit;
@@ -18,7 +20,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -28,11 +29,16 @@ class RollingUpdateOrchestrationStrategyTest {
     @Mock
     private MetadataStore metadataStore;
 
+    @Mock
+    private MetricsProvider metricsProvider;
+
     private RollingUpdateOrchestrationStrategy strategy;
 
     @BeforeEach
     void setUp() {
-        strategy = new RollingUpdateOrchestrationStrategy(metadataStore);
+        strategy = new RollingUpdateOrchestrationStrategy(metadataStore, metricsProvider);
+        // Use lenient() since not all tests call gauge (e.g., tests with empty nodes or no planned allocation)
+        lenient().when(metricsProvider.gauge(anyString(), anyDouble(), anyMap())).thenReturn(new AtomicDouble(0.0));
     }
 
     @Test
@@ -63,6 +69,13 @@ class RollingUpdateOrchestrationStrategyTest {
         // REPLICA group: 2 nodes, 20% = 0.4 → Math.ceil(0.4) = 1 → updates 1 node
         // Total: 2 nodes updated
         verify(metadataStore, times(2)).setSearchUnitGoalState(eq(clusterId), anyString(), any(SearchUnitGoalState.class));
+        
+        // Verify gauge metrics are updated for both PRIMARY and REPLICA groups
+        verify(metricsProvider, times(2)).gauge(
+            eq("rolling_update_progress_percentage"),
+            anyDouble(),
+            anyMap()
+        );
     }
 
     @Test
@@ -879,6 +892,99 @@ class RollingUpdateOrchestrationStrategyTest {
         verify(metadataStore).setSearchUnitGoalState(eq(clusterId), eq(decommissionedNode), argThat(gs -> 
             gs.getLocalShards() == null || gs.getLocalShards().isEmpty()
         ));
+    }
+
+    @Test
+    void testGaugeMetricUpdatesWithCorrectProgressPercentage() throws Exception {
+        // Given
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String shardId = "0";
+        
+        Index indexConfig = createIndex(indexName, 1);
+        
+        // Create planned allocation with 10 nodes (1 primary + 9 replicas)
+        ShardAllocation planned = new ShardAllocation();
+        planned.setIngestSUs(Arrays.asList("node1"));
+        planned.setSearchSUs(Arrays.asList("node2", "node3", "node4", "node5", "node6", "node7", "node8", "node9", "node10", "node11"));
+        
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, shardId)).thenReturn(planned);
+        lenient().when(metadataStore.getSearchUnitGoalState(eq(clusterId), anyString())).thenReturn(null);
+        lenient().when(metadataStore.getSearchUnitActualState(eq(clusterId), anyString())).thenReturn(null);
+
+        // When
+        strategy.orchestrate(clusterId);
+
+        // Then - Verify gauge is called for PRIMARY group
+        // PRIMARY: 1 node updated out of 1 = 100%
+        verify(metricsProvider).gauge(
+            eq("rolling_update_progress_percentage"),
+            eq(100.0),
+            argThat(tags -> 
+                tags.get("clusterId").equals(clusterId) &&
+                tags.get("indexName").equals(indexName) &&
+                tags.get("shardId").equals(shardId) &&
+                tags.get("role").equals("PRIMARY")
+            )
+        );
+        
+        // REPLICA: 2 nodes updated out of 10 ≈ 20%
+        verify(metricsProvider).gauge(
+            eq("rolling_update_progress_percentage"),
+            eq(20.0),
+            argThat(tags -> 
+                tags.get("clusterId").equals(clusterId) &&
+                tags.get("indexName").equals(indexName) &&
+                tags.get("shardId").equals(shardId) &&
+                tags.get("role").equals("SEARCH_REPLICA")
+            )
+        );
+    }
+
+    @Test
+    void testGaugeMetricWithConvergedNodes() throws Exception {
+        // Given: Some nodes already converged
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String shardId = "0";
+        
+        Index indexConfig = createIndex(indexName, 1);
+        
+        ShardAllocation planned = new ShardAllocation();
+        planned.setIngestSUs(Arrays.asList("node1", "node2", "node3", "node4", "node5"));
+        planned.setSearchSUs(Arrays.asList());
+        
+        // Mock 3 nodes already converged
+        SearchUnitGoalState goalState = createGoalStateWithShard(indexName, shardId, "PRIMARY");
+        SearchUnitActualState actualState = createActualStateWithShard(indexName, shardId, "PRIMARY");
+        
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getPlannedAllocation(clusterId, indexName, shardId)).thenReturn(planned);
+        when(metadataStore.getSearchUnitGoalState(clusterId, "node1")).thenReturn(goalState);
+        when(metadataStore.getSearchUnitGoalState(clusterId, "node2")).thenReturn(goalState);
+        when(metadataStore.getSearchUnitGoalState(clusterId, "node3")).thenReturn(goalState);
+        when(metadataStore.getSearchUnitGoalState(clusterId, "node4")).thenReturn(null);
+        when(metadataStore.getSearchUnitGoalState(clusterId, "node5")).thenReturn(null);
+        
+        when(metadataStore.getSearchUnitActualState(clusterId, "node1")).thenReturn(actualState);
+        when(metadataStore.getSearchUnitActualState(clusterId, "node2")).thenReturn(actualState);
+        when(metadataStore.getSearchUnitActualState(clusterId, "node3")).thenReturn(actualState);
+
+        // When
+        strategy.orchestrate(clusterId);
+
+        // Then - Verify gauge shows 4 out of 5 nodes = 80% (3 already converged + 1 newly updated)
+        verify(metricsProvider).gauge(
+            eq("rolling_update_progress_percentage"),
+            eq(80.0),
+            argThat(tags -> 
+                tags.get("clusterId").equals(clusterId) &&
+                tags.get("indexName").equals(indexName) &&
+                tags.get("shardId").equals(shardId) &&
+                tags.get("role").equals("PRIMARY")
+            )
+        );
     }
 
     // Helper methods

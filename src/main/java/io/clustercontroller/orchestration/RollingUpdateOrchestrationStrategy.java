@@ -1,9 +1,9 @@
 package io.clustercontroller.orchestration;
 
 import io.clustercontroller.enums.NodeRole;
+import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexShardProgress;
-import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
@@ -23,12 +23,19 @@ import java.util.Map;
 @Component
 @Slf4j
 public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestrationStrategy {
-    
+    private final static String ROLLING_UPDATE_PROGRESS_PERCENTAGE_METRIC_NAME = "rolling_update_progress_percentage";
+    private final static String CLUSTER_ID_TAG = "clusterId";
+    private final static String INDEX_NAME_TAG = "indexName";
+    private final static String SHARD_ID_TAG = "shardId";
+    private final static String ROLE_TAG = "role";
+
     private final MetadataStore metadataStore;
+    private final MetricsProvider metricsProvider;
     private final double maxTransitPercentage = 0.20; // TODO: Make configurable
-    
-    public RollingUpdateOrchestrationStrategy(MetadataStore metadataStore) {
+
+    public RollingUpdateOrchestrationStrategy(MetadataStore metadataStore, MetricsProvider metricsProvider) {
         this.metadataStore = metadataStore;
+        this.metricsProvider = metricsProvider;
     }
     
     @Override
@@ -108,14 +115,15 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
         
         // Check current progress for this node group
         IndexShardProgress progress = getIndexShardProgress(indexShard, nodeGroup, clusterId);
+        int successfulUpdates = 0;
         
         // Calculate how many nodes can be updated (20% of this group)
         int availableSlots = progress.getAvailableSlots(maxTransitPercentage);
-        
+
+        // Get nodes that haven't been updated yet
+        List<String> nodesToUpdate = getNodesToUpdate(nodeGroup, progress);
+
         if (availableSlots > 0) {
-            // Get nodes that haven't been updated yet
-            List<String> nodesToUpdate = getNodesToUpdate(nodeGroup, progress);
-            
             // Update next batch
             int batchSize = Math.min(availableSlots, nodesToUpdate.size());
             List<String> nextBatch = nodesToUpdate.stream()
@@ -129,6 +137,7 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
             for (String nodeId : nextBatch) {
                 try {
                     updateNodeGoalState(nodeId, indexName, shardId, planned, clusterId);
+                    successfulUpdates++;
                     log.debug("Started update for {} node {} with shard {}/{}", role, nodeId, indexName, shardId);
                 } catch (Exception e) {
                     log.error("Failed to start update for {} node {}: {}", role, nodeId, e.getMessage(), e);
@@ -138,6 +147,20 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
             log.info("Index-shard {} {} group has {}% nodes in transit, waiting for convergence", 
                     indexShard, role, progress.getTransitPercentage() * 100);
         }
+        metricsProvider.gauge(
+            ROLLING_UPDATE_PROGRESS_PERCENTAGE_METRIC_NAME,
+            (progress.getGoalStateUpdatedCount() + successfulUpdates) * 100.0 / nodeGroup.size(),
+            buildMetricsTag(clusterId, indexName, shardId, role)
+        );
+    }
+
+    private Map<String, String> buildMetricsTag(String clusterId, String indexName, String shardId, NodeRole role) {
+        Map<String, String> tags = new HashMap<>();
+        tags.put(CLUSTER_ID_TAG, clusterId);
+        tags.put(INDEX_NAME_TAG, indexName);
+        tags.put(SHARD_ID_TAG, shardId);
+        tags.put(ROLE_TAG, role.getValue());
+        return tags;
     }
     
     private IndexShardProgress getIndexShardProgress(String indexShard, List<String> allNodes, String clusterId) {
