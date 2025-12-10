@@ -22,10 +22,10 @@ public class SearchUnitActualState {
     private String address;
     
     @JsonProperty("httpPort")
-    private int httpPort;  
+    private int httpPort;
     
     @JsonProperty("transportPort")
-    private int transportPort;  
+    private int transportPort;
     
     @JsonProperty("nodeId")
     private String nodeId;

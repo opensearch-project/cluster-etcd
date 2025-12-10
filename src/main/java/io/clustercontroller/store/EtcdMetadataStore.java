@@ -10,16 +10,20 @@ import io.clustercontroller.models.CoordinatorGoalState;
 import io.clustercontroller.models.ClusterInformation;
 import io.clustercontroller.models.Alias;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
+import io.clustercontroller.enums.HealthState;
 import io.clustercontroller.models.TaskMetadata;
 import io.clustercontroller.models.ClusterControllerAssignment;
 import io.clustercontroller.util.EnvironmentUtils;
 import io.etcd.jetcd.*;
+import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.kv.GetResponse;
 import io.etcd.jetcd.kv.TxnResponse;
 import io.etcd.jetcd.op.Cmp;
@@ -290,6 +294,78 @@ public class EtcdMetadataStore implements MetadataStore {
         } catch (Exception e) {
             log.error("Failed to get all search units from etcd: {}", e.getMessage(), e);
             throw new Exception("Failed to retrieve search units from etcd", e);
+        }
+    }
+    
+    @Override
+    public List<SearchUnit> getAllCoordinators(String clusterId) throws Exception {
+        log.debug("Getting all coordinators from etcd for cluster: {}", clusterId);
+        List<SearchUnit> coordinators = new ArrayList<>();
+        
+        try {
+            // Query etcd for all coordinators using existing helper
+            String coordinatorsPrefix = pathResolver.getCoordinatorsPrefix(clusterId);
+            GetResponse response = executeEtcdPrefixQuery(coordinatorsPrefix);
+            
+            // Parse each coordinator actual-state entry
+            for (KeyValue kv : response.getKvs()) {
+                String key = kv.getKey().toString(StandardCharsets.UTF_8);
+                String value = kv.getValue().toString(StandardCharsets.UTF_8);
+                
+                if (!key.endsWith("/actual-state")) {
+                    continue;
+                }
+                
+                JsonNode json = objectMapper.readTree(value);
+                
+                // Verify it's a coordinator by checking clusterlessRole
+                String role = json.has("clusterlessRole") ? json.get("clusterlessRole").asText() : "";
+                if (!"coordinator".equals(role)) {
+                    continue;
+                }
+                
+                String nodeName = json.has("nodeName") ? json.get("nodeName").asText() : "unknown";
+                
+                // Parse actual-state to check health
+                SearchUnitActualState actualState = objectMapper.readValue(value, SearchUnitActualState.class);
+                HealthState healthState = actualState.deriveNodeState();
+                
+                // Filter out RED (unhealthy) coordinators
+                if (healthState == HealthState.RED) {
+                    log.debug("Skipping unhealthy coordinator '{}': state=RED", actualState.getNodeName());
+                    continue;
+                }
+                
+                // Convert actual-state to SearchUnit
+                String address = json.has("address") ? json.get("address").asText() : "";
+                int httpPort = json.get("httpPort").asInt();
+                
+                SearchUnit coordinator = new SearchUnit();
+                coordinator.setName(nodeName);
+                coordinator.setHost(address);
+                coordinator.setPortHttp(httpPort);
+                int transportPort = json.has("transportPort") ? json.get("transportPort").asInt() : 9300;
+                coordinator.setPortTransport(transportPort);
+                coordinator.setRole("COORDINATOR");
+                coordinator.setClusterName(clusterId);
+                
+                // Validate before adding
+                if (address == null || address.trim().isEmpty()) {
+                    log.warn("Coordinator '{}' has invalid/empty address, skipping", nodeName);
+                    continue;
+                }
+                
+                coordinators.add(coordinator);
+                log.debug("Found healthy coordinator: {} at {}:{} (state={})", 
+                        coordinator.getName(), coordinator.getHost(), coordinator.getPortHttp(), healthState);
+            }
+            
+            log.debug("Retrieved {} coordinators from etcd for cluster '{}'", coordinators.size(), clusterId);
+            return coordinators;
+            
+        } catch (Exception e) {
+            log.error("Failed to get coordinators from etcd: {}", e.getMessage(), e);
+            throw new Exception("Failed to retrieve coordinators from etcd", e);
         }
     }
     
@@ -595,7 +671,7 @@ public class EtcdMetadataStore implements MetadataStore {
                         Index indexConfig = objectMapper.readValue(indexConfigJson, Index.class);
                         indexConfigs.add(indexConfig);
                     } catch (Exception parseException) {
-                        log.warn("Failed to parse index config JSON: {}, skipping", indexConfigJson);
+                        log.warn("Failed to parse index config JSON: {}, error: {}, skipping", indexConfigJson, parseException.getMessage(), parseException);
                     }
                 }
             }

@@ -122,6 +122,12 @@ public interface MetadataStore {
      * Set search unit actual state
      */
     void setSearchUnitActualState(String clusterId, String unitName, SearchUnitActualState actualState) throws Exception;
+    
+    /**
+     * Get all coordinator nodes for a cluster
+     */
+    List<SearchUnit> getAllCoordinators(String clusterId) throws Exception;
+    
     // =================================================================
     // INDEX CONFIGURATIONS OPERATIONS
     // =================================================================
