@@ -12,6 +12,12 @@ import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.launcher.Etcd;
 import io.etcd.jetcd.launcher.EtcdCluster;
 import org.opensearch.Version;
+import org.opensearch.action.admin.cluster.node.stats.NodeStats;
+import org.opensearch.action.admin.cluster.node.stats.NodesStatsRequest;
+import org.opensearch.action.admin.cluster.node.stats.NodesStatsResponse;
+import org.opensearch.action.admin.indices.stats.CommonStats;
+import org.opensearch.action.admin.indices.stats.IndexShardStats;
+import org.opensearch.action.support.AdapterActionFuture;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -33,12 +39,17 @@ import org.opensearch.core.xcontent.DeprecationHandler;
 import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.core.xcontent.XContentParser;
 import org.opensearch.env.NodeEnvironment;
+import org.opensearch.indices.NodeIndicesStats;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.threadpool.TestThreadPool;
 import org.opensearch.threadpool.ThreadPool;
+import org.opensearch.transport.client.AdminClient;
+import org.opensearch.transport.client.ClusterAdminClient;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -55,6 +66,8 @@ import static org.testcontainers.shaded.org.awaitility.Awaitility.await;
 @ThreadLeakFilters(filters = { TestContainerThreadLeakFilter.class })
 public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
+    public static final ClusterName CLUSTER_NAME = new ClusterName("test-cluster");
+
     public void testETCDHeartbeatStartStop() throws InterruptedException {
         // Setup mocks
         DiscoveryNode localNode = createMockDiscoveryNode();
@@ -68,7 +81,14 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
         ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool);
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+            localNode,
+            etcdClient,
+            createMockOpenSearchClient(),
+            nodeEnvironment,
+            clusterService,
+            threadPool
+        );
 
         // Test start and stop
         heartbeat.start();
@@ -78,9 +98,9 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             Thread.sleep(100);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            threadPool.shutdown();
         }
-        threadPool.shutdownNow();
-        threadPool.awaitTermination(1, TimeUnit.SECONDS);
 
         // The test should complete without hanging, indicating proper scheduler management
         assertTrue("Test completed successfully", true);
@@ -99,7 +119,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
         ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool, 100);
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+            localNode,
+            etcdClient,
+            createMockOpenSearchClient(),
+            nodeEnvironment,
+            clusterService,
+            threadPool,
+            100
+        );
 
         // Test the lifecycle without actual scheduling - just ensure construction and cleanup work
         heartbeat.start();
@@ -131,7 +159,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
         ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool, 100);
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+            localNode,
+            etcdClient,
+            createMockOpenSearchClient(),
+            nodeEnvironment,
+            clusterService,
+            threadPool,
+            100
+        );
 
         // Test that heartbeat can be constructed and managed with routing information
         heartbeat.start();
@@ -164,7 +200,14 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         );
 
         ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool);
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+            localNode,
+            etcdClient,
+            createMockOpenSearchClient(),
+            nodeEnvironment,
+            clusterService,
+            threadPool
+        );
 
         // Start heartbeat - it should handle the error gracefully and not crash
         heartbeat.start();
@@ -202,7 +245,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
         ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, nodeEnvironment, clusterService, threadPool, 100);
+        ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+            localNode,
+            etcdClient,
+            createMockOpenSearchClient(),
+            nodeEnvironment,
+            clusterService,
+            threadPool,
+            100
+        );
 
         // Start heartbeat - it should handle the cluster service error gracefully
         heartbeat.start();
@@ -221,17 +272,76 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         verify(etcdClient, times(1)).getKVClient();
     }
 
-    private DiscoveryNode createMockDiscoveryNode() {
+    private static DiscoveryNode createMockDiscoveryNode() {
         Settings localNodeSettings = Settings.builder().put("cluster.name", "test-cluster").put("node.name", "test-node").build();
         return DiscoveryNode.createLocal(localNodeSettings, new TransportAddress(TransportAddress.META_ADDRESS, 9200), "test-node");
     }
 
+    private org.opensearch.transport.client.Client createMockOpenSearchClient() {
+        org.opensearch.transport.client.Client opensearchClient = mock(org.opensearch.transport.client.Client.class);
+        AdminClient adminClient = mock(AdminClient.class);
+        when(opensearchClient.admin()).thenReturn(adminClient);
+        ClusterAdminClient clusterAdminClient = mock(ClusterAdminClient.class);
+        when(adminClient.cluster()).thenReturn(clusterAdminClient);
+
+        Map<Index, List<IndexShardStats>> shardStats = new HashMap<>();
+        NodeIndicesStats nodeIndicesStats = new NodeIndicesStats(new CommonStats(), shardStats, null);
+
+        NodesStatsResponse nodesStatsResponse = new NodesStatsResponse(
+            CLUSTER_NAME,
+            List.of(
+                new NodeStats(
+                    createMockDiscoveryNode(),
+                    System.currentTimeMillis(),
+                    nodeIndicesStats,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                )
+            ),
+            Collections.emptyList()
+        );
+        AdapterActionFuture<NodesStatsResponse, Void> actionFuture = new AdapterActionFuture<>() {
+            @Override
+            protected NodesStatsResponse convert(Void listenerResponse) {
+                return nodesStatsResponse;
+            }
+        };
+        actionFuture.onResponse(null);
+        when(clusterAdminClient.nodesStats(any(NodesStatsRequest.class))).thenReturn(actionFuture);
+        return opensearchClient;
+    }
+
     private ClusterService createMockClusterService() {
         ClusterService clusterService = mock(ClusterService.class);
-        when(clusterService.getClusterName()).thenReturn(new ClusterName("test-cluster"));
+        when(clusterService.getClusterName()).thenReturn(CLUSTER_NAME);
 
         // Create empty cluster state
-        ClusterState clusterState = ClusterState.builder(new ClusterName("test-cluster")).build();
+        ClusterState clusterState = ClusterState.builder(CLUSTER_NAME).build();
         when(clusterService.state()).thenReturn(clusterState);
 
         // Mock settings with HTTP port
@@ -313,7 +423,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                    localNode,
+                    etcdClient,
+                    createMockOpenSearchClient(),
+                    null,
+                    clusterService,
+                    threadPool,
+                    100
+                ); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -364,6 +482,8 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     assertTrue("diskTotalMB should be present", heartbeatData.containsKey(ETCDHeartbeat.DISK_TOTAL_MB));
                     assertTrue("diskAvailableMB should be present", heartbeatData.containsKey(ETCDHeartbeat.DISK_AVAILABLE_MB));
 
+                    assertTrue("stats should be present", heartbeatData.containsKey(ETCDHeartbeat.STATS));
+
                     // Verify timestamp is recent (within last 10 seconds)
                     long timestamp = ((Number) heartbeatData.get(ETCDHeartbeat.TIMESTAMP)).longValue();
                     long now = System.currentTimeMillis();
@@ -391,7 +511,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterServiceWithRouting(clusterName);
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                    localNode,
+                    etcdClient,
+                    createMockOpenSearchClient(),
+                    null,
+                    clusterService,
+                    threadPool,
+                    100
+                ); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -452,7 +580,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 200); // 200ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                    localNode,
+                    etcdClient,
+                    createMockOpenSearchClient(),
+                    null,
+                    clusterService,
+                    threadPool,
+                    200
+                ); // 200ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -505,7 +641,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                    localNode,
+                    etcdClient,
+                    createMockOpenSearchClient(),
+                    null,
+                    clusterService,
+                    threadPool,
+                    100
+                ); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -559,7 +703,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                    localNode,
+                    etcdClient,
+                    createMockOpenSearchClient(),
+                    null,
+                    clusterService,
+                    threadPool,
+                    100
+                ); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -664,7 +816,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                    localNode,
+                    etcdClient,
+                    createMockOpenSearchClient(),
+                    null,
+                    clusterService,
+                    threadPool,
+                    100
+                ); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
@@ -708,7 +868,15 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
-                ETCDHeartbeat heartbeat = new ETCDHeartbeat(localNode, etcdClient, null, clusterService, threadPool, 100); // 100ms interval
+                ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                    localNode,
+                    etcdClient,
+                    createMockOpenSearchClient(),
+                    null,
+                    clusterService,
+                    threadPool,
+                    100
+                ); // 100ms interval
 
                 // Start heartbeat
                 heartbeat.start();
