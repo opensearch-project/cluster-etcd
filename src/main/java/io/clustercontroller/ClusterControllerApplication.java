@@ -9,14 +9,12 @@ import io.clustercontroller.indices.AliasManager;
 import io.clustercontroller.indices.IndexManager;
 import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.orchestration.GoalStateOrchestrator;
-import io.clustercontroller.orchestration.GoalStateOrchestrationStrategy;
 import io.clustercontroller.proxy.CoordinatorProxy;
 import io.clustercontroller.proxy.CoordinatorSelector;
 import io.clustercontroller.proxy.HttpForwarder;
 import io.clustercontroller.templates.TemplateManager;
 import io.clustercontroller.store.MetadataStore;
 import io.clustercontroller.store.EtcdMetadataStore;
-import io.clustercontroller.tasks.TaskContext;
 import io.etcd.jetcd.Client;
 
 import lombok.extern.slf4j.Slf4j;
@@ -28,11 +26,9 @@ import org.springframework.context.annotation.Primary;
 
 /**
  * Main Spring Boot application class for the Cluster Controller with multi-cluster support.
- * 
  * This application provides production-ready controller functionality for managing
  * distributed clusters at scale, including shard allocation, cluster coordination,
  * automated operations, and REST APIs backed by pluggable metadata stores.
- * 
  * The application is cluster-agnostic - cluster context is provided via API calls.
  */
 @Slf4j
@@ -112,9 +108,9 @@ public class ClusterControllerApplication {
     }
 
     @Bean
-    public ShardAllocator shardAllocator(MetadataStore metadataStore) {
+    public ShardAllocator shardAllocator(MetadataStore metadataStore, MetricsProvider metricsProvider) {
         log.info("Initializing ShardAllocator");
-        return new ShardAllocator(metadataStore);
+        return new ShardAllocator(metadataStore, metricsProvider);
     }
 
     @Bean
@@ -170,15 +166,15 @@ public class ClusterControllerApplication {
     public Client etcdClient(MetadataStore metadataStore) {
         return ((EtcdMetadataStore) metadataStore).getEtcdClient();
     }
-    
+
     /**
      * MultiClusterManager bean for managing multiple clusters with distributed locking.
      * Replaces the single TaskManager with multi-cluster coordination.
-     * 
+     *
      * Note: MultiClusterManager now uses @Component and constructor injection,
      * so it will be auto-created by Spring. We only need to ensure all its
      * dependencies are available as beans (which they are via @ComponentScan).
-     * 
+     *
      * The @PostConstruct method in MultiClusterManager will handle startup.
      */
 

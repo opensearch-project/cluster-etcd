@@ -16,6 +16,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static io.clustercontroller.metrics.MetricsConstants.ROLLING_UPDATE_PROGRESS_PERCENTAGE_METRIC_NAME;
+import static io.clustercontroller.metrics.MetricsConstants.ROLLING_UPDATE_TRANSIT_NODES_PERCENTAGE_METRIC_NAME;
+import static io.clustercontroller.metrics.MetricsUtils.buildMetricsTagsByRole;
+
 /**
  * Sophisticated strategy that implements rolling updates with configurable transit percentage
  * Maintains a maximum percentage of nodes in transit for any index-shard
@@ -23,12 +27,6 @@ import java.util.Map;
 @Component
 @Slf4j
 public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestrationStrategy {
-    private final static String ROLLING_UPDATE_PROGRESS_PERCENTAGE_METRIC_NAME = "rolling_update_progress_percentage";
-    private final static String CLUSTER_ID_TAG = "clusterId";
-    private final static String INDEX_NAME_TAG = "indexName";
-    private final static String SHARD_ID_TAG = "shardId";
-    private final static String ROLE_TAG = "role";
-
     private final MetadataStore metadataStore;
     private final MetricsProvider metricsProvider;
     private final double maxTransitPercentage = 0.20; // TODO: Make configurable
@@ -88,9 +86,7 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
         }
     }
     
-    private void orchestrateIndexShard(String indexName, String shardId, ShardAllocation planned, String clusterId) throws Exception {
-        String indexShard = indexName + "/" + shardId;
-        
+    private void orchestrateIndexShard(String indexName, String shardId, ShardAllocation planned, String clusterId) {
         // Process IngestSUs (Primary nodes) separately
         List<String> ingestSUs = planned.getIngestSUs();
         if (!ingestSUs.isEmpty()) {
@@ -110,7 +106,7 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
         }
     }
     
-    private void orchestrateNodeGroup(String indexName, String shardId, List<String> nodeGroup, NodeRole role, ShardAllocation planned, String clusterId) throws Exception {
+    private void orchestrateNodeGroup(String indexName, String shardId, List<String> nodeGroup, NodeRole role, ShardAllocation planned, String clusterId) {
         String indexShard = indexName + "/" + shardId;
         
         // Check current progress for this node group
@@ -128,7 +124,7 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
             int batchSize = Math.min(availableSlots, nodesToUpdate.size());
             List<String> nextBatch = nodesToUpdate.stream()
                     .limit(batchSize)
-                    .collect(java.util.stream.Collectors.toList());
+                    .toList();
             
             log.info("Starting batch update for {} {} nodes for shard {}/{}: {} nodes ({}% in transit)", 
                     role, nodeGroup.size(), indexName, shardId, nextBatch.size(), 
@@ -144,23 +140,20 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
                 }
             }
         } else {
+            double transitPercent = progress.getTransitPercentage() * 100;
             log.info("Index-shard {} {} group has {}% nodes in transit, waiting for convergence", 
-                    indexShard, role, progress.getTransitPercentage() * 100);
+                    indexShard, role, transitPercent);
+            metricsProvider.gauge(
+                ROLLING_UPDATE_TRANSIT_NODES_PERCENTAGE_METRIC_NAME,
+                transitPercent,
+                buildMetricsTagsByRole(clusterId, indexName, shardId, role)
+            );
         }
         metricsProvider.gauge(
             ROLLING_UPDATE_PROGRESS_PERCENTAGE_METRIC_NAME,
             (progress.getGoalStateUpdatedCount() + successfulUpdates) * 100.0 / nodeGroup.size(),
-            buildMetricsTag(clusterId, indexName, shardId, role)
+            buildMetricsTagsByRole(clusterId, indexName, shardId, role)
         );
-    }
-
-    private Map<String, String> buildMetricsTag(String clusterId, String indexName, String shardId, NodeRole role) {
-        Map<String, String> tags = new HashMap<>();
-        tags.put(CLUSTER_ID_TAG, clusterId);
-        tags.put(INDEX_NAME_TAG, indexName);
-        tags.put(SHARD_ID_TAG, shardId);
-        tags.put(ROLE_TAG, role.getValue());
-        return tags;
     }
     
     private IndexShardProgress getIndexShardProgress(String indexShard, List<String> allNodes, String clusterId) {
@@ -279,7 +272,6 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
     /**
      * Cleanup phase: Remove stale goal states that are no longer in planned allocations.
      * This is executed instantly (no orchestration) for ALL nodes.
-     * 
      * Logic:
      * 1. Get all nodes that have goal states
      * 2. For each node, check its goal state
@@ -287,7 +279,7 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
      *    - Verify if this node is still in the planned allocation
      *    - If NOT, remove it immediately
      * 
-     * @param clusterId the cluster ID to cleanup
+     * @param clusterId the cluster ID to clean up
      */
     private void cleanupStaleGoalStates(String clusterId) {
         log.info("Starting goal state cleanup phase for cluster: {}", clusterId);
@@ -322,7 +314,7 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
      * Cleanup goal state for a single node
      * 
      * @param clusterId the cluster ID
-     * @param nodeId the node ID to cleanup
+     * @param nodeId the node ID to clean up
      * @return number of index/shard entries removed
      */
     private int cleanupNodeGoalState(String clusterId, String nodeId) throws Exception {
@@ -330,7 +322,7 @@ public class RollingUpdateOrchestrationStrategy implements GoalStateOrchestratio
         SearchUnitGoalState goalState = metadataStore.getSearchUnitGoalState(clusterId, nodeId);
         
         if (goalState == null || goalState.getLocalShards().isEmpty()) {
-            return 0; // No goal state to cleanup
+            return 0; // No goal state to clean up
         }
         
         Map<String, Map<String, String>> localShards = goalState.getLocalShards();
