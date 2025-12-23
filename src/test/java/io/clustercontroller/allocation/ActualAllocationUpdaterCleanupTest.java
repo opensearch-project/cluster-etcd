@@ -1,18 +1,19 @@
 package io.clustercontroller.allocation;
 
 import io.clustercontroller.enums.ShardState;
+import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.store.MetadataStore;
+import io.micrometer.core.instrument.Counter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -29,12 +30,20 @@ class ActualAllocationUpdaterCleanupTest {
     @Mock
     private MetadataStore metadataStore;
     
+    @Mock
+    private MetricsProvider metricsProvider;
+    
+    @Mock
+    private Counter mockCounter;
+    
     private ActualAllocationUpdater updater;
     
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        updater = new ActualAllocationUpdater(metadataStore);
+        updater = new ActualAllocationUpdater(metadataStore, metricsProvider);
+        // Use lenient() for metrics since not all tests will trigger metric emissions
+        lenient().when(metricsProvider.counter(anyString(), anyMap())).thenReturn(mockCounter);
     }
     
     // ========== PHASE 1 TESTS: Existing Index - Selective Cleanup ==========
@@ -49,22 +58,22 @@ class ActualAllocationUpdaterCleanupTest {
         SearchUnit unit = createSearchUnit("node1");
         SearchUnitActualState emptyState = new SearchUnitActualState();
         emptyState.setNodeRouting(new HashMap<>());
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(unit));
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(List.of(unit));
         when(metadataStore.getSearchUnitActualState(clusterId, "node1")).thenReturn(emptyState);
         
         // Index config exists
         Index indexConfig = createIndex(indexName, 2);
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         
         // Mock that the index has actual-allocation entries in etcd
         when(metadataStore.getAllIndicesWithActualAllocations(clusterId))
             .thenReturn(Collections.singleton(indexName));
         
         // Stored actual allocations in etcd (stale)
-        ShardAllocation storedShard0 = createShardAllocation("0", Arrays.asList("node1"), Arrays.asList());
-        ShardAllocation storedShard1 = createShardAllocation("1", Arrays.asList("node1"), Arrays.asList());
+        ShardAllocation storedShard0 = createShardAllocation("0", List.of("node1"), List.of());
+        ShardAllocation storedShard1 = createShardAllocation("1", List.of("node1"), List.of());
         when(metadataStore.getAllActualAllocations(clusterId, indexName))
-            .thenReturn(Arrays.asList(storedShard0, storedShard1));
+            .thenReturn(List.of(storedShard0, storedShard1));
         
         // When
         updater.updateActualAllocations(clusterId);
@@ -88,9 +97,9 @@ class ActualAllocationUpdaterCleanupTest {
         
         // Node reports having shards from the deleted index
         SearchUnit unit = createSearchUnit("node1");
-        SearchUnitActualState actualState = createActualStateWithShards(deletedIndex, Arrays.asList(0, 1, 2));
+        SearchUnitActualState actualState = createActualStateWithShards(deletedIndex, List.of(0, 1, 2));
         
-        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(Arrays.asList(unit));
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(List.of(unit));
         when(metadataStore.getSearchUnitActualState(clusterId, "node1")).thenReturn(actualState);
         
         // NO config exists for deleted-index (this makes it a deleted index)
@@ -101,12 +110,12 @@ class ActualAllocationUpdaterCleanupTest {
             .thenReturn(Collections.singleton(deletedIndex));
         
         // The deleted index has actual allocations stored in etcd (orphaned entries)
-        ShardAllocation shard0 = createShardAllocation("0", Arrays.asList("node1"), Arrays.asList());
-        ShardAllocation shard1 = createShardAllocation("1", Arrays.asList("node1"), Arrays.asList());
-        ShardAllocation shard2 = createShardAllocation("2", Arrays.asList("node1"), Arrays.asList());
+        ShardAllocation shard0 = createShardAllocation("0", List.of("node1"), List.of());
+        ShardAllocation shard1 = createShardAllocation("1", List.of("node1"), List.of());
+        ShardAllocation shard2 = createShardAllocation("2", List.of("node1"), List.of());
         
         when(metadataStore.getAllActualAllocations(clusterId, deletedIndex))
-            .thenReturn(Arrays.asList(shard0, shard1, shard2));
+            .thenReturn(List.of(shard0, shard1, shard2));
         
         // When
         updater.updateActualAllocations(clusterId);
@@ -123,6 +132,61 @@ class ActualAllocationUpdaterCleanupTest {
         verify(metadataStore).deleteActualAllocation(eq(clusterId), eq(deletedIndex), eq("2"));
     }
     
+    
+    @Test
+    void testMetricsCounter_IncrementedOnAllocationUpdateFailure() throws Exception {
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        String shardId = "0";
+        
+        SearchUnit unit = createSearchUnit("node1");
+        SearchUnitActualState actualState = createActualStateWithShards(indexName, List.of(0));
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(List.of(unit));
+        when(metadataStore.getSearchUnitActualState(clusterId, "node1")).thenReturn(actualState);
+        Index indexConfig = createIndex(indexName, 1);
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
+        when(metadataStore.getAllIndicesWithActualAllocations(clusterId))
+            .thenReturn(Collections.singleton(indexName));
+        when(metadataStore.getActualAllocation(clusterId, indexName, shardId))
+            .thenThrow(new RuntimeException("Database connection failed"));
+
+        updater.updateActualAllocations(clusterId);
+        
+        verify(metricsProvider).counter(
+            eq("update_actual_allocation_failures_count"),
+            argThat(tags -> 
+                tags.get("clusterId").equals(clusterId) &&
+                tags.get("indexName").equals(indexName) &&
+                tags.get("shardId").equals(shardId)
+            )
+        );
+        verify(mockCounter).increment();
+    }
+    
+    @Test
+    void testMetricsCounter_NotIncrementedOnSuccess() throws Exception {
+        String clusterId = "test-cluster";
+        String indexName = "test-index";
+        
+        SearchUnit unit = createSearchUnit("node1");
+        unit.setRole("PRIMARY");
+        SearchUnitActualState actualState = createActualStateWithShards(indexName, List.of(0));
+        
+        when(metadataStore.getAllSearchUnits(clusterId)).thenReturn(List.of(unit));
+        when(metadataStore.getSearchUnitActualState(clusterId, "node1")).thenReturn(actualState);
+        when(metadataStore.getSearchUnit(clusterId, "node1"))
+            .thenReturn(java.util.Optional.of(unit));
+        Index indexConfig = createIndex(indexName, 1);
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
+        when(metadataStore.getAllIndicesWithActualAllocations(clusterId))
+            .thenReturn(Collections.singleton(indexName));
+        when(metadataStore.getActualAllocation(clusterId, indexName, "0")).thenReturn(null);
+        doNothing().when(metadataStore).setActualAllocation(eq(clusterId), eq(indexName), eq("0"), any());
+        
+        updater.updateActualAllocations(clusterId);
+        verify(metricsProvider, never()).counter(eq("update_actual_allocation_failures_count"), anyMap());
+        verify(mockCounter, never()).increment();
+    }
     // Helper methods
     private Index createIndex(String indexName, int numberOfShards) {
         Index index = new Index();

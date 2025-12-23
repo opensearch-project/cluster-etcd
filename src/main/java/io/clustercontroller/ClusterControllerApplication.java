@@ -114,9 +114,9 @@ public class ClusterControllerApplication {
     }
 
     @Bean
-    public ActualAllocationUpdater actualAllocationUpdater(MetadataStore metadataStore) {
+    public ActualAllocationUpdater actualAllocationUpdater(MetadataStore metadataStore, MetricsProvider metricsProvider) {
         log.info("Initializing ActualAllocationUpdater");
-        return new ActualAllocationUpdater(metadataStore);
+        return new ActualAllocationUpdater(metadataStore, metricsProvider);
     }
 
     /**
@@ -132,9 +132,9 @@ public class ClusterControllerApplication {
      * Discovery bean for node discovery
      */
     @Bean
-    public Discovery discovery(MetadataStore metadataStore) {
+    public Discovery discovery(MetadataStore metadataStore, MetricsProvider metricsProvider) {
         log.info("Initializing Discovery for multi-cluster support");
-        return new Discovery(metadataStore);
+        return new Discovery(metadataStore, metricsProvider);
     }
 
     /**
