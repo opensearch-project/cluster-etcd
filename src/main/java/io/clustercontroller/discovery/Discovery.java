@@ -2,6 +2,7 @@ package io.clustercontroller.discovery;
 
 import io.clustercontroller.config.Constants;
 import io.clustercontroller.enums.HealthState;
+import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.models.NodeAttributes;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
@@ -13,10 +14,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static io.clustercontroller.metrics.MetricsConstants.CLUSTER_ID_TAG;
+import static io.clustercontroller.metrics.MetricsConstants.DISCOVERY_CLEANED_STALE_SEARCH_UNITS_COUNT_METRIC_NAME;
+
 /**
  * Handles cluster topology discovery.
  * Internal component used by TaskManager.
- * 
+ * <p>
  * Note: This is a shared component across all clusters in multi-cluster mode.
  * Methods accept clusterName as a parameter instead of storing it as a field.
  */
@@ -24,13 +28,15 @@ import java.util.Map;
 public class Discovery {
     
     private final MetadataStore metadataStore;
+    private final MetricsProvider metricsProvider;
     
-    public Discovery(MetadataStore metadataStore) {
+    public Discovery(MetadataStore metadataStore, MetricsProvider metricsProvider) {
         this.metadataStore = metadataStore;
+        this.metricsProvider = metricsProvider;
     }
     
 
-    public void discoverSearchUnits(String clusterName) throws Exception {
+    public void discoverSearchUnits(String clusterName) {
         log.info("Discovery - Starting search unit discovery process for cluster: {}", clusterName);
         
         // Discover and update search units from Etcd actual-states
@@ -75,7 +81,6 @@ public class Discovery {
      */
     private void discoverSearchUnitsFromEtcd(String clusterName) {
         try {
-            log.info("Discovery - Discovering search units from Etcd...");
             // fetch search units from actual-state paths
             List<SearchUnit> etcdSearchUnits = fetchSearchUnitsFromEtcd(clusterName); 
             log.info("Discovery - Found {} search units from Etcd", etcdSearchUnits.size());
@@ -175,12 +180,12 @@ public class Discovery {
      * Clean up search units with missing or stale actual state timestamp (older than configured timeout)
      */
     private void cleanupStaleSearchUnits(String clusterName) {
+        int deletedCount = 0;
         try {
             log.info("Discovery - Starting cleanup of stale search units...");
             
             // Get all existing search units from metadata store
             List<SearchUnit> allSearchUnits = metadataStore.getAllSearchUnits(clusterName);
-            int deletedCount = 0;
             
             for (SearchUnit searchUnit : allSearchUnits) {
                 String unitName = searchUnit.getName();
@@ -221,6 +226,10 @@ public class Discovery {
             
         } catch (Exception e) {
             log.error("Discovery - Failed to cleanup stale search units: {}", e.getMessage(), e);
+        } finally {
+            metricsProvider
+                .counter(DISCOVERY_CLEANED_STALE_SEARCH_UNITS_COUNT_METRIC_NAME, Map.of(CLUSTER_ID_TAG, clusterName))
+                .increment(deletedCount);
         }
     }
     
