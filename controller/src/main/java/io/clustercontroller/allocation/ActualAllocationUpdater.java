@@ -1,22 +1,38 @@
 package io.clustercontroller.allocation;
 
 import io.clustercontroller.enums.ShardState;
-import io.clustercontroller.models.*;
+import io.clustercontroller.metrics.MetricsProvider;
+import io.clustercontroller.models.Alias;
+import io.clustercontroller.models.CoordinatorGoalState;
+import io.clustercontroller.models.Index;
+import io.clustercontroller.models.IndexSettings;
+import io.clustercontroller.models.SearchUnit;
+import io.clustercontroller.models.SearchUnitActualState;
+import io.clustercontroller.models.SearchUnitGoalState;
+import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.store.MetadataStore;
 import lombok.extern.slf4j.Slf4j;
 import io.clustercontroller.config.Constants;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import static io.clustercontroller.metrics.MetricsConstants.UPDATE_ACTUAL_ALLOCATION_FAILURES_METRIC_NAME;
+import static io.clustercontroller.metrics.MetricsUtils.buildMetricsTags;
 
 /**
  * ActualAllocationUpdater - Responsible for aggregating search unit actual states into index shard actual allocations
- * 
+ * <p>
  * This task:
  * 1. Reads actual states from /search-units/<su-name>/actual-state
  * 2. Aggregates this information by index and shard
  * 3. Updates actual allocations at /indices/<index-name>/<shard_id>/actual-allocation
  * 4. Provides coordinator nodes with a goal-state view of remote_shards used for routing/monitoring
- *
+ * <p>
  * Coordinator goal state specifics:
  * - For each index and shard, we compute a list of nodes with their role (primary/replica) flag: List<List<NodeRoutingInfo>>.
  * - A node is included only when it is converged for that index/shard.
@@ -24,7 +40,7 @@ import java.util.*;
  *   (b) the node's actual state reports that shard in STARTED state.
  * - Primaries come from the current actual ingest set; replicas come from the current actual search set,
  *   and both are filtered by convergence before inclusion.
- *
+ * <p>
  * Example:
  * - Index "logs-2025" has 2 shards.
  *   - Shard 0: su-a (primary, STARTED, requested in goal) and su-b (replica, STARTED, requested in goal)
@@ -36,10 +52,12 @@ import java.util.*;
 public class ActualAllocationUpdater {
     
     private final MetadataStore metadataStore;
+    private final MetricsProvider metricsProvider;
     private static final long ONE_MINUTE_MS = 60 * 1000;
     
-    public ActualAllocationUpdater(MetadataStore metadataStore) {
+    public ActualAllocationUpdater(MetadataStore metadataStore, MetricsProvider metricsProvider) {
         this.metadataStore = metadataStore;
+        this.metricsProvider = metricsProvider;
     }
     
     /**
@@ -77,7 +95,7 @@ public class ActualAllocationUpdater {
      * Collect actual allocations from all search units
      * Returns: Map<indexName, Map<shardId, Set<unitNames>>>
      */
-    private Map<String, Map<String, Set<String>>> collectActualAllocations(String clusterId, List<SearchUnit> searchUnits) throws Exception {
+    private Map<String, Map<String, Set<String>>> collectActualAllocations(String clusterId, List<SearchUnit> searchUnits) {
         Map<String, Map<String, Set<String>>> actualAllocations = new HashMap<>();
         
         for (SearchUnit searchUnit : searchUnits) {
@@ -152,7 +170,7 @@ public class ActualAllocationUpdater {
     /**
      * Update actual allocation records based on collected data
      */
-    private int updateActualAllocationRecords(String clusterId, Map<String, Map<String, Set<String>>> actualAllocations) throws Exception {
+    private int updateActualAllocationRecords(String clusterId, Map<String, Map<String, Set<String>>> actualAllocations) {
         int totalUpdates = 0;
         
         for (Map.Entry<String, Map<String, Set<String>>> indexEntry : actualAllocations.entrySet()) {
@@ -169,6 +187,10 @@ public class ActualAllocationUpdater {
                 } catch (Exception e) {
                     log.error("ActualAllocationUpdater - Error updating actual allocation for {}/{}: {}", 
                         indexName, shardId, e.getMessage(), e);
+                    metricsProvider.counter(
+                        UPDATE_ACTUAL_ALLOCATION_FAILURES_METRIC_NAME,
+                        buildMetricsTags(clusterId, indexName, shardId)
+                    ).increment();
                     // Continue with other shards
                 }
             }
@@ -349,7 +371,6 @@ public class ActualAllocationUpdater {
     /**
      * Determines if a search unit is a coordinator node
      * Coordinator nodes belong to a separate cluster and are not part of shard allocation
-     * 
      * Current logic: role="coordinator" OR name starts with "coordinator"
      * TODO: Use cluster_name information to properly identify coordinator nodes
      *       instead of relying on naming conventions. Coordinator nodes should have
@@ -368,11 +389,7 @@ public class ActualAllocationUpdater {
         
         // Check if name starts with "coordinator" prefix (for data nodes acting as coordinators)
         String name = unit.getName() != null ? unit.getName().toLowerCase() : "";
-        if (name.startsWith("coordinator")) {
-            return true;
-        }
-        
-        return false;
+        return name.startsWith("coordinator");
     }
     
     /**

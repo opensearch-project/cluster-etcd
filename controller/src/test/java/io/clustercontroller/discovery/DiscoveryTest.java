@@ -1,21 +1,36 @@
 package io.clustercontroller.discovery;
 
 import io.clustercontroller.enums.HealthState;
-import io.clustercontroller.enums.NodeRole;
+import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.store.MetadataStore;
+import io.micrometer.core.instrument.Counter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.*;
 
-import static org.assertj.core.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatCode;
+import static org.assertj.core.api.AssertionsForInterfaceTypes.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Comprehensive tests for Discovery flow.
@@ -26,12 +41,19 @@ class DiscoveryTest {
     @Mock
     private MetadataStore metadataStore;
     
+    @Mock
+    private MetricsProvider metricsProvider;
+    
+    @Mock
+    private Counter mockCounter;
+    
     private Discovery discovery;
     private static final String TEST_CLUSTER = "test-cluster";
     
     @BeforeEach
     void setUp() {
-        discovery = new Discovery(metadataStore);
+        discovery = new Discovery(metadataStore, metricsProvider);
+        lenient().when(metricsProvider.counter(anyString(), anyMap())).thenReturn(mockCounter);
     }
     
     // =================================================================
@@ -63,7 +85,7 @@ class DiscoveryTest {
         // Given
         Map<String, SearchUnitActualState> actualStates = createMockActualStates();
         SearchUnit existingUnit = createMockSearchUnit("coordinator-node-1", "COORDINATOR");
-        List<SearchUnit> existingUnits = Arrays.asList(existingUnit);
+        List<SearchUnit> existingUnits = List.of(existingUnit);
         
         when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(actualStates);
         when(metadataStore.getAllSearchUnits(anyString())).thenReturn(existingUnits);
@@ -190,7 +212,7 @@ class DiscoveryTest {
         
         // Then
         assertThat(result).hasSize(1);
-        SearchUnit unit = result.get(0);
+        SearchUnit unit = result.getFirst();
         assertThat(unit.getName()).isEqualTo("test-node");
         // Should handle null gracefully
         assertThat(unit.getRole()).isNull();
@@ -215,7 +237,7 @@ class DiscoveryTest {
         
         // Then
         assertThat(result).hasSize(1);
-        SearchUnit unit = result.get(0);
+        SearchUnit unit = result.getFirst();
         assertThat(unit.getName()).isEqualTo("coordinator-node-1");
         assertThat(unit.getRole()).isEqualTo("COORDINATOR");
         assertThat(unit.getShardId()).isEqualTo("COORDINATOR");
@@ -240,7 +262,7 @@ class DiscoveryTest {
         
         // Then
         assertThat(result).hasSize(1);
-        SearchUnit unit = result.get(0);
+        SearchUnit unit = result.getFirst();
         assertThat(unit.getName()).isEqualTo("primary-node-1");
         assertThat(unit.getRole()).isEqualTo("PRIMARY");
         assertThat(unit.getShardId()).isEqualTo("shard-1");
@@ -263,7 +285,7 @@ class DiscoveryTest {
         
         // Then
         assertThat(result).hasSize(1);
-        SearchUnit unit = result.get(0);
+        SearchUnit unit = result.getFirst();
         assertThat(unit.getName()).isEqualTo("replica-node-1");
         assertThat(unit.getRole()).isEqualTo("SEARCH_REPLICA");
         assertThat(unit.getShardId()).isEqualTo("shard-2");
@@ -286,11 +308,44 @@ class DiscoveryTest {
         
         // Then
         assertThat(result).hasSize(1);
-        SearchUnit unit = result.get(0);
+        SearchUnit unit = result.getFirst();
         assertThat(unit.getStateAdmin()).isEqualTo("DRAIN");
         assertThat(unit.getStatePulled()).isEqualTo(HealthState.RED);
     }
-    
+
+    @Test
+    void testCleanupStaleSearchUnits_MetricIncrementedWhenSearchUnitsDeleted() throws Exception {
+        // Given: 2 stale search units (missing actual state)
+        SearchUnit staleUnit1 = createMockSearchUnit("stale-node-1", "PRIMARY");
+        SearchUnit staleUnit2 = createMockSearchUnit("stale-node-2", "SEARCH_REPLICA");
+        SearchUnit healthyUnit = createMockSearchUnit("healthy-node-1", "PRIMARY");
+        
+        when(metadataStore.getAllSearchUnitActualStates(anyString())).thenReturn(new HashMap<>());
+        when(metadataStore.getAllSearchUnits(TEST_CLUSTER))
+            .thenReturn(List.of(staleUnit1, staleUnit2, healthyUnit));
+        
+        // staleUnit1 and staleUnit2 have no actual state (null)
+        when(metadataStore.getSearchUnitActualState(TEST_CLUSTER, "stale-node-1")).thenReturn(null);
+        when(metadataStore.getSearchUnitActualState(TEST_CLUSTER, "stale-node-2")).thenReturn(null);
+        
+        // healthyUnit has actual state with current timestamp
+        SearchUnitActualState healthyState = createHealthyActualState("healthy-node-1", "10.0.1.5", 9200, 9300);
+        healthyState.setTimestamp(System.currentTimeMillis()); // Current timestamp
+        when(metadataStore.getSearchUnitActualState(TEST_CLUSTER, "healthy-node-1")).thenReturn(healthyState);
+
+        discovery.discoverSearchUnits(TEST_CLUSTER);
+
+        verify(metadataStore).deleteSearchUnit(TEST_CLUSTER, "stale-node-1");
+        verify(metadataStore).deleteSearchUnit(TEST_CLUSTER, "stale-node-2");
+        verify(metadataStore, never()).deleteSearchUnit(TEST_CLUSTER, "healthy-node-1");
+        verify(metricsProvider, times(1)).counter(
+            eq("discovery_cleaned_stale_search_units_count"),
+            argThat(tags -> 
+                tags.get("clusterId").equals(TEST_CLUSTER)
+            )
+        );
+        verify(mockCounter).increment(2);
+    }
     
     // =================================================================
     // HELPER METHODS

@@ -434,38 +434,34 @@ public class IndexManager {
             throw new IllegalArgumentException("Index '" + indexName + "' does not exist in cluster '" + clusterId + "'");
         }
 
-        // Parse and validate the new settings JSON
-        IndexSettings newSettings;
+        // Parse the new settings JSON to Map
+        Map<String, Object> newSettingsMap;
         try {
-            newSettings = objectMapper.readValue(settingsJson, IndexSettings.class);
-            log.debug("Successfully parsed new settings JSON for index '{}': {}", indexName, newSettings);
+            newSettingsMap = objectMapper.readValue(settingsJson, Map.class);
+            log.debug("Successfully parsed new settings JSON for index '{}': {}", indexName, newSettingsMap);
         } catch (Exception e) {
             throw new IllegalArgumentException("Invalid JSON format for settings: " + e.getMessage(), e);
         }
 
-        // Validate that new settings is not empty
-        if (newSettings == null) {
-            throw new IllegalArgumentException("Settings cannot be empty");
-        }
-
-        // Get existing settings and merge with new settings
-        IndexSettings existingSettings = null;
+        // Get existing settings (IndexSettings now preserves all fields via @JsonAnySetter)
+        Map<String, Object> mergedSettingsMap = new HashMap<>();
         try {
-            existingSettings = metadataStore.getIndexSettings(clusterId, indexName);
-            log.debug("Retrieved existing settings for index '{}': {}", indexName, existingSettings);
+            IndexSettings existingSettings = metadataStore.getIndexSettings(clusterId, indexName);
+            if (existingSettings != null) {
+                mergedSettingsMap = objectMapper.convertValue(existingSettings, Map.class);
+                log.debug("Retrieved existing settings for index '{}': {}", indexName, mergedSettingsMap);
+            }
         } catch (Exception e) {
-            log.warn("Failed to retrieve existing settings for index '{}', will create new settings: {}", indexName, e.getMessage());
+            log.warn("Failed to retrieve existing settings for index '{}', will use new settings only: {}", indexName, e.getMessage());
         }
 
-        // Merge existing settings with new settings (new settings override existing ones)
-        IndexSettings mergedSettings = mergeIndexSettings(existingSettings, newSettings);
-        
-        log.info("Merged settings for index '{}': existing={}, new={}, merged={}", 
-            indexName, existingSettings, newSettings, mergedSettings);
+        // Deep merge: new settings override existing ones (partial update)
+        deepMerge(mergedSettingsMap, newSettingsMap);
+        log.info("Merged settings for index '{}': {}", indexName, mergedSettingsMap);
 
-        // Update the settings in the metadata store with merged settings
+        // Save merged settings
         try {
-            String mergedSettingsJson = objectMapper.writeValueAsString(mergedSettings);
+            String mergedSettingsJson = objectMapper.writeValueAsString(mergedSettingsMap);
             metadataStore.setIndexSettings(clusterId, indexName, mergedSettingsJson);
             log.info("Successfully updated settings for index '{}' in cluster '{}'", indexName, clusterId);
         } catch (Exception e) {
@@ -700,52 +696,6 @@ public class IndexManager {
         // Fallback to shardReplicaCount
         log.debug("Using shardReplicaCount for groups allocate count: {}", shardReplicaCount);
         return new ArrayList<>(shardReplicaCount);
-    }
-
-    /**
-     * Merge two IndexSettings objects, with the second object's values taking precedence.
-     * Only non-null fields from newSettings are applied to oldSettings.
-     */
-    private IndexSettings mergeIndexSettings(IndexSettings oldSettings, IndexSettings newSettings) {
-        // If both are null, return empty settings
-        if (oldSettings == null && newSettings == null) {
-            return new IndexSettings();
-        }
-        
-        // If old is null, return new
-        if (oldSettings == null) {
-            return newSettings;
-        }
-        
-        // If new is null, return old
-        if (newSettings == null) {
-            return oldSettings;
-        }
-        
-        // Update fields in oldSettings with non-null values from newSettings
-        if (newSettings.getNumberOfShards() != null) {
-            oldSettings.setNumberOfShards(newSettings.getNumberOfShards());
-            log.debug("Updating number_of_shards to {}", newSettings.getNumberOfShards());
-        }
-        
-        if (newSettings.getShardReplicaCount() != null) {
-            oldSettings.setShardReplicaCount(newSettings.getShardReplicaCount());
-            log.debug("Updating shard_replica_count");
-        }
-        
-        if (newSettings.getNumGroupsPerShard() != null) {
-            oldSettings.setNumGroupsPerShard(newSettings.getNumGroupsPerShard());
-            log.debug("Updating num_groups_per_shard");
-        }
-        
-        if (newSettings.getPausePullIngestion() != null) {
-            oldSettings.setPausePullIngestion(newSettings.getPausePullIngestion());
-            log.debug("Updating pause_pull_ingestion to {}", newSettings.getPausePullIngestion());
-        }
-        
-        log.debug("Merged IndexSettings: result={}", oldSettings);
-        
-        return oldSettings;
     }
 
     /**
