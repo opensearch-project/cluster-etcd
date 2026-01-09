@@ -670,11 +670,11 @@ public class EtcdMetadataStoreTest {
         // Execute
         IndexSettings result = store.getIndexSettings("test-cluster", indexName);
 
-        // Verify - empty JSON {} will parse to an IndexSettings object with all null fields
+        // Verify - empty JSON {} will parse to an IndexSettings object with default values
         assertThat(result).isNotNull();
-        assertThat(result.getNumberOfShards()).isNull(); // No default value
-        assertThat(result.getShardReplicaCount()).isNull();
-        assertThat(result.getPausePullIngestion()).isNull();
+        assertThat(result.getNumberOfShards()).isNull();
+        assertThat(result.getShardReplicaCount()).isEmpty(); // Default is empty list
+        assertThat(result.getPausePullIngestion()).isFalse(); // Default is false
     }
 
     // ------------------------- getIndexMappings tests -------------------------

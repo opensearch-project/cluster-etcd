@@ -4,7 +4,6 @@ import com.google.common.util.concurrent.AtomicDouble;
 import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.IndexSettings;
-import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.SearchUnitActualState;
 import io.clustercontroller.models.SearchUnitGoalState;
@@ -15,7 +14,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -50,11 +48,11 @@ class RollingUpdateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1"));
-        planned.setSearchSUs(Arrays.asList("node2", "node3"));
+        planned.setIngestSUs(List.of("node1"));
+        planned.setSearchSUs(List.of("node2", "node3"));
         
         // Mock goal states - no nodes have been updated yet
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
 
         // When
@@ -87,8 +85,8 @@ class RollingUpdateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1"));
-        planned.setSearchSUs(Arrays.asList("node2", "node3", "node4", "node5"));
+        planned.setIngestSUs(List.of("node1"));
+        planned.setSearchSUs(List.of("node2", "node3", "node4", "node5"));
         
         // Mock goal states - node1 and node2 already updated, node3 converged
         SearchUnitGoalState node1GoalState = createGoalStateWithShard(indexName, "0", "PRIMARY");
@@ -98,7 +96,7 @@ class RollingUpdateOrchestrationStrategyTest {
         // Mock actual states - node3 has converged (has the shard)
         SearchUnitActualState node3ActualState = createActualStateWithShard(indexName, "0", "SEARCH_REPLICA");
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node1")).thenReturn(node1GoalState);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node2")).thenReturn(node2GoalState);
@@ -119,6 +117,25 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Should not update any nodes (already at 20% limit with 2 nodes in transit)
         verify(metadataStore, never()).setSearchUnitGoalState(eq(clusterId), anyString(), any(SearchUnitGoalState.class));
+        
+        // Verify transit percentage metric is emitted
+        // PRIMARY: 1 node in transit (node1) out of 1 = 100%
+        verify(metricsProvider).gauge(
+            eq("rolling_update_transit_nodes_percentage"),
+            eq(100.0),
+            argThat(tags -> 
+                tags.get("role").equals("PRIMARY")
+            )
+        );
+        
+        // REPLICA: 1 node in transit (node2, node3 is converged) out of 4 = 25%
+        verify(metricsProvider).gauge(
+            eq("rolling_update_transit_nodes_percentage"),
+            eq(25.0),
+            argThat(tags -> 
+                tags.get("role").equals("SEARCH_REPLICA")
+            )
+        );
     }
 
     @Test
@@ -130,14 +147,14 @@ class RollingUpdateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1"));
-        planned.setSearchSUs(Arrays.asList("node2", "node3", "node4", "node5"));
+        planned.setIngestSUs(List.of("node1"));
+        planned.setSearchSUs(List.of("node2", "node3", "node4", "node5"));
         
         // Mock goal states - 2 nodes updated (40% of 5 nodes = 8% < 20%)
         SearchUnitGoalState node1GoalState = createGoalStateWithShard(indexName, "0", "PRIMARY");
         SearchUnitGoalState node2GoalState = createGoalStateWithShard(indexName, "0", "SEARCH_REPLICA");
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node1")).thenReturn(node1GoalState);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node2")).thenReturn(node2GoalState);
@@ -156,6 +173,31 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Should not update any more nodes since 2/5 = 40% > 20% transit limit
         verify(metadataStore, never()).setSearchUnitGoalState(eq(clusterId), anyString(), any(SearchUnitGoalState.class));
+        
+        // Verify transit percentage metric is emitted when waiting for convergence
+        // PRIMARY: 1 node in transit out of 1 = 100% transit
+        verify(metricsProvider).gauge(
+            eq("rolling_update_transit_nodes_percentage"),
+            eq(100.0),
+            argThat(tags -> 
+                tags.get("clusterId").equals(clusterId) &&
+                tags.get("indexName").equals(indexName) &&
+                tags.get("shardId").equals("0") &&
+                tags.get("role").equals("PRIMARY")
+            )
+        );
+        
+        // REPLICA: 1 node in transit out of 4 = 25% transit
+        verify(metricsProvider).gauge(
+            eq("rolling_update_transit_nodes_percentage"),
+            eq(25.0),
+            argThat(tags -> 
+                tags.get("clusterId").equals(clusterId) &&
+                tags.get("indexName").equals(indexName) &&
+                tags.get("shardId").equals("0") &&
+                tags.get("role").equals("SEARCH_REPLICA")
+            )
+        );
     }
 
     @Test
@@ -167,8 +209,8 @@ class RollingUpdateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1"));
-        planned.setSearchSUs(Arrays.asList("node2", "node3"));
+        planned.setIngestSUs(List.of("node1"));
+        planned.setSearchSUs(List.of("node2", "node3"));
         
         // Mock goal states - all nodes updated
         SearchUnitGoalState node1GoalState = createGoalStateWithShard(indexName, "0", "PRIMARY");
@@ -180,7 +222,7 @@ class RollingUpdateOrchestrationStrategyTest {
         SearchUnitActualState node2ActualState = createActualStateWithShard(indexName, "0", "SEARCH_REPLICA");
         SearchUnitActualState node3ActualState = createActualStateWithShard(indexName, "0", "SEARCH_REPLICA");
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node1")).thenReturn(node1GoalState);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node2")).thenReturn(node2GoalState);
@@ -209,7 +251,7 @@ class RollingUpdateOrchestrationStrategyTest {
         
         Index indexConfig = createIndex(indexName, 1);
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(null);
 
         // When
@@ -230,10 +272,10 @@ class RollingUpdateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList());
-        planned.setSearchSUs(Arrays.asList());
+        planned.setIngestSUs(List.of());
+        planned.setSearchSUs(List.of());
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
 
         // When
@@ -254,10 +296,10 @@ class RollingUpdateOrchestrationStrategyTest {
         Index index2 = createIndex("index2", 1);
         
         ShardAllocation planned2 = new ShardAllocation();
-        planned2.setIngestSUs(Arrays.asList("node1"));
-        planned2.setSearchSUs(Arrays.asList("node2"));
+        planned2.setIngestSUs(List.of("node1"));
+        planned2.setSearchSUs(List.of("node2"));
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(index1, index2));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(index1, index2));
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "0"))
                 .thenThrow(new RuntimeException("Database error"));
         when(metadataStore.getPlannedAllocation(clusterId, "index2", "0")).thenReturn(planned2);
@@ -289,10 +331,10 @@ class RollingUpdateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1"));
-        planned.setSearchSUs(Arrays.asList("node2"));
+        planned.setIngestSUs(List.of("node1"));
+        planned.setSearchSUs(List.of("node2"));
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node1")).thenReturn(null);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node2"))
@@ -320,22 +362,22 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Create planned allocations with 10 nodes each (1 primary + 9 replicas)
         ShardAllocation planned1_0 = new ShardAllocation();
-        planned1_0.setIngestSUs(Arrays.asList("node1"));
-        planned1_0.setSearchSUs(Arrays.asList("node2", "node3", "node4", "node5", "node6", "node7", "node8", "node9", "node10"));
+        planned1_0.setIngestSUs(List.of("node1"));
+        planned1_0.setSearchSUs(List.of("node2", "node3", "node4", "node5", "node6", "node7", "node8", "node9", "node10"));
         
         ShardAllocation planned1_1 = new ShardAllocation();
-        planned1_1.setIngestSUs(Arrays.asList("node11"));
-        planned1_1.setSearchSUs(Arrays.asList("node12", "node13", "node14", "node15", "node16", "node17", "node18", "node19", "node20"));
+        planned1_1.setIngestSUs(List.of("node11"));
+        planned1_1.setSearchSUs(List.of("node12", "node13", "node14", "node15", "node16", "node17", "node18", "node19", "node20"));
         
         ShardAllocation planned2_0 = new ShardAllocation();
-        planned2_0.setIngestSUs(Arrays.asList("node21"));
-        planned2_0.setSearchSUs(Arrays.asList("node22", "node23", "node24", "node25", "node26", "node27", "node28", "node29", "node30"));
+        planned2_0.setIngestSUs(List.of("node21"));
+        planned2_0.setSearchSUs(List.of("node22", "node23", "node24", "node25", "node26", "node27", "node28", "node29", "node30"));
         
         // Mock goal states: All nodes have null goal states (no existing goal states)
         when(metadataStore.getSearchUnitGoalState(eq(clusterId), anyString())).thenReturn(null);
         when(metadataStore.getSearchUnitActualState(eq(clusterId), anyString())).thenReturn(null);
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(index1, index2));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(index1, index2));
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(planned1_0);
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "1")).thenReturn(planned1_1);
         when(metadataStore.getPlannedAllocation(clusterId, "index2", "0")).thenReturn(planned2_0);
@@ -444,8 +486,8 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Create planned allocation with 10 nodes (1 primary + 9 replicas)
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1")); // 1 primary
-        planned.setSearchSUs(Arrays.asList("node2", "node3", "node4", "node5", "node6", "node7", "node8", "node9", "node10")); // 9 replicas
+        planned.setIngestSUs(List.of("node1")); // 1 primary
+        planned.setSearchSUs(List.of("node2", "node3", "node4", "node5", "node6", "node7", "node8", "node9", "node10")); // 9 replicas
         
         // Create goal states for some nodes (already have goal states)
         SearchUnitGoalState existingGoalState1 = createGoalStateWithShard(indexName, shardId, "PRIMARY");
@@ -474,7 +516,7 @@ class RollingUpdateOrchestrationStrategyTest {
         when(metadataStore.getSearchUnitActualState(clusterId, "node2")).thenReturn(actualState2);
         when(metadataStore.getSearchUnitActualState(clusterId, "node3")).thenReturn(actualState3);
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, shardId)).thenReturn(planned);
 
         // When
@@ -511,8 +553,8 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Create planned allocation with 10 nodes (1 primary + 9 replicas)
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1")); // 1 primary
-        planned.setSearchSUs(Arrays.asList("node2", "node3", "node4", "node5", "node6", "node7", "node8", "node9", "node10")); // 9 replicas
+        planned.setIngestSUs(List.of("node1")); // 1 primary
+        planned.setSearchSUs(List.of("node2", "node3", "node4", "node5", "node6", "node7", "node8", "node9", "node10")); // 9 replicas
         
         // Create goal states for some nodes (already have goal states)
         SearchUnitGoalState existingGoalState1 = createGoalStateWithShard(indexName, shardId, "PRIMARY");
@@ -538,7 +580,7 @@ class RollingUpdateOrchestrationStrategyTest {
         when(metadataStore.getSearchUnitActualState(clusterId, "node1")).thenReturn(actualState1);
         when(metadataStore.getSearchUnitActualState(clusterId, "node2")).thenReturn(actualState2);
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, shardId)).thenReturn(planned);
 
         // When
@@ -566,7 +608,7 @@ class RollingUpdateOrchestrationStrategyTest {
         
         Index indexConfig = createIndex(indexName, 1);
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0"))
                 .thenThrow(new RuntimeException("Database connection failed"));
 
@@ -588,10 +630,10 @@ class RollingUpdateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1"));
-        planned.setSearchSUs(Arrays.asList("node2"));
+        planned.setIngestSUs(List.of("node1"));
+        planned.setSearchSUs(List.of("node2"));
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node1"))
                 .thenThrow(new RuntimeException("Goal state retrieval failed"));
@@ -615,12 +657,12 @@ class RollingUpdateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1"));
-        planned.setSearchSUs(Arrays.asList("node2"));
+        planned.setIngestSUs(List.of("node1"));
+        planned.setSearchSUs(List.of("node2"));
         
         SearchUnitGoalState existingGoalState = createGoalStateWithShard(indexName, "0", "PRIMARY");
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, "0")).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node1")).thenReturn(existingGoalState);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node2")).thenReturn(null);
@@ -646,14 +688,14 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Node has goal state for index1/shard0
         SearchUnitGoalState goalState = createGoalStateWithShard("index1", "0", "PRIMARY");
-        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(List.of(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
         
         // But no planned allocation exists for index1/shard0
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(null);
         
         // Mock empty index configs for main orchestration
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of());
         
         // When
         strategy.orchestrate(clusterId);
@@ -672,17 +714,17 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Node has goal state for index1/shard0 as PRIMARY
         SearchUnitGoalState goalState = createGoalStateWithShard("index1", "0", "PRIMARY");
-        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(List.of(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
         
         // Planned allocation includes this node for index1/shard0 as PRIMARY
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList(nodeId));
-        planned.setSearchSUs(Arrays.asList());
+        planned.setIngestSUs(List.of(nodeId));
+        planned.setSearchSUs(List.of());
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(planned);
         
         // Mock empty index configs for main orchestration
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of());
         
         // When
         strategy.orchestrate(clusterId);
@@ -711,22 +753,22 @@ class RollingUpdateOrchestrationStrategyTest {
         
         goalState.setLocalShards(localShards);
         
-        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(List.of(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
         
         // Planned allocation: index1/shard0 includes node1, but index2/shard0 does NOT
         ShardAllocation planned1 = new ShardAllocation();
-        planned1.setIngestSUs(Arrays.asList(nodeId));
-        planned1.setSearchSUs(Arrays.asList());
+        planned1.setIngestSUs(List.of(nodeId));
+        planned1.setSearchSUs(List.of());
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(planned1);
         
         ShardAllocation planned2 = new ShardAllocation();
-        planned2.setIngestSUs(Arrays.asList());
-        planned2.setSearchSUs(Arrays.asList("node2", "node3")); // node1 NOT in planned allocation
+        planned2.setIngestSUs(List.of());
+        planned2.setSearchSUs(List.of("node2", "node3")); // node1 NOT in planned allocation
         when(metadataStore.getPlannedAllocation(clusterId, "index2", "0")).thenReturn(planned2);
         
         // Mock empty index configs for main orchestration
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of());
         
         // When
         strategy.orchestrate(clusterId);
@@ -748,11 +790,11 @@ class RollingUpdateOrchestrationStrategyTest {
         SearchUnitGoalState emptyGoalState = new SearchUnitGoalState();
         emptyGoalState.setLocalShards(new HashMap<>());
         
-        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(List.of(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(emptyGoalState);
         
         // Mock empty index configs for main orchestration
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of());
         
         // When
         strategy.orchestrate(clusterId);
@@ -767,11 +809,11 @@ class RollingUpdateOrchestrationStrategyTest {
         String clusterId = "test-cluster";
         String nodeId = "node1";
         
-        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(List.of(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(null);
         
         // Mock empty index configs for main orchestration
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of());
         
         // When
         strategy.orchestrate(clusterId);
@@ -795,13 +837,13 @@ class RollingUpdateOrchestrationStrategyTest {
         SearchUnitGoalState replicaGoalState = createGoalStateWithShard("index1", "0", "SEARCH_REPLICA");
         when(metadataStore.getSearchUnitGoalState(clusterId, replicaNode)).thenReturn(replicaGoalState);
         
-        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(primaryNode, replicaNode));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(List.of(primaryNode, replicaNode));
         
         // No planned allocation exists for index1/shard0
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(null);
         
         // Mock empty index configs for main orchestration
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of());
         
         // When
         strategy.orchestrate(clusterId);
@@ -836,27 +878,27 @@ class RollingUpdateOrchestrationStrategyTest {
         
         goalState.setLocalShards(localShards);
         
-        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(nodeId));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(List.of(nodeId));
         when(metadataStore.getSearchUnitGoalState(clusterId, nodeId)).thenReturn(goalState);
         
         // None of the planned allocations include this node
         ShardAllocation planned1_0 = new ShardAllocation();
-        planned1_0.setIngestSUs(Arrays.asList("other-node"));
-        planned1_0.setSearchSUs(Arrays.asList());
+        planned1_0.setIngestSUs(List.of("other-node"));
+        planned1_0.setSearchSUs(List.of());
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(planned1_0);
         
         ShardAllocation planned1_1 = new ShardAllocation();
-        planned1_1.setIngestSUs(Arrays.asList("another-node"));
-        planned1_1.setSearchSUs(Arrays.asList());
+        planned1_1.setIngestSUs(List.of("another-node"));
+        planned1_1.setSearchSUs(List.of());
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "1")).thenReturn(planned1_1);
         
         ShardAllocation planned2_0 = new ShardAllocation();
-        planned2_0.setIngestSUs(Arrays.asList());
-        planned2_0.setSearchSUs(Arrays.asList("replica-1", "replica-2"));
+        planned2_0.setIngestSUs(List.of());
+        planned2_0.setSearchSUs(List.of("replica-1", "replica-2"));
         when(metadataStore.getPlannedAllocation(clusterId, "index2", "0")).thenReturn(planned2_0);
         
         // Mock empty index configs for main orchestration
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of());
         
         // When
         strategy.orchestrate(clusterId);
@@ -874,7 +916,7 @@ class RollingUpdateOrchestrationStrategyTest {
         String decommissionedNode = "decommissioned-node";
         
         // Node is in getAllNodesWithGoalStates (has goal state) but NOT in getAllSearchUnits (no conf)
-        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(Arrays.asList(decommissionedNode));
+        when(metadataStore.getAllNodesWithGoalStates(clusterId)).thenReturn(List.of(decommissionedNode));
         
         SearchUnitGoalState goalState = createGoalStateWithShard("index1", "0", "PRIMARY");
         when(metadataStore.getSearchUnitGoalState(clusterId, decommissionedNode)).thenReturn(goalState);
@@ -883,7 +925,7 @@ class RollingUpdateOrchestrationStrategyTest {
         when(metadataStore.getPlannedAllocation(clusterId, "index1", "0")).thenReturn(null);
         
         // Mock empty index configs for main orchestration
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList());
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of());
         
         // When
         strategy.orchestrate(clusterId);
@@ -905,10 +947,10 @@ class RollingUpdateOrchestrationStrategyTest {
         
         // Create planned allocation with 10 nodes (1 primary + 9 replicas)
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1"));
-        planned.setSearchSUs(Arrays.asList("node2", "node3", "node4", "node5", "node6", "node7", "node8", "node9", "node10", "node11"));
+        planned.setIngestSUs(List.of("node1"));
+        planned.setSearchSUs(List.of("node2", "node3", "node4", "node5", "node6", "node7", "node8", "node9", "node10", "node11"));
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, shardId)).thenReturn(planned);
         lenient().when(metadataStore.getSearchUnitGoalState(eq(clusterId), anyString())).thenReturn(null);
         lenient().when(metadataStore.getSearchUnitActualState(eq(clusterId), anyString())).thenReturn(null);
@@ -952,14 +994,14 @@ class RollingUpdateOrchestrationStrategyTest {
         Index indexConfig = createIndex(indexName, 1);
         
         ShardAllocation planned = new ShardAllocation();
-        planned.setIngestSUs(Arrays.asList("node1", "node2", "node3", "node4", "node5"));
-        planned.setSearchSUs(Arrays.asList());
+        planned.setIngestSUs(List.of("node1", "node2", "node3", "node4", "node5"));
+        planned.setSearchSUs(List.of());
         
         // Mock 3 nodes already converged
         SearchUnitGoalState goalState = createGoalStateWithShard(indexName, shardId, "PRIMARY");
         SearchUnitActualState actualState = createActualStateWithShard(indexName, shardId, "PRIMARY");
         
-        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(Arrays.asList(indexConfig));
+        when(metadataStore.getAllIndexConfigs(clusterId)).thenReturn(List.of(indexConfig));
         when(metadataStore.getPlannedAllocation(clusterId, indexName, shardId)).thenReturn(planned);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node1")).thenReturn(goalState);
         when(metadataStore.getSearchUnitGoalState(clusterId, "node2")).thenReturn(goalState);
@@ -1007,7 +1049,7 @@ class RollingUpdateOrchestrationStrategyTest {
         // Convert role to lowercase format matching worker output ("primary", "search_replica", "replica")
         shardInfo.setRole("PRIMARY".equals(role) ? "primary" : "replica");
         shardInfo.setState(io.clustercontroller.enums.ShardState.STARTED);
-        nodeRouting.put(indexName, Arrays.asList(shardInfo));
+        nodeRouting.put(indexName, List.of(shardInfo));
         actualState.setNodeRouting(nodeRouting);
         return actualState;
     }
@@ -1022,12 +1064,5 @@ class RollingUpdateOrchestrationStrategyTest {
         index.setSettings(settings);
         
         return index;
-    }
-    
-    // Helper method to create SearchUnit
-    private SearchUnit createSearchUnit(String nodeId) {
-        SearchUnit node = new SearchUnit();
-        node.setName(nodeId);
-        return node;
     }
 }

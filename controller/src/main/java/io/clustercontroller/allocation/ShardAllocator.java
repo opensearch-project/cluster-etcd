@@ -1,17 +1,20 @@
 package io.clustercontroller.allocation;
 
-import io.clustercontroller.allocation.deciders.AllNodesDecider;
-import io.clustercontroller.allocation.deciders.RoleDecider;
-import io.clustercontroller.allocation.deciders.ShardPoolDecider;
 import io.clustercontroller.enums.NodeRole;
+import io.clustercontroller.metrics.MetricsProvider;
 import io.clustercontroller.models.Index;
 import io.clustercontroller.models.ShardAllocation;
 import io.clustercontroller.models.SearchUnit;
 import io.clustercontroller.store.MetadataStore;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.time.Duration;
 import java.util.List;
+
+import static io.clustercontroller.metrics.MetricsConstants.PLANNED_INGEST_SU_ALLOCATION_METRIC_NAME;
+import static io.clustercontroller.metrics.MetricsConstants.PLANNED_SEARCH_SU_ALLOCATION_METRIC_NAME;
+import static io.clustercontroller.metrics.MetricsUtils.buildMetricsTags;
 
 /**
  * Handles shard allocation decisions.
@@ -21,24 +24,24 @@ import java.util.List;
 public class ShardAllocator {
     
     private final MetadataStore metadataStore;
+    /**
+     * -- SETTER --
+     *  Setter for AllocationDecisionEngine (for testing purposes)
+     */
+    @Setter
     private AllocationDecisionEngine allocationDecisionEngine;
+    private final MetricsProvider metricsProvider;
     
     // TODO: Make this configurable via properties
     private static final Duration RECENT_ALLOCATION_THRESHOLD = Duration.ofMinutes(5);
     
-    public ShardAllocator(MetadataStore metadataStore) {
+    public ShardAllocator(MetadataStore metadataStore, MetricsProvider metricsProvider) {
         this.metadataStore = metadataStore;
         // Use bin-packing allocation engine with random group selection strategy
         this.allocationDecisionEngine = new GroupAwareBinPackingEngine();
+        this.metricsProvider = metricsProvider;
     }
-    
-    /**
-     * Setter for AllocationDecisionEngine (for testing purposes)
-     */
-    public void setAllocationDecisionEngine(AllocationDecisionEngine allocationDecisionEngine) {
-        this.allocationDecisionEngine = allocationDecisionEngine;
-    }
-    
+
     /**
      * Plan shard allocation for all indexes in cluster
      */
@@ -99,6 +102,16 @@ public class ShardAllocator {
                     }
                     
                     updatePlannedAllocation(clusterId, indexName, shardIdStr, ingestNodes, searchNodes);
+                    metricsProvider.gauge(
+                        PLANNED_INGEST_SU_ALLOCATION_METRIC_NAME,
+                        ingestNodes == null ? 0 : ingestNodes.size(),
+                        buildMetricsTags(clusterId, indexName, shardIdStr)
+                    );
+                    metricsProvider.gauge(
+                        PLANNED_SEARCH_SU_ALLOCATION_METRIC_NAME,
+                        searchNodes.size(),
+                        buildMetricsTags(clusterId, indexName, shardIdStr)
+                    );
                     
                     log.info("Planned allocation for shard {}/{} - IngestSUs: {}, SearchSUs: {}", 
                              indexName, shardIndex, ingestNodes, searchNodes);
@@ -149,7 +162,6 @@ public class ShardAllocator {
     
     /**
      * Plan IngestSU allocation (primary allocation).
-     * 
      * Supports both single-writer (default) and multi-writer configurations.
      * The desired number of ingesters is determined by ingestGroupsAllocateCount config.
      */
@@ -217,8 +229,6 @@ public class ShardAllocator {
                                             Index indexConfig, int replicaCount, AllocationStrategy strategy, 
                                             List<SearchUnit> allNodes, ShardAllocation currentPlanned) {
         try {
-            String shardIdStr = String.valueOf(shardId);
-            
             // Get eligible search nodes
             List<SearchUnit> eligibleSearchNodes = allocationDecisionEngine
                 .getAvailableNodesForAllocation(shardId, indexName, indexConfig, allNodes, NodeRole.REPLICA, currentPlanned);
