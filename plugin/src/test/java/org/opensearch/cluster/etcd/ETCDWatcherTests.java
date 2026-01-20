@@ -68,12 +68,14 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
             etcdCluster.start();
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
             try (
-                Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build();
+                ETCDClientHolder etcdClientHolder = new ETCDClientHolder(
+                    () -> Client.builder().endpoints(etcdCluster.clientEndpoints()).build()
+                );
                 ETCDWatcher etcdWatcher = new ETCDWatcher(
                     localNode,
                     ByteSequence.from(configPath, StandardCharsets.UTF_8),
                     mockNodeStateApplier,
-                    etcdClient,
+                    etcdClientHolder,
                     threadPool,
                     clusterName
                 )
@@ -83,8 +85,8 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                 // Set up index metadata
                 String mappingPath = ETCDPathUtils.buildIndexMappingsPath(clusterName, indexName);
                 String settingsPath = ETCDPathUtils.buildIndexSettingsPath(clusterName, indexName);
-                etcdPut(etcdClient, mappingPath, "{\"properties\": {\"field1\": {\"type\": \"text\"}}}");
-                etcdPut(etcdClient, settingsPath, """
+                etcdPut(etcdClientHolder, mappingPath, "{\"properties\": {\"field1\": {\"type\": \"text\"}}}");
+                etcdPut(etcdClientHolder, settingsPath, """
                     {
                        "index": {
                            "number_of_shards": "2",
@@ -94,7 +96,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     """);
 
                 // Add the current node as a data node
-                etcdPut(etcdClient, configPath, """
+                etcdPut(etcdClientHolder, configPath, """
                     {
                        "local_shards": {
                          "test-index": {
@@ -117,7 +119,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                 });
 
                 // Remove the config to trigger removal of node state
-                etcdClient.getKVClient().delete(ByteSequence.from(configPath, StandardCharsets.UTF_8)).get();
+                etcdClientHolder.getClient().getKVClient().delete(ByteSequence.from(configPath, StandardCharsets.UTF_8)).get();
 
                 await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
 
@@ -145,12 +147,14 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
             etcdCluster.start();
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
             try (
-                Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build();
+                ETCDClientHolder etcdClientHolder = new ETCDClientHolder(
+                    () -> Client.builder().endpoints(etcdCluster.clientEndpoints()).build()
+                );
                 ETCDWatcher etcdWatcher = new ETCDWatcher(
                     localNode,
                     ByteSequence.from(configPath, StandardCharsets.UTF_8),
                     mockNodeStateApplier,
-                    etcdClient,
+                    etcdClientHolder,
                     threadPool,
                     clusterName
                 )
@@ -163,7 +167,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                 String healthPath1 = ETCDPathUtils.buildSearchUnitActualStatePath(clusterName, remoteNodeName1);
                 String healthPath2 = ETCDPathUtils.buildSearchUnitActualStatePath(clusterName, remoteNodeName2);
 
-                etcdPut(etcdClient, healthPath1, """
+                etcdPut(etcdClientHolder, healthPath1, """
                     {
                         "nodeId": "remote-node-id-1",
                         "ephemeralId": "ephemeral-id-1",
@@ -173,7 +177,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                         "heartbeatIntervalSeconds": 5
                     }
                     """);
-                etcdPut(etcdClient, healthPath2, """
+                etcdPut(etcdClientHolder, healthPath2, """
                     {
                         "nodeId": "remote-node-id-2",
                         "ephemeralId": "ephemeral-id-2",
@@ -185,7 +189,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     """);
 
                 // Add coordinator node configuration with remote_shards and aliases
-                etcdPut(etcdClient, configPath, """
+                etcdPut(etcdClientHolder, configPath, """
                     {
                        "remote_shards": {
                          "indices": {
@@ -248,7 +252,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                 });
 
                 // Remove the coordinator node config to trigger removal
-                etcdClient.getKVClient().delete(ByteSequence.from(configPath, StandardCharsets.UTF_8)).get();
+                etcdClientHolder.getClient().getKVClient().delete(ByteSequence.from(configPath, StandardCharsets.UTF_8)).get();
 
                 // Verify coordinator node state is removed
                 await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
@@ -275,18 +279,20 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
             etcdCluster.start();
             ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
             try (
-                Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build();
+                ETCDClientHolder etcdClientHolder = new ETCDClientHolder(
+                    () -> Client.builder().endpoints(etcdCluster.clientEndpoints()).build()
+                );
                 ETCDWatcher etcdWatcher = new ETCDWatcher(
                     localNode,
                     ByteSequence.from(configPath, StandardCharsets.UTF_8),
                     mockNodeStateApplier,
-                    etcdClient,
+                    etcdClientHolder,
                     threadPool,
                     clusterName
                 )
             ) {
                 // Add coordinator node configuration with remote_clusters
-                etcdPut(etcdClient, configPath, """
+                etcdPut(etcdClientHolder, configPath, """
                         {
                           "remote_shards": {
                             "indices": {},
@@ -343,10 +349,11 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
         }
     }
 
-    private static void etcdPut(Client etcdClient, String key, String value) throws ExecutionException, InterruptedException {
+    private static void etcdPut(ETCDClientHolder etcdClientHolder, String key, String value) throws ExecutionException,
+        InterruptedException {
         ByteSequence keyBytes = ByteSequence.from(key, StandardCharsets.UTF_8);
         ByteSequence valueBytes = ByteSequence.from(value, StandardCharsets.UTF_8);
-        etcdClient.getKVClient().put(keyBytes, valueBytes).get();
+        etcdClientHolder.getClient().getKVClient().put(keyBytes, valueBytes).get();
     }
 
 }

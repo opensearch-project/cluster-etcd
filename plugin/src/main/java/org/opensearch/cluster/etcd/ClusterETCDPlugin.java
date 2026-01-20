@@ -46,7 +46,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
     private org.opensearch.transport.client.Client openSearchClient;
     private ClusterService clusterService;
     private ETCDWatcher etcdWatcher;
-    private Client etcdClient;
+    private ETCDClientHolder etcdClientHolder;
     private NodeEnvironment nodeEnvironment;
     private ThreadPool threadPool;
 
@@ -81,7 +81,7 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
             }
             String[] endpoints = endpointSetting.split(",");
 
-            etcdClient = Client.builder().endpoints(endpoints).build();
+            etcdClientHolder = new ETCDClientHolder(() -> Client.builder().endpoints(endpoints).build());
 
             String clusterName = clusterService.getClusterName().value();
 
@@ -89,12 +89,12 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
                 localNode,
                 getNodeGoalStateKey(localNode, clusterName),
                 new ChangeApplierService(clusterService.getClusterApplierService(), GUICE_HOLDER_REF.get().indicesService),
-                etcdClient,
+                etcdClientHolder,
                 threadPool,
                 clusterName
             );
 
-            new ETCDHeartbeat(localNode, etcdClient, openSearchClient, nodeEnvironment, clusterService, threadPool).start();
+            new ETCDHeartbeat(localNode, etcdClientHolder, openSearchClient, nodeEnvironment, clusterService, threadPool).start();
         } catch (IOException | ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
         }
@@ -122,8 +122,8 @@ public class ClusterETCDPlugin extends Plugin implements ClusterPlugin, ActionPl
         if (etcdWatcher != null) {
             etcdWatcher.close();
         }
-        if (etcdClient != null) {
-            etcdClient.close();
+        if (etcdClientHolder != null) {
+            etcdClientHolder.close();
         }
     }
 
