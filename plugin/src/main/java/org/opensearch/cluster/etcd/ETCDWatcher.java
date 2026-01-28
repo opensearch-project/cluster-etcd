@@ -65,7 +65,7 @@ public class ETCDWatcher implements Closeable {
         this.nodeStateApplier = nodeStateApplier;
         this.threadPool = threadPool;
         this.clusterName = clusterName;
-        loadState(nodeGoalStateKey);
+        loadState(true);
         nodeWatcher = etcdClientHolder.getClient()
             .getWatchClient()
             .watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), nodeListener);
@@ -83,12 +83,12 @@ public class ETCDWatcher implements Closeable {
         return new FixedExecutorBuilder(settings, THREAD_POOL_NAME, 1, 100, THREAD_POOL_NAME);
     }
 
-    private void loadState(ByteSequence nodeKey) throws ExecutionException, InterruptedException {
-        // Load the initial state of the node from etcd
+    private void loadState(boolean initialLoad) throws ExecutionException, InterruptedException {
+        // Load the goal state of the node from etcd
         try (KV kvClient = etcdClientHolder.getClient().getKVClient()) {
-            List<KeyValue> kvs = kvClient.get(nodeKey).get().getKvs();
+            List<KeyValue> kvs = kvClient.get(nodeGoalStateKey).get().getKvs();
             if (kvs != null && kvs.isEmpty() == false && kvs.getFirst() != null) {
-                handleNodeChange(kvs.getFirst(), true);
+                handleNodeChange(kvs.getFirst(), initialLoad);
             }
         }
     }
@@ -162,9 +162,9 @@ public class ETCDWatcher implements Closeable {
         }
         for (Watch.Watcher watcher : additionalWatchers.values()) {
             try {
-                nodeWatcher.close();
+                watcher.close();
             } catch (Exception e) {
-                logger.error("Error while closing node watcher", e);
+                logger.error("Error while closing additional watcher", e);
             }
         }
         etcdClientHolder.resetClient();
@@ -175,6 +175,12 @@ public class ETCDWatcher implements Closeable {
             ByteSequence watchKey = ByteSequence.from(keyToWatch, java.nio.charset.StandardCharsets.UTF_8);
             Watch.Watcher watcher = client.getWatchClient().watch(watchKey, WatchOption.builder().withRevision(0).build(), nodeListener);
             additionalWatchers.put(keyToWatch, watcher);
+        }
+        // Trigger a state reload in case we missed any changes while the watchers wer down
+        try {
+            loadState(false);
+        } catch (ExecutionException | InterruptedException e) {
+            logger.error("Error while reloading node state", e);
         }
     }
 
@@ -193,8 +199,6 @@ public class ETCDWatcher implements Closeable {
                 clusterName,
                 isInitialLoad
             );
-            String action = isInitialLoad ? "initial-load" : "update-node";
-            nodeStateApplier.applyNodeState(action + " on change to " + keyValue.getKey().toString(), nodeStateResult.nodeState());
             for (String keyToWatch : nodeStateResult.keysToWatch()) {
                 if (additionalWatchers.containsKey(keyToWatch) == false) {
                     ByteSequence watchKey = ByteSequence.from(keyToWatch, java.nio.charset.StandardCharsets.UTF_8);
@@ -213,6 +217,8 @@ public class ETCDWatcher implements Closeable {
                     watcher.close();
                 }
             }
+            String action = isInitialLoad ? "initial-load" : "update-node";
+            nodeStateApplier.applyNodeState(action + " on change to " + keyValue.getKey().toString(), nodeStateResult.nodeState());
         } catch (Exception e) {
             logger.error("Error while processing node state", e);
         }
