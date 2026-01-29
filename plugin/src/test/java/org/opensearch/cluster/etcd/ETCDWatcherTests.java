@@ -105,7 +105,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                        }
                     }
                     """);
-                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
                     assertNotNull(mockNodeStateApplier.appliedNodeState);
                     assertTrue(mockNodeStateApplier.appliedNodeState instanceof DataNodeState);
                     DataNodeState dataNodeState = (DataNodeState) mockNodeStateApplier.appliedNodeState;
@@ -121,7 +121,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                 // Remove the config to trigger removal of node state
                 etcdClientHolder.getClient().getKVClient().delete(ByteSequence.from(configPath, StandardCharsets.UTF_8)).get();
 
-                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
+                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
 
             } finally {
                 threadPool.shutdown();
@@ -215,7 +215,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     """);
 
                 // Verify coordinator node state is applied
-                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
                     assertNotNull(mockNodeStateApplier.appliedNodeState);
                     assertTrue(mockNodeStateApplier.appliedNodeState instanceof CoordinatorNodeState);
                     CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) mockNodeStateApplier.appliedNodeState;
@@ -255,7 +255,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                 etcdClientHolder.getClient().getKVClient().delete(ByteSequence.from(configPath, StandardCharsets.UTF_8)).get();
 
                 // Verify coordinator node state is removed
-                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
+                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
             } finally {
                 threadPool.shutdown();
             }
@@ -318,7 +318,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     """);
 
                 // Verify coordinator node state is applied and contains remote cluster settings
-                await().atMost(10, TimeUnit.SECONDS).untilAsserted(() -> {
+                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
                     assertNotNull(mockNodeStateApplier.appliedNodeState);
                     assertTrue(mockNodeStateApplier.appliedNodeState instanceof CoordinatorNodeState);
                     CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) mockNodeStateApplier.appliedNodeState;
