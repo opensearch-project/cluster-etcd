@@ -4,7 +4,6 @@
  */
 package org.opensearch.cluster.etcd;
 
-import io.etcd.jetcd.Client;
 import org.opensearch.action.admin.cluster.node.stats.NodeStats;
 import org.opensearch.action.admin.cluster.node.stats.NodesStatsRequest;
 import org.opensearch.action.admin.cluster.node.stats.NodesStatsResponse;
@@ -97,7 +96,7 @@ public class ETCDHeartbeat {
     private final Integer httpPort;
     private final String clusterlessRole;
     private final String clusterlessShardId;
-    private final Client etcdClient;
+    private final ETCDClientHolder etcdClientHolder;
     private final org.opensearch.transport.client.Client openSearchClient;
     private final ThreadPool threadPool;
     private final ByteSequence nodeStateKey;
@@ -107,18 +106,18 @@ public class ETCDHeartbeat {
 
     public ETCDHeartbeat(
         DiscoveryNode localNode,
-        Client etcdClient,
+        ETCDClientHolder etcdClientHolder,
         org.opensearch.transport.client.Client openSearchClient,
         NodeEnvironment nodeEnvironment,
         ClusterService clusterService,
         ThreadPool threadPool
     ) {
-        this(localNode, etcdClient, openSearchClient, nodeEnvironment, clusterService, threadPool, DEFAULT_HEARTBEAT_INTERVAL_MILLIS);
+        this(localNode, etcdClientHolder, openSearchClient, nodeEnvironment, clusterService, threadPool, DEFAULT_HEARTBEAT_INTERVAL_MILLIS);
     }
 
     public ETCDHeartbeat(
         DiscoveryNode localNode,
-        Client etcdClient,
+        ETCDClientHolder etcdClientHolder,
         org.opensearch.transport.client.Client openSearchClient,
         NodeEnvironment nodeEnvironment,
         ClusterService clusterService,
@@ -156,7 +155,7 @@ public class ETCDHeartbeat {
                 this.nodeName + "." + CLUSTERLESS_SHARD_ID_ATTRIBUTE, // Key: Try node-specific first
                 localNode.getAttributes().get(CLUSTERLESS_SHARD_ID_ATTRIBUTE) // DefaultValue: Fall back to generic key
             );
-        this.etcdClient = etcdClient;
+        this.etcdClientHolder = etcdClientHolder;
         this.openSearchClient = openSearchClient;
         this.threadPool = threadPool;
         String clusterName = clusterService.getClusterName().value();
@@ -260,7 +259,7 @@ public class ETCDHeartbeat {
             NodeIndicesStats nodeIndicesStats = nodeStats.getIndices();
 
             // Publish to ETCD
-            KV kvClient = etcdClient.getKVClient();
+            KV kvClient = etcdClientHolder.getClient().getKVClient();
 
             // Convert Map to JSON using XContent
             ByteArrayOutputStream jsonStream = new ByteArrayOutputStream();

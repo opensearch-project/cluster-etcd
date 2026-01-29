@@ -9,6 +9,8 @@ import io.etcd.jetcd.Client;
 import io.etcd.jetcd.KV;
 import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.Watch;
+import io.etcd.jetcd.common.exception.ErrorCode;
+import io.etcd.jetcd.common.exception.EtcdException;
 import io.etcd.jetcd.options.WatchOption;
 import io.etcd.jetcd.watch.WatchEvent;
 import io.etcd.jetcd.watch.WatchResponse;
@@ -24,18 +26,20 @@ import org.opensearch.threadpool.ThreadPool;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ETCDWatcher implements Closeable {
     public static final String THREAD_POOL_NAME = "etcd-watcher";
     private final Logger logger = LogManager.getLogger(ETCDWatcher.class);
-    private final Client etcdClient;
+    private final ETCDClientHolder etcdClientHolder;
     private final DiscoveryNode localNode;
-    private final Watch.Watcher nodeWatcher;
     private final NodeStateApplier nodeStateApplier;
     private final AtomicReference<Runnable> pendingAction = new AtomicReference<>();
     private final ThreadPool threadPool;
@@ -44,40 +48,47 @@ public class ETCDWatcher implements Closeable {
     private final NodeListener nodeListener = new NodeListener();
     private final ByteSequence nodeGoalStateKey;
 
+    // The following is non-final, because it may be recreated in restartWatcher.
+    private Watch.Watcher nodeWatcher;
+
     public ETCDWatcher(
         DiscoveryNode localNode,
         ByteSequence nodeGoalStateKey,
         NodeStateApplier nodeStateApplier,
-        Client etcdClient,
+        ETCDClientHolder etcdClientHolder,
         ThreadPool threadPool,
         String clusterName
     ) throws IOException, ExecutionException, InterruptedException {
         this.localNode = localNode;
         this.nodeGoalStateKey = nodeGoalStateKey;
-        this.etcdClient = etcdClient;
+        this.etcdClientHolder = etcdClientHolder;
         this.nodeStateApplier = nodeStateApplier;
         this.threadPool = threadPool;
         this.clusterName = clusterName;
-        loadState(nodeGoalStateKey);
-        nodeWatcher = etcdClient.getWatchClient().watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), nodeListener);
+        loadState(true);
+        nodeWatcher = etcdClientHolder.getClient()
+            .getWatchClient()
+            .watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), nodeListener);
     }
 
     @Override
     public void close() {
         nodeWatcher.close();
-        etcdClient.close();
+        for (Watch.Watcher watcher : additionalWatchers.values()) {
+            watcher.close();
+        }
     }
 
     public static ExecutorBuilder<?> createExecutorBuilder(Settings settings) {
         return new FixedExecutorBuilder(settings, THREAD_POOL_NAME, 1, 100, THREAD_POOL_NAME);
     }
 
-    private void loadState(ByteSequence nodeKey) throws ExecutionException, InterruptedException {
-        // Load the initial state of the node from etcd
-        try (KV kvClient = etcdClient.getKVClient()) {
-            List<KeyValue> kvs = kvClient.get(nodeKey).get().getKvs();
+    private void loadState(boolean initialLoad) throws ExecutionException, InterruptedException {
+        // Load the goal state of the node from etcd
+        try (KV kvClient = etcdClientHolder.getClient().getKVClient()) {
+            List<KeyValue> kvs = kvClient.get(nodeGoalStateKey).get().getKvs();
             if (kvs != null && kvs.isEmpty() == false && kvs.getFirst() != null) {
-                handleNodeChange(kvs.getFirst(), true);
+                handleNodeChange(kvs.getFirst(), initialLoad);
             }
         }
     }
@@ -123,9 +134,18 @@ public class ETCDWatcher implements Closeable {
             }, TimeValue.timeValueMillis(100), THREAD_POOL_NAME);
         }
 
+        private static final Set<ErrorCode> FATAL_ERRORS = EnumSet.of(ErrorCode.INTERNAL, ErrorCode.UNKNOWN);
+
         @Override
         public void onError(Throwable throwable) {
-            logger.error("Error in node watcher", throwable);
+            if (throwable instanceof EtcdException e) {
+                logger.error("Error in node watcher with error code ({})", e.getErrorCode(), e);
+                if (FATAL_ERRORS.contains(e.getErrorCode())) {
+                    scheduleRefresh(ETCDWatcher.this::restartWatchers);
+                }
+            } else {
+                logger.error("Error in node watcher", throwable);
+            }
         }
 
         @Override
@@ -134,26 +154,55 @@ public class ETCDWatcher implements Closeable {
         }
     }
 
+    private synchronized void restartWatchers() {
+        try {
+            nodeWatcher.close();
+        } catch (Exception e) {
+            logger.error("Error while closing node watcher", e);
+        }
+        for (Watch.Watcher watcher : additionalWatchers.values()) {
+            try {
+                watcher.close();
+            } catch (Exception e) {
+                logger.error("Error while closing additional watcher", e);
+            }
+        }
+        etcdClientHolder.resetClient();
+        Client client = etcdClientHolder.getClient();
+        nodeWatcher = client.getWatchClient().watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), nodeListener);
+        Set<String> keysToWatch = new HashSet<>(additionalWatchers.keySet());
+        for (String keyToWatch : keysToWatch) {
+            ByteSequence watchKey = ByteSequence.from(keyToWatch, java.nio.charset.StandardCharsets.UTF_8);
+            Watch.Watcher watcher = client.getWatchClient().watch(watchKey, WatchOption.builder().withRevision(0).build(), nodeListener);
+            additionalWatchers.put(keyToWatch, watcher);
+        }
+        // Trigger a state reload in case we missed any changes while the watchers wer down
+        try {
+            loadState(false);
+        } catch (ExecutionException | InterruptedException e) {
+            logger.error("Error while reloading node state", e);
+        }
+    }
+
     private void handleNodeChange(KeyValue keyValue, boolean isInitialLoad) {
         try {
             ByteSequence goalState;
-            try (KV kvClient = etcdClient.getKVClient()) {
+            Client client = etcdClientHolder.getClient();
+            try (KV kvClient = client.getKVClient()) {
                 List<KeyValue> kvs = kvClient.get(nodeGoalStateKey).get().getKvs();
                 goalState = kvs.getFirst().getValue();
             }
             ETCDStateDeserializer.NodeStateResult nodeStateResult = ETCDStateDeserializer.deserializeNodeState(
                 localNode,
                 goalState,
-                etcdClient,
+                client,
                 clusterName,
                 isInitialLoad
             );
-            String action = isInitialLoad ? "initial-load" : "update-node";
-            nodeStateApplier.applyNodeState(action + " on change to " + keyValue.getKey().toString(), nodeStateResult.nodeState());
             for (String keyToWatch : nodeStateResult.keysToWatch()) {
                 if (additionalWatchers.containsKey(keyToWatch) == false) {
                     ByteSequence watchKey = ByteSequence.from(keyToWatch, java.nio.charset.StandardCharsets.UTF_8);
-                    Watch.Watcher watcher = etcdClient.getWatchClient()
+                    Watch.Watcher watcher = client.getWatchClient()
                         .watch(watchKey, WatchOption.builder().withRevision(0).build(), nodeListener);
                     additionalWatchers.put(keyToWatch, watcher);
                 }
@@ -168,6 +217,8 @@ public class ETCDWatcher implements Closeable {
                     watcher.close();
                 }
             }
+            String action = isInitialLoad ? "initial-load" : "update-node";
+            nodeStateApplier.applyNodeState(action + " on change to " + keyValue.getKey().toString(), nodeStateResult.nodeState());
         } catch (Exception e) {
             logger.error("Error while processing node state", e);
         }
