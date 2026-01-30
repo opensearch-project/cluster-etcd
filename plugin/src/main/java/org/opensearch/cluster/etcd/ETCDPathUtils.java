@@ -64,6 +64,30 @@ public class ETCDPathUtils {
         return "/" + clusterName + "/indices/" + indexName + "/mappings";
     }
 
+    /**
+     * Builds the etcd path for index restore metadata.
+     * This metadata is used to trigger snapshot-based recovery in cluster-etcd.
+     *
+     * @param clusterName the cluster name
+     * @param indexName the index name
+     * @return the etcd path for index restore metadata
+     */
+    public static String buildIndexRestorePath(String clusterName, String indexName) {
+        return "/" + clusterName + "/indices/" + indexName + "/restore";
+    }
+
+    /**
+     * Builds the etcd path for repository metadata.
+     * This metadata is used to register snapshot repositories in clusterless mode.
+     *
+     * @param clusterName the cluster name
+     * @param repositoryName the repository name
+     * @return the etcd path for repository metadata
+     */
+    public static String buildRepositoryPath(String clusterName, String repositoryName) {
+        return "/" + clusterName + "/repositories/" + repositoryName;
+    }
+
     public static String buildShardPlannedAllocationPath(String clusterName, String indexName, int shardId) {
         return "/" + clusterName + "/indices/" + indexName + "/shard/" + shardId + "/planned-allocation";
     }

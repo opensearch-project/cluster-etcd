@@ -19,6 +19,8 @@ import org.opensearch.cluster.etcd.changeapplier.NodeShardAssignment;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
 import org.opensearch.cluster.etcd.changeapplier.RemoteNode;
 import org.opensearch.cluster.etcd.changeapplier.ShardRole;
+import org.opensearch.cluster.etcd.changeapplier.SnapshotRepositoryInfo;
+import org.opensearch.cluster.etcd.changeapplier.SnapshotRestoreInfo;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.common.xcontent.XContentHelper;
 import org.opensearch.common.xcontent.json.JsonXContent;
@@ -295,6 +297,8 @@ public final class ETCDStateDeserializer {
         Set<String> pathsToWatch = new HashSet<>();
         Map<String, Set<DataNodeShard>> localShardAssignment = new HashMap<>();
         Map<String, IndexMetadataComponents> indexMetadataMap = new HashMap<>();
+        Map<String, SnapshotRestoreInfo> restoreInfoByIndex = new HashMap<>();
+        Map<String, SnapshotRepositoryInfo> repositoryInfoByName = new HashMap<>();
 
         // Fetch allocation ID information on initial load
         Map<String, Map<Integer, String>> allocationInfoMap = new HashMap<>();
@@ -314,6 +318,20 @@ public final class ETCDStateDeserializer {
 
             for (Map.Entry<String, Map<String, Object>> entry : localShards.entrySet()) {
                 String indexName = entry.getKey();
+                SnapshotRestoreInfo restoreInfo = restoreInfoByIndex.computeIfAbsent(
+                    indexName,
+                    name -> fetchRestoreInfo(etcdClient, clusterName, name)
+                );
+                if (restoreInfo != null) {
+                    String repoName = restoreInfo.repository();
+                    SnapshotRepositoryInfo repositoryInfo = repositoryInfoByName.computeIfAbsent(
+                        repoName,
+                        name -> fetchRepositoryInfo(etcdClient, clusterName, name)
+                    );
+                    if (repositoryInfo != null) {
+                        pathsToWatch.add(ETCDPathUtils.buildRepositoryPath(clusterName, repoName));
+                    }
+                }
 
                 // Fetch settings and mappings from separate etcd paths
                 String indexSettingsPath = ETCDPathUtils.buildIndexSettingsPath(clusterName, indexName);
@@ -341,7 +359,8 @@ public final class ETCDStateDeserializer {
                         shardEntry.getValue(),
                         etcdClient,
                         clusterName,
-                        allocationId
+                        allocationId,
+                        restoreInfo
                     );
                     pathsToWatch.addAll(dataNodeShardConvergence.nonConvergedPaths());
                     if (dataNodeShardConvergence.shard() != null) {
@@ -363,7 +382,10 @@ public final class ETCDStateDeserializer {
             }
         }
 
-        return new NodeStateResult(new DataNodeState(localNode, indexMetadataMap, localShardAssignment), pathsToWatch);
+        return new NodeStateResult(
+            new DataNodeState(localNode, indexMetadataMap, localShardAssignment, repositoryInfoByName),
+            pathsToWatch
+        );
     }
 
     private record DataNodeShardConvergence(DataNodeShard shard, Collection<String> nonConvergedPaths) {
@@ -436,18 +458,19 @@ public final class ETCDStateDeserializer {
         Object shardConfig,
         Client etcdClient,
         String clusterName,
-        String allocationId
+        String allocationId,
+        SnapshotRestoreInfo restoreInfo
     ) throws IOException {
         if (shardConfig instanceof String role) {
             // Single string value indicates a primary or search replica shard
             if ("PRIMARY".equalsIgnoreCase(role)) {
                 return new DataNodeShardConvergence(
-                    new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId),
+                    new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId, restoreInfo),
                     Collections.emptySet()
                 );
             } else if ("SEARCH_REPLICA".equalsIgnoreCase(role)) {
                 return new DataNodeShardConvergence(
-                    new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId),
+                    new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId, null),
                     Collections.emptySet()
                 );
             } else {
@@ -493,13 +516,13 @@ public final class ETCDStateDeserializer {
                         }
                     }
                     return new DataNodeShardConvergence(
-                        new DataNodeShard.DocRepPrimary(indexName, shardNum, allocationId, shardAllocations),
+                        new DataNodeShard.DocRepPrimary(indexName, shardNum, allocationId, restoreInfo, shardAllocations),
                         nonConvergedPaths
                     );
                 } else {
                     // Segrep primary shard
                     return new DataNodeShardConvergence(
-                        new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId),
+                        new DataNodeShard.SegRepPrimary(indexName, shardNum, allocationId, restoreInfo),
                         Collections.emptySet()
                     );
                 }
@@ -541,13 +564,13 @@ public final class ETCDStateDeserializer {
                     return new DataNodeShardConvergence(null, List.of(primaryNodeActualStatePath));
                 }
                 return new DataNodeShardConvergence(
-                    new DataNodeShard.DocRepReplica(indexName, shardNum, allocationId, primaryAllocation),
+                    new DataNodeShard.DocRepReplica(indexName, shardNum, allocationId, null, primaryAllocation),
                     Collections.emptySet()
                 );
             case "SEARCH_REPLICA":
                 // Segrep search replica shard
                 return new DataNodeShardConvergence(
-                    new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId),
+                    new DataNodeShard.SegRepSearchReplica(indexName, shardNum, allocationId, null),
                     Collections.emptySet()
                 );
             default:
@@ -658,6 +681,94 @@ public final class ETCDStateDeserializer {
             }
         }
         return healthInfoMap;
+    }
+
+    private static SnapshotRestoreInfo fetchRestoreInfo(Client etcdClient, String clusterName, String indexName) {
+        String restorePath = ETCDPathUtils.buildIndexRestorePath(clusterName, indexName);
+        try (KV kvClient = etcdClient.getKVClient()) {
+            GetResponse response = kvClient.get(ByteSequence.from(restorePath, StandardCharsets.UTF_8)).get();
+            if (response.getKvs().isEmpty()) {
+                return null;
+            }
+            KeyValue kv = response.getKvs().getFirst();
+            Map<String, Object> restoreMap;
+            try (
+                XContentParser parser = JsonXContent.jsonXContent.createParser(
+                    NamedXContentRegistry.EMPTY,
+                    DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                    kv.getValue().getBytes()
+                )
+            ) {
+                restoreMap = parser.map();
+            }
+            String repo = (String) restoreMap.get("repo");
+            String snapshot = (String) restoreMap.get("snapshot");
+            String snapshotUuid = (String) restoreMap.get("snapshot_uuid");
+            String indexUuid = (String) restoreMap.get("index_uuid");
+            Integer shardPathType = null;
+            Object shardPathTypeValue = restoreMap.get("shard_path_type");
+            if (shardPathTypeValue instanceof Number) {
+                shardPathType = ((Number) shardPathTypeValue).intValue();
+            } else if (shardPathTypeValue != null) {
+                try {
+                    shardPathType = Integer.parseInt(String.valueOf(shardPathTypeValue));
+                } catch (NumberFormatException ignored) {
+                    // Ignore invalid shard_path_type and fall back to repository resolution.
+                }
+            }
+            if (repo == null || snapshot == null || snapshotUuid == null || indexUuid == null) {
+                LOGGER.warn(
+                    "Restore metadata missing required fields at {} (repo={}, snapshot={}, snapshot_uuid={}, index_uuid={})",
+                    restorePath,
+                    repo,
+                    snapshot,
+                    snapshotUuid,
+                    indexUuid
+                );
+                return null;
+            }
+            return new SnapshotRestoreInfo(repo, snapshot, snapshotUuid, indexUuid, shardPathType);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to read restore metadata at {}: {}", restorePath, e.getMessage());
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static SnapshotRepositoryInfo fetchRepositoryInfo(Client etcdClient, String clusterName, String repositoryName) {
+        String repositoryPath = ETCDPathUtils.buildRepositoryPath(clusterName, repositoryName);
+        try (KV kvClient = etcdClient.getKVClient()) {
+            GetResponse response = kvClient.get(ByteSequence.from(repositoryPath, StandardCharsets.UTF_8)).get();
+            if (response.getKvs().isEmpty()) {
+                return null;
+            }
+            KeyValue kv = response.getKvs().getFirst();
+            Map<String, Object> repositoryMap;
+            try (
+                XContentParser parser = JsonXContent.jsonXContent.createParser(
+                    NamedXContentRegistry.EMPTY,
+                    DeprecationHandler.THROW_UNSUPPORTED_OPERATION,
+                    kv.getValue().getBytes()
+                )
+            ) {
+                repositoryMap = parser.map();
+            }
+            String type = (String) repositoryMap.get("type");
+            Map<String, Object> settings = (Map<String, Object>) repositoryMap.getOrDefault("settings", new HashMap<>());
+            if (type == null || settings == null) {
+                LOGGER.warn(
+                    "Repository metadata missing required fields at {} (type={}, settings={})",
+                    repositoryPath,
+                    type,
+                    settings
+                );
+                return null;
+            }
+            return new SnapshotRepositoryInfo(repositoryName, type, settings);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to read repository metadata at {}: {}", repositoryPath, e.getMessage());
+            return null;
+        }
     }
 
     private record NodeShardAllocation(String indexName, int shardNum, String allocationId, String state) {

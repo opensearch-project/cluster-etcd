@@ -11,6 +11,8 @@ import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IngestionStatus;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.metadata.Metadata;
+import org.opensearch.cluster.metadata.RepositoriesMetadata;
+import org.opensearch.cluster.metadata.RepositoryMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.routing.IndexRoutingTable;
@@ -22,6 +24,7 @@ import org.opensearch.cluster.routing.UnassignedInfo;
 import org.opensearch.common.compress.CompressedXContent;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.xcontent.XContentFactory;
+import org.opensearch.Version;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
@@ -30,10 +33,15 @@ import org.opensearch.index.IndexService;
 import org.opensearch.index.mapper.DocumentMapper;
 import org.opensearch.index.mapper.MapperService;
 import org.opensearch.indices.IndicesService;
+import org.opensearch.repositories.IndexId;
+import org.opensearch.snapshots.Snapshot;
+import org.opensearch.snapshots.SnapshotId;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -47,17 +55,20 @@ public class DataNodeState extends NodeState {
 
     private final Map<String, IndexMetadataComponents> indices;
     private final Map<String, Set<DataNodeShard>> assignedShards;
+    private final Map<String, SnapshotRepositoryInfo> repositories;
 
     public DataNodeState(
         DiscoveryNode localNode,
         Map<String, IndexMetadataComponents> indices,
-        Map<String, Set<DataNodeShard>> assignedShards
+        Map<String, Set<DataNodeShard>> assignedShards,
+        Map<String, SnapshotRepositoryInfo> repositories
     ) {
         super(localNode);
         // The index metadata and shard assignment should be identical
         assert indices.keySet().equals(assignedShards.keySet());
         this.indices = indices;
         this.assignedShards = assignedShards;
+        this.repositories = repositories;
     }
 
     /**
@@ -73,6 +84,38 @@ public class DataNodeState extends NodeState {
         ShardRole role = dataNodeShard.getShardRole();
 
         logger.debug("Determining recovery source for shard {}[{}] with role {}", indexName, shardNum, role);
+
+        // Snapshot restore has highest priority when configured.
+        if (dataNodeShard.getRestoreInfo().isPresent()) {
+            SnapshotRestoreInfo restoreInfo = dataNodeShard.getRestoreInfo().get();
+            Snapshot snapshot = new Snapshot(
+                restoreInfo.repository(),
+                new SnapshotId(restoreInfo.snapshotName(), restoreInfo.snapshotUuid())
+            );
+            Integer shardPathType = restoreInfo.shardPathType();
+            if (shardPathType == null) {
+                logger.warn(
+                    "shard_path_type not provided for repo {}; falling back to default",
+                    restoreInfo.repository()
+                );
+                shardPathType = IndexId.DEFAULT_SHARD_PATH_TYPE;
+            }
+            IndexId indexId = new IndexId(indexName, restoreInfo.indexUuid(), shardPathType);
+            logger.info(
+                "Shard {}[{}] restore configured (repo={}, snapshot={}, shard_path_type={}), using SnapshotRecoverySource",
+                indexName,
+                shardNum,
+                restoreInfo.repository(),
+                restoreInfo.snapshotName(),
+                shardPathType
+            );
+            return new RecoverySource.SnapshotRecoverySource(
+                RecoverySource.SnapshotRecoverySource.NO_API_RESTORE_UUID,
+                snapshot,
+                Version.CURRENT,
+                indexId
+            );
+        }
 
         // Search replicas should always fetch fresh data from remote store
         if (role == ShardRole.SEARCH_REPLICA) {
@@ -101,6 +144,8 @@ public class DataNodeState extends NodeState {
             return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
         }
     }
+
+    // FS repository handling removed; shard_path_type must be provided in restore info.
 
     private static CompressedXContent canonicalMapping(Index index, Map<String, Object> newMapping, IndicesService indicesService) {
         try {
@@ -319,6 +364,29 @@ public class DataNodeState extends NodeState {
             metadataBuilder.put(newIndexMetadata, false);
         }
         clusterStateBuilder.routingTable(routingTableBuilder.build());
+        if (repositories.isEmpty() == false) {
+            List<RepositoryMetadata> repositoryMetadataList = new ArrayList<>(repositories.size());
+            for (SnapshotRepositoryInfo repositoryInfo : repositories.values()) {
+                Settings.Builder repositorySettingsBuilder = Settings.builder();
+                for (Map.Entry<String, Object> entry : repositoryInfo.settings().entrySet()) {
+                    if (entry.getValue() != null) {
+                        repositorySettingsBuilder.put(entry.getKey(), String.valueOf(entry.getValue()));
+                    }
+                }
+                Settings repositorySettings = repositorySettingsBuilder.build();
+                logger.info(
+                    "Repository {} configured (type={}, settings={})",
+                    repositoryInfo.name(),
+                    repositoryInfo.type(),
+                    repositorySettings
+                );
+                repositoryMetadataList.add(
+                    new RepositoryMetadata(repositoryInfo.name(), repositoryInfo.type(), repositorySettings)
+                );
+            }
+            metadataBuilder.putCustom(RepositoriesMetadata.TYPE, new RepositoriesMetadata(repositoryMetadataList));
+        }
+
         clusterStateBuilder.metadata(metadataBuilder);
 
         return clusterStateBuilder.build();
