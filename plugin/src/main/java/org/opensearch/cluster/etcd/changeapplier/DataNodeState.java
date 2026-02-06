@@ -74,10 +74,25 @@ public class DataNodeState extends NodeState {
 
         logger.debug("Determining recovery source for shard {}[{}] with role {}", indexName, shardNum, role);
 
-        // Search replicas should always fetch fresh data from remote store
+        // Search replicas: if previously allocated then existing, else empty
         if (role == ShardRole.SEARCH_REPLICA) {
-            logger.info("Shard {}[{}] with role {} is search-replica, using EmptyStoreRecoverySource", indexName, shardNum, role);
-            return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
+            String previousAllocationId = dataNodeShard.getAllocationId();
+            if (previousAllocationId != null) {
+                logger.info(
+                    "Search replica {}[{}] was previously allocated (ID: {}), using ExistingStoreRecoverySource",
+                    indexName,
+                    shardNum,
+                    previousAllocationId
+                );
+                return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
+            } else {
+                logger.info(
+                    "Search replica {}[{}] is new allocation, using EmptyStoreRecoverySource",
+                    indexName,
+                    shardNum
+                );
+                return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
+            }
         }
 
         // Regular replica shards will recover from primary
