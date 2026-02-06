@@ -725,14 +725,7 @@ public final class ETCDStateDeserializer {
         }
     }
 
-    private record NodeHealthInfo(
-        String nodeId,
-        String ephemeralId,
-        String address,
-        int port,
-        List<NodeShardAllocation> primaryAllocations,
-        List<NodeShardAllocation> replicaAllocations,
-        List<NodeShardAllocation> searchReplicaAllocations
-    ) {
+    private record NodeHealthInfo(String nodeId, String ephemeralId, String address, int port, List<NodeShardAllocation> primaryAllocations,
+        List<NodeShardAllocation> replicaAllocations, List<NodeShardAllocation> searchReplicaAllocations) {
     }
 }

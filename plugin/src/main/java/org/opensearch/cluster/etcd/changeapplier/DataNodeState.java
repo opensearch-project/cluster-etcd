@@ -86,11 +86,7 @@ public class DataNodeState extends NodeState {
                 );
                 return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
             } else {
-                logger.info(
-                    "Search replica {}[{}] is new allocation, using EmptyStoreRecoverySource",
-                    indexName,
-                    shardNum
-                );
+                logger.info("Search replica {}[{}] is new allocation, using EmptyStoreRecoverySource", indexName, shardNum);
                 return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
             }
         }
