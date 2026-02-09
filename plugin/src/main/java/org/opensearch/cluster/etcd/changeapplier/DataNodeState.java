@@ -229,7 +229,7 @@ public class DataNodeState extends NodeState {
                     : previousShardRoutingTable.shards()
                         .stream()
                         .filter(sr -> localNode.getId().equals(sr.currentNodeId()))
-                        .filter(ShardRouting::started)
+                        .filter(s -> s.started() || s.initializing())
                         .findAny();
 
                 ShardRouting shardRouting;
