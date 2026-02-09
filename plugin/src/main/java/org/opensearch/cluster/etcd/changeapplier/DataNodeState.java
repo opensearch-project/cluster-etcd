@@ -74,41 +74,30 @@ public class DataNodeState extends NodeState {
 
         logger.debug("Determining recovery source for shard {}[{}] with role {}", indexName, shardNum, role);
 
-        // Search replicas: if previously allocated then existing, else empty
-        if (role == ShardRole.SEARCH_REPLICA) {
-            String previousAllocationId = dataNodeShard.getAllocationId();
-            if (previousAllocationId != null) {
-                logger.info(
-                    "Search replica {}[{}] was previously allocated (ID: {}), using ExistingStoreRecoverySource",
-                    indexName,
-                    shardNum,
-                    previousAllocationId
-                );
-                return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
-            } else {
-                logger.info("Search replica {}[{}] is new allocation, using EmptyStoreRecoverySource", indexName, shardNum);
-                return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
-            }
-        }
-
         // Regular replica shards will recover from primary
         if (role == ShardRole.REPLICA) {
             logger.info("Shard {}[{}] with role {} is replica, using PeerRecoverySource", indexName, shardNum, role);
             return RecoverySource.PeerRecoverySource.INSTANCE;
         }
 
-        // For PRIMARY shards: If previously allocated then existing, else empty
+        // For PRIMARY (and search replica fallthrough) shards: if previously allocated then existing, else empty
         String previousAllocationId = dataNodeShard.getAllocationId();
         if (previousAllocationId != null) {
             logger.info(
-                "Primary shard {}[{}] was previously allocated (ID: {}), using ExistingStoreRecoverySource",
+                "Shard {}[{}] with role {} was previously allocated (ID: {}), using ExistingStoreRecoverySource",
                 indexName,
                 shardNum,
+                role,
                 previousAllocationId
             );
             return RecoverySource.ExistingStoreRecoverySource.INSTANCE;
         } else {
-            logger.info("Primary shard {}[{}] was not previously allocated, using EmptyStoreRecoverySource", indexName, shardNum);
+            logger.info(
+                "Shard {}[{}] with role {} was not previously allocated, using EmptyStoreRecoverySource",
+                indexName,
+                shardNum,
+                role
+            );
             return RecoverySource.EmptyStoreRecoverySource.INSTANCE;
         }
     }
