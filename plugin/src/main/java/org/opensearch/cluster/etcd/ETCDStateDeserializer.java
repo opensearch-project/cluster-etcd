@@ -395,7 +395,7 @@ public final class ETCDStateDeserializer {
             for (String indexName : indexNames) {
                 Map<Integer, String> indexAllocationInfo = new HashMap<>();
 
-                // Check both primary and replica allocations
+                // Check primary, replica, and search replica allocations
                 for (NodeShardAllocation allocation : localNodeHealth.primaryAllocations()) {
                     if (indexName.equals(allocation.indexName())) {
                         indexAllocationInfo.put(allocation.shardNum(), allocation.allocationId());
@@ -413,6 +413,18 @@ public final class ETCDStateDeserializer {
                         indexAllocationInfo.put(allocation.shardNum(), allocation.allocationId());
                         LOGGER.debug(
                             "Found replica allocation info for shard {}[{}]: {}",
+                            allocation.indexName(),
+                            allocation.shardNum(),
+                            allocation.allocationId()
+                        );
+                    }
+                }
+
+                for (NodeShardAllocation allocation : localNodeHealth.searchReplicaAllocations()) {
+                    if (indexName.equals(allocation.indexName())) {
+                        indexAllocationInfo.put(allocation.shardNum(), allocation.allocationId());
+                        LOGGER.debug(
+                            "Found search replica allocation info for shard {}[{}]: {}",
                             allocation.indexName(),
                             allocation.shardNum(),
                             allocation.allocationId()
@@ -681,8 +693,9 @@ public final class ETCDStateDeserializer {
             String ephemeralId = (String) healthMap.get(ETCDHeartbeat.EPHEMERAL_ID);
             String address = (String) healthMap.get(ETCDHeartbeat.ADDRESS);
             int port = ((Number) healthMap.get(ETCDHeartbeat.TRANSPORT_PORT)).intValue();
-            List<NodeShardAllocation> replicaAllocations = new ArrayList<>();
             List<NodeShardAllocation> primaryAllocations = new ArrayList<>();
+            List<NodeShardAllocation> replicaAllocations = new ArrayList<>();
+            List<NodeShardAllocation> searchReplicaAllocations = new ArrayList<>();
             if (healthMap.containsKey(ETCDHeartbeat.NODE_ROUTING)) {
                 Map<String, List<Map<String, Object>>> nodeRouting = (Map<String, List<Map<String, Object>>>) healthMap.get(
                     ETCDHeartbeat.NODE_ROUTING
@@ -696,21 +709,23 @@ public final class ETCDStateDeserializer {
                             String role = (String) shardEntry.get(ETCDHeartbeat.ROLE);
                             String allocationId = (String) shardEntry.get(ETCDHeartbeat.ALLOCATION_ID);
                             String state = (String) shardEntry.get(ETCDHeartbeat.STATE);
-                            if ("replica".equalsIgnoreCase(role)) {
-                                replicaAllocations.add(new NodeShardAllocation(indexName, shardNum, allocationId, state));
-                            } else if ("primary".equalsIgnoreCase(role)) {
+                            if ("primary".equalsIgnoreCase(role)) {
                                 primaryAllocations.add(new NodeShardAllocation(indexName, shardNum, allocationId, state));
+                            } else if ("replica".equalsIgnoreCase(role)) {
+                                replicaAllocations.add(new NodeShardAllocation(indexName, shardNum, allocationId, state));
+                            } else if ("search_replica".equalsIgnoreCase(role)) {
+                                searchReplicaAllocations.add(new NodeShardAllocation(indexName, shardNum, allocationId, state));
                             }
                         }
                     }
 
                 }
             }
-            return new NodeHealthInfo(nodeId, ephemeralId, address, port, replicaAllocations, primaryAllocations);
+            return new NodeHealthInfo(nodeId, ephemeralId, address, port, primaryAllocations, replicaAllocations, searchReplicaAllocations);
         }
     }
 
-    private record NodeHealthInfo(String nodeId, String ephemeralId, String address, int port, List<NodeShardAllocation> replicaAllocations,
-        List<NodeShardAllocation> primaryAllocations) {
+    private record NodeHealthInfo(String nodeId, String ephemeralId, String address, int port, List<NodeShardAllocation> primaryAllocations,
+        List<NodeShardAllocation> replicaAllocations, List<NodeShardAllocation> searchReplicaAllocations) {
     }
 }
