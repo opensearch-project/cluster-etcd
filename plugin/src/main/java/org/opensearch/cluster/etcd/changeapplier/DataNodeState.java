@@ -86,7 +86,7 @@ public class DataNodeState extends NodeState {
         logger.debug("Determining recovery source for shard {}[{}] with role {}", indexName, shardNum, role);
 
         // Snapshot restore has highest priority when configured.
-        if (dataNodeShard.getRestoreInfo().isPresent()) {
+        if (role == ShardRole.PRIMARY && dataNodeShard.getRestoreInfo().isPresent()) {
             SnapshotRestoreInfo restoreInfo = dataNodeShard.getRestoreInfo().get();
             Snapshot snapshot = new Snapshot(
                 restoreInfo.repository(),
