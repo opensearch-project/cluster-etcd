@@ -18,6 +18,9 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+    - uses: docker/setup-docker-action@v4
+    - name: Check Docker status
+       run: docker context ls && docker info
     - uses: actions/checkout@v6
     - name: Set up JDK ${{ matrix.java }}
       uses: actions/setup-java@v5
