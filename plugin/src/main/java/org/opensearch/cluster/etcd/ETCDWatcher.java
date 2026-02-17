@@ -36,7 +36,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ETCDWatcher implements Closeable {
-    public static final String THREAD_POOL_NAME = "etcd-watcher";
+    private static final String THREAD_POOL_NAME = "etcd-watcher";
+    private static final int EVENT_COOLDOWN_MILLIS = 1000; // Hold changes for one second, only applying the last seen change.
     private final Logger logger = LogManager.getLogger(ETCDWatcher.class);
     private final ETCDClientHolder etcdClientHolder;
     private final DiscoveryNode localNode;
@@ -116,22 +117,33 @@ public class ETCDWatcher implements Closeable {
                         break;
                 }
             }
+        }
 
+        private final Runnable refreshRunnable = () -> {
+            Runnable action = pendingAction.get();
+            if (action != null) {
+                try {
+                    action.run();
+                } catch (Exception e) {
+                    logger.error("Error while processing pending action", e);
+                }
+            }
+            if (pendingAction.compareAndSet(action, null) == false) {
+                // Action has changed. Schedule the next update.
+                threadPool.schedule(getRefreshRunnable(), TimeValue.timeValueMillis(EVENT_COOLDOWN_MILLIS), THREAD_POOL_NAME);
+            }
+        };
+
+        // The following is required so that refreshRunnable can reference itself within its definition.
+        private Runnable getRefreshRunnable() {
+            return refreshRunnable;
         }
 
         private void scheduleRefresh(Runnable nextAction) {
-            pendingAction.set(nextAction);
-            threadPool.schedule(() -> {
-                Runnable action = pendingAction.get();
-                if (action != null) {
-                    try {
-                        action.run();
-                    } catch (Exception e) {
-                        logger.error("Error while processing pending action", e);
-                    }
-                }
-                pendingAction.compareAndSet(action, null);
-            }, TimeValue.timeValueMillis(100), THREAD_POOL_NAME);
+            Runnable previousAction = pendingAction.getAndSet(nextAction);
+            if (previousAction == null) {
+                threadPool.schedule(refreshRunnable, TimeValue.timeValueMillis(EVENT_COOLDOWN_MILLIS), THREAD_POOL_NAME);
+            }
         }
 
         private static final Set<ErrorCode> FATAL_ERRORS = EnumSet.of(ErrorCode.INTERNAL, ErrorCode.UNKNOWN);
@@ -176,7 +188,7 @@ public class ETCDWatcher implements Closeable {
             Watch.Watcher watcher = client.getWatchClient().watch(watchKey, WatchOption.builder().withRevision(0).build(), nodeListener);
             additionalWatchers.put(keyToWatch, watcher);
         }
-        // Trigger a state reload in case we missed any changes while the watchers wer down
+        // Trigger a state reload in case we missed any changes while the watchers were down
         try {
             loadState(false);
         } catch (ExecutionException | InterruptedException e) {

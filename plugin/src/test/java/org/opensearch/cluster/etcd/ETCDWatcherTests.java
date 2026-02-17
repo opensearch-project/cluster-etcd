@@ -14,10 +14,13 @@ import org.opensearch.cluster.etcd.changeapplier.CoordinatorNodeState;
 import org.opensearch.cluster.etcd.changeapplier.DataNodeState;
 import org.opensearch.cluster.etcd.changeapplier.NodeState;
 import org.opensearch.cluster.etcd.changeapplier.NodeStateApplier;
+import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.common.settings.Settings;
+import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.transport.TransportAddress;
+import org.opensearch.index.IndexSettings;
 import org.opensearch.indices.IndicesService;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.threadpool.TestThreadPool;
@@ -28,6 +31,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 
 import static org.mockito.Mockito.mock;
 import static org.testcontainers.shaded.org.awaitility.Awaitility.await;
@@ -37,16 +42,20 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
     private final IndicesService indicesService = mock(IndicesService.class);
 
     private static class MockNodeStateApplier implements NodeStateApplier {
-        private NodeState appliedNodeState = null;
+        private final LongAdder applyCounter = new LongAdder();
+        private final LongAdder removeCounter = new LongAdder();
+        private final AtomicReference<NodeState> appliedNodeState = new AtomicReference<>();
 
         @Override
         public void applyNodeState(String source, NodeState nodeState) {
-            appliedNodeState = nodeState;
+            applyCounter.increment();
+            appliedNodeState.set(nodeState);
         }
 
         @Override
         public void removeNode(String source, DiscoveryNode localNode) {
-            appliedNodeState = null;
+            removeCounter.increment();
+            appliedNodeState.set(null);
         }
     }
 
@@ -80,7 +89,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     clusterName
                 )
             ) {
-                assertNull(mockNodeStateApplier.appliedNodeState);
+                assertNull(mockNodeStateApplier.appliedNodeState.get());
 
                 // Set up index metadata
                 String mappingPath = ETCDPathUtils.buildIndexMappingsPath(clusterName, indexName);
@@ -106,9 +115,10 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     }
                     """);
                 await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
-                    assertNotNull(mockNodeStateApplier.appliedNodeState);
-                    assertTrue(mockNodeStateApplier.appliedNodeState instanceof DataNodeState);
-                    DataNodeState dataNodeState = (DataNodeState) mockNodeStateApplier.appliedNodeState;
+                    NodeState nodeState = mockNodeStateApplier.appliedNodeState.get();
+                    assertNotNull(nodeState);
+                    assertTrue(nodeState instanceof DataNodeState);
+                    DataNodeState dataNodeState = (DataNodeState) nodeState;
                     ClusterState clusterState = dataNodeState.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
                     assertTrue(clusterState.metadata().hasIndex(indexName));
                     assertEquals(2, clusterState.metadata().index(indexName).getNumberOfShards());
@@ -121,7 +131,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                 // Remove the config to trigger removal of node state
                 etcdClientHolder.getClient().getKVClient().delete(ByteSequence.from(configPath, StandardCharsets.UTF_8)).get();
 
-                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
+                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> assertNull(mockNodeStateApplier.appliedNodeState.get()));
 
             } finally {
                 threadPool.shutdown();
@@ -159,7 +169,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     clusterName
                 )
             ) {
-                assertNull(mockNodeStateApplier.appliedNodeState);
+                assertNull(mockNodeStateApplier.appliedNodeState.get());
 
                 // Set up health information for remote nodes
                 String remoteNodeName1 = "remote-node-1";
@@ -216,9 +226,10 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
                 // Verify coordinator node state is applied
                 await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
-                    assertNotNull(mockNodeStateApplier.appliedNodeState);
-                    assertTrue(mockNodeStateApplier.appliedNodeState instanceof CoordinatorNodeState);
-                    CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) mockNodeStateApplier.appliedNodeState;
+                    NodeState nodeState = mockNodeStateApplier.appliedNodeState.get();
+                    assertNotNull(nodeState);
+                    assertTrue(nodeState instanceof CoordinatorNodeState);
+                    CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) nodeState;
                     ClusterState clusterState = coordinatorNodeState.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
 
                     // Verify the coordinator node sees the index
@@ -255,7 +266,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                 etcdClientHolder.getClient().getKVClient().delete(ByteSequence.from(configPath, StandardCharsets.UTF_8)).get();
 
                 // Verify coordinator node state is removed
-                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> { assertNull(mockNodeStateApplier.appliedNodeState); });
+                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> assertNull(mockNodeStateApplier.appliedNodeState.get()));
             } finally {
                 threadPool.shutdown();
             }
@@ -319,9 +330,10 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
                 // Verify coordinator node state is applied and contains remote cluster settings
                 await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
-                    assertNotNull(mockNodeStateApplier.appliedNodeState);
-                    assertTrue(mockNodeStateApplier.appliedNodeState instanceof CoordinatorNodeState);
-                    CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) mockNodeStateApplier.appliedNodeState;
+                    NodeState nodeState = mockNodeStateApplier.appliedNodeState.get();
+                    assertNotNull(nodeState);
+                    assertTrue(nodeState instanceof CoordinatorNodeState);
+                    CoordinatorNodeState coordinatorNodeState = (CoordinatorNodeState) nodeState;
                     ClusterState clusterState = coordinatorNodeState.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
 
                     // Verify persistent settings contain the remote cluster configurations
@@ -343,6 +355,108 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
                     assertEquals("remote-cluster-proxy:8030", clusterThreeProxyAddress);
 
                 });
+            } finally {
+                threadPool.shutdown();
+            }
+        }
+    }
+
+    public void testRefreshCoolDown() throws Exception {
+        String clusterName = "test-cluster";
+        String nodeName = "test-node";
+        String indexName = "test-index";
+        Settings localNodeSettings = Settings.builder().put("cluster.name", clusterName).put("node.name", nodeName).build();
+        DiscoveryNode localNode = DiscoveryNode.createLocal(
+            localNodeSettings,
+            new TransportAddress(TransportAddress.META_ADDRESS, 9200),
+            nodeName
+        );
+
+        MockNodeStateApplier mockNodeStateApplier = new MockNodeStateApplier();
+        String configPath = ETCDPathUtils.buildSearchUnitGoalStatePath(localNode, clusterName);
+        try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
+            etcdCluster.start();
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
+            try (
+                ETCDClientHolder etcdClientHolder = new ETCDClientHolder(
+                    () -> Client.builder().endpoints(etcdCluster.clientEndpoints()).build()
+                );
+                ETCDWatcher etcdWatcher = new ETCDWatcher(
+                    localNode,
+                    ByteSequence.from(configPath, StandardCharsets.UTF_8),
+                    mockNodeStateApplier,
+                    etcdClientHolder,
+                    threadPool,
+                    clusterName
+                )
+            ) {
+                assertNull(mockNodeStateApplier.appliedNodeState.get());
+
+                // Set up index metadata
+                String mappingPath = ETCDPathUtils.buildIndexMappingsPath(clusterName, indexName);
+                String settingsPath = ETCDPathUtils.buildIndexSettingsPath(clusterName, indexName);
+                etcdPut(etcdClientHolder, mappingPath, "{\"properties\": {\"field1\": {\"type\": \"text\"}}}");
+                etcdPut(etcdClientHolder, settingsPath, """
+                    {
+                       "index": {
+                           "number_of_shards": "1",
+                           "number_of_replicas": "0",
+                           "refresh_interval": "1s"
+                       }
+                    }
+                    """);
+
+                // Add the current node as a data node
+                etcdPut(etcdClientHolder, configPath, """
+                    {
+                       "local_shards": {
+                         "test-index": {
+                           "0": "PRIMARY"
+                         }
+                       }
+                    }
+                    """);
+
+                // Wait for the state to be applied
+                AtomicReference<ClusterState> clusterStateRef = new AtomicReference<>();
+                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
+                    NodeState nodeState = mockNodeStateApplier.appliedNodeState.get();
+                    assertNotNull(nodeState);
+                    assertTrue(nodeState instanceof DataNodeState);
+                    DataNodeState dataNodeState = (DataNodeState) nodeState;
+                    ClusterState clusterState = dataNodeState.buildClusterState(ClusterState.EMPTY_STATE, indicesService);
+                    IndexMetadata indexMetadata = clusterState.getMetadata().index(indexName);
+                    TimeValue timeValue = IndexSettings.INDEX_REFRESH_INTERVAL_SETTING.get(indexMetadata.getSettings());
+                    assertEquals(1, timeValue.getSeconds());
+                    clusterStateRef.set(clusterState);
+                });
+                assertEquals(1, mockNodeStateApplier.applyCounter.sum());
+                // Send a burst of updates to the index settings, changing the refresh interval, spread out over a couple of seconds
+                for (int i = 2; i <= 200; i++) {
+                    etcdPut(
+                        etcdClientHolder,
+                        settingsPath,
+                        "{\"index\":{\"number_of_shards\":\"1\",\"number_of_replicas\":\"0\",\"refresh_interval\":\"" + i + "s\"}}"
+                    );
+                    Thread.sleep(10);
+                }
+                await().atMost(30, TimeUnit.SECONDS).untilAsserted(() -> {
+                    NodeState nodeState = mockNodeStateApplier.appliedNodeState.get();
+                    assertNotNull(nodeState);
+                    assertTrue(nodeState instanceof DataNodeState);
+                    DataNodeState dataNodeState = (DataNodeState) nodeState;
+                    ClusterState clusterState = dataNodeState.buildClusterState(clusterStateRef.get(), indicesService);
+                    clusterStateRef.set(clusterState);
+                    IndexMetadata indexMetadata = clusterState.getMetadata().index(indexName);
+                    TimeValue timeValue = IndexSettings.INDEX_REFRESH_INTERVAL_SETTING.get(indexMetadata.getSettings());
+                    // Verify that the final update was processed and not dropped.
+                    assertEquals(200, timeValue.getSeconds());
+                });
+                // We write 200 times to etcd, with writes every 10ms. So, we would expect applyCounter to increase by
+                // 2 or 3, if we have a 1s cooldown on applying changes. Given that the etcd writes take time, we should
+                // add a bit of padding. Also, on a slow machine (e.g. a GitHub action runner), we should expect things
+                // to take even longer, but still less than 30 seconds (given the await() condition above).
+                assertTrue(mockNodeStateApplier.applyCounter.sum() < 30);
             } finally {
                 threadPool.shutdown();
             }
