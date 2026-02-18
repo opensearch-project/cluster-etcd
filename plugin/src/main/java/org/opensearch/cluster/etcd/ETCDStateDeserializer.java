@@ -329,6 +329,36 @@ public final class ETCDStateDeserializer {
                         name -> fetchRepositoryInfo(etcdClient, clusterName, name)
                     );
                     if (repositoryInfo != null) {
+                        Object bucket = repositoryInfo.settings().get("bucket");
+                        Object basePath = repositoryInfo.settings().get("base_path");
+                        if (bucket != null && basePath != null) {
+                            LOGGER.info(
+                                "Restore path for index {}: repo={}, bucket={}, base_path={}, snapshot={}, snapshot_uuid={}, index_uuid={}",
+                                indexName,
+                                repoName,
+                                bucket,
+                                basePath,
+                                restoreInfo.snapshotName(),
+                                restoreInfo.snapshotUuid(),
+                                restoreInfo.indexUuid()
+                            );
+                            LOGGER.info(
+                                "Expected snapshot metadata prefix: gs://{}/{} (index.latest, index-*, snap-{}.dat, meta-{}.dat)",
+                                bucket,
+                                basePath,
+                                restoreInfo.snapshotUuid(),
+                                restoreInfo.snapshotUuid()
+                            );
+                        } else {
+                            LOGGER.info(
+                                "Restore path for index {}: repo={}, snapshot={}, snapshot_uuid={}, index_uuid={} (bucket/base_path missing)",
+                                indexName,
+                                repoName,
+                                restoreInfo.snapshotName(),
+                                restoreInfo.snapshotUuid(),
+                                restoreInfo.indexUuid()
+                            );
+                        }
                         pathsToWatch.add(ETCDPathUtils.buildRepositoryPath(clusterName, repoName));
                     }
                 }
@@ -727,6 +757,15 @@ public final class ETCDStateDeserializer {
                 );
                 return null;
             }
+            LOGGER.info(
+                "Loaded restore metadata at {} (repo={}, snapshot={}, snapshot_uuid={}, index_uuid={}, shard_path_type={})",
+                restorePath,
+                repo,
+                snapshot,
+                snapshotUuid,
+                indexUuid,
+                shardPathType
+            );
             return new SnapshotRestoreInfo(repo, snapshot, snapshotUuid, indexUuid, shardPathType);
         } catch (Exception e) {
             LOGGER.warn("Failed to read restore metadata at {}: {}", restorePath, e.getMessage());
@@ -764,6 +803,7 @@ public final class ETCDStateDeserializer {
                 );
                 return null;
             }
+            LOGGER.info("Loaded repository metadata at {} (type={}, settings={})", repositoryPath, type, settings);
             return new SnapshotRepositoryInfo(repositoryName, type, settings);
         } catch (Exception e) {
             LOGGER.warn("Failed to read repository metadata at {}: {}", repositoryPath, e.getMessage());
