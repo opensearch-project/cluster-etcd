@@ -119,7 +119,7 @@ public class ETCDWatcher implements Closeable {
             }
         }
 
-        private final Runnable refreshRunnable = () -> {
+        private void refresh() {
             Runnable action = pendingAction.get();
             if (action != null) {
                 try {
@@ -129,20 +129,16 @@ public class ETCDWatcher implements Closeable {
                 }
             }
             if (pendingAction.compareAndSet(action, null) == false) {
-                // Action has changed. Schedule the next update.
-                threadPool.schedule(getRefreshRunnable(), TimeValue.timeValueMillis(EVENT_COOLDOWN_MILLIS), THREAD_POOL_NAME);
+                // A new change has come in since we started. Schedule the next refresh.
+                threadPool.schedule(this::refresh, TimeValue.timeValueMillis(EVENT_COOLDOWN_MILLIS), THREAD_POOL_NAME);
             }
-        };
-
-        // The following is required so that refreshRunnable can reference itself within its definition.
-        private Runnable getRefreshRunnable() {
-            return refreshRunnable;
         }
 
         private void scheduleRefresh(Runnable nextAction) {
             Runnable previousAction = pendingAction.getAndSet(nextAction);
             if (previousAction == null) {
-                threadPool.schedule(refreshRunnable, TimeValue.timeValueMillis(EVENT_COOLDOWN_MILLIS), THREAD_POOL_NAME);
+                // If there's already a scheduled refresh, it will run this action, instead of the one it was going to run.
+                threadPool.schedule(this::refresh, TimeValue.timeValueMillis(EVENT_COOLDOWN_MILLIS), THREAD_POOL_NAME);
             }
         }
 
