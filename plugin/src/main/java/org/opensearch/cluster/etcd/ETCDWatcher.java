@@ -36,7 +36,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class ETCDWatcher implements Closeable {
-    public static final String THREAD_POOL_NAME = "etcd-watcher";
+    private static final String THREAD_POOL_NAME = "etcd-watcher";
+    private static final int EVENT_COOLDOWN_MILLIS = 1000; // Hold changes for one second, only applying the last seen change.
     private final Logger logger = LogManager.getLogger(ETCDWatcher.class);
     private final ETCDClientHolder etcdClientHolder;
     private final DiscoveryNode localNode;
@@ -116,22 +117,29 @@ public class ETCDWatcher implements Closeable {
                         break;
                 }
             }
+        }
 
+        private void refresh() {
+            Runnable action = pendingAction.get();
+            if (action != null) {
+                try {
+                    action.run();
+                } catch (Exception e) {
+                    logger.error("Error while processing pending action", e);
+                }
+            }
+            if (pendingAction.compareAndSet(action, null) == false) {
+                // A new change has come in since we started. Schedule the next refresh.
+                threadPool.schedule(this::refresh, TimeValue.timeValueMillis(EVENT_COOLDOWN_MILLIS), THREAD_POOL_NAME);
+            }
         }
 
         private void scheduleRefresh(Runnable nextAction) {
-            pendingAction.set(nextAction);
-            threadPool.schedule(() -> {
-                Runnable action = pendingAction.get();
-                if (action != null) {
-                    try {
-                        action.run();
-                    } catch (Exception e) {
-                        logger.error("Error while processing pending action", e);
-                    }
-                }
-                pendingAction.compareAndSet(action, null);
-            }, TimeValue.timeValueMillis(100), THREAD_POOL_NAME);
+            Runnable previousAction = pendingAction.getAndSet(nextAction);
+            if (previousAction == null) {
+                // If there's already a scheduled refresh, it will run this action, instead of the one it was going to run.
+                threadPool.schedule(this::refresh, TimeValue.timeValueMillis(EVENT_COOLDOWN_MILLIS), THREAD_POOL_NAME);
+            }
         }
 
         private static final Set<ErrorCode> FATAL_ERRORS = EnumSet.of(ErrorCode.INTERNAL, ErrorCode.UNKNOWN);
@@ -176,7 +184,7 @@ public class ETCDWatcher implements Closeable {
             Watch.Watcher watcher = client.getWatchClient().watch(watchKey, WatchOption.builder().withRevision(0).build(), nodeListener);
             additionalWatchers.put(keyToWatch, watcher);
         }
-        // Trigger a state reload in case we missed any changes while the watchers wer down
+        // Trigger a state reload in case we missed any changes while the watchers were down
         try {
             loadState(false);
         } catch (ExecutionException | InterruptedException e) {
