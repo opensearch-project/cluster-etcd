@@ -85,6 +85,10 @@ task controllerTest(type: RestIntegTestTask) {
 tasks.named("check").configure { dependsOn(integTest) }
 tasks.named("check").configure { dependsOn(spotlessCheck) }
 
+test {
+  environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
+}
+
 integTest {
     // The --debug-jvm command-line option makes the cluster debuggable; this makes the tests debuggable
     if (System.getProperty("test.debug") != null) {
@@ -181,7 +185,7 @@ versions << [
   'failsafe': '3.3.2',
   'jetcd': rootProject.ext.commonVersions.jetcd,
   'vertx': '5.0.5',
-  'testcontainers': '1.19.7'
+  'testcontainers': '1.21.4'
 ]
 
 dependencies {
