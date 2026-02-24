@@ -323,6 +323,15 @@ public final class ETCDStateDeserializer {
                     name -> fetchRestoreInfo(etcdClient, clusterName, name)
                 );
                 if (restoreInfo != null) {
+                    LOGGER.info(
+                        "Restore metadata present for index {} (repo={}, snapshot={}, snapshot_uuid={}, index_uuid={}, shard_path_type={})",
+                        indexName,
+                        restoreInfo.repository(),
+                        restoreInfo.snapshotName(),
+                        restoreInfo.snapshotUuid(),
+                        restoreInfo.indexUuid(),
+                        restoreInfo.shardPathType()
+                    );
                     String repoName = restoreInfo.repository();
                     SnapshotRepositoryInfo repositoryInfo = repositoryInfoByName.computeIfAbsent(
                         repoName,
@@ -360,7 +369,15 @@ public final class ETCDStateDeserializer {
                             );
                         }
                         pathsToWatch.add(ETCDPathUtils.buildRepositoryPath(clusterName, repoName));
+                    } else {
+                        LOGGER.warn(
+                            "Restore metadata refers to repo {} but repository metadata was not found at {}",
+                            repoName,
+                            ETCDPathUtils.buildRepositoryPath(clusterName, repoName)
+                        );
                     }
+                } else {
+                    LOGGER.info("No restore metadata found for index {}", indexName);
                 }
 
                 // Fetch settings and mappings from separate etcd paths
@@ -718,6 +735,7 @@ public final class ETCDStateDeserializer {
         try (KV kvClient = etcdClient.getKVClient()) {
             GetResponse response = kvClient.get(ByteSequence.from(restorePath, StandardCharsets.UTF_8)).get();
             if (response.getKvs().isEmpty()) {
+                LOGGER.info("No restore metadata found at {} (empty response)", restorePath);
                 return null;
             }
             KeyValue kv = response.getKvs().getFirst();

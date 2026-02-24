@@ -102,12 +102,20 @@ public class DataNodeState extends NodeState {
             }
             IndexId indexId = new IndexId(indexName, restoreInfo.indexUuid(), shardPathType);
             logger.info(
-                "Shard {}[{}] restore configured (repo={}, snapshot={}, shard_path_type={}), using SnapshotRecoverySource",
+                "Shard {}[{}] restore configured (repo={}, snapshot={}, snapshot_uuid={}, index_uuid={}, shard_path_type={}), using SnapshotRecoverySource",
                 indexName,
                 shardNum,
                 restoreInfo.repository(),
                 restoreInfo.snapshotName(),
+                restoreInfo.snapshotUuid(),
+                restoreInfo.indexUuid(),
                 shardPathType
+            );
+            logger.info(
+                "SnapshotRecoverySource indexId for shard {}[{}]: {}",
+                indexName,
+                shardNum,
+                indexId
             );
             return new RecoverySource.SnapshotRecoverySource(
                 RecoverySource.SnapshotRecoverySource.NO_API_RESTORE_UUID,
