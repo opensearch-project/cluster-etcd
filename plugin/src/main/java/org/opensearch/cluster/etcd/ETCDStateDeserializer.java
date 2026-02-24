@@ -318,6 +318,9 @@ public final class ETCDStateDeserializer {
 
             for (Map.Entry<String, Map<String, Object>> entry : localShards.entrySet()) {
                 String indexName = entry.getKey();
+                // Always watch restore metadata so changes are picked up dynamically.
+                String restorePath = ETCDPathUtils.buildIndexRestorePath(clusterName, indexName);
+                pathsToWatch.add(restorePath);
                 SnapshotRestoreInfo restoreInfo = restoreInfoByIndex.computeIfAbsent(
                     indexName,
                     name -> fetchRestoreInfo(etcdClient, clusterName, name)
