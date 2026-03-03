@@ -81,27 +81,25 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
         ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(
-            localNode,
-            new ETCDClientHolder(() -> etcdClient),
-            createMockOpenSearchClient(),
-            nodeEnvironment,
-            clusterService,
-            threadPool
-        );
-
-        // Test start and stop
-        heartbeat.start();
-
-        // Give the heartbeat a moment to potentially execute
         try {
-            Thread.sleep(100);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                localNode,
+                new ETCDClientHolder(() -> etcdClient),
+                createMockOpenSearchClient(),
+                nodeEnvironment,
+                clusterService,
+                threadPool,
+                100
+            );
+
+            // Test start and stop
+            heartbeat.start();
+
+            // Give the heartbeat a moment to potentially execute
+            await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> { verify(etcdClient, atLeastOnce()).getKVClient(); });
         } finally {
             threadPool.shutdown();
         }
-
         // The test should complete without hanging, indicating proper scheduler management
         assertTrue("Test completed successfully", true);
     }
@@ -159,30 +157,28 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
         ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(
-            localNode,
-            new ETCDClientHolder(() -> etcdClient),
-            createMockOpenSearchClient(),
-            nodeEnvironment,
-            clusterService,
-            threadPool,
-            100
-        );
-
-        // Test that heartbeat can be constructed and managed with routing information
-        heartbeat.start();
-
-        // Give it a moment for potential execution
         try {
-            Thread.sleep(200);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                localNode,
+                new ETCDClientHolder(() -> etcdClient),
+                createMockOpenSearchClient(),
+                nodeEnvironment,
+                clusterService,
+                threadPool,
+                100
+            );
+
+            // Test that heartbeat can be constructed and managed with routing information
+            heartbeat.start();
+
+            // Give it a moment for potential execution
+            await().atMost(1, TimeUnit.SECONDS).untilAsserted(() -> {
+                // Verify that ETCD client was accessed (indicates heartbeat execution attempted)
+                verify(etcdClient, atLeastOnce()).getKVClient();
+            });
         } finally {
             threadPool.shutdown();
         }
-
-        // Verify that ETCD client was accessed (indicates heartbeat execution attempted)
-        verify(etcdClient, atLeastOnce()).getKVClient();
     }
 
     public void testETCDHeartbeatErrorHandling() throws InterruptedException {
@@ -245,31 +241,26 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
         ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
-        ETCDHeartbeat heartbeat = new ETCDHeartbeat(
-            localNode,
-            new ETCDClientHolder(() -> etcdClient),
-            createMockOpenSearchClient(),
-            nodeEnvironment,
-            clusterService,
-            threadPool,
-            100
-        );
-
-        // Start heartbeat - it should handle the cluster service error gracefully
-        heartbeat.start();
-
-        // Wait a bit to allow the heartbeat to attempt publishing
         try {
-            Thread.sleep(200);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            ETCDHeartbeat heartbeat = new ETCDHeartbeat(
+                localNode,
+                new ETCDClientHolder(() -> etcdClient),
+                createMockOpenSearchClient(),
+                nodeEnvironment,
+                clusterService,
+                threadPool,
+                100
+            );
+
+            // Start heartbeat - it should handle the cluster service error gracefully
+            heartbeat.start();
+
+            // Test that the heartbeat handles cluster service errors gracefully
+            // The heartbeat should still attempt to publish (without routing info) despite the cluster service error
+            await().atMost(1, TimeUnit.SECONDS).untilAsserted(() -> { verify(etcdClient, atLeastOnce()).getKVClient(); });
         } finally {
             threadPool.shutdown();
         }
-
-        // Test that the heartbeat handles cluster service errors gracefully
-        // The heartbeat should still attempt to publish (without routing info) despite the cluster service error
-        verify(etcdClient, atLeastOnce()).getKVClient();
     }
 
     private static DiscoveryNode createMockDiscoveryNode() {
@@ -618,7 +609,6 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
                     assertTrue("Timestamp should be updated", currentTimestamp > firstTimestamp);
                 });
-                threadPool.shutdown();
             } finally {
                 threadPool.shutdown();
             }

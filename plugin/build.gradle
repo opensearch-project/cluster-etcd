@@ -85,6 +85,10 @@ task controllerTest(type: RestIntegTestTask) {
 tasks.named("check").configure { dependsOn(integTest) }
 tasks.named("check").configure { dependsOn(spotlessCheck) }
 
+test {
+  environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
+}
+
 integTest {
     // The --debug-jvm command-line option makes the cluster debuggable; this makes the tests debuggable
     if (System.getProperty("test.debug") != null) {
@@ -181,11 +185,11 @@ versions << [
   'failsafe': '3.3.2',
   'jetcd': rootProject.ext.commonVersions.jetcd,
   'vertx': '5.0.5',
-  'testcontainers': '1.19.7'
+  'testcontainers': '1.21.4'
 ]
 
 dependencies {
-  testImplementation "com.fasterxml.jackson.core:jackson-annotations:${versions.jackson}"
+  testImplementation "com.fasterxml.jackson.core:jackson-annotations:${versions.jackson_annotations}"
   api "com.fasterxml.jackson.core:jackson-core:${versions.jackson}"
   testImplementation "com.github.docker-java:docker-java-api:${versions.docker}"
   testImplementation "com.github.docker-java:docker-java-transport:${versions.docker}"
@@ -395,9 +399,6 @@ thirdPartyAudit {
      'io.netty.buffer.FreeChunkEvent',
      'io.netty.buffer.PooledByteBufAllocator',
      'io.netty.buffer.ReallocateBufferEvent',
-     'io.netty.buffer.ReturnChunkEvent',
      'io.netty.util.internal.PlatformDependent0$5'
-
-
     )
 }
