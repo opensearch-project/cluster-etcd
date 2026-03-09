@@ -5,7 +5,7 @@ allprojects {
             // Normally this isn't necessary, but we have Java sources in
             // non-standard places
             removeUnusedImports()
-            eclipse().withP2Mirrors(Map.of("https://download.eclipse.org/", "https://mirror.umd.edu/eclipse/")).configFile rootProject.file('formatter/formatterConfig.xml')
+            eclipse().configFile rootProject.file('formatter/formatterConfig.xml')
             trimTrailingWhitespace()
             endWithNewline();
 
