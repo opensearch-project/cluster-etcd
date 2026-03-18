@@ -326,51 +326,12 @@ public final class ETCDStateDeserializer {
                     name -> fetchRestoreInfo(etcdClient, clusterName, name)
                 );
                 if (restoreInfo != null) {
-                    LOGGER.info(
-                        "Restore metadata present for index {} (repo={}, snapshot={}, snapshot_uuid={}, index_uuid={}, shard_path_type={})",
-                        indexName,
-                        restoreInfo.repository(),
-                        restoreInfo.snapshotName(),
-                        restoreInfo.snapshotUuid(),
-                        restoreInfo.indexUuid(),
-                        restoreInfo.shardPathType()
-                    );
                     String repoName = restoreInfo.repository();
                     SnapshotRepositoryInfo repositoryInfo = repositoryInfoByName.computeIfAbsent(
                         repoName,
                         name -> fetchRepositoryInfo(etcdClient, clusterName, name)
                     );
                     if (repositoryInfo != null) {
-                        Object bucket = repositoryInfo.settings().get("bucket");
-                        Object basePath = repositoryInfo.settings().get("base_path");
-                        if (bucket != null && basePath != null) {
-                            LOGGER.info(
-                                "Restore path for index {}: repo={}, bucket={}, base_path={}, snapshot={}, snapshot_uuid={}, index_uuid={}",
-                                indexName,
-                                repoName,
-                                bucket,
-                                basePath,
-                                restoreInfo.snapshotName(),
-                                restoreInfo.snapshotUuid(),
-                                restoreInfo.indexUuid()
-                            );
-                            LOGGER.info(
-                                "Expected snapshot metadata prefix: gs://{}/{} (index.latest, index-*, snap-{}.dat, meta-{}.dat)",
-                                bucket,
-                                basePath,
-                                restoreInfo.snapshotUuid(),
-                                restoreInfo.snapshotUuid()
-                            );
-                        } else {
-                            LOGGER.info(
-                                "Restore path for index {}: repo={}, snapshot={}, snapshot_uuid={}, index_uuid={} (bucket/base_path missing)",
-                                indexName,
-                                repoName,
-                                restoreInfo.snapshotName(),
-                                restoreInfo.snapshotUuid(),
-                                restoreInfo.indexUuid()
-                            );
-                        }
                         pathsToWatch.add(ETCDPathUtils.buildRepositoryPath(clusterName, repoName));
                     } else {
                         LOGGER.warn(
@@ -379,8 +340,6 @@ public final class ETCDStateDeserializer {
                             ETCDPathUtils.buildRepositoryPath(clusterName, repoName)
                         );
                     }
-                } else {
-                    LOGGER.info("No restore metadata found for index {}", indexName);
                 }
 
                 // Fetch settings and mappings from separate etcd paths
