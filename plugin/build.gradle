@@ -334,6 +334,7 @@ thirdPartyAudit {
      'io.netty.internal.tcnative.ResultCallback',
      'io.netty.internal.tcnative.SSL',
      'io.netty.internal.tcnative.SSLContext',
+     'io.netty.internal.tcnative.SSLCredential',
      'io.netty.internal.tcnative.SSLPrivateKeyMethod',
      'io.netty.internal.tcnative.SSLSession',
      'io.netty.internal.tcnative.SSLSessionCache',
