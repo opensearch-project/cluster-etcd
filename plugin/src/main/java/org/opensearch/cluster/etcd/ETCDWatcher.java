@@ -31,6 +31,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -81,7 +82,7 @@ public class ETCDWatcher implements Closeable {
     }
 
     public static ExecutorBuilder<?> createExecutorBuilder(Settings settings) {
-        return new FixedExecutorBuilder(settings, THREAD_POOL_NAME, 1, 100, THREAD_POOL_NAME);
+        return new FixedExecutorBuilder(Objects.requireNonNull(settings), THREAD_POOL_NAME, 1, 100, THREAD_POOL_NAME);
     }
 
     private void loadState(boolean initialLoad) throws ExecutionException, InterruptedException {

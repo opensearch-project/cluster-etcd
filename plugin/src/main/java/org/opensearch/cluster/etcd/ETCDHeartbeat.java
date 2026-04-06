@@ -23,6 +23,7 @@ import org.opensearch.monitor.os.OsProbe;
 import org.opensearch.monitor.os.OsStats;
 import org.opensearch.monitor.jvm.JvmStats;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import org.apache.logging.log4j.LogManager;
@@ -171,7 +172,7 @@ public class ETCDHeartbeat {
     }
 
     public static ExecutorBuilder<?> createExecutorBuilder(Settings settings) {
-        return new FixedExecutorBuilder(settings, THREAD_POOL_NAME, 1, 1, THREAD_POOL_NAME);
+        return new FixedExecutorBuilder(Objects.requireNonNull(settings), THREAD_POOL_NAME, 1, 1, THREAD_POOL_NAME);
     }
 
     public void start() {

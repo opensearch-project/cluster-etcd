@@ -75,7 +75,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
         String configPath = ETCDPathUtils.buildSearchUnitGoalStatePath(localNode, clusterName);
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(Settings.EMPTY));
             try (
                 ETCDClientHolder etcdClientHolder = new ETCDClientHolder(
                     () -> Client.builder().endpoints(etcdCluster.clientEndpoints()).build()
@@ -155,7 +155,7 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(Settings.EMPTY));
             try (
                 ETCDClientHolder etcdClientHolder = new ETCDClientHolder(
                     () -> Client.builder().endpoints(etcdCluster.clientEndpoints()).build()
@@ -288,12 +288,12 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(Settings.EMPTY));
             try (
                 ETCDClientHolder etcdClientHolder = new ETCDClientHolder(
                     () -> Client.builder().endpoints(etcdCluster.clientEndpoints()).build()
                 );
-                ETCDWatcher etcdWatcher = new ETCDWatcher(
+                ETCDWatcher ignored = new ETCDWatcher(
                     localNode,
                     ByteSequence.from(configPath, StandardCharsets.UTF_8),
                     mockNodeStateApplier,
@@ -376,12 +376,12 @@ public class ETCDWatcherTests extends OpenSearchTestCase {
         String configPath = ETCDPathUtils.buildSearchUnitGoalStatePath(localNode, clusterName);
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDWatcher.createExecutorBuilder(Settings.EMPTY));
             try (
                 ETCDClientHolder etcdClientHolder = new ETCDClientHolder(
                     () -> Client.builder().endpoints(etcdCluster.clientEndpoints()).build()
                 );
-                ETCDWatcher etcdWatcher = new ETCDWatcher(
+                ETCDWatcher ignored = new ETCDWatcher(
                     localNode,
                     ByteSequence.from(configPath, StandardCharsets.UTF_8),
                     mockNodeStateApplier,
