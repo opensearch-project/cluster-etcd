@@ -80,7 +80,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(etcdClient.getKVClient()).thenReturn(kvClient);
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
-        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
         try {
             ETCDHeartbeat heartbeat = new ETCDHeartbeat(
                 localNode,
@@ -116,7 +116,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(etcdClient.getKVClient()).thenReturn(kvClient);
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
-        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
         ETCDHeartbeat heartbeat = new ETCDHeartbeat(
             localNode,
             new ETCDClientHolder(() -> etcdClient),
@@ -156,7 +156,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(etcdClient.getKVClient()).thenReturn(kvClient);
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
-        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
         try {
             ETCDHeartbeat heartbeat = new ETCDHeartbeat(
                 localNode,
@@ -195,7 +195,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
             CompletableFuture.failedFuture(new RuntimeException("ETCD connection failed"))
         );
 
-        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
         ETCDHeartbeat heartbeat = new ETCDHeartbeat(
             localNode,
             new ETCDClientHolder(() -> etcdClient),
@@ -240,7 +240,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(etcdClient.getKVClient()).thenReturn(kvClient);
         when(kvClient.put(any(ByteSequence.class), any(ByteSequence.class))).thenReturn(CompletableFuture.completedFuture(null));
 
-        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+        ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
         try {
             ETCDHeartbeat heartbeat = new ETCDHeartbeat(
                 localNode,
@@ -411,7 +411,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
                 ETCDHeartbeat heartbeat = new ETCDHeartbeat(
@@ -499,7 +499,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterServiceWithRouting(clusterName);
                 ETCDHeartbeat heartbeat = new ETCDHeartbeat(
@@ -568,7 +568,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
                 ETCDHeartbeat heartbeat = new ETCDHeartbeat(
@@ -628,7 +628,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
                 ETCDHeartbeat heartbeat = new ETCDHeartbeat(
@@ -690,7 +690,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
                 ETCDHeartbeat heartbeat = new ETCDHeartbeat(
@@ -803,7 +803,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
                 ETCDHeartbeat heartbeat = new ETCDHeartbeat(
@@ -855,7 +855,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
 
         try (EtcdCluster etcdCluster = Etcd.builder().withNodes(1).build()) {
             etcdCluster.start();
-            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(null));
+            ThreadPool threadPool = new TestThreadPool(localNode.getName(), ETCDHeartbeat.createExecutorBuilder(Settings.EMPTY));
             try (Client etcdClient = Client.builder().endpoints(etcdCluster.clientEndpoints()).build()) {
                 ClusterService clusterService = createMockClusterService();
                 ETCDHeartbeat heartbeat = new ETCDHeartbeat(
