@@ -9,6 +9,7 @@ import io.etcd.jetcd.Client;
 import io.etcd.jetcd.KV;
 import io.etcd.jetcd.KeyValue;
 import io.etcd.jetcd.Watch;
+import io.etcd.jetcd.kv.GetResponse;
 import io.etcd.jetcd.common.exception.ErrorCode;
 import io.etcd.jetcd.common.exception.EtcdException;
 import io.etcd.jetcd.options.WatchOption;
@@ -28,7 +29,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -67,10 +67,10 @@ public class ETCDWatcher implements Closeable {
         this.nodeStateApplier = nodeStateApplier;
         this.threadPool = threadPool;
         this.clusterName = clusterName;
-        loadState(true);
+        long revision = loadState(true);
         nodeWatcher = etcdClientHolder.getClient()
             .getWatchClient()
-            .watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), nodeListener);
+            .watch(nodeGoalStateKey, WatchOption.builder().withRevision(revision + 1).build(), nodeListener);
     }
 
     @Override
@@ -85,13 +85,15 @@ public class ETCDWatcher implements Closeable {
         return new FixedExecutorBuilder(Objects.requireNonNull(settings), THREAD_POOL_NAME, 1, 100, THREAD_POOL_NAME);
     }
 
-    private void loadState(boolean initialLoad) throws ExecutionException, InterruptedException {
+    private long loadState(boolean initialLoad) throws ExecutionException, InterruptedException {
         // Load the goal state of the node from etcd
         try (KV kvClient = etcdClientHolder.getClient().getKVClient()) {
-            List<KeyValue> kvs = kvClient.get(nodeGoalStateKey).get().getKvs();
+            GetResponse response = kvClient.get(nodeGoalStateKey).get();
+            List<KeyValue> kvs = response.getKvs();
             if (kvs != null && kvs.isEmpty() == false && kvs.getFirst() != null) {
                 handleNodeChange(kvs.getFirst(), initialLoad);
             }
+            return response.getHeader().getRevision();
         }
     }
 
@@ -176,30 +178,29 @@ public class ETCDWatcher implements Closeable {
                 logger.error("Error while closing additional watcher", e);
             }
         }
+        additionalWatchers.clear();
         etcdClientHolder.resetClient();
-        Client client = etcdClientHolder.getClient();
-        nodeWatcher = client.getWatchClient().watch(nodeGoalStateKey, WatchOption.builder().withRevision(0).build(), nodeListener);
-        Set<String> keysToWatch = new HashSet<>(additionalWatchers.keySet());
-        for (String keyToWatch : keysToWatch) {
-            ByteSequence watchKey = ByteSequence.from(keyToWatch, java.nio.charset.StandardCharsets.UTF_8);
-            Watch.Watcher watcher = client.getWatchClient().watch(watchKey, WatchOption.builder().withRevision(0).build(), nodeListener);
-            additionalWatchers.put(keyToWatch, watcher);
-        }
-        // Trigger a state reload in case we missed any changes while the watchers were down
+        long watchRevision = 0;
         try {
-            loadState(false);
+            long revision = loadState(false);
+            watchRevision = revision + 1;
         } catch (ExecutionException | InterruptedException e) {
             logger.error("Error while reloading node state", e);
         }
+        Client client = etcdClientHolder.getClient();
+        nodeWatcher = client.getWatchClient()
+            .watch(nodeGoalStateKey, WatchOption.builder().withRevision(watchRevision).build(), nodeListener);
     }
 
     private void handleNodeChange(KeyValue keyValue, boolean isInitialLoad) {
         try {
             ByteSequence goalState;
+            long revision;
             Client client = etcdClientHolder.getClient();
             try (KV kvClient = client.getKVClient()) {
-                List<KeyValue> kvs = kvClient.get(nodeGoalStateKey).get().getKvs();
-                goalState = kvs.getFirst().getValue();
+                GetResponse response = kvClient.get(nodeGoalStateKey).get();
+                goalState = response.getKvs().getFirst().getValue();
+                revision = response.getHeader().getRevision();
             }
             ETCDStateDeserializer.NodeStateResult nodeStateResult = ETCDStateDeserializer.deserializeNodeState(
                 localNode,
@@ -212,7 +213,7 @@ public class ETCDWatcher implements Closeable {
                 if (additionalWatchers.containsKey(keyToWatch) == false) {
                     ByteSequence watchKey = ByteSequence.from(keyToWatch, java.nio.charset.StandardCharsets.UTF_8);
                     Watch.Watcher watcher = client.getWatchClient()
-                        .watch(watchKey, WatchOption.builder().withRevision(0).build(), nodeListener);
+                        .watch(watchKey, WatchOption.builder().withRevision(revision + 1).build(), nodeListener);
                     additionalWatchers.put(keyToWatch, watcher);
                 }
             }
