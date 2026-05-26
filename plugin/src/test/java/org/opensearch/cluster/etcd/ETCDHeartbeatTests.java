@@ -17,6 +17,7 @@ import org.opensearch.action.admin.cluster.node.stats.NodesStatsRequest;
 import org.opensearch.action.admin.cluster.node.stats.NodesStatsResponse;
 import org.opensearch.action.admin.indices.stats.CommonStats;
 import org.opensearch.action.admin.indices.stats.IndexShardStats;
+import org.opensearch.action.admin.indices.stats.StatusCounterStats;
 import org.opensearch.action.support.AdapterActionFuture;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
@@ -276,7 +277,7 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
         when(adminClient.cluster()).thenReturn(clusterAdminClient);
 
         Map<Index, List<IndexShardStats>> shardStats = new HashMap<>();
-        NodeIndicesStats nodeIndicesStats = new NodeIndicesStats(new CommonStats(), shardStats, null);
+        NodeIndicesStats nodeIndicesStats = new NodeIndicesStats(new CommonStats(), shardStats, null, new StatusCounterStats());
 
         NodesStatsResponse nodesStatsResponse = new NodesStatsResponse(
             CLUSTER_NAME,
@@ -285,6 +286,10 @@ public class ETCDHeartbeatTests extends OpenSearchTestCase {
                     createMockDiscoveryNode(),
                     System.currentTimeMillis(),
                     nodeIndicesStats,
+                    null,
+                    null,
+                    null,
+                    null,
                     null,
                     null,
                     null,
