@@ -7,11 +7,11 @@ surface, generated from the
 
 ## Status
 
-Early. The full control plane surface is routed. Ingest pipeline CRUD is implemented;
-everything else returns `501 Not Implemented`.
+Early. The full control plane surface is routed. `info`, `ping`, and ingest pipeline CRUD
+are implemented; everything else returns `501 Not Implemented`.
 
 ```
-128 routes, 81 operation groups, 3 implemented, 78 stubbed
+128 routes, 81 operation groups, 5 implemented, 76 stubbed
 ```
 
 | namespace | routes | implemented |
@@ -19,12 +19,12 @@ everything else returns `501 Not Implemented`.
 | `indices` | 67 | — |
 | `cluster` | 23 | — |
 | `snapshot` | 16 | — |
-| `_core` (info, ping, stored scripts) | 10 | — |
+| `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
 | `search_pipeline` | 4 | — |
 | `dangling_indices` | 3 | — |
 
-**The remaining 78 operation groups return `501 Not Implemented`** with a structured
+**The remaining 76 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -457,7 +457,11 @@ character for character against the server's response.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 78 operations that are still stubbed.
+- Everything about the 76 operations that are still stubbed.
+- The `info` response is structurally identical to a live 3.9.0 cluster and every
+  compatibility-relevant value matches. What differs is instance-specific and deliberate:
+  `build_hash`/`build_date` are `unknown` unless injected at build time, and `build_type` is
+  `controlplane` rather than `tar`.
 
 The right way to keep closing these out is the spec repo's own test harness
 (`tools/src/tester`), which runs ~412 YAML story files against a live cluster and

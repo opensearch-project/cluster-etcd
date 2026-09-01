@@ -76,12 +76,16 @@ if [[ ! -d "$SPEC_REPO/node_modules" ]]; then
 fi
 
 require_reachable() {
-  local url="$1" what="$2"
-  if curl -fsS -m 5 -o /dev/null "$url" 2>/dev/null; then
+  local url="$1" what="$2" code
+  # Any HTTP status means reachable. Deliberately not `curl -f`: the control plane answers 501 for
+  # unimplemented operations and 404 for an empty pipeline listing, both of which are correct and
+  # neither of which means it is down.
+  code="$(curl -sS -o /dev/null -m 5 -w '%{http_code}' "$url" 2>/dev/null || true)"
+  if [[ -n "$code" && "$code" != "000" ]]; then
     return 0
   fi
   cat >&2 <<EOF
-error: no $what responding at $url
+error: nothing answered HTTP at $url ($what)
 
 If this is the control plane, start it on a port that does not collide with a real OpenSearch:
 
@@ -94,6 +98,21 @@ EOF
 
 require_reachable "$URL" "control plane"
 [[ -n "$REFERENCE" ]] && require_reachable "$REFERENCE" "reference OpenSearch"
+
+# The tester calls wait_until_available() before any story runs: it GETs / and reads
+# version.number off the response. If `info` is unimplemented the 501 is retried 20 times at 5s
+# intervals before failing, which looks like a hang. Fail fast with an explanation instead.
+info_code="$(curl -sS -o /dev/null -m 5 -w '%{http_code}' "$URL/" 2>/dev/null || true)"
+if [[ "$info_code" != "200" ]]; then
+  cat >&2 <<EOF
+error: GET $URL/ returned $info_code, but the harness requires it to return 200
+
+The tester reads version.number from GET / before running any story, and retries for 100 seconds
+before giving up. The 'info' operation group has to be implemented for conformance testing to work
+at all -- it is the gate for everything else.
+EOF
+  exit 1
+fi
 
 if [[ -n "$REFERENCE" && "$REFERENCE" == "$URL" ]]; then
   echo "error: --reference is the same URL as --url; nothing to compare" >&2

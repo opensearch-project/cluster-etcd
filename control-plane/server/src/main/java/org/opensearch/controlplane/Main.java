@@ -5,6 +5,7 @@
 package org.opensearch.controlplane;
 
 import org.opensearch.controlplane.handler.ControlPlaneHandlers;
+import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.HandlerRegistry;
 import org.opensearch.controlplane.handler.OperationContextFactory;
 import org.opensearch.controlplane.store.FileSystemKeyValueStore;
@@ -30,12 +31,15 @@ public final class Main {
         int port = DEFAULT_PORT;
         boolean dumpRoutes = false;
         Path dataPath = Path.of(DEFAULT_DATA_PATH);
+        ClusterIdentity identity = ClusterIdentity.defaults();
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--host" -> host = requireValue(args, ++i, "--host");
                 case "--port" -> port = Integer.parseInt(requireValue(args, ++i, "--port"));
                 case "--data-path" -> dataPath = Path.of(requireValue(args, ++i, "--data-path"));
+                case "--cluster-name" -> identity = identity.withClusterName(requireValue(args, ++i, "--cluster-name"));
+                case "--api-version" -> identity = identity.withVersion(requireValue(args, ++i, "--api-version"));
                 case "--dump-routes" -> dumpRoutes = true;
                 case "--help", "-h" -> {
                     printUsage();
@@ -55,7 +59,7 @@ public final class Main {
         // needed to serve multiple tenants; see the README's Multi-tenancy section.
         KeyValueStore store = new FileSystemKeyValueStore(dataPath);
         OperationContextFactory contextFactory = new OperationContextFactory(store, new SingleTenantResolver());
-        HandlerRegistry registry = ControlPlaneHandlers.build();
+        HandlerRegistry registry = ControlPlaneHandlers.build(identity);
 
         ControlPlaneServer server = new ControlPlaneServer(host, port, registry, contextFactory);
         if (dumpRoutes) {
@@ -111,15 +115,23 @@ public final class Main {
     }
 
     private static void printUsage() {
-        System.out.println("""
+        System.out.printf(
+            Locale.ROOT,
+            """
             Usage: control-plane [options]
 
-              --host <addr>       bind address (default 127.0.0.1)
-              --port <port>       listen port, 0 for ephemeral (default 9200)
-              --data-path <dir>   filesystem store directory (default ./data)
+              --host <addr>       bind address (default %s)
+              --port <port>       listen port, 0 for ephemeral (default %d)
+              --data-path <dir>   filesystem store directory (default %s)
+              --cluster-name <n>  cluster_name reported by GET / (default opensearch)
+              --api-version <v>   OpenSearch API version claimed by GET / (default %s)
               --dump-routes       print the route table and handler status, then start
               --help              show this message
-            """);
+            %n""",
+            DEFAULT_HOST,
+            DEFAULT_PORT,
+            DEFAULT_DATA_PATH,
+            ClusterIdentity.DEFAULT_VERSION
+        );
     }
-
 }
