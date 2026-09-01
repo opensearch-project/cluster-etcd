@@ -11,6 +11,8 @@ import org.opensearch.controlplane.store.FileSystemKeyValueStore;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.tenant.SingleTenantResolver;
 
+import java.net.BindException;
+import java.net.SocketException;
 import java.nio.file.Path;
 import java.util.Locale;
 
@@ -62,7 +64,34 @@ public final class Main {
 
         Runtime.getRuntime().addShutdownHook(new Thread(server::close, "control-plane-shutdown"));
 
-        server.start();
+        try {
+            server.start();
+        } catch (Exception e) {
+            // Caught broadly and then narrowed by hand, rather than with specific catch clauses.
+            // Netty's bind future rethrows the original failure via an unchecked cast, so the
+            // compiler does not believe BindException or SocketException can be thrown here and
+            // rejects a catch clause for either. Same reason NettyHttpServer.start catches Throwable.
+            if (e instanceof BindException) {
+                // Overwhelmingly the common case in development: a real OpenSearch already holds 9200.
+                System.err.printf(
+                    Locale.ROOT,
+                    "error: cannot bind %s:%d (%s)%n%n"
+                        + "Something is already listening there. During development that is usually a real%n"
+                        + "OpenSearch; pick another port and you can run both side by side:%n%n"
+                        + "  --port 9400%n",
+                    host,
+                    port,
+                    e.getMessage()
+                );
+            } else if (e instanceof SocketException) {
+                System.err.printf(Locale.ROOT, "error: cannot bind %s:%d (%s)%n", host, port, e.getMessage());
+            } else {
+                throw e;
+            }
+            System.exit(1);
+            return;
+        }
+
         System.out.printf(
             Locale.ROOT,
             "OpenSearch control plane listening on %s:%d%n%s%nstore: %s%n",

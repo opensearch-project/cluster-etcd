@@ -29,12 +29,12 @@ error naming the operation group, so the routing surface is complete from day on
 clients get an honest answer rather than a 404.
 
 ```bash
-./gradlew :server:run --args="--port 9200 --data-path /tmp/cp"
+./gradlew :server:run --args="--port 9400 --data-path /tmp/cp"
 
-curl -XPUT localhost:9200/_ingest/pipeline/p -H 'Content-Type: application/json' \
+curl -XPUT localhost:9400/_ingest/pipeline/p -H 'Content-Type: application/json' \
      -d '{"description":"noop","processors":[]}'
-curl localhost:9200/_ingest/pipeline?pretty
-curl -XPUT localhost:9200/my-index          # 501, not yet implemented
+curl localhost:9400/_ingest/pipeline?pretty
+curl -XPUT localhost:9400/my-index          # 501, not yet implemented
 ```
 
 ## Where this sits
@@ -169,18 +169,35 @@ used to validate OpenSearch itself. It replays YAML story files over HTTP and va
 asserting they do.
 
 ```bash
-./gradlew :server:run --args="--port 9200 --data-path /tmp/cp-conformance"
+# a real OpenSearch usually already holds 9200, so run the control plane elsewhere
+./gradlew :server:run --args="--port 9400 --data-path /tmp/cp-conformance"
 
 # in another shell
 conformance/run.sh
+conformance/run.sh --reference http://localhost:9200   # differential; see below
 conformance/run.sh --spec-repo /path/to/opensearch-api-specification
 conformance/run.sh -- --verbose          # anything after -- goes to the tester
 conformance/run.sh --all                 # every story; a to-do list, not a gate
 ```
 
+### Running against a reference OpenSearch
+
+`--reference URL` replays the same stories against a real OpenSearch and compares, which separates
+two failure modes that look identical otherwise:
+
+| control plane | reference | meaning |
+|---|---|---|
+| pass | pass | agree |
+| **fail** | **pass** | **a real divergence — this is the one that matters** |
+| pass | fail | story depends on something out of scope, or a version difference |
+| fail | fail | story or scope issue, not evidence against us |
+
+Only the second row exits non-zero. Without a reference, a story that fails because it reaches an
+unimplemented operation is indistinguishable from one that fails because we got the behaviour wrong,
+and the whole point of the harness is telling those apart.
+
 `conformance/stories.txt` lists the stories to run. Only stories whose every chapter is within the
-implemented surface belong there — one touching an unimplemented operation fails on the 501, which
-is correct but not useful signal. Add a line as each operation group lands. Right now that is one
+implemented surface belong there. Add a line as each operation group lands. Right now that is one
 story, `default/ingest/pipeline.yaml`, which exercises put, get-by-id, get-all, and delete.
 
 Stories run **in place**, one tester invocation each, rather than staged into a temp directory: the
@@ -257,7 +274,7 @@ Requires JDK 21.
 
 ```bash
 ./gradlew build                      # generate routes, compile, test
-./gradlew :server:run --args="--port 9200 --data-path /tmp/cp"
+./gradlew :server:run --args="--port 9400 --data-path /tmp/cp"
 ./gradlew :server:run                # start on 127.0.0.1:9200
 ./gradlew :server:run --args="--dump-routes --port 9200"
 ./gradlew :server:generateRoutes     # regenerate after editing the scope file

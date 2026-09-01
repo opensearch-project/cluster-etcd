@@ -11,19 +11,28 @@
 # they do.
 #
 # Usage:
-#   conformance/run.sh [--url URL] [--spec-repo PATH] [--all] [-- <extra tester args>]
+#   conformance/run.sh [--url URL] [--reference URL] [--spec-repo PATH] [--all]
+#                      [-- <extra tester args>]
 #
-#   --url URL          control plane base URL (default http://localhost:9200)
+#   --url URL          control plane base URL (default http://localhost:9400)
+#   --reference URL    also run the same stories against a real OpenSearch and compare. This is
+#                      what separates "we are wrong" from "this story does not pass against
+#                      OpenSearch either", which happens when a story depends on something out of
+#                      scope or on a different server version.
 #   --spec-repo PATH   opensearch-api-specification checkout (default ../opensearch-api-specification)
-#   --all              run every story in the spec repo in one pass, not just the manifest.
-#                      Expect large numbers of failures: everything unimplemented answers 501.
-#                      Useful as a to-do list, not as a pass/fail gate.
+#   --all              run every story in one pass instead of the manifest. Expect large numbers of
+#                      failures: everything unimplemented answers 501. A to-do list, not a gate.
 #
 # Anything after -- is passed through to the tester, e.g. --verbose or --coverage-report.
+#
+# Typical development setup, with a real OpenSearch on 9200:
+#   ./gradlew :server:run --args="--port 9400 --data-path /tmp/cp-conformance"
+#   conformance/run.sh --reference http://localhost:9200
 
 set -euo pipefail
 
-URL="http://localhost:9200"
+URL="http://localhost:9400"
+REFERENCE=""
 SPEC_REPO=""
 RUN_ALL=0
 EXTRA_ARGS=()
@@ -34,10 +43,11 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --url) URL="$2"; shift 2 ;;
+    --reference) REFERENCE="$2"; shift 2 ;;
     --spec-repo) SPEC_REPO="$2"; shift 2 ;;
     --all) RUN_ALL=1; shift ;;
     --) shift; EXTRA_ARGS=("$@"); break ;;
-    -h|--help) sed -n '7,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '7,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -65,17 +75,29 @@ if [[ ! -d "$SPEC_REPO/node_modules" ]]; then
   exit 1
 fi
 
-if ! curl -fsS -m 5 -o /dev/null "$URL" 2>/dev/null; then
+require_reachable() {
+  local url="$1" what="$2"
+  if curl -fsS -m 5 -o /dev/null "$url" 2>/dev/null; then
+    return 0
+  fi
   cat >&2 <<EOF
-error: no control plane responding at $URL
+error: no $what responding at $url
 
-Start it first:
+If this is the control plane, start it on a port that does not collide with a real OpenSearch:
 
-  ./gradlew :server:run --args="--port 9200 --data-path /tmp/cp-conformance"
+  ./gradlew :server:run --args="--port 9400 --data-path /tmp/cp-conformance"
 
 A throwaway --data-path is worth using: the harness creates and deletes real resources.
 EOF
   exit 1
+}
+
+require_reachable "$URL" "control plane"
+[[ -n "$REFERENCE" ]] && require_reachable "$REFERENCE" "reference OpenSearch"
+
+if [[ -n "$REFERENCE" && "$REFERENCE" == "$URL" ]]; then
+  echo "error: --reference is the same URL as --url; nothing to compare" >&2
+  exit 2
 fi
 
 run_tester() {
@@ -84,7 +106,7 @@ run_tester() {
   (cd "$SPEC_REPO" && npx ts-node tools/src/tester/test.ts \
     --spec "$SPEC_REPO/spec" \
     --tests-path "$1" \
-    --opensearch-url "$URL" \
+    --opensearch-url "$2" \
     ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"})
 }
 
@@ -92,7 +114,7 @@ run_tester() {
 
 if [[ "$RUN_ALL" == "1" ]]; then
   echo "Running ALL stories against $URL (expect 501 failures for unimplemented operations)"
-  run_tester "$SPEC_REPO/tests"
+  run_tester "$SPEC_REPO/tests" "$URL"
   exit $?
 fi
 
@@ -120,27 +142,68 @@ if [[ "${#stories[@]}" == "0" ]]; then
   exit 1
 fi
 
-echo "Running ${#stories[@]} story file(s) from $manifest against $URL"
+echo "Running ${#stories[@]} story file(s) from $manifest"
+echo "  control plane: $URL"
+[[ -n "$REFERENCE" ]] && echo "  reference:     $REFERENCE"
 echo
 
-failed=()
+cp_failed=()
+ref_failed=()
 for story in "${stories[@]}"; do
-  echo "=== $story"
-  if run_tester "$SPEC_REPO/tests/$story"; then
-    :
-  else
-    failed+=("$story")
-  fi
+  echo "=== $story  [control plane]"
+  run_tester "$SPEC_REPO/tests/$story" "$URL" || cp_failed+=("$story")
   echo
+
+  if [[ -n "$REFERENCE" ]]; then
+    echo "=== $story  [reference]"
+    run_tester "$SPEC_REPO/tests/$story" "$REFERENCE" || ref_failed+=("$story")
+    echo
+  fi
 done
 
+contains() {
+  local needle="$1"; shift
+  local item
+  for item in "$@"; do [[ "$item" == "$needle" ]] && return 0; done
+  return 1
+}
+
 echo "──────────────────────────────────────────────"
-if [[ "${#failed[@]}" == "0" ]]; then
-  echo "conformance: ${#stories[@]}/${#stories[@]} stories passed"
+
+if [[ -z "$REFERENCE" ]]; then
+  if [[ "${#cp_failed[@]}" == "0" ]]; then
+    echo "conformance: ${#stories[@]}/${#stories[@]} stories passed"
+    exit 0
+  fi
+  echo "conformance: $((${#stories[@]} - ${#cp_failed[@]}))/${#stories[@]} passed, ${#cp_failed[@]} failed:"
+  for story in "${cp_failed[@]}"; do echo "  - $story"; done
+  exit 1
+fi
+
+# With a reference, a story failing on both sides is not evidence against us -- it usually means the
+# story reaches something out of scope, or the reference is a different OpenSearch version. Only a
+# story that passes against OpenSearch and fails against us is a divergence.
+divergent=()
+both_failed=()
+for story in "${stories[@]}"; do
+  cp_ok=1; ref_ok=1
+  contains "$story" ${cp_failed[@]+"${cp_failed[@]}"} && cp_ok=0
+  contains "$story" ${ref_failed[@]+"${ref_failed[@]}"} && ref_ok=0
+
+  if [[ "$cp_ok" == "1" && "$ref_ok" == "1" ]]; then verdict="agree (both pass)"
+  elif [[ "$cp_ok" == "0" && "$ref_ok" == "1" ]]; then verdict="DIVERGENT"; divergent+=("$story")
+  elif [[ "$cp_ok" == "1" && "$ref_ok" == "0" ]]; then verdict="passes here, fails on reference"
+  else verdict="fails on both (story or scope issue, not a divergence)"; both_failed+=("$story")
+  fi
+  printf '  %-44s %s\n' "$story" "$verdict"
+done
+
+echo
+if [[ "${#divergent[@]}" == "0" ]]; then
+  echo "conformance: no divergences from the reference"
+  [[ "${#both_failed[@]}" != "0" ]] && echo "note: ${#both_failed[@]} story/stories fail on both sides; check scope or reference version"
   exit 0
 fi
-echo "conformance: $((${#stories[@]} - ${#failed[@]}))/${#stories[@]} stories passed, ${#failed[@]} failed:"
-for story in "${failed[@]}"; do
-  echo "  - $story"
-done
+echo "conformance: ${#divergent[@]} divergence(s) -- passes against OpenSearch, fails here:"
+for story in "${divergent[@]}"; do echo "  - $story"; done
 exit 1
