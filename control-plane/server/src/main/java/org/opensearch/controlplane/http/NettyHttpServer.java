@@ -1,4 +1,5 @@
 /*
+ * Copyright OpenSearch Software Foundation
  * SPDX-License-Identifier: Apache-2.0
  */
 package org.opensearch.controlplane.http;
