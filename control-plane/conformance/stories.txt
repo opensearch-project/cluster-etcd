@@ -1,0 +1,8 @@
+# Conformance stories to run against the control plane, relative to the spec repo's tests/ directory.
+#
+# Only stories whose every chapter is within the implemented surface belong here. A story that
+# touches an unimplemented operation will fail on the 501, which is correct but not useful signal.
+#
+# Add a line when an operation group lands. Lines starting with # are comments.
+
+default/ingest/pipeline.yaml

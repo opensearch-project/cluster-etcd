@@ -24,10 +24,18 @@ everything else returns `501 Not Implemented`.
 | `search_pipeline` | 4 | — |
 | `dangling_indices` | 3 | — |
 
-**The running server still returns 501 for everything**, including the pipeline
-operations. There is no `KeyValueStore` implementation on the main source set yet —
-the only one is `InMemoryKeyValueStore` under the test source set — so `Main` has no
-store to construct the handlers with. See [Persistence](#persistence).
+**The remaining 78 operation groups return `501 Not Implemented`** with a structured
+error naming the operation group, so the routing surface is complete from day one and
+clients get an honest answer rather than a 404.
+
+```bash
+./gradlew :server:run --args="--port 9200 --data-path /tmp/cp"
+
+curl -XPUT localhost:9200/_ingest/pipeline/p -H 'Content-Type: application/json' \
+     -d '{"description":"noop","processors":[]}'
+curl localhost:9200/_ingest/pipeline?pretty
+curl -XPUT localhost:9200/my-index          # 501, not yet implemented
+```
 
 ## Where this sits
 
@@ -117,15 +125,70 @@ conditional expression on a version attribute, S3 has conditional writes via
 Payloads are small — index and pipeline configuration, not documents — which is worth
 weighing when considering an object store for this role.
 
-**Implementations:** only `InMemoryKeyValueStore`, on the *test* source set. It is
-deliberately not on the main source set: it is not durable, and nothing shippable
-should be able to reach for it by accident. Consequently
-`ControlPlaneHandlers.build()` registers nothing and the running server still stubs
-everything.
+**Implementations:**
 
-To make the server serve real requests, add a persistent implementation — a local
-filesystem store is the obvious next step — and switch `build()` to call
-`registerAll(registry, store)`.
+| implementation | source set | notes |
+|---|---|---|
+| `FileSystemKeyValueStore` | main | local development and single-node. Durable, real CAS *within one process* |
+| `InMemoryKeyValueStore` | test | not durable; deliberately unshippable |
+| etcd / DynamoDB | *not built* | production |
+
+`KeyValueStoreContractTests` is written purely against the interface and runs against both
+implementations. An etcd or DynamoDB backend should extend it too: a behaviour asserted there is
+one the control plane relies on regardless of backend.
+
+### The filesystem store
+
+One flat directory, one file per key, filename = strict percent-encoding of the key. Keys are
+deliberately **not** mapped onto nested directories. Keys carry user input, so a segment of `..`
+would escape the directory, and under tenancy the key prefix is the only thing separating tenants.
+Encoding everything outside `[A-Za-z0-9_-]` turns `..` into `%2E%2E` and `/` into `%2F` — ordinary
+filenames, no traversal possible, and no exposure to case-insensitive or reserved-name behaviour.
+There is a test that writes `../sibling/secret` and asserts the sibling file is untouched.
+
+Each file is an 8-byte big-endian revision followed by the payload. Writes go to a temp file in the
+same directory, are fsynced, then `ATOMIC_MOVE`d into place, so a reader never sees a half-written
+value. Revisions increment per key, which needs no separate counter to persist and survives
+restarts.
+
+Three limitations worth knowing:
+
+- **CAS is process-local.** Conditional writes are serialised by an in-process lock, so two
+  instances sharing a directory will race and lose updates. One process per directory, or use a
+  store with real CAS. This is the main reason production wants etcd or DynamoDB.
+- **`scanPrefix` is O(number of keys)** — it lists the directory and decodes every name. Fine for
+  control plane volumes, not a substitute for an index.
+- **Key length is bounded** by the filename limit (240 encoded characters). Exceeding it throws
+  rather than truncating.
+
+## Conformance
+
+`conformance/run.sh` runs the spec repo's own test harness against this service — the same harness
+used to validate OpenSearch itself. It replays YAML story files over HTTP and validates status codes
+*and* response bodies against the spec, which is what proves the two surfaces agree rather than us
+asserting they do.
+
+```bash
+./gradlew :server:run --args="--port 9200 --data-path /tmp/cp-conformance"
+
+# in another shell
+conformance/run.sh
+conformance/run.sh --spec-repo /path/to/opensearch-api-specification
+conformance/run.sh -- --verbose          # anything after -- goes to the tester
+conformance/run.sh --all                 # every story; a to-do list, not a gate
+```
+
+`conformance/stories.txt` lists the stories to run. Only stories whose every chapter is within the
+implemented surface belong there — one touching an unimplemented operation fails on the 501, which
+is correct but not useful signal. Add a line as each operation group lands. Right now that is one
+story, `default/ingest/pipeline.yaml`, which exercises put, get-by-id, get-all, and delete.
+
+Stories run **in place**, one tester invocation each, rather than staged into a temp directory: the
+tester validates each story's `$schema` field against the file's own location, so a copied story
+fails validation before it ever runs. `--all` uses a single invocation and so also produces a
+combined coverage report.
+
+The harness creates and deletes real resources, so point the server at a throwaway `--data-path`.
 
 ## Multi-tenancy
 
@@ -194,6 +257,7 @@ Requires JDK 21.
 
 ```bash
 ./gradlew build                      # generate routes, compile, test
+./gradlew :server:run --args="--port 9200 --data-path /tmp/cp"
 ./gradlew :server:run                # start on 127.0.0.1:9200
 ./gradlew :server:run --args="--dump-routes --port 9200"
 ./gradlew :server:generateRoutes     # regenerate after editing the scope file
@@ -404,15 +468,18 @@ codegen/                  reads spec + scope, emits the route table
 server/
   router/                 PathTrie, Router, Route, GeneratedRoutes (generated)
   rest/                   RestRequest, RestResponse, RestStatus, Json, ErrorResponses
-  store/                  KeyValueStore, TenantScopedKeyValueStore
+  store/                  KeyValueStore, FileSystemKeyValueStore,
+                          TenantScopedKeyValueStore
   tenant/                 TenantId, TenantResolver + implementations
   handler/                OperationHandler, OperationContext, HandlerRegistry,
                           ControlPlaneHandlers
   handler/ingest/         pipeline CRUD
   http/                   Netty front end
 server/src/test/
-  store/                  InMemoryKeyValueStore (test-only, non-durable)
+  store/                  InMemoryKeyValueStore (test-only, non-durable),
+                          KeyValueStoreContractTests (run against both stores)
   tenant/                 TenantIsolationTests -- end-to-end isolation proof
+conformance/              spec-harness runner + story manifest
 ```
 
 ## License

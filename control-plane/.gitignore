@@ -3,6 +3,9 @@ build/
 out/
 bin/
 
+# Default --data-path for the filesystem store.
+data/
+
 *.class
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
