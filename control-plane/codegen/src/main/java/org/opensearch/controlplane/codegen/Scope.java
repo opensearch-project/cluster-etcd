@@ -21,6 +21,8 @@ import java.util.Set;
  * about which OpenSearch operation groups this service implements.
  */
 record Scope(
+    SemanticVersion targetVersion,
+    String targetVersionRaw,
     Map<String, String> excludedNamespaces,
     Set<String> reviewedNamespaces,
     Set<String> includedOperations,
@@ -30,7 +32,18 @@ record Scope(
     static Scope load(Path file) throws IOException {
         JsonNode root = yamlMapper().readTree(file.toFile());
 
+        JsonNode version = root.get("target_opensearch_version");
+        if (version == null || version.asText("").isBlank()) {
+            throw new IllegalArgumentException(
+                "scope file must set target_opensearch_version: it decides both which operations the "
+                    + "route table includes and what GET / reports as version.number"
+            );
+        }
+        String targetVersionRaw = version.asText().trim();
+
         return new Scope(
+            SemanticVersion.parse(targetVersionRaw),
+            targetVersionRaw,
             readStringMap(root, "excluded_namespaces"),
             readStringSet(root, "reviewed_namespaces"),
             readStringSet(root, "included_operations"),

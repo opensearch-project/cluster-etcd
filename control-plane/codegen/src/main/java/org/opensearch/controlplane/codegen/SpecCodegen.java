@@ -62,10 +62,11 @@ public final class SpecCodegen {
         JsonNode spec = Scope.yamlMapper().readTree(specFile.toFile());
         Scope scope = Scope.load(scopeFile);
 
-        List<SpecRoute> allRoutes = discoverRoutes(spec);
+        List<SpecRoute> allRoutes = discoverRoutes(spec, scope.targetVersion());
         Set<String> globalQueryParams = discoverGlobalQueryParams(spec);
 
         validate(scope, allRoutes);
+        logVersionFiltering(scope, allRoutes);
 
         List<SpecRoute> inScope = allRoutes.stream()
             .filter(route -> scope.isIncluded(route.operationGroup()))
@@ -80,7 +81,7 @@ public final class SpecCodegen {
         Files.createDirectories(packageDir);
 
         String specVersion = spec.path("info").path("version").asText("unknown");
-        String source = renderRouteTable(inScope, globalQueryParams, specVersion);
+        String source = renderRouteTable(inScope, globalQueryParams, specVersion, scope.targetVersionRaw());
         Files.writeString(packageDir.resolve("GeneratedRoutes.java"), source, StandardCharsets.UTF_8);
 
         if (reportFile != null) {
@@ -103,7 +104,7 @@ public final class SpecCodegen {
     // Spec traversal
     // ------------------------------------------------------------------
 
-    private static List<SpecRoute> discoverRoutes(JsonNode spec) {
+    private static List<SpecRoute> discoverRoutes(JsonNode spec, SemanticVersion targetVersion) {
         List<SpecRoute> routes = new ArrayList<>();
         JsonNode paths = spec.path("paths");
 
@@ -129,11 +130,31 @@ public final class SpecCodegen {
                     namespaceOf(group),
                     operation.path("deprecated").asBoolean(false),
                     operation.path("x-ignorable").asBoolean(false),
-                    operationQueryParams(spec, operation)
+                    availableAt(operation, targetVersion),
+                    operationQueryParams(spec, operation, targetVersion)
                 ));
             }
         }
         return routes;
+    }
+
+    /**
+     * Whether an element exists at the target version, per {@code x-version-added} and
+     * {@code x-version-removed}.
+     *
+     * <p>Matches the spec repo's {@code OpenApiVersionExtractor}: excluded when the target is before
+     * {@code x-version-added}, or at or after {@code x-version-removed}. Versions are coerced first,
+     * because the spec mixes {@code '2.11'} with {@code 2.10.0}.
+     */
+    private static boolean availableAt(JsonNode element, SemanticVersion targetVersion) {
+        String added = element.path("x-version-added").asText(null);
+        if (added != null && added.isBlank() == false
+            && targetVersion.isBefore(SemanticVersion.parse(added))) {
+            return false;
+        }
+        String removed = element.path("x-version-removed").asText(null);
+        return removed == null || removed.isBlank()
+            || targetVersion.isBefore(SemanticVersion.parse(removed));
     }
 
     /** Operation groups are {@code namespace.action}, except {@code _core} where the namespace is elided. */
@@ -148,13 +169,22 @@ public final class SpecCodegen {
      * every operation and tags them {@code x-global}; those are hoisted into a
      * single shared set instead of repeated on every route.
      */
-    private static Set<String> operationQueryParams(JsonNode spec, JsonNode operation) {
+    private static Set<String> operationQueryParams(JsonNode spec, JsonNode operation, SemanticVersion targetVersion) {
         Set<String> params = new TreeSet<>();
         for (JsonNode parameter : operation.path("parameters")) {
             JsonNode resolved = resolveParameter(spec, parameter);
-            if ("query".equals(resolved.path("in").asText()) && resolved.path("x-global").asBoolean(false) == false) {
-                params.add(resolved.path("name").asText());
+            if ("query".equals(resolved.path("in").asText()) == false) {
+                continue;
             }
+            if (resolved.path("x-global").asBoolean(false)) {
+                continue;
+            }
+            // Parameters carry their own version markers, so a route can exist at the target version
+            // while some of its parameters do not.
+            if (availableAt(resolved, targetVersion) == false) {
+                continue;
+            }
+            params.add(resolved.path("name").asText());
         }
         return params;
     }
@@ -196,10 +226,20 @@ public final class SpecCodegen {
     private static void validate(Scope scope, List<SpecRoute> allRoutes) {
         List<String> errors = new ArrayList<>();
 
-        Set<String> specNamespaces = allRoutes.stream()
+        // Classification is judged against the surface available at the target version: an operation
+        // that does not exist at this version is not a decision anyone needs to make. Staleness is
+        // judged against the whole spec, so a genuinely removed operation is still reported.
+        List<SpecRoute> availableRoutes = allRoutes.stream()
+            .filter(SpecRoute::availableAtTargetVersion)
+            .toList();
+
+        Set<String> specNamespaces = availableRoutes.stream()
             .map(SpecRoute::namespace)
             .collect(Collectors.toCollection(TreeSet::new));
-        Set<String> specGroups = allRoutes.stream()
+        Set<String> specGroups = availableRoutes.stream()
+            .map(SpecRoute::operationGroup)
+            .collect(Collectors.toCollection(TreeSet::new));
+        Set<String> allSpecGroups = allRoutes.stream()
             .map(SpecRoute::operationGroup)
             .collect(Collectors.toCollection(TreeSet::new));
 
@@ -242,15 +282,26 @@ public final class SpecCodegen {
             }
         }
 
-        // Stale entries: the scope file references something the spec no longer has.
+        // Stale entries: the scope file references something the spec does not have at all.
         for (String group : scope.includedOperations()) {
-            if (specGroups.contains(group) == false) {
+            if (allSpecGroups.contains(group) == false) {
                 errors.add("included operation [" + group + "] no longer exists in the spec");
             }
         }
         for (String group : scope.excludedOperations().keySet()) {
-            if (specGroups.contains(group) == false) {
+            if (allSpecGroups.contains(group) == false) {
                 errors.add("excluded operation [" + group + "] no longer exists in the spec");
+            }
+        }
+
+        // Claiming to serve an operation the target version does not have is a contradiction: the
+        // service would answer a route a real cluster at that version rejects.
+        for (String group : scope.includedOperations()) {
+            if (allSpecGroups.contains(group) && specGroups.contains(group) == false) {
+                errors.add(
+                    "included operation [" + group + "] does not exist at target_opensearch_version ["
+                        + scope.targetVersionRaw() + "]; either drop it or raise the target version"
+                );
             }
         }
 
@@ -272,11 +323,34 @@ public final class SpecCodegen {
         }
     }
 
+    /** Version filtering must never be silent: a dropped route is a change in served surface. */
+    private static void logVersionFiltering(Scope scope, List<SpecRoute> allRoutes) {
+        Map<String, Long> droppedByGroup = allRoutes.stream()
+            .filter(route -> route.availableAtTargetVersion() == false)
+            .collect(Collectors.groupingBy(SpecRoute::operationGroup, TreeMap::new, Collectors.counting()));
+
+        System.out.printf(
+            Locale.ROOT,
+            "target OpenSearch version %s (%s): %d of %d spec routes are unavailable at this version%n",
+            scope.targetVersionRaw(),
+            scope.targetVersion(),
+            allRoutes.size() - allRoutes.stream().filter(SpecRoute::availableAtTargetVersion).count(),
+            allRoutes.size()
+        );
+        droppedByGroup.forEach((group, count) ->
+            System.out.printf(Locale.ROOT, "  unavailable: %s (%d route(s))%n", group, count));
+    }
+
     // ------------------------------------------------------------------
     // Emission
     // ------------------------------------------------------------------
 
-    private static String renderRouteTable(List<SpecRoute> routes, Set<String> globalQueryParams, String specVersion) {
+    private static String renderRouteTable(
+        List<SpecRoute> routes,
+        Set<String> globalQueryParams,
+        String specVersion,
+        String targetVersion
+    ) {
         // Group by namespace so each namespace gets its own method. A single
         // static initialiser holding every route would risk the 64 KB method
         // bytecode limit as the surface grows.
@@ -311,6 +385,17 @@ public final class SpecCodegen {
 
         out.append("    /** info.version of the spec this table was generated from. */\n");
         out.append("    public static final String SPEC_VERSION = \"").append(escape(specVersion)).append("\";\n\n");
+
+        out.append("""
+                /**
+                 * The OpenSearch version this surface claims to be, from target_opensearch_version in the
+                 * scope file. Only operations and parameters available at this version are in the table
+                 * below, and ClusterIdentity reports it as version.number, so the claim and the surface
+                 * cannot drift apart.
+                 */
+            """);
+        out.append("    public static final String TARGET_OPENSEARCH_VERSION = \"")
+           .append(escape(targetVersion)).append("\";\n\n");
 
         out.append("    /** Query parameters that every OpenSearch operation accepts. */\n");
         out.append("    public static final Set<String> GLOBAL_QUERY_PARAMS = Set.of(\n        ");
@@ -380,7 +465,13 @@ public final class SpecCodegen {
 
         StringBuilder out = new StringBuilder();
         out.append("# Control plane scope report\n\n");
-        out.append("Generated from spec version `").append(specVersion).append("`.\n\n");
+        out.append("Generated from spec version `").append(specVersion)
+           .append("`, targeting OpenSearch `").append(scope.targetVersionRaw()).append("`.\n\n");
+        long unavailable = allRoutes.stream().filter(r -> r.availableAtTargetVersion() == false).count();
+        if (unavailable > 0) {
+            out.append(unavailable).append(" spec route(s) are excluded because they do not exist at ")
+               .append(scope.targetVersionRaw()).append(".\n\n");
+        }
         out.append("| | operation groups | routes |\n|---|---|---|\n");
         out.append("| in scope | ").append(inScope.stream().map(SpecRoute::operationGroup).distinct().count())
            .append(" | ").append(inScope.size()).append(" |\n");

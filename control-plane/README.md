@@ -74,6 +74,25 @@ makes this tractable: OpenSearch models one logical operation as several
 group collapses them back to one. So the route table has 128 entries but there
 are only 81 things to implement.
 
+### The claimed version decides the surface
+
+`target_opensearch_version` in the scope file does two things at once, deliberately:
+
+- the route table includes only operations and parameters available at that version, judged by
+  `x-version-added` / `x-version-removed` in the spec
+- `GET /` reports it as `version.number`
+
+Codegen emits it as `GeneratedRoutes.TARGET_OPENSEARCH_VERSION` and `ClusterIdentity` reads it from
+there, so there is one value rather than two that can disagree. **There is intentionally no runtime
+flag for the reported version** — overriding it at startup would mean claiming to be a version the
+route table was not generated for, which is exactly the inconsistency this removes.
+
+Including an operation the target version does not have is a build error, not a warning: a service
+reporting 3.9.0 must not answer a route a real 3.9.0 cluster rejects. At the current target of
+`3.9.0` nothing is filtered out — nothing in the spec is gated above 3.5, and `x-version-removed`
+appears only on responses in namespaces already out of scope. Lower the target and the filter bites:
+at `2.11.0` it drops 165 of 823 routes.
+
 ### The scope file is the interesting part
 
 `spec/control-plane-scope.yaml` enforces **total coverage** of the spec. Every
@@ -468,6 +487,9 @@ character for character against the server's response.
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
 - Everything about the 76 operations that are still stubbed.
+- Whether the version filtering matters in practice. At `3.9.0` it drops nothing, so the mechanism is
+  exercised only by lowering the target in a scratch scope file. It will start mattering the first
+  time the pinned spec adds something above the claimed version.
 - The `info` response is structurally identical to a live 3.9.0 cluster and every
   compatibility-relevant value matches. What differs is instance-specific and deliberate:
   `build_hash`/`build_date` are `unknown` unless injected at build time, and `build_type` is

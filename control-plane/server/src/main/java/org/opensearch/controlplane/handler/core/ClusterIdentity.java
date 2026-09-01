@@ -4,6 +4,8 @@
  */
 package org.opensearch.controlplane.handler.core;
 
+import org.opensearch.controlplane.router.GeneratedRoutes;
+
 /**
  * The identity this service reports from {@code GET /}.
  *
@@ -23,19 +25,20 @@ package org.opensearch.controlplane.handler.core;
 public record ClusterIdentity(String nodeName, String clusterName, String version) {
 
     /**
-     * The OpenSearch version this API surface claims compatibility with.
+     * The OpenSearch version this API surface claims to be.
      *
-     * <p>This is a real decision, not a placeholder. Clients gate behaviour on it, and the test
-     * harness uses it to decide which stories apply — a story marked {@code version: '>= 2.11'} is
-     * skipped if this is lower. Set it too high and clients will expect operations that are still
-     * stubbed; too low and they will avoid ones that work.
+     * <p>Comes from {@code target_opensearch_version} in the scope file, by way of the generated
+     * route table. That is deliberately the same value the codegen filters routes with, so the claim
+     * and the served surface cannot drift apart: a service reporting 3.9.0 will not answer a route
+     * that 3.9.0 does not have, and will not omit one that it does.
      *
-     * <p>Worth knowing: the route table is generated from the spec bundle <em>without</em> a
-     * {@code --opensearch-version} filter, so it is the union across versions and may include a
-     * route that a real cluster at this version no longer serves. Passing a target version to the
-     * merger would make the two consistent.
+     * <p>It is a real decision rather than a placeholder. Clients gate behaviour on it, and the spec
+     * repo's test harness uses it to decide which stories apply — a story marked
+     * {@code version: '>= 2.11'} is skipped if this is lower. Change it in the scope file and
+     * regenerate; there is intentionally no runtime flag, because overriding it at startup would
+     * recreate exactly the inconsistency this indirection removes.
      */
-    public static final String DEFAULT_VERSION = "3.9.0";
+    public static final String DEFAULT_VERSION = GeneratedRoutes.TARGET_OPENSEARCH_VERSION;
 
     public static final String DISTRIBUTION = "opensearch";
     public static final String TAGLINE = "The OpenSearch Project: https://opensearch.org/";
@@ -57,6 +60,13 @@ public record ClusterIdentity(String nodeName, String clusterName, String versio
         return new ClusterIdentity(nodeName, name, version);
     }
 
+    /**
+     * Overrides the claimed version.
+     *
+     * <p>For tests only, and not exposed as a startup flag: reporting a version the route table was
+     * not generated for is the inconsistency {@link #DEFAULT_VERSION} exists to prevent. Change
+     * {@code target_opensearch_version} in the scope file instead.
+     */
     public ClusterIdentity withVersion(String version) {
         return new ClusterIdentity(nodeName, clusterName, version);
     }

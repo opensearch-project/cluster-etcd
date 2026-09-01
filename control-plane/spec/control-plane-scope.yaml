@@ -17,6 +17,21 @@
 # standalone service can serve the request.
 
 # ---------------------------------------------------------------------------
+# The OpenSearch version this service claims to be.
+#
+# Two things follow from it, and they must not drift apart:
+#   * the route table only includes operations and parameters available at this version, judged by
+#     x-version-added / x-version-removed in the spec
+#   * GET / reports it as version.number
+#
+# Codegen emits it as GeneratedRoutes.TARGET_OPENSEARCH_VERSION and ClusterIdentity reads it from
+# there, so there is one value rather than two that can disagree. Changing it here changes both, and
+# is a real decision: clients gate features on the reported version, and the spec repo's test harness
+# uses it to decide which stories apply.
+# ---------------------------------------------------------------------------
+target_opensearch_version: '3.9.0'
+
+# ---------------------------------------------------------------------------
 # Namespaces excluded wholesale. Value is the reason (shown in the scope report).
 # ---------------------------------------------------------------------------
 excluded_namespaces:

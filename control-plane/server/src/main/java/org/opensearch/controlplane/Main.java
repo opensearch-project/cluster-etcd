@@ -39,7 +39,6 @@ public final class Main {
                 case "--port" -> port = Integer.parseInt(requireValue(args, ++i, "--port"));
                 case "--data-path" -> dataPath = Path.of(requireValue(args, ++i, "--data-path"));
                 case "--cluster-name" -> identity = identity.withClusterName(requireValue(args, ++i, "--cluster-name"));
-                case "--api-version" -> identity = identity.withVersion(requireValue(args, ++i, "--api-version"));
                 case "--dump-routes" -> dumpRoutes = true;
                 case "--help", "-h" -> {
                     printUsage();
@@ -124,9 +123,12 @@ public final class Main {
               --port <port>       listen port, 0 for ephemeral (default %d)
               --data-path <dir>   filesystem store directory (default %s)
               --cluster-name <n>  cluster_name reported by GET / (default opensearch)
-              --api-version <v>   OpenSearch API version claimed by GET / (default %s)
               --dump-routes       print the route table and handler status, then start
               --help              show this message
+
+            Reports itself as OpenSearch %s. That is a build-time property, set by
+            target_opensearch_version in spec/control-plane-scope.yaml, because it also decides
+            which operations the route table contains.
             %n""",
             DEFAULT_HOST,
             DEFAULT_PORT,

@@ -22,6 +22,8 @@ record SpecRoute(
     String namespace,
     boolean deprecated,
     boolean ignorable,
+    /** Whether this operation exists at the target OpenSearch version. */
+    boolean availableAtTargetVersion,
     Set<String> queryParams
 ) implements Comparable<SpecRoute> {
 
