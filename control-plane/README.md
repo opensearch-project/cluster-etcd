@@ -1,0 +1,420 @@
+# OpenSearch Control Plane
+
+A standalone service that exposes OpenSearch's control plane APIs — index, alias,
+template, pipeline, and snapshot metadata operations — with a wire-identical HTTP
+surface, generated from the
+[OpenSearch API specification](https://github.com/opensearch-project/opensearch-api-specification).
+
+## Status
+
+Early. The full control plane surface is routed. Ingest pipeline CRUD is implemented;
+everything else returns `501 Not Implemented`.
+
+```
+128 routes, 81 operation groups, 3 implemented, 78 stubbed
+```
+
+| namespace | routes | implemented |
+|---|---|---|
+| `indices` | 67 | — |
+| `cluster` | 23 | — |
+| `snapshot` | 16 | — |
+| `_core` (info, ping, stored scripts) | 10 | — |
+| `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
+| `search_pipeline` | 4 | — |
+| `dangling_indices` | 3 | — |
+
+**The running server still returns 501 for everything**, including the pipeline
+operations. There is no `KeyValueStore` implementation on the main source set yet —
+the only one is `InMemoryKeyValueStore` under the test source set — so `Main` has no
+store to construct the handlers with. See [Persistence](#persistence).
+
+## Where this sits
+
+Three layers communicating loosely through a shared data store:
+
+| layer | responsibility |
+|---|---|
+| **control plane** (this repo) | operations on the resources that exist — index, alias, template, pipeline, snapshot configuration; owns task lifecycle including retries and cleanup |
+| **shard manager** | allocates resources to data nodes: reads registered index management tasks, sees which data nodes exist from their published heartbeats, writes per-node configuration |
+| **data plane** | indexes and searches shards; "regular" OpenSearch plus a plugin that fetches configuration from the data store and synthesizes local cluster state in-process |
+
+A create-index request therefore ends, from this service's point of view, at
+"validate, write the index configuration, register an index management task". The
+shard manager assigns shards; the data nodes consume their updated configuration and
+do the actual create-shard work. No layer calls another directly.
+
+This is why an `OperationHandler` returning a response is a complete operation:
+nothing here blocks on shard work.
+
+## How the API surface is defined
+
+The HTTP surface is not hand-written. It is generated:
+
+```
+spec/opensearch-openapi.yaml     pinned bundle of the OpenSearch API spec
+spec/control-plane-scope.yaml    which operation groups are in scope, and why
+        |
+        v  :codegen  (SpecCodegen)
+        |
+server/build/generated/.../GeneratedRoutes.java
+```
+
+Everything is keyed by the spec's `x-operation-group`. That extension is what
+makes this tractable: OpenSearch models one logical operation as several
+(method, path) pairs — `indices.put_alias` is eleven of them — and the operation
+group collapses them back to one. So the route table has 128 entries but there
+are only 81 things to implement.
+
+### The scope file is the interesting part
+
+`spec/control-plane-scope.yaml` enforces **total coverage** of the spec. Every
+namespace must be classified, and within a reviewed namespace every operation
+group must be individually marked included or excluded with a reason. Anything
+unclassified **fails the build**.
+
+That is deliberate. When you bump the pinned spec and OpenSearch has added an
+API, the build breaks and tells you to make a decision, rather than silently not
+implementing it.
+
+The classification axis is *not* "control plane vs data plane". It is
+**"answerable from cluster state and metadata alone"** vs **"requires shard data
+or node-local runtime"** — which is what actually determines whether a standalone
+service can serve a request. That is why `indices.get_mapping` is in scope while
+`indices.stats`, `indices.refresh`, and `indices.analyze` are not, even though all
+four live in the `indices` namespace.
+
+Currently out of scope wholesale: `cat` and `list` (text/plain table rendering),
+`security` (needs an auth backend), the index-management plugins (`ism`, `sm`,
+`rollups`, `transforms`, `wlm`), and everything node- or shard-level. Each is one
+line to re-enable.
+
+`indices.clone` / `shrink` / `split` / `rollover` are in scope even though they
+move data: the control plane validates and creates the target index metadata,
+initiates the work, hands the shard copy off to the data plane, and owns the
+overarching task lifecycle including retries and cleanup.
+
+The `tasks` namespace is the one deliberate gap in that story. It is deferred, not
+out of scope — exposing `_tasks` compatibly needs a task identity decision first,
+because OpenSearch task IDs are `{node_id}:{task_num}` enumerated per-node over the
+transport layer, and a standalone control plane has no node IDs to put there.
+
+## Persistence
+
+`KeyValueStore` (`org.opensearch.controlplane.store`) is the only seam through which
+this service talks to anything else: an ordered key/value store of opaque byte
+payloads. Keys are namespaced by resource, e.g. `ingest/pipeline/<id>`.
+
+Every key carries a monotonically increasing revision, and writes can be conditional
+on it. That is not speculative — `indices.create` has to fail with
+`resource_already_exists_exception` rather than clobber an existing index
+(`put(key, value, ABSENT)`), and `indices.update_aliases` / `put_mapping` are
+read-modify-write cycles that lose updates without a compare-and-set. All the likely
+backends support this directly: etcd compares `ModRevision`, DynamoDB uses a
+conditional expression on a version attribute, S3 has conditional writes via
+`If-Match` / `If-None-Match` on ETags.
+
+Payloads are small — index and pipeline configuration, not documents — which is worth
+weighing when considering an object store for this role.
+
+**Implementations:** only `InMemoryKeyValueStore`, on the *test* source set. It is
+deliberately not on the main source set: it is not durable, and nothing shippable
+should be able to reach for it by accident. Consequently
+`ControlPlaneHandlers.build()` registers nothing and the running server still stubs
+everything.
+
+To make the server serve real requests, add a persistent implementation — a local
+filesystem store is the obvious next step — and switch `build()` to call
+`registerAll(registry, store)`.
+
+## Multi-tenancy
+
+One control plane instance serves many tenants. Isolation is **structural**: a handler
+is handed a store already confined to the requesting tenant and never learns which
+tenant it is serving, so cross-tenant access is not something it can get wrong. There is
+no API through which to express it.
+
+```
+request headers
+   │
+   ▼  TenantResolver                    (headers -> TenantId, or 401)
+   │
+   ▼  OperationContextFactory
+   │
+   ▼  OperationContext{ tenant, TenantScopedKeyValueStore }
+   │
+   ▼  OperationHandler.handle(request, context)
+```
+
+Keys land under `tenant/<id>/`, so `ingest/pipeline/p` for two tenants is two distinct
+rows. `scanPrefix` strips the prefix on the way back out, which is why `PipelineStore`
+contains no tenancy logic at all — it sees exactly the key space it wrote.
+
+Contrast the alternative, where every handler receives a tenant ID and is trusted to
+incorporate it into every key. That works until one of 81 handlers forgets, and it fails
+silently.
+
+### Why not a URL prefix
+
+Not merely because generated clients would not emit `/acme/_ingest/pipeline`. `GET
+/{index}` is a real route, so `/acme/_settings` cannot be distinguished from the settings
+of an index named `acme`. The ambiguity is unresolvable, so the path is out.
+
+### Choosing a resolver
+
+The property that matters is that **a caller cannot choose its own tenant**. If the
+tenant comes from a header any client can set, then every authenticated caller can
+address every other tenant's data and isolation depends on the transport being
+trustworthy.
+
+| resolver | tenant from | notes |
+|---|---|---|
+| `SingleTenantResolver` | fixed | single-tenant deployments and local dev |
+| `HeaderTenantResolver` | `x-tenant-id` | **client-asserted.** Trusted proxy or `restrictedTo` only |
+| *not yet built* | authenticated principal | **preferred.** Basic auth, bearer, SigV4 — all supported by vanilla clients, so no spec deviation |
+| *not yet built* | SNI / `Host` | endpoint-per-tenant, zero client change, natural sharding boundary |
+| *not yet built* | mTLS client certificate | transport surfaces the subject as a synthetic header |
+
+Because data is under a tenant prefix even in single-tenant mode, moving to real
+multi-tenancy is a resolver swap rather than a data migration.
+
+`TenantId` validation is security-critical, not cosmetic: the value becomes a key prefix,
+so a `/` in it could escape the namespace. Malformed IDs are rejected rather than
+sanitised, since a value containing a slash is indistinguishable from an attempt to
+escape.
+
+**A warning for whoever writes the filesystem or object-store backend:** `KeyValueStore`
+does no path normalisation, so `..` in a key is inert — just part of the key. An
+implementation that maps keys onto paths *must* normalise or reject traversal sequences,
+or the isolation above is defeated one layer down.
+
+## Building
+
+Requires JDK 21.
+
+```bash
+./gradlew build                      # generate routes, compile, test
+./gradlew :server:run                # start on 127.0.0.1:9200
+./gradlew :server:run --args="--dump-routes --port 9200"
+./gradlew :server:generateRoutes     # regenerate after editing the scope file
+```
+
+`:server:generateRoutes` also writes `server/build/reports/control-plane-scope.md`,
+a readable breakdown of what is in scope and why.
+
+### Offline builds
+
+Dependency versions are pinned to what resolves from local caches, and
+`settings.gradle.kts` lists `mavenLocal()` after `mavenCentral()` as a fallback,
+so `./gradlew --offline build` also works. Gradle tries repositories in order, so
+`mavenLocal()` only comes into play for modules `mavenCentral()` cannot supply —
+in practice the JUnit 1.11.4 platform set, which is in `~/.m2` but not in the
+Gradle module cache.
+
+## Implementing an operation
+
+Routing does not change. Put the handler in a package mirroring its spec namespace —
+`handler.indices`, `handler.cluster`, `handler.ingest`, `handler.snapshot` — so the
+package layout matches the scope file and the generated route table:
+
+```
+server/src/main/java/org/opensearch/controlplane/handler/
+    OperationHandler.java          the SPI
+    HandlerRegistry.java
+    NotImplementedHandler.java
+    ControlPlaneHandlers.java      <-- register here
+    ingest/PutPipelineHandler.java <-- implementations go in namespace subpackages
+    indices/CreateIndexHandler.java
+```
+
+```java
+package org.opensearch.controlplane.handler.ingest;
+
+public final class PutPipelineHandler implements OperationHandler {
+    @Override
+    public String operationGroup() {
+        return "ingest.put_pipeline";   // must exist in the generated route table
+    }
+
+    @Override
+    public RestResponse handle(RestRequest request, OperationContext context) {
+        String id = request.pathParam("id");
+        // context.store() is already confined to the requesting tenant
+        var pipelines = new PipelineStore(context.store());
+        ...
+    }
+}
+```
+
+Handlers are **stateless singletons with no constructor arguments**. Everything
+request-scoped arrives in the `OperationContext`, because the store a handler gets depends
+on which tenant is calling. Register it in `ControlPlaneHandlers.registerAll` — the one
+place that lists implemented operations:
+
+```java
+public static HandlerRegistry registerAll(HandlerRegistry registry) {
+    return registry.register(new PutPipelineHandler());
+}
+```
+
+Registration is explicit rather than classpath-scanned: the list is greppable, and
+`HandlerRegistry.register` rejects an operation group that is not in the generated
+route table, so a typo or a scope mismatch fails at startup instead of producing a
+handler that silently never receives a request.
+
+When handlers need further collaborators — a task registrar, a clock — add them to
+`OperationContext` rather than to constructors. That keeps them out of the routing and
+HTTP layers, and keeps anything request-scoped from being captured in a shared field.
+
+### Where to start
+
+`ingest.put_pipeline` / `get_pipeline` / `delete_pipeline` is the cheapest useful
+vertical slice: pure metadata CRUD against the data store, no shard manager
+involvement, no task to register. It exercises path parameters, body parsing,
+persistence, and the error shapes end to end without any of the hard semantics.
+`cluster.get_settings` / `put_settings` and `search_pipeline.*` are equivalent in
+shape.
+
+`indices.create` is the natural second step and the first one that needs the task
+handoff — validate the request, resolve templates, write index configuration, then
+register an index management task for the shard manager.
+
+## Design notes
+
+### The router is hand-written on purpose
+
+`PathTrie` reimplements OpenSearch's path resolution rather than delegating to a
+framework router. OpenSearch prefers a literal segment match at each level and
+**backtracks** to the wildcard child when the literal subtree dead-ends. Framework
+routers use different, usually non-backtracking, precedence — which diverges on
+genuinely ambiguous OpenSearch paths like `/_alias/{name}` vs `/{index}/_alias`.
+Matching the server is the whole point, so the trie is ours.
+
+Consequence worth knowing: `GET /anything` routes to `indices.get`, because
+`GET /{index}` is a registered route and any single segment is a valid index name.
+That is OpenSearch's behaviour too.
+
+### Placeholder names are per-route, not per-node
+
+The spec names the same trie position differently across operations:
+`indices.get_alias` is `GET /{index}/_alias` while `indices.rollover` is
+`POST /{alias}/_rollover`. OpenSearch's own trie stores the name on the shared
+node, so whichever template was registered last wins — which is why
+`RestRolloverIndexAction` reads `request.param("index")` despite the documented
+path saying `{alias}`.
+
+This implementation binds placeholders from the matched route's own template, so
+each handler sees the names its spec template declares. That diverges from the
+server in internal naming only; placeholder names never appear on the wire and the
+paths route identically.
+
+### Three error shapes, all reproduced
+
+OpenSearch emits three different error shapes and clients depend on all of them. All
+three verified byte-exact against OpenSearch 3.9.0-SNAPSHOT:
+
+| condition | status | body |
+|---|---|---|
+| handler failure | varies | `{"error":{"root_cause":[{...}],"type":...,"reason":...},"status":N}` |
+| wrong method | 405 | `{"error":"Incorrect HTTP method for uri [...] ...","status":405}` + `Allow` |
+| unknown path | 400 | `{"error":"no handler found for uri [...] and method [...]"}` |
+
+Three things here are easy to get wrong, and I got two of them wrong first time:
+
+- **`root_cause` is mandatory** in the structured shape, and it repeats the top-level
+  cause *including extra fields* — a `parse_exception` carrying `property_name` has it
+  in both places.
+- **The unknown-path 400 has no `status` field at all.** It is the only response in the
+  API that omits it, because `RestController.handleBadRequest` hand-builds the object
+  with just `error`. The 405 path goes through `BytesRestResponse(RestStatus, String)`
+  and does include `status`.
+- **The unknown-path message is lower-case** (`no handler found`) while the 405 message
+  is capitalised (`Incorrect HTTP method`).
+
+The 501 shape is ours; OpenSearch never returns 501 because every route it registers is
+implemented. It uses the structured form plus an `operation_group` field, which is legal
+because the spec's `ErrorCause` schema permits additional properties.
+
+## Verified against a live cluster
+
+Confirmed against OpenSearch 3.9.0-SNAPSHOT. Bodies marked *byte-exact* were diffed
+character for character against the server's response.
+
+- **Unknown path** → `400`, lower-case `no handler found for uri [...] and method
+  [...]`, **no `status` field**. Byte-exact.
+- **Wrong method** → `405`, capitalised `Incorrect HTTP method for uri [...]`, with
+  `status` present and a comma-separated `Allow` header. Byte-exact.
+- **`+` in a path segment is a literal plus, not a space.** A pipeline created as
+  `a+b` is retrievable as `a+b`; `a%20b` gives 404. So per-segment decoding must not
+  apply form-encoding rules.
+- **`GET /_ingest/pipeline` with no matches** → `404` with a bare `{}`. This holds even
+  for a bare `GET` on a cluster with zero pipelines, and for `*` matching nothing.
+- **`PUT /_ingest/pipeline/{id}` with no body** → `400 parse_exception`,
+  `request body or source parameter is required`. Byte-exact (203 bytes).
+- **`PUT` without `processors`** → `400 parse_exception`,
+  `[processors] required property is missing`, plus `property_name: "processors"` at
+  both the top level and inside `root_cause`. Byte-exact (255 bytes). **This is a spec
+  bug:** the spec's `Pipeline` schema does not mark `processors` required. Worth
+  reporting upstream.
+- **`DELETE /_ingest/pipeline/{id}` not-found rules.** Subtler than they look, and the
+  obvious reading is wrong. Mirrors `IngestService.innerDelete`:
+  1. If ingest metadata has **never existed**, any delete is a no-op `200` — which is
+     why deleting a nonexistent pipeline on a pristine cluster succeeds.
+  2. Otherwise, nothing matched and the ID is exactly `*` → `200`. Match-all is exempt.
+  3. Otherwise, nothing matched → `404 resource_not_found_exception`,
+     `pipeline [<expr>] is missing`. **Partial wildcards are not exempt**: `logs-*`
+     matching nothing is a 404 even though `*` is not.
+
+  Note the trigger for (1) is the *presence of ingest metadata*, not the pipeline
+  count: delete every pipeline and a subsequent delete-of-missing still 404s.
+  `PipelineStore.METADATA_MARKER_KEY` replicates this. It is faithfully reproducing an
+  implementation artifact leaking into the API — drop the marker if you would rather
+  not carry the quirk forward.
+
+## Still unverified
+
+- Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
+  explicit comma-separated list where *some* IDs match and others do not (partial
+  match is assumed to be a 200 here).
+- Everything about the 78 operations that are still stubbed.
+
+The right way to keep closing these out is the spec repo's own test harness
+(`tools/src/tester`), which runs ~412 YAML story files against a live cluster and
+takes an `--opensearch-url`. Point it at this service, filtered to the operation
+groups in scope, and it becomes a compatibility suite that proves the surfaces
+match — far more systematic than hand-written curl probes.
+
+## Bumping the spec
+
+```bash
+cd ../opensearch-api-specification && npm run merge
+cp build/opensearch-openapi.yaml ../opensearch-control-plane/spec/opensearch-openapi.yaml
+cd ../opensearch-control-plane && ./gradlew :server:generateRoutes
+```
+
+If OpenSearch added or removed an API, this fails with a list of what needs
+classifying. `spec/SPEC_PROVENANCE.txt` records the spec repo commit the current
+bundle came from.
+
+## Layout
+
+```
+spec/                     pinned spec + scope definition
+codegen/                  reads spec + scope, emits the route table
+server/
+  router/                 PathTrie, Router, Route, GeneratedRoutes (generated)
+  rest/                   RestRequest, RestResponse, RestStatus, Json, ErrorResponses
+  store/                  KeyValueStore, TenantScopedKeyValueStore
+  tenant/                 TenantId, TenantResolver + implementations
+  handler/                OperationHandler, OperationContext, HandlerRegistry,
+                          ControlPlaneHandlers
+  handler/ingest/         pipeline CRUD
+  http/                   Netty front end
+server/src/test/
+  store/                  InMemoryKeyValueStore (test-only, non-durable)
+  tenant/                 TenantIsolationTests -- end-to-end isolation proof
+```
+
+## License
+
+Apache 2.0.

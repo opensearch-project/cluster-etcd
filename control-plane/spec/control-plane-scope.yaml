@@ -1,0 +1,252 @@
+# Control plane scope definition.
+#
+# This file is the single place where "what is a control plane API?" is decided.
+# Everything is keyed by `x-operation-group` from the OpenSearch OpenAPI spec.
+#
+# The codegen enforces TOTAL coverage:
+#   * every namespace in the spec must appear in `excluded_namespaces` or `reviewed_namespaces`
+#   * within a reviewed namespace, every operation group must appear in
+#     `included_operations` or `excluded_operations`
+# Anything unclassified FAILS THE BUILD. That is deliberate: when you bump the
+# pinned spec and OpenSearch has added an API, you find out at build time rather
+# than silently not implementing it.
+#
+# The classification axis is NOT "control plane vs data plane" -- it is
+# "answerable from cluster state / metadata alone" vs "requires shard data or
+# node-local runtime". That distinction is what actually determines whether a
+# standalone service can serve the request.
+
+# ---------------------------------------------------------------------------
+# Namespaces excluded wholesale. Value is the reason (shown in the scope report).
+# ---------------------------------------------------------------------------
+excluded_namespaces:
+  cat: "text/plain tabular rendering plus the v/h/s/format machinery; deferred"
+  list: "paginated cat-style tabular output; same rendering machinery as cat; deferred"
+  security: "requires an authn/authz backend and the security config index; deferred"
+
+  nodes: "per-node runtime state; a standalone control plane has no data nodes to report on"
+  remote_store: "shard-level remote store restore; data plane"
+
+  # The control plane DOES own task management: it initiates clone/shrink/split/
+  # rollover, hands the shard work to the data plane, and owns retries and
+  # cleanup. So the _tasks API is squarely in scope conceptually -- it is deferred
+  # only because exposing it compatibly needs a decision first. OpenSearch task
+  # IDs are {node_id}:{task_num} and are enumerated per-node via the transport
+  # layer; a standalone control plane has no node IDs to put there. Bring this in
+  # once the task identity and persistence model is settled.
+  tasks: "deferred pending the task identity model, not because it is out of scope"
+
+  # Control-plane-shaped, but plugin-provided. Flip these to reviewed_namespaces
+  # once the core namespaces land -- they are the natural phase 2.
+  ism: "index management plugin; control-plane-shaped, enable after core namespaces land"
+  sm: "snapshot management plugin; control-plane-shaped, enable after core namespaces land"
+  rollups: "index management plugin; control-plane-shaped, enable after core namespaces land"
+  transforms: "index management plugin; control-plane-shaped, enable after core namespaces land"
+  wlm: "workload management query groups; control-plane-shaped, enable after core namespaces land"
+  query: "SQL/PPL datasource config from the sql plugin; enable after core namespaces land"
+
+  # Plugin-provided and not control plane.
+  ml: "ml-commons plugin; model lifecycle is its own control plane, out of scope"
+  ltr: "learning-to-rank plugin; not core control plane"
+  search_relevance: "search relevance plugin; not core control plane"
+  flow_framework: "flow framework plugin; not core control plane"
+  knn: "k-NN plugin; mixes model training with shard-level stats"
+  neural: "neural search plugin; data plane"
+  geospatial: "geospatial plugin; data plane"
+  security_analytics: "security analytics plugin; not core control plane"
+  observability: "observability plugin; stores objects in its own index"
+  notifications: "notifications plugin; not core control plane"
+  sql: "sql plugin; data plane"
+  ppl: "ppl plugin; data plane"
+  ubi: "user behavior insights plugin; data plane"
+  insights: "query insights plugin; runtime query statistics"
+  ingestion: "pull-based ingestion; data plane"
+  asynchronous_search: "asynchronous search plugin; data plane"
+  replication: "cross-cluster replication plugin; requires the remote cluster data path"
+
+# ---------------------------------------------------------------------------
+# Namespaces where every operation group is individually classified below.
+# ---------------------------------------------------------------------------
+reviewed_namespaces:
+  - _core
+  - indices
+  - cluster
+  - ingest
+  - snapshot
+  - dangling_indices
+  - search_pipeline
+
+# ---------------------------------------------------------------------------
+# In scope. These get a generated route and a handler slot.
+# ---------------------------------------------------------------------------
+included_operations:
+  # -- _core: only the bits backed by cluster state, plus the two probes that
+  #    every client library calls before anything else.
+  - info
+  - ping
+  - get_script
+  - put_script
+  - delete_script
+  - get_script_context
+  - get_script_languages
+
+  # -- indices: index and template metadata.
+  - indices.create
+  - indices.delete
+  - indices.exists
+  - indices.get
+  - indices.open
+  - indices.close
+  - indices.add_block
+  - indices.resolve_index
+  # aliases
+  - indices.get_alias
+  - indices.put_alias
+  - indices.delete_alias
+  - indices.exists_alias
+  - indices.update_aliases
+  # mappings and settings
+  - indices.get_mapping
+  - indices.put_mapping
+  - indices.get_field_mapping
+  - indices.get_settings
+  - indices.put_settings
+  # legacy templates
+  - indices.get_template
+  - indices.put_template
+  - indices.delete_template
+  - indices.exists_template
+  # composable index templates
+  - indices.get_index_template
+  - indices.put_index_template
+  - indices.delete_index_template
+  - indices.exists_index_template
+  - indices.simulate_template
+  - indices.simulate_index_template
+  # data streams
+  - indices.create_data_stream
+  - indices.get_data_stream
+  - indices.delete_data_stream
+  # resize / rollover. These do move data, but the control plane owns the
+  # operation: it validates and creates the target index metadata, initiates the
+  # work, hands the shard copy off to the data plane, and owns the overarching
+  # task lifecycle including retries and cleanup. See the `tasks` note in
+  # excluded_namespaces for the API surface that will eventually expose that.
+  - indices.clone
+  - indices.shrink
+  - indices.split
+  - indices.rollover
+
+  # -- cluster: cluster state, settings, component templates, coordination.
+  - cluster.health
+  - cluster.state
+  - cluster.pending_tasks
+  - cluster.remote_info
+  - cluster.get_settings
+  - cluster.put_settings
+  - cluster.get_component_template
+  - cluster.put_component_template
+  - cluster.delete_component_template
+  - cluster.exists_component_template
+  - cluster.get_decommission_awareness
+  - cluster.put_decommission_awareness
+  - cluster.delete_decommission_awareness
+  - cluster.get_weighted_routing
+  - cluster.put_weighted_routing
+  - cluster.delete_weighted_routing
+  - cluster.post_voting_config_exclusions
+  - cluster.delete_voting_config_exclusions
+
+  # -- ingest: pipeline definitions live in cluster state.
+  - ingest.get_pipeline
+  - ingest.put_pipeline
+  - ingest.delete_pipeline
+  - ingest.processor_grok
+
+  # -- snapshot: repository and snapshot lifecycle.
+  - snapshot.create_repository
+  - snapshot.get_repository
+  - snapshot.delete_repository
+  - snapshot.verify_repository
+  - snapshot.cleanup_repository
+  - snapshot.create
+  - snapshot.get
+  - snapshot.delete
+  - snapshot.clone
+  - snapshot.restore
+  - snapshot.status
+
+  # -- dangling indices: pure metadata reconciliation.
+  - dangling_indices.list_dangling_indices
+  - dangling_indices.import_dangling_index
+  - dangling_indices.delete_dangling_index
+
+  # -- search pipelines: definitions live in cluster state.
+  - search_pipeline.get
+  - search_pipeline.put
+  - search_pipeline.delete
+
+# ---------------------------------------------------------------------------
+# Out of scope, with the reason. Value is shown in the scope report.
+# ---------------------------------------------------------------------------
+excluded_operations:
+  # -- _core: the data plane.
+  search: "data plane"
+  search_shards: "requires shard routing table and allocation state"
+  search_template: "data plane"
+  msearch: "data plane"
+  msearch_template: "data plane"
+  render_search_template: "requires the mustache scripting engine"
+  count: "data plane"
+  explain: "data plane"
+  field_caps: "requires field mappings resolved across shards"
+  rank_eval: "data plane"
+  scroll: "data plane"
+  clear_scroll: "data plane"
+  create_pit: "data plane"
+  get_all_pits: "data plane"
+  delete_pit: "data plane"
+  delete_all_pits: "data plane"
+  index: "data plane"
+  create: "data plane"
+  get: "data plane"
+  exists: "data plane"
+  get_source: "data plane"
+  exists_source: "data plane"
+  update: "data plane"
+  delete: "data plane"
+  bulk: "data plane"
+  bulk_stream: "data plane"
+  mget: "data plane"
+  termvectors: "data plane"
+  mtermvectors: "data plane"
+  reindex: "data plane"
+  reindex_rethrottle: "data plane"
+  delete_by_query: "data plane"
+  delete_by_query_rethrottle: "data plane"
+  update_by_query: "data plane"
+  update_by_query_rethrottle: "data plane"
+  scripts_painless_execute: "requires the painless execution engine"
+
+  # -- indices: needs shards or node-local runtime.
+  indices.analyze: "requires the analysis chain runtime"
+  indices.validate_query: "requires the query parsing and shard runtime"
+  indices.stats: "shard-level runtime statistics"
+  indices.segments: "shard-level Lucene segment state"
+  indices.recovery: "shard recovery runtime"
+  indices.shard_stores: "shard store state on data nodes"
+  indices.data_streams_stats: "shard-level runtime statistics"
+  indices.refresh: "shard-level operation"
+  indices.flush: "shard-level operation"
+  indices.forcemerge: "shard-level Lucene merge"
+  indices.clear_cache: "node-local cache state"
+  indices.upgrade: "shard-level Lucene upgrade; deprecated in OpenSearch"
+  indices.get_upgrade: "shard-level Lucene upgrade; deprecated in OpenSearch"
+
+  # -- cluster: needs the routing table or node runtime.
+  cluster.reroute: "operates on the shard routing table"
+  cluster.allocation_explain: "requires the allocation deciders and routing table"
+  cluster.stats: "aggregates per-node runtime statistics"
+
+  # -- ingest
+  ingest.simulate: "requires the ingest processor execution engine"
