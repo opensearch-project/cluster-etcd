@@ -196,6 +196,16 @@ Only the second row exits non-zero. Without a reference, a story that fails beca
 unimplemented operation is indistinguishable from one that fails because we got the behaviour wrong,
 and the whole point of the harness is telling those apart.
 
+**Current state:** `default/ingest/pipeline.yaml` passes against the control plane and against a
+real OpenSearch 3.9.0, with no divergence. That covers 4 of the spec's 710 paths.
+
+Read that narrowly. The story exercises the happy path — put, get-by-id, get-all, delete — and its
+epilogue accepts either 200 or 404, so it does *not* pin the error semantics: the three delete
+not-found branches, the `processors`-required rejection, malformed-body handling, wildcards, and
+comma-separated ID lists are covered by unit tests and by hand-verification against a live cluster,
+but not yet by the harness. A passing conformance run is weaker evidence than it looks until the
+stories reach those paths.
+
 `conformance/stories.txt` lists the stories to run. Only stories whose every chapter is within the
 implemented surface belong there. Add a line as each operation group lands. Right now that is one
 story, `default/ingest/pipeline.yaml`, which exercises put, get-by-id, get-all, and delete.
