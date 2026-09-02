@@ -520,11 +520,10 @@ match — far more systematic than hand-written curl probes.
 [`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md) surveys the 73 stubbed
 operation groups by what makes them difficult rather than by namespace. The short version:
 
-- **Atomic multi-resource mutation is the one place the per-resource-key design costs us.**
-  `indices.update_aliases` applies a list of actions atomically in OpenSearch because there is one
-  cluster state; the canonical alias swap is unsafe if applied piecewise. Decide the approach before
-  writing it — promoting aliases to their own resource looks better than adding multi-key
-  transactions, and the transaction option would rule out object-store backends entirely.
+- **Aliases will become their own keyed resource** rather than fields inside index metadata. That
+  turns the canonical alias swap into a single-key compare-and-swap, so no multi-key transaction
+  support is needed and object-store backends stay viable. It also turns alias lookup from a scan
+  into a direct read.
 - **Index expression resolution** (wildcards, `_all`, aliases, `expand_wildcards`) is the most reused
   logic in the `indices` namespace and should be written once, deliberately.
 - **Template composition** wants porting from `MetadataIndexTemplateService` rather than reinventing,
@@ -532,6 +531,10 @@ operation groups by what makes them difficult rather than by namespace. The shor
 - **`search_pipeline.*` is the best next task** — structurally identical to the ingest pipeline
   handlers already written.
 - `cluster.pending_tasks` gets *easier* in this architecture: it is a read over our own task keys.
+- **The service is stateless** — nothing outside the data store, no background threads — so it scales
+  by adding instances and could scale to zero. Audited, and it holds today. The catch:
+  `FileSystemKeyValueStore`'s compare-and-swap is process-local, so multi-instance needs etcd or
+  DynamoDB.
 
 ## Bumping the spec
 

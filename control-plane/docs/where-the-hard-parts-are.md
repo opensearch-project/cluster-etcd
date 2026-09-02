@@ -14,7 +14,7 @@ rather than observation it says so.
 | 0 | nothing — single key, single document | ~24 |
 | 1 | needs a scan or aggregation across keys | ~13 |
 | 2 | non-trivial merge or composition semantics | ~8 |
-| 3 | **atomic mutation across several resources** | ~10 |
+| 3 | atomic mutation across several resources — **largely dissolved, see below** | ~10 |
 | 4 | long-running orchestration and task lifecycle | ~14 |
 | 5 | needs facts the control plane does not own | ~4 |
 
@@ -52,27 +52,37 @@ Also in this tier, all multi-index: `indices.put_alias`, `indices.delete_alias`,
 `indices.put_mapping`, `indices.put_settings`, `indices.open`, `indices.close`,
 `indices.add_block`.
 
-### Options, with what each costs
+### Decided: aliases become their own resource
 
-1. **Multi-key transactions in `KeyValueStore`.** etcd has `Txn` with compare-and-swap over multiple
-   keys; DynamoDB has `TransactWriteItems` (100 items, and it fails the whole transaction on any
-   conflict); **S3 has nothing equivalent**. So this option decides the backend question — it rules
-   out object stores for good, which is worth knowing now rather than after picking one.
-2. **A serialising key for the mutation class.** Alias mutations take a CAS on a single
-   `aliases/generation` key, making them mutually exclusive without needing multi-key atomicity.
-   Cheap, works on any backend, but serialises all alias changes cluster-wide and still leaves a
-   window where a reader sees a half-applied change unless readers also check the generation.
-3. **Aliases as their own resources** rather than fields inside index metadata: `aliases/<name>`
-   holding the list of indices it points at. Then an alias swap is a single-key CAS and genuinely
-   atomic. This is the most attractive option and the one I would look at first — it changes the
-   data model rather than the store contract. The cost is that alias data is no longer co-located
-   with the index, so deleting an index must also clean up its aliases, which is itself a multi-key
-   write (though a much easier one to make idempotent and sweep).
-4. **Accept non-atomic and document it.** Defensible for single-index cases; not defensible for the
-   swap above, which is the main reason the API exists.
+Multi-key transactions are to be avoided, so aliases move out of index metadata and become
+`aliases/<name>` holding the indices they point at plus their filter, routing and write-index
+settings.
 
-Option 3 plus option 1 for the residue is probably where this lands, but it is a decision, and
-`indices.update_aliases` should not be started before it is made.
+The payoff is larger than "one option among four": **it collapses the canonical alias swap to a
+single key.** Remove `logs` from `logs-v1` and add it to `logs-v2` is not two writes to two index
+documents — it is one update to `aliases/logs`, changing its index list from `[logs-v1]` to
+`[logs-v2]`. That is a single-key compare-and-swap, genuinely atomic, on any backend. The operation
+the API mainly exists for stops being a problem.
+
+It also removes the scan in Tier 1: looking up an alias by name becomes a direct key read instead of
+walking every index.
+
+What remains non-atomic is a request whose actions span several *different* aliases, e.g. adding
+`x` to one index and `y` to another in one call. That is a much weaker requirement, and it is
+covered from the other direction: the shard manager assembles the configuration it pushes to
+coordinator nodes, and that push is atomic. Since aliases matter for operation dispatch — which is
+the coordinator nodes' job — a brief window where the control plane's own keys disagree is not
+observable by anything routing requests.
+
+So the control plane does not need cross-resource atomicity at all. It writes independent resources;
+the layer below assembles a coherent snapshot. Deleting an index still has to clean up alias
+membership, which is a second write, but one that is easy to make idempotent and to sweep.
+
+Consequences to keep in mind:
+
+- `KeyValueStore` needs no transaction support, which keeps object-store backends viable.
+- Alias data is no longer co-located with the index, so index deletion and alias cleanup need a
+  reconciliation path rather than relying on a single write.
 
 ---
 
@@ -161,10 +171,12 @@ current `IndexManagementTasks` explicitly is not.
   through the shard manager. Each has preconditions worth reproducing: the source must be
   read-only, shrink requires a single-shard target, split requires the shard count to be a multiple
   of the source's.
-- **`indices.rollover`** — the most demanding operation in the namespace. It combines
-  condition evaluation (Tier 5: `max_docs` and `max_size` need doc counts and sizes the control
-  plane does not have), implicit target naming (`logs-000001` → `logs-000002`), an atomic write-index
-  alias switch (Tier 3), and a `dry_run` mode. Everything hard in one endpoint. Leave it last.
+- **`indices.rollover`** — still the most demanding operation in the namespace, but less of it is
+  ours than it first looked. Condition evaluation needs doc counts and sizes the control plane does
+  not have, so it is a collaboration with the shard manager rather than something to implement here.
+  The write-index alias switch is now a single-key update (see above). What is left for the control
+  plane is implicit target naming (`logs-000001` → `logs-000002`), `dry_run`, and driving the
+  exchange. Still last, but for orchestration reasons rather than atomicity ones.
 - **`snapshot.create/restore/clone/delete`, `cleanup_repository`, `verify_repository`** — long-running
   work against a repository backend, plus progress reporting through `snapshot.status`.
 - **`indices.open`, `close`** — state transitions that the shard manager must act on.
@@ -184,8 +196,41 @@ internals. Here it is a read over our own `tasks/index-management/` prefix — a
 natural API in the whole set for this architecture, and a good early way to make the task queue
 observable without committing to the `_tasks` ID format.
 
-**`cluster.post_voting_config_exclusions` / `delete_voting_config_exclusions` may not be meaningful.**
-They manage the cluster-manager quorum. A standalone control plane has no quorum in OpenSearch's
-sense; whatever consensus exists belongs to etcd or DynamoDB. These are in scope today, but
-implementing them faithfully may be impossible and pretending may be worse than a clear error. Worth
-revisiting their scope classification.
+**`cluster.post_voting_config_exclusions` / `delete_voting_config_exclusions` are now out of scope.**
+They manage the cluster-manager quorum. This service is stateless and holds no state outside the
+data store, so it has no quorum of its own; whatever consensus exists belongs to etcd or DynamoDB.
+Implementing them faithfully is not possible and pretending would be worse than a clear error.
+
+---
+
+## Statelessness, and what it forbids
+
+The control plane is a stateless service: it holds nothing outside the data store, scales by running
+more instances, and should be able to scale to zero on something like Lambda, since control plane
+operations are infrequent and not latency sensitive.
+
+Audited against the current code, and it holds:
+
+- No mutable static fields anywhere.
+- Three non-final instance fields, all in `NettyHttpServer` and all transport lifecycle
+  (`bossGroup`, `workerGroup`, `channel`), plus `PathTrie.Node.wildcardChild`, which is written while
+  the trie is built and read-only afterwards.
+- No background threads, executors or timers beyond a shutdown hook. This is the property that makes
+  scale-to-zero possible, and it holds because task *processing* belongs to the shard manager. If the
+  control plane ever grows a polling loop it stops being able to scale to zero — worth treating as a
+  design constraint rather than an accident.
+- `cluster_uuid` is generated with create-if-absent, so concurrent cold starts converge on one value
+  rather than racing.
+
+Two things this rules out or complicates:
+
+- **`FileSystemKeyValueStore` cannot back more than one instance.** Its compare-and-swap is an
+  in-process lock, so two instances over one directory will silently lose updates. That was written
+  up as a limitation; under this scaling model it is a hard boundary. It is a development and
+  single-instance store, and multi-instance requires etcd or DynamoDB. Nothing warns about this at
+  startup, which it probably should.
+- **Netty is the wrong front end for Lambda.** Not a problem to fix now: `HttpRequestDispatcher` is
+  the seam, and the routing and handler layers know nothing about Netty, so an invocation-based
+  entry point is an additive change. Worth noting that `ClusterUuid.resolve` does a store read on
+  every `GET /`, which under Lambda is a round-trip per call; it is immutable once written, so it can
+  be cached per instance when that matters.

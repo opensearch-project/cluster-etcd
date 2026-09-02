@@ -169,8 +169,6 @@ included_operations:
   - cluster.get_weighted_routing
   - cluster.put_weighted_routing
   - cluster.delete_weighted_routing
-  - cluster.post_voting_config_exclusions
-  - cluster.delete_voting_config_exclusions
 
   # -- ingest: pipeline definitions live in cluster state.
   - ingest.get_pipeline
@@ -262,6 +260,13 @@ excluded_operations:
   cluster.reroute: "operates on the shard routing table"
   cluster.allocation_explain: "requires the allocation deciders and routing table"
   cluster.stats: "aggregates per-node runtime statistics"
+
+  # Voting config exclusions manage the cluster-manager quorum. This control plane is a stateless
+  # service -- it holds no state outside the data store and scales by running more instances -- so
+  # there is no quorum of its own to manage; whatever consensus exists belongs to etcd or DynamoDB.
+  # Implementing these faithfully is not possible, and pretending would be worse than a clear error.
+  cluster.post_voting_config_exclusions: "no cluster-manager quorum exists in a stateless control plane"
+  cluster.delete_voting_config_exclusions: "no cluster-manager quorum exists in a stateless control plane"
 
   # -- ingest
   ingest.simulate: "requires the ingest processor execution engine"
