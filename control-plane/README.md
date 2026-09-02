@@ -525,6 +525,32 @@ character for character against the server's response.
   implementation artifact leaking into the API — drop the marker if you would rather
   not carry the quirk forward.
 
+## Known gap: the global query parameters
+
+The spec attaches five parameters to every operation, and codegen collects them into
+`GeneratedRoutes.GLOBAL_QUERY_PARAMS`. Only one of them is honoured:
+
+| parameter | status |
+|---|---|
+| `pretty` | implemented |
+| `filter_path` | **accepted and silently ignored** — a real cluster returns only the selected paths; we return the whole document |
+| `error_trace` | ignored — a real cluster adds `stack_trace` to the error cause |
+| `human` | ignored — a real cluster reformats durations and sizes |
+| `source` | ignored — a real cluster reads the request body from this parameter |
+
+Two reasons this is worse than it looks. It is **silent**: a client asking for
+`?filter_path=cluster_name` gets a valid-looking response with every other field still in it, rather
+than an error. And it applies to **every operation**, present and future, so the cost of leaving it
+grows with the surface.
+
+`source` is the sharpest edge, because `PutPipelineHandler` already tells clients
+`request body or source parameter is required` — wording copied faithfully from OpenSearch — while not
+supporting the parameter it names.
+
+These are cross-cutting request and response concerns, so they belong in one place alongside `pretty`
+rather than in each handler. `filter_path` and `source` are self-contained; `human` needs per-field
+knowledge of which values are durations or byte sizes and is a bigger job.
+
 ## Still unverified
 
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
