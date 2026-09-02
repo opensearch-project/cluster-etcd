@@ -536,7 +536,7 @@ The spec attaches five parameters to every operation, and codegen collects them 
 | `pretty` | implemented; two-space indent matching the server |
 | `filter_path` | implemented; see below |
 | `source` + `source_content_type` | implemented; body supplied in the query string |
-| `error_trace` | partial — see below |
+| `error_trace` | implemented for escaped exceptions; deliberately not for checked failures — see below |
 | `human` | **deliberately not supported** — see below |
 
 ### filter_path
@@ -553,15 +553,24 @@ Two details that are easy to get wrong, and were:
   exception, so `GET /nope?filter_path=status` returns the whole error body. Reproduced by filtering
   only on the success path.
 
-### error_trace, and why it is partial
+### error_trace, and what it deliberately omits
 
-A real cluster can render a stack trace for any error because every error *is* a thrown exception.
-Most errors here are constructed rather than thrown — `indexNotFound` builds a response — so there is
-no stack to report, and a fabricated one would point at nothing.
+A real cluster can trace any error, because in OpenSearch every error *is* a thrown exception. Here
+most are not: `indexNotFound` and the validation failures build a response directly, because a
+rejected index name is an expected outcome rather than an exceptional one.
 
-So `error_trace=true` yields a stack trace for an exception that genuinely escaped a handler, and
-nothing for a constructed error. Closing that properly means raising these conditions as exceptions
-and rendering them centrally: a worthwhile refactor, and a larger one than adding a parameter.
+So `error_trace=true` yields a trace when an exception genuinely escaped a handler, and nothing when
+the failure was explicitly checked for. **This is the intended scope, not a gap awaiting a refactor.**
+Like `human`, `error_trace` is a debugging aid for a human reading a response rather than a signal a
+production client acts on — and where it actually helps is precisely the unforeseen case, which is the
+one that does carry a trace. Throwing an exception per validation failure would put that cost on an
+ordinary path and produce a trace pointing at our own validation code rather than at anything the
+caller could act on; the `reason` already says exactly what was wrong.
+
+### Two parameters aimed at humans, not programs
+
+`human` and `error_trace` both exist for someone reading a response. Both are scoped by judgement
+rather than reproduced exhaustively, which is why the divergences above and below are deliberate.
 
 ### Why human is not supported
 

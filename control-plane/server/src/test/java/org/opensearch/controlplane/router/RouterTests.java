@@ -264,8 +264,8 @@ class RouterTests {
     }
 
     /**
-     * A constructed error has no stack to report, and fabricating one would point at nothing. See
-     * {@code ErrorResponses.ERROR_TRACE_LIMITATION}.
+     * Deliberate, not a gap: an explicitly-checked failure is an expected outcome, so there is no
+     * exception and nothing worth tracing. See {@code ErrorResponses.internalError}.
      */
     @Test
     void errorTraceAddsNothingToAConstructedError() throws Exception {

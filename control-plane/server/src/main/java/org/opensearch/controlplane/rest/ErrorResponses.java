@@ -108,8 +108,27 @@ public final class ErrorResponses {
     /**
      * An unexpected exception escaped a handler.
      *
-     * @param errorTrace whether {@code ?error_trace} asked for a stack trace. Only a genuine exception
-     *                   has one to give; see the note on {@link #ERROR_TRACE_LIMITATION}.
+     * <h2>Which errors carry a stack trace, and why only those</h2>
+     *
+     * <p>A real cluster can trace any error, because in OpenSearch every error <em>is</em> a thrown
+     * exception. Here most are not: {@code indexNotFound} and the validation failures build a response
+     * directly, because a rejected index name is an expected outcome rather than an exceptional one.
+     *
+     * <p>So {@code error_trace=true} yields a trace when an exception genuinely escaped a handler, and
+     * nothing when the failure was explicitly checked for. That is the intended behaviour, not a gap
+     * awaiting a refactor:
+     *
+     * <ul>
+     *   <li>{@code error_trace} is a debugging aid for a human reading a response, not a signal a
+     *       production client acts on — the same family as {@code human}. Where it helps is exactly
+     *       where something unforeseen happened, which is the case that does carry a trace.</li>
+     *   <li>Throwing and catching an exception per validation failure would put that cost on an
+     *       ordinary path, and the resulting trace would point at our own validation code rather than
+     *       at anything the caller could act on. The {@code reason} already says precisely what was
+     *       wrong.</li>
+     * </ul>
+     *
+     * @param errorTrace whether {@code ?error_trace} asked for a stack trace
      */
     public static RestResponse internalError(Throwable cause, boolean pretty, boolean errorTrace) {
         ObjectNode node = Json.object();
@@ -120,22 +139,6 @@ public final class ErrorResponses {
         }
         return structured(RestStatus.INTERNAL_SERVER_ERROR, node, pretty, Map.of());
     }
-
-    /**
-     * Why {@code error_trace} is only partly honoured.
-     *
-     * <p>A real cluster renders a stack trace for any error, because every error <em>is</em> a thrown
-     * exception. Most errors here are constructed directly — {@code indexNotFound} builds a response
-     * rather than throwing — so there is no stack to report, and inventing one would be worse than
-     * omitting it: a fabricated trace points at nothing.
-     *
-     * <p>So {@code error_trace=true} yields a stack trace for an exception that genuinely escaped a
-     * handler, and nothing for a constructed error. Closing the gap properly means raising these
-     * conditions as exceptions and rendering them centrally, which is a worthwhile refactor and a
-     * larger one than adding a parameter.
-     */
-    public static final String ERROR_TRACE_LIMITATION =
-        "stack traces are available only for exceptions that genuinely escaped a handler";
 
     private static String stackTraceOf(Throwable cause) {
         java.io.StringWriter writer = new java.io.StringWriter();

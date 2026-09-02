@@ -17,9 +17,16 @@ package org.opensearch.controlplane.rest;
  *   <tr><td>{@link #PRETTY}</td><td>{@link Json#response} — two-space indent, matching the server</td></tr>
  *   <tr><td>{@link #FILTER_PATH}</td><td>{@link Json#response} via {@link FilterPath}, success responses only</td></tr>
  *   <tr><td>{@link #SOURCE}</td><td>{@code Router.dispatch}, with {@link #SOURCE_CONTENT_TYPE}</td></tr>
- *   <tr><td>{@link #ERROR_TRACE}</td><td>{@link ErrorResponses#internalError}, for genuine exceptions</td></tr>
+ *   <tr><td>{@link #ERROR_TRACE}</td><td>{@link ErrorResponses#internalError} — traces exceptions that escaped a handler, deliberately not explicitly-checked failures</td></tr>
  *   <tr><td>{@link #HUMAN}</td><td><b>deliberately unsupported</b> — see below</td></tr>
  * </table>
+ *
+ * <h2>Two parameters aimed at humans rather than programs</h2>
+
+ * <p>{@code human} and {@code error_trace} both exist for someone reading a response, not for a client
+ * acting on one. Both are therefore scoped by judgement rather than reproduced exhaustively:
+ * {@code error_trace} traces genuinely unforeseen failures and not explicitly-checked ones (see
+ * {@link ErrorResponses#internalError}), and {@code human} is declined outright.
  *
  * <h2>Why {@code human} is not supported</h2>
  *
