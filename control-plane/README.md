@@ -10,20 +10,20 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-128 routes, 81 operation groups, 8 implemented, 73 stubbed
+126 routes, 79 operation groups, 11 implemented, 68 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
 | `indices` | 67 | `create`, `exists`, `delete` |
-| `cluster` | 23 | — |
+| `cluster` | 21 | — |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
-| `search_pipeline` | 4 | — |
+| `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 73 operation groups return `501 Not Implemented`** with a structured
+**The remaining 68 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -216,8 +216,9 @@ Only the second row exits non-zero. Without a reference, a story that fails beca
 unimplemented operation is indistinguishable from one that fails because we got the behaviour wrong,
 and the whole point of the harness is telling those apart.
 
-**Current state:** `default/ingest/pipeline.yaml` passes against the control plane and against a
-real OpenSearch 3.9.0, with no divergence. That covers 4 of the spec's 710 paths.
+**Current state:** the ingest pipeline story passes against both the control plane and a real
+OpenSearch 3.9.0 with no divergence. Two search pipeline stories have been added to the manifest but
+not yet run.
 
 Read that narrowly. The story exercises the happy path — put, get-by-id, get-all, delete — and its
 epilogue accepts either 200 or 404, so it does *not* pin the error semantics: the three delete
@@ -228,7 +229,7 @@ stories reach those paths.
 
 `conformance/stories.txt` lists the stories to run. Only stories whose every chapter is within the
 implemented surface belong there. Add a line as each operation group lands. Right now that is one
-story, `default/ingest/pipeline.yaml`, which exercises put, get-by-id, get-all, and delete.
+three: the ingest pipeline story, and both search pipeline stories.
 
 Stories run **in place**, one tester invocation each, rather than staged into a temp directory: the
 tester validates each story's `$schema` field against the file's own location, so a copied story
@@ -528,8 +529,6 @@ operation groups by what makes them difficult rather than by namespace. The shor
   logic in the `indices` namespace and should be written once, deliberately.
 - **Template composition** wants porting from `MetadataIndexTemplateService` rather than reinventing,
   stopping short of the mapping engine.
-- **`search_pipeline.*` is the best next task** — structurally identical to the ingest pipeline
-  handlers already written.
 - `cluster.pending_tasks` gets *easier* in this architecture: it is a read over our own task keys.
 - **The service is stateless** — nothing outside the data store, no background threads — so it scales
   by adding instances and could scale to zero. Audited, and it holds today. The catch:
@@ -561,7 +560,8 @@ server/
   tenant/                 TenantId, TenantResolver + implementations
   handler/                OperationHandler, OperationContext, HandlerRegistry,
                           ControlPlaneHandlers
-  handler/ingest/         pipeline CRUD
+  handler/pipeline/       ingest + search pipeline CRUD (one implementation, two kinds)
+  handler/indices/        create, exists, delete
   http/                   Netty front end
 server/src/test/
   store/                  InMemoryKeyValueStore (test-only, non-durable),

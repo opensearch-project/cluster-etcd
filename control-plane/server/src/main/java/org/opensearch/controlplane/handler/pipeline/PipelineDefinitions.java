@@ -2,7 +2,7 @@
  * Copyright OpenSearch Software Foundation
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.controlplane.handler.ingest;
+package org.opensearch.controlplane.handler.pipeline;
 
 import org.opensearch.controlplane.store.KeyValueStore;
 
@@ -12,46 +12,30 @@ import java.util.TreeMap;
 import java.util.regex.Pattern;
 
 /**
- * Pipeline definitions in the key/value store: key layout and ID expression resolution.
+ * Pipeline definitions in the key/value store: key layout and ID expression resolution, for either
+ * {@link PipelineKind}.
  *
  * <p>Payloads are stored as opaque canonical JSON. The control plane deliberately does not model
  * processors — it has no processor registry and cannot execute a pipeline, so validating anything
- * beyond "this is a JSON object" would mean duplicating knowledge that belongs to the data plane.
- * Definitions are stored and returned verbatim.
+ * beyond the shape would mean duplicating knowledge that belongs to the data plane. Definitions are
+ * stored and returned verbatim.
  */
-final class PipelineStore {
-
-    /** Key layout: {@code ingest/pipeline/<id>}. */
-    static final String KEY_PREFIX = "ingest/pipeline/";
-
-    /**
-     * Marker for "this cluster has had ingest metadata at some point".
-     *
-     * <p>Mirrors the presence of {@code IngestMetadata} in OpenSearch's cluster state, which is
-     * created by the first successful pipeline PUT and never removed thereafter — not even when
-     * every pipeline is deleted. {@link DeletePipelineHandler} needs it: OpenSearch's
-     * {@code IngestService.innerDelete} returns early with no error when there is no ingest
-     * metadata at all, so a delete of a nonexistent pipeline is a 200 on a pristine cluster but a
-     * 404 once any pipeline has ever existed. Verified against a live cluster.
-     *
-     * <p>Deliberately outside {@link #KEY_PREFIX} so it never shows up in a pipeline scan.
-     */
-    static final String METADATA_MARKER_KEY = "ingest/metadata-initialized";
-
-    private static final byte[] MARKER_VALUE = new byte[0];
+final class PipelineDefinitions {
 
     private final KeyValueStore store;
+    private final PipelineKind kind;
 
-    PipelineStore(KeyValueStore store) {
+    PipelineDefinitions(KeyValueStore store, PipelineKind kind) {
         this.store = store;
+        this.kind = kind;
     }
 
-    static String key(String id) {
-        return KEY_PREFIX + id;
+    String key(String id) {
+        return kind.keyPrefix() + id;
     }
 
-    static String idFromKey(String key) {
-        return key.substring(KEY_PREFIX.length());
+    private String idFromKey(String key) {
+        return key.substring(kind.keyPrefix().length());
     }
 
     Optional<byte[]> get(String id) {
@@ -60,37 +44,43 @@ final class PipelineStore {
 
     void put(String id, byte[] canonicalJson) {
         store.put(key(id), canonicalJson);
-        if (hasIngestMetadata() == false) {
-            store.put(METADATA_MARKER_KEY, MARKER_VALUE);
+        if (hasMetadata() == false) {
+            store.put(kind.metadataMarkerKey(), new byte[0]);
         }
-    }
-
-    /**
-     * Whether ingest metadata has ever existed here. Once true, never false again — see
-     * {@link #METADATA_MARKER_KEY}.
-     */
-    boolean hasIngestMetadata() {
-        return store.get(METADATA_MARKER_KEY).isPresent();
     }
 
     boolean delete(String id) {
         return store.delete(key(id));
     }
 
-    /** Every stored pipeline, in ID order. */
+    /**
+     * Whether pipeline metadata has ever existed here. Once true, never false again.
+     *
+     * <p>Mirrors the presence of {@code IngestMetadata} (or its search equivalent) in OpenSearch's
+     * cluster state, which the first successful put creates and nothing ever removes — not even
+     * deleting every pipeline. {@link DeletePipelineHandler} needs it: deleting a nonexistent pipeline
+     * is a 200 on a pristine cluster but a 404 once any pipeline has ever existed. Verified against a
+     * live cluster for both kinds.
+     */
+    boolean hasMetadata() {
+        return store.get(kind.metadataMarkerKey()).isPresent();
+    }
+
+    /** Every stored definition, in ID order. */
     NavigableMap<String, byte[]> all() {
-        NavigableMap<String, byte[]> pipelines = new TreeMap<>();
-        store.scanPrefix(KEY_PREFIX).forEach((key, versioned) -> pipelines.put(idFromKey(key), versioned.value()));
-        return pipelines;
+        NavigableMap<String, byte[]> definitions = new TreeMap<>();
+        store.scanPrefix(kind.keyPrefix())
+             .forEach((key, versioned) -> definitions.put(idFromKey(key), versioned.value()));
+        return definitions;
     }
 
     /**
-     * Resolves an ID expression: a comma-separated list of IDs, each of which may contain
-     * {@code *} wildcards. A {@code null} expression means all pipelines, matching
-     * {@code GET /_ingest/pipeline} with no ID.
+     * Resolves an ID expression: a comma-separated list of IDs, each of which may contain {@code *}
+     * wildcards. A {@code null} or empty expression means all definitions, matching a bare
+     * {@code GET} with no ID.
      */
     NavigableMap<String, byte[]> resolve(String idExpression) {
-        if (idExpression == null || idExpression.isEmpty() || "*".equals(idExpression)) {
+        if (idExpression == null || idExpression.isEmpty() || MATCH_ALL.equals(idExpression)) {
             return all();
         }
 
@@ -103,7 +93,7 @@ final class PipelineStore {
                 continue;
             }
             if (hasWildcard(id)) {
-                // Only scan once, however many wildcard tokens there are.
+                // Scan once, however many wildcard tokens there are.
                 if (everything == null) {
                     everything = all();
                 }
@@ -119,6 +109,9 @@ final class PipelineStore {
         }
         return matched;
     }
+
+    /** OpenSearch exempts only the exact match-all pattern from the not-found check, not wildcards generally. */
+    static final String MATCH_ALL = "*";
 
     static boolean hasWildcard(String idExpression) {
         return idExpression != null && idExpression.indexOf('*') >= 0;

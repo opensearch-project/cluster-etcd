@@ -11,7 +11,7 @@ rather than observation it says so.
 
 | tier | what makes it hard | count |
 |---|---|---|
-| 0 | nothing — single key, single document | ~24 |
+| 0 | nothing — single key, single document | ~21 |
 | 1 | needs a scan or aggregation across keys | ~13 |
 | 2 | non-trivial merge or composition semantics | ~8 |
 | 3 | atomic mutation across several resources — **largely dissolved, see below** | ~10 |
@@ -144,9 +144,11 @@ The direct consequence of not having a prebuilt cluster-state view.
 
 Worth knowing which these are, because several are near-copies of code that already exists:
 
-- **`search_pipeline.put/get/delete`** — structurally identical to the ingest pipeline handlers
-  already written, including the wildcard and comma-list resolution. Close to a copy with a
-  different key prefix. Best next task if the goal is momentum.
+- ~~**`search_pipeline.put/get/delete`**~~ — **done.** They turned out to be identical to ingest in
+  every branch, including the metadata-presence delete quirk and the error wording, so rather than
+  copying, the handlers were extracted and parameterised by `PipelineKind` and are now instantiated
+  twice. The single difference is that ingest requires `processors` while a search pipeline accepts
+  `{}`.
 - **stored scripts** (`put/get/delete_script`) — one key per script id.
   `get_script_context` / `get_script_languages` are static lists.
 - **component and index templates** (`put/get/delete/exists` × both) — one key per template. The

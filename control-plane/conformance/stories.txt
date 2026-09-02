@@ -6,3 +6,8 @@
 # Add a line when an operation group lands. Lines starting with # are comments.
 
 default/ingest/pipeline.yaml
+
+# Search pipelines. Both stories touch only /_search/pipeline paths, so they are fully within the
+# implemented surface -- unlike most stories, which reach data plane operations.
+default/search_pipeline/search_phase_results_processors/normalization.yaml
+default/search_pipeline/search_phase_results_processors/score_ranker.yaml

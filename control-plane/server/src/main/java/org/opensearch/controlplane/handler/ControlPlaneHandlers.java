@@ -10,9 +10,10 @@ import org.opensearch.controlplane.handler.core.PingHandler;
 import org.opensearch.controlplane.handler.indices.CreateIndexHandler;
 import org.opensearch.controlplane.handler.indices.DeleteIndexHandler;
 import org.opensearch.controlplane.handler.indices.ExistsIndexHandler;
-import org.opensearch.controlplane.handler.ingest.DeletePipelineHandler;
-import org.opensearch.controlplane.handler.ingest.GetPipelineHandler;
-import org.opensearch.controlplane.handler.ingest.PutPipelineHandler;
+import org.opensearch.controlplane.handler.pipeline.DeletePipelineHandler;
+import org.opensearch.controlplane.handler.pipeline.GetPipelineHandler;
+import org.opensearch.controlplane.handler.pipeline.PipelineKind;
+import org.opensearch.controlplane.handler.pipeline.PutPipelineHandler;
 
 /**
  * The single place where implemented operations are registered.
@@ -63,9 +64,12 @@ public final class ControlPlaneHandlers {
             .register(new CreateIndexHandler())
             .register(new ExistsIndexHandler())
             .register(new DeleteIndexHandler())
-            // ingest
-            .register(new PutPipelineHandler())
-            .register(new GetPipelineHandler())
-            .register(new DeletePipelineHandler());
+            // ingest and search pipelines are the same API twice; see PipelineKind
+            .register(new PutPipelineHandler(PipelineKind.ingest()))
+            .register(new GetPipelineHandler(PipelineKind.ingest()))
+            .register(new DeletePipelineHandler(PipelineKind.ingest()))
+            .register(new PutPipelineHandler(PipelineKind.search()))
+            .register(new GetPipelineHandler(PipelineKind.search()))
+            .register(new DeletePipelineHandler(PipelineKind.search()));
     }
 }

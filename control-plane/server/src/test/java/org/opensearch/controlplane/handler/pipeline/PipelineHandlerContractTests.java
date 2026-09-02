@@ -2,7 +2,7 @@
  * Copyright OpenSearch Software Foundation
  * SPDX-License-Identifier: Apache-2.0
  */
-package org.opensearch.controlplane.handler.ingest;
+package org.opensearch.controlplane.handler.pipeline;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,12 +27,26 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Drives the pipeline handlers through the real router, so path templates, placeholder binding, and
- * error shapes are exercised rather than the handler being called directly.
+ * The pipeline API contract, run against both {@link PipelineKind}s.
  *
- * <p>Every status code and error body asserted here was verified against OpenSearch 3.9.0-SNAPSHOT.
+ * <p>Drives the real router, so path templates, placeholder binding, and error shapes are exercised
+ * rather than handlers being called directly. Every status code and error body asserted here was
+ * verified against OpenSearch 3.9.0 for <em>both</em> ingest and search pipelines — they behave
+ * identically, which is why one set of assertions covers both.
+ *
+ * <p>The single divergence is expressed by {@link #requiredProperty()}: ingest insists on
+ * {@code processors}, a search pipeline accepts {@code {}}.
  */
-class IngestPipelineHandlerTests {
+abstract class PipelineHandlerContractTests {
+
+    /** The URL prefix under test, e.g. {@code /_ingest/pipeline}. */
+    protected abstract String urlPrefix();
+
+    /** The kind under test, for key-layout assertions. */
+    protected abstract PipelineKind kind();
+
+    /** A body property the server requires, or {@code null} if none. */
+    protected abstract String requiredProperty();
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -56,8 +70,14 @@ class IngestPipelineHandlerTests {
     // ------------------------------------------------------------------
 
     /** A minimal valid definition. {@code processors} is required by the server. */
-    private static String definition(String description) {
-        return "{\"description\":\"" + description + "\",\"processors\":[]}";
+    private String definition(String description) {
+        String required = requiredProperty() == null ? "" : ",\"" + requiredProperty() + "\":[]";
+        return "{\"description\":\"" + description + "\"" + required + "}";
+    }
+
+    /** The minimal body this kind accepts. */
+    private String minimalDefinition() {
+        return requiredProperty() == null ? "{}" : "{\"" + requiredProperty() + "\":[]}";
     }
 
     private JsonNode body(RestResponse response) throws Exception {
@@ -65,7 +85,7 @@ class IngestPipelineHandlerTests {
     }
 
     private RestResponse put(String id, String definition) {
-        String path = "/_ingest/pipeline/" + id;
+        String path = urlPrefix() + "/" + id;
         return router.dispatch("PUT", path, path, Map.of(), Map.of(), definition.getBytes(StandardCharsets.UTF_8));
     }
 
@@ -86,7 +106,7 @@ class IngestPipelineHandlerTests {
      * is bookkeeping rather than a pipeline.
      */
     private int pipelineCount() {
-        return store.scanPrefix(TENANT_PREFIX + PipelineStore.KEY_PREFIX).size();
+        return store.scanPrefix(TENANT_PREFIX + kind().keyPrefix()).size();
     }
 
     // ------------------------------------------------------------------
@@ -100,7 +120,7 @@ class IngestPipelineHandlerTests {
         assertEquals(RestStatus.OK, response.status());
         assertTrue(body(response).get("acknowledged").asBoolean());
         assertEquals(1, pipelineCount());
-        assertTrue(store.get(TENANT_PREFIX + "ingest/pipeline/my-pipeline").isPresent(), "stored under ingest/pipeline/<id>");
+        assertTrue(store.get(TENANT_PREFIX + kind().keyPrefix() + "my-pipeline").isPresent(), "stored under <prefix>/<id>");
     }
 
     @Test
@@ -112,13 +132,13 @@ class IngestPipelineHandlerTests {
         assertEquals(1, pipelineCount());
         assertEquals(
             "second",
-            body(get("/_ingest/pipeline/my-pipeline")).get("my-pipeline").get("description").asText()
+            body(get(urlPrefix() + "/my-pipeline")).get("my-pipeline").get("description").asText()
         );
     }
 
     @Test
     void putRejectsAMissingBody() throws Exception {
-        RestResponse response = router.dispatch("PUT", "/_ingest/pipeline/my-pipeline");
+        RestResponse response = router.dispatch("PUT", urlPrefix() + "/my-pipeline");
 
         assertEquals(RestStatus.BAD_REQUEST, response.status());
         JsonNode error = body(response).get("error");
@@ -146,38 +166,51 @@ class IngestPipelineHandlerTests {
     }
 
     /**
-     * The server requires {@code processors} even though the spec's {@code Pipeline} schema does not
-     * mark it required. Server behaviour wins.
+     * The one place the two kinds differ. Ingest requires {@code processors} even though the spec's
+     * {@code Pipeline} schema does not mark it required; a search pipeline has three independently
+     * optional processor lists and so accepts {@code {}}. Both verified against a live cluster.
      */
     @Test
-    void putRejectsABodyWithoutProcessors() throws Exception {
-        RestResponse response = put("my-pipeline", "{\"description\":\"no processors\"}");
+    void enforcesTheRequiredPropertyIfThisKindHasOne() throws Exception {
+        RestResponse response = put("my-pipeline", "{\"description\":\"nothing else\"}");
+
+        if (requiredProperty() == null) {
+            assertEquals(RestStatus.OK, response.status(), "this kind requires nothing");
+            assertEquals(1, pipelineCount());
+            return;
+        }
 
         assertEquals(RestStatus.BAD_REQUEST, response.status());
         JsonNode error = body(response).get("error");
         assertEquals("parse_exception", error.get("type").asText());
-        assertEquals("[processors] required property is missing", error.get("reason").asText());
-        assertEquals("processors", error.get("property_name").asText());
+        assertEquals("[" + requiredProperty() + "] required property is missing", error.get("reason").asText());
+        assertEquals(requiredProperty(), error.get("property_name").asText());
         // The extra field is repeated inside root_cause, as the server does.
-        assertEquals("processors", error.get("root_cause").get(0).get("property_name").asText());
+        assertEquals(requiredProperty(), error.get("root_cause").get(0).get("property_name").asText());
         assertEquals(0, pipelineCount());
     }
 
     @Test
-    void putRejectsAnEmptyObject() throws Exception {
+    void handlesAnEmptyObjectAccordingToKind() throws Exception {
         RestResponse response = put("my-pipeline", "{}");
 
-        assertEquals(RestStatus.BAD_REQUEST, response.status());
-        assertEquals("processors", body(response).get("error").get("property_name").asText());
+        if (requiredProperty() == null) {
+            assertEquals(RestStatus.OK, response.status());
+        } else {
+            assertEquals(RestStatus.BAD_REQUEST, response.status());
+            assertEquals(requiredProperty(), body(response).get("error").get("property_name").asText());
+        }
     }
 
     @Test
     void putNormalisesStoredJsonSoOutputIsIndependentOfRequestFormatting() {
-        put("a", "{\n  \"description\" : \"spaced out\",\n  \"processors\" : [ ]\n}");
+        put("a", "{\n  \"description\" : \"spaced out\"\n}".replace("\"spaced out\"",
+            requiredProperty() == null ? "\"spaced out\"" : "\"spaced out\",\n  \"" + requiredProperty() + "\" : [ ]"));
 
         assertEquals(
-            "{\"description\":\"spaced out\",\"processors\":[]}",
-            store.getAsString(TENANT_PREFIX + "ingest/pipeline/a").orElseThrow()
+            definition("spaced out"),
+            store.getAsString(TENANT_PREFIX + kind().keyPrefix() + "a").orElseThrow(),
+            "stored form must be canonical, not however the client indented it"
         );
     }
 
@@ -189,7 +222,7 @@ class IngestPipelineHandlerTests {
     void getReturnsABareMapWithNoEnvelope() throws Exception {
         put("a", definition("A"));
 
-        JsonNode json = body(get("/_ingest/pipeline/a"));
+        JsonNode json = body(get(urlPrefix() + "/a"));
         assertEquals(List.of("a"), json.propertyStream().map(Map.Entry::getKey).toList());
         assertEquals("A", json.get("a").get("description").asText());
     }
@@ -199,7 +232,7 @@ class IngestPipelineHandlerTests {
         put("a");
         put("b");
 
-        RestResponse response = get("/_ingest/pipeline");
+        RestResponse response = get(urlPrefix());
         assertEquals(RestStatus.OK, response.status());
         JsonNode json = body(response);
         assertEquals(2, json.size());
@@ -212,7 +245,7 @@ class IngestPipelineHandlerTests {
         put("b");
         put("c");
 
-        JsonNode json = body(get("/_ingest/pipeline/a,c"));
+        JsonNode json = body(get(urlPrefix() + "/a,c"));
         assertEquals(2, json.size());
         assertTrue(json.has("a") && json.has("c"));
         assertFalse(json.has("b"));
@@ -224,7 +257,7 @@ class IngestPipelineHandlerTests {
         put("logs-b");
         put("metrics");
 
-        JsonNode json = body(get("/_ingest/pipeline/logs-*"));
+        JsonNode json = body(get(urlPrefix() + "/logs-*"));
         assertEquals(2, json.size());
         assertTrue(json.has("logs-a") && json.has("logs-b"));
         assertFalse(json.has("metrics"));
@@ -234,7 +267,7 @@ class IngestPipelineHandlerTests {
     void getIgnoresMissingIdsInAList() throws Exception {
         put("a");
 
-        JsonNode json = body(get("/_ingest/pipeline/a,nonexistent"));
+        JsonNode json = body(get(urlPrefix() + "/a,nonexistent"));
         assertEquals(1, json.size());
         assertTrue(json.has("a"));
     }
@@ -244,7 +277,7 @@ class IngestPipelineHandlerTests {
     void getReturns404WithAnEmptyObjectWhenNothingMatches() throws Exception {
         put("a");
 
-        RestResponse response = get("/_ingest/pipeline/nonexistent");
+        RestResponse response = get(urlPrefix() + "/nonexistent");
         assertEquals(RestStatus.NOT_FOUND, response.status());
         JsonNode json = body(response);
         assertTrue(json.isObject());
@@ -254,8 +287,8 @@ class IngestPipelineHandlerTests {
     /** Verified: even a bare GET on a cluster with no pipelines is a 404. */
     @Test
     void getReturns404WhenNoPipelinesExistAtAll() {
-        assertEquals(RestStatus.NOT_FOUND, get("/_ingest/pipeline").status());
-        assertEquals(RestStatus.NOT_FOUND, get("/_ingest/pipeline/*").status());
+        assertEquals(RestStatus.NOT_FOUND, get(urlPrefix()).status());
+        assertEquals(RestStatus.NOT_FOUND, get(urlPrefix() + "/*").status());
     }
 
     // ------------------------------------------------------------------
@@ -266,7 +299,7 @@ class IngestPipelineHandlerTests {
     void deleteRemovesThePipelineAndAcknowledges() throws Exception {
         put("a");
 
-        RestResponse response = delete("/_ingest/pipeline/a");
+        RestResponse response = delete(urlPrefix() + "/a");
         assertEquals(RestStatus.OK, response.status());
         assertTrue(body(response).get("acknowledged").asBoolean());
         assertEquals(0, pipelineCount());
@@ -275,7 +308,7 @@ class IngestPipelineHandlerTests {
     /** Branch 1: no ingest metadata has ever existed, so any delete is a no-op 200. */
     @Test
     void deleteOnAPristineStoreIsAcknowledgedEvenForAMissingId() throws Exception {
-        RestResponse response = delete("/_ingest/pipeline/never-existed");
+        RestResponse response = delete(urlPrefix() + "/never-existed");
 
         assertEquals(RestStatus.OK, response.status());
         assertTrue(body(response).get("acknowledged").asBoolean());
@@ -288,10 +321,10 @@ class IngestPipelineHandlerTests {
     @Test
     void deleteOfAMissingIdIs404OnceAnyPipelineHasEverExisted() throws Exception {
         put("a");
-        delete("/_ingest/pipeline/a");
+        delete(urlPrefix() + "/a");
         assertEquals(0, pipelineCount(), "no pipelines remain, but ingest metadata does");
 
-        RestResponse response = delete("/_ingest/pipeline/never-existed");
+        RestResponse response = delete(urlPrefix() + "/never-existed");
         assertEquals(RestStatus.NOT_FOUND, response.status());
         JsonNode error = body(response).get("error");
         assertEquals("resource_not_found_exception", error.get("type").asText());
@@ -302,7 +335,7 @@ class IngestPipelineHandlerTests {
     void deleteOfAConcreteMissingIdIs404WhenOthersExist() throws Exception {
         put("a");
 
-        RestResponse response = delete("/_ingest/pipeline/nonexistent");
+        RestResponse response = delete(urlPrefix() + "/nonexistent");
         assertEquals(RestStatus.NOT_FOUND, response.status());
         assertEquals("pipeline [nonexistent] is missing", body(response).get("error").get("reason").asText());
         assertEquals(1, pipelineCount(), "the failed delete must not have removed anything");
@@ -313,7 +346,7 @@ class IngestPipelineHandlerTests {
     void deleteByAPartialWildcardMatchingNothingIs404() throws Exception {
         put("a");
 
-        RestResponse response = delete("/_ingest/pipeline/logs-*");
+        RestResponse response = delete(urlPrefix() + "/logs-*");
         assertEquals(RestStatus.NOT_FOUND, response.status());
         assertEquals("pipeline [logs-*] is missing", body(response).get("error").get("reason").asText());
     }
@@ -322,9 +355,9 @@ class IngestPipelineHandlerTests {
     @Test
     void deleteByMatchAllIsAcknowledgedEvenWhenNothingMatches() throws Exception {
         put("a");
-        delete("/_ingest/pipeline/a");
+        delete(urlPrefix() + "/a");
 
-        RestResponse response = delete("/_ingest/pipeline/*");
+        RestResponse response = delete(urlPrefix() + "/*");
         assertEquals(RestStatus.OK, response.status());
         assertTrue(body(response).get("acknowledged").asBoolean());
     }
@@ -335,9 +368,9 @@ class IngestPipelineHandlerTests {
         put("logs-b");
         put("metrics");
 
-        assertEquals(RestStatus.OK, delete("/_ingest/pipeline/logs-*").status());
+        assertEquals(RestStatus.OK, delete(urlPrefix() + "/logs-*").status());
         assertEquals(1, pipelineCount());
-        assertTrue(store.get(TENANT_PREFIX + "ingest/pipeline/metrics").isPresent());
+        assertTrue(store.get(TENANT_PREFIX + kind().keyPrefix() + "metrics").isPresent());
     }
 
     @Test
@@ -345,7 +378,7 @@ class IngestPipelineHandlerTests {
         put("a");
         put("b");
 
-        assertEquals(RestStatus.OK, delete("/_ingest/pipeline/*").status());
+        assertEquals(RestStatus.OK, delete(urlPrefix() + "/*").status());
         assertEquals(0, pipelineCount());
     }
 
@@ -354,24 +387,32 @@ class IngestPipelineHandlerTests {
     // ------------------------------------------------------------------
 
     @Test
-    void allThreeOperationsAreRegisteredAndTheRestStayStubbed() {
+    void allThreeOperationsForThisKindAreRegistered() {
         HandlerRegistry registry = ControlPlaneHandlers.registerAll(HandlerRegistry.withAllStubbed());
 
-        assertTrue(
-            registry.implemented().containsAll(
-                Set.of("ingest.put_pipeline", "ingest.get_pipeline", "ingest.delete_pipeline")
-            )
-        );
+        assertTrue(registry.implemented().containsAll(
+            Set.of(kind().putGroup(), kind().getGroup(), kind().deleteGroup())));
         // ingest.simulate is out of scope entirely; processor_grok is in scope but unimplemented.
         assertTrue(registry.notImplemented().contains("ingest.processor_grok"));
         assertFalse(registry.handlers().containsKey("ingest.simulate"));
     }
 
     @Test
+    void theTwoKindsDoNotShareAKeySpace() {
+        put("shared", minimalDefinition());
+
+        PipelineKind other = kind().keyPrefix().startsWith("ingest")
+            ? PipelineKind.search()
+            : PipelineKind.ingest();
+        assertEquals(0, store.scanPrefix(TENANT_PREFIX + other.keyPrefix()).size(),
+            "an ingest pipeline must not appear as a search pipeline, or vice versa");
+    }
+
+    @Test
     void prettyPrintingAppliesToPipelineResponses() {
         put("a");
         RestResponse pretty = router.dispatch(
-            "GET", "/_ingest/pipeline/a", "/_ingest/pipeline/a?pretty",
+            "GET", urlPrefix() + "/a", urlPrefix() + "/a?pretty",
             Map.of("pretty", List.of("")), Map.of(), new byte[0]
         );
 
