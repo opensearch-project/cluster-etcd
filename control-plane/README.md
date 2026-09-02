@@ -217,8 +217,14 @@ unimplemented operation is indistinguishable from one that fails because we got 
 and the whole point of the harness is telling those apart.
 
 **Current state:** the ingest pipeline story passes against both the control plane and a real
-OpenSearch 3.9.0 with no divergence. Two search pipeline stories have been added to the manifest but
-not yet run.
+OpenSearch 3.9.0 with no divergence. That covers 4 of the spec's 710 paths.
+
+The two search pipeline stories were tried and removed: their payloads use `normalization-processor`
+and `score-ranker-processor`, which come from the neural-search plugin, so a plain cluster answers
+400 and they cannot pass on either side. The differential mode classified them correctly as "fails on
+both — story or scope issue, not a divergence", which is what that classification is for. The lesson
+is about curation: **checking that a story's paths are in scope is not enough — run it against a
+reference cluster before adding it.**
 
 Read that narrowly. The story exercises the happy path — put, get-by-id, get-all, delete — and its
 epilogue accepts either 200 or 404, so it does *not* pin the error semantics: the three delete
@@ -500,6 +506,13 @@ character for character against the server's response.
   when the wait times out. Everything else about create, delete, and their error bodies is
   byte-identical to OpenSearch 3.9.0.
 - Settings are stored unvalidated. A real cluster rejects unknown or malformed settings with 400.
+- **Pipeline processor types are not validated.** A real cluster rejects an unknown processor at PUT
+  time with `400 illegal_argument_exception: Invalid processor type <name>`; we accept it, so a client
+  can store a pipeline that only fails when it runs. Confirmed by direct comparison. Genuinely
+  unresolved rather than merely undone: validity depends on which plugins the *data nodes* have, which
+  the control plane cannot know today. It needs either a registry told what is installed, or the data
+  plane publishing its processor types — a channel that does not exist. Worth deciding before the
+  equivalent question arrives for ingest processors and index settings.
 - No conformance story covers the indices operations yet: every story under `tests/default/indices/`
   pulls in operations that are still stubbed.
 - Whether the version filtering matters in practice. At `3.9.0` it drops nothing, so the mechanism is

@@ -15,10 +15,22 @@ import java.util.regex.Pattern;
  * Pipeline definitions in the key/value store: key layout and ID expression resolution, for either
  * {@link PipelineKind}.
  *
- * <p>Payloads are stored as opaque canonical JSON. The control plane deliberately does not model
- * processors — it has no processor registry and cannot execute a pipeline, so validating anything
- * beyond the shape would mean duplicating knowledge that belongs to the data plane. Definitions are
- * stored and returned verbatim.
+ * <p>Payloads are stored as opaque canonical JSON. The control plane does not model processors: it has
+ * no processor registry and cannot execute a pipeline, so definitions are stored and returned
+ * verbatim.
+ *
+ * <p><b>This is a known divergence, not a settled position.</b> A real cluster validates processor
+ * types at PUT time and rejects unknown ones with {@code 400 illegal_argument_exception: Invalid
+ * processor type <name>}. We accept them, so a client can store a pipeline that will fail at
+ * execution time rather than at definition time. Observed directly: a pipeline using
+ * {@code normalization-processor} is accepted here and rejected by a cluster without the
+ * neural-search plugin.
+ *
+ * <p>The awkward part is that validity is not a property of the control plane. Whether
+ * {@code normalization-processor} is valid depends on which plugins the data nodes have, which this
+ * service has no way to know today. Resolving it means either a processor registry told what is
+ * installed, or the data plane publishing its available processor types for the control plane to
+ * validate against — a channel that does not exist yet.
  */
 final class PipelineDefinitions {
 

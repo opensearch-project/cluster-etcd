@@ -1,13 +1,31 @@
 # Conformance stories to run against the control plane, relative to the spec repo's tests/ directory.
 #
-# Only stories whose every chapter is within the implemented surface belong here. A story that
-# touches an unimplemented operation will fail on the 501, which is correct but not useful signal.
+# Two things must be true before a story belongs here:
 #
-# Add a line when an operation group lands. Lines starting with # are comments.
+#   1. Every chapter is within the implemented surface. A story touching an unimplemented operation
+#      fails on the 501, which is correct but not useful signal.
+#   2. THE STORY PASSES AGAINST A REFERENCE OPENSEARCH. Checking the paths is not enough -- a story's
+#      payload can depend on a plugin that a plain cluster does not have. Verify with:
+#
+#        conformance/run.sh --url http://localhost:9200
+#
+#      pointing --url at a real cluster. If it fails there, it is not a valid target for us either.
+#
+# Lines starting with # are comments.
 
 default/ingest/pipeline.yaml
 
-# Search pipelines. Both stories touch only /_search/pipeline paths, so they are fully within the
-# implemented surface -- unlike most stories, which reach data plane operations.
-default/search_pipeline/search_phase_results_processors/normalization.yaml
-default/search_pipeline/search_phase_results_processors/score_ranker.yaml
+# NOT included, despite touching only /_search/pipeline paths:
+#
+#   default/search_pipeline/search_phase_results_processors/normalization.yaml
+#   default/search_pipeline/search_phase_results_processors/score_ranker.yaml
+#
+# Both post pipelines using normalization-processor and score-ranker-processor, which come from the
+# neural-search plugin. A cluster without it answers 400 "Invalid processor type ...", so these
+# cannot pass against a plain reference and are not achievable for us either. Nothing in the spec
+# marks those processors as plugin-provided -- they are plain oneOf variants of PhaseResultsProcessor
+# with no x-distributions-* markers -- so the dependency is invisible from the spec alone.
+#
+# They would become valid targets against a reference cluster with neural-search installed, but only
+# once the control plane decides how to validate processor types at all. See the README's
+# "Still unverified" section: we currently accept any processor type and a real cluster does not.
