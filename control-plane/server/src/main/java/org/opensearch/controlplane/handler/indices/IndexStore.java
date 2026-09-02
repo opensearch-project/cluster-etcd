@@ -6,6 +6,7 @@ package org.opensearch.controlplane.handler.indices;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.resolver.IndexAbstractions;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.RevisionConflictException;
@@ -32,7 +33,8 @@ import java.util.TreeMap;
  */
 final class IndexStore {
 
-    static final String KEY_PREFIX = "indices/";
+    /** Shared with the resolver, which scans the same prefix. */
+    static final String KEY_PREFIX = IndexAbstractions.INDEX_KEY_PREFIX;
 
     private static final SecureRandom RANDOM = new SecureRandom();
 

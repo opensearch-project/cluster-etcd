@@ -324,6 +324,54 @@ class CreateIndexHandlerTests {
         assertTrue(store.get("tenant/globex/" + IndexStore.key("shared")).isPresent());
     }
 
+    // ------------------------------------------------------------------
+    // exists resolves expressions, not just exact names
+    // ------------------------------------------------------------------
+
+    /** Statuses verified against OpenSearch 3.9.0 for every case below. */
+    @Test
+    void existsResolvesAliasesWildcardsAndExclusions() {
+        create("cp-a");
+        create("cp-b");
+        create("cp-aliased", "{\"aliases\":{\"cp-alias\":{}}}");
+
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/cp-alias").status(), "alias");
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/cp-*").status(), "wildcard");
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/cp-a,cp-b").status(), "comma list");
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/cp-*,-cp-a").status(), "exclusion");
+    }
+
+    /**
+     * The asymmetry a live cluster has here: a wildcard matching nothing succeeds
+     * ({@code allow_no_indices}), a missing concrete name does not
+     * ({@code ignore_unavailable} off).
+     */
+    @Test
+    void existsAllowsAnEmptyWildcardButNotAMissingName() {
+        create("cp-a");
+
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/nomatch-*").status());
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/missing").status());
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/cp-a,missing").status());
+        // A leading - with no preceding wildcard is a name, and nothing is called that.
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/-cp-a").status());
+    }
+
+    /** Verified: HEAD /_foo is a 400, not a 404 — an unusable name differs from an absent one. */
+    @Test
+    void existsReportsAnUnderscorePrefixAsBadRequestNotNotFound() {
+        assertEquals(RestStatus.BAD_REQUEST, router.dispatch("HEAD", "/_foo").status());
+    }
+
+    @Test
+    void existsSkipsHiddenIndicesForAPlainWildcardButNotADottedOne() {
+        create(".cp-hidden", "{\"settings\":{\"index.hidden\":true}}");
+
+        // Nothing visible matches *, so the resolution is empty -- still a 200 under allow_no_indices.
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/.cp-*").status());
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/.cp-hidden").status());
+    }
+
     @Test
     void allThreeAreRegistered() {
         HandlerRegistry registry = ControlPlaneHandlers.build();
