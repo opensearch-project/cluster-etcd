@@ -9,9 +9,11 @@ import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationContextFactory;
 import org.opensearch.controlplane.handler.OperationHandler;
 import org.opensearch.controlplane.rest.ErrorResponses;
+import org.opensearch.controlplane.rest.GlobalParameters;
 import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -75,6 +77,15 @@ public final class Router {
             return ErrorResponses.methodNotAllowed(method, uri, allowed, pretty);
         }
 
+        // The body may arrive in the query string instead. Substituted before the handler runs, so no
+        // handler has to know the difference.
+        byte[] effectiveBody;
+        try {
+            effectiveBody = resolveBody(queryParams, body);
+        } catch (IllegalStateException e) {
+            return ErrorResponses.sourceParametersRequired(pretty);
+        }
+
         // Resolved once, before the handler runs, so no handler can pick its own tenant.
         Optional<OperationContext> context = contextFactory.create(headers);
         if (context.isEmpty()) {
@@ -88,7 +99,7 @@ public final class Router {
             queryParams,
             pathMatch.pathParams(route),
             headers,
-            body,
+            effectiveBody,
             route.operationGroup()
         );
 
@@ -102,13 +113,46 @@ public final class Router {
             }
             return response;
         } catch (Exception e) {
-            return ErrorResponses.internalError(e, pretty);
+            return ErrorResponses.internalError(e, pretty, isErrorTrace(queryParams));
         }
+    }
+
+    /**
+     * The request body, taken from {@code ?source} when no body was sent.
+     *
+     * <p>A real cluster requires {@code source_content_type} alongside {@code source} and fails
+     * without it. Only JSON is accepted here, since that is the only content type any implemented
+     * operation reads.
+     *
+     * @throws IllegalStateException if {@code source} is present without {@code source_content_type}
+     */
+    private static byte[] resolveBody(Map<String, List<String>> queryParams, byte[] body) {
+        if (body != null && body.length > 0) {
+            return body;
+        }
+        List<String> source = queryParams.get(GlobalParameters.SOURCE);
+        if (source == null || source.isEmpty()) {
+            return body == null ? new byte[0] : body;
+        }
+        List<String> contentType = queryParams.get(GlobalParameters.SOURCE_CONTENT_TYPE);
+        if (contentType == null || contentType.isEmpty() || contentType.getFirst().isBlank()) {
+            throw new IllegalStateException("source without source_content_type");
+        }
+        return source.getFirst().getBytes(StandardCharsets.UTF_8);
     }
 
     /** Same {@code ?pretty} flag semantics as {@link RestRequest#paramAsBoolean}, needed before a request exists. */
     private static boolean isPretty(Map<String, List<String>> queryParams) {
         List<String> values = queryParams.get("pretty");
+        if (values == null || values.isEmpty()) {
+            return false;
+        }
+        String value = values.getFirst();
+        return value == null || value.isEmpty() || Boolean.parseBoolean(value);
+    }
+
+    private static boolean isErrorTrace(Map<String, List<String>> queryParams) {
+        List<String> values = queryParams.get(GlobalParameters.ERROR_TRACE);
         if (values == null || values.isEmpty()) {
             return false;
         }

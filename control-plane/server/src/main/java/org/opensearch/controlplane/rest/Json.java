@@ -8,6 +8,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
@@ -29,6 +30,10 @@ public final class Json {
 
     public static ObjectNode object() {
         return MAPPER.createObjectNode();
+    }
+
+    public static ArrayNode array() {
+        return MAPPER.createArrayNode();
     }
 
     /** Parses JSON, throwing {@link IOException} on malformed input. */
@@ -57,9 +62,17 @@ public final class Json {
         return RestResponse.json(status, write(body, pretty));
     }
 
-    /** Builds a response, taking the {@code ?pretty} flag from the request. */
+    /**
+     * Builds a response, applying the global parameters the request asked for.
+     *
+     * <p>Every success response goes through here, which is the point: {@code filter_path} and
+     * {@code pretty} apply to all of them without any handler needing to know. Error responses
+     * deliberately do not use this path — a real cluster ignores {@code filter_path} when rendering an
+     * exception.
+     */
     public static RestResponse response(RestStatus status, JsonNode body, RestRequest request) {
-        return response(status, body, request.paramAsBoolean("pretty", false));
+        JsonNode filtered = FilterPath.apply(body, request.param(GlobalParameters.FILTER_PATH));
+        return response(status, filtered, request.paramAsBoolean(GlobalParameters.PRETTY, false));
     }
 
     /**

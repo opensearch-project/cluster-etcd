@@ -148,6 +148,143 @@ class RouterTests {
         assertTrue(new String(pretty.body(), StandardCharsets.UTF_8).contains("\n"), "bare ?pretty means true");
     }
 
+    // ------------------------------------------------------------------
+    // global parameters, applied for every operation
+    // ------------------------------------------------------------------
+
+    private static RestResponse dispatchWith(Router router, String method, String path, Map<String, List<String>> params) {
+        return router.dispatch(method, path, path, params, Map.of(), new byte[0]);
+    }
+
+    /**
+     * A router with the real handlers registered. The global parameters apply to actual responses, so
+     * they cannot be exercised against the all-stubbed registry that most of these tests use.
+     */
+    private static Router implementedRouter() {
+        return Router.fromGeneratedRoutes(
+            org.opensearch.controlplane.handler.ControlPlaneHandlers.build(), TestContexts.factory());
+    }
+
+    @Test
+    void filterPathAppliesToAnySuccessResponse() throws Exception {
+        Router router = implementedRouter();
+        // info is implemented, so this exercises a real response rather than a 501.
+        JsonNode json = body(dispatchWith(router, "GET", "/", Map.of("filter_path", List.of("cluster_name"))));
+
+        assertEquals(1, json.size(), "only the requested path should survive");
+        assertTrue(json.has("cluster_name"));
+    }
+
+    @Test
+    void filterPathIsNotAppliedToErrorResponses() throws Exception {
+        // Verified against a live cluster: filter_path is ignored when rendering an exception.
+        JsonNode json = body(dispatchWith(
+            implementedRouter(), "GET", "/_cluster/health", Map.of("filter_path", List.of("status"))));
+
+        assertTrue(json.has("error"), "the whole error body should come back");
+        assertTrue(json.get("error").has("type"));
+    }
+
+    @Test
+    void filterPathComposesWithPretty() {
+        RestResponse response = dispatchWith(implementedRouter(), "GET", "/",
+            Map.of("filter_path", List.of("cluster_name"), "pretty", List.of("")));
+        String out = new String(response.body(), StandardCharsets.UTF_8);
+
+        assertTrue(out.contains("\n"), "still pretty");
+        assertFalse(out.contains("tagline"), "still filtered");
+    }
+
+    @Test
+    void sourceParameterSuppliesTheRequestBody() throws Exception {
+        // The body arrives in the query string. ingest.put_pipeline needs a body, so a 200 proves the
+        // substitution happened before the handler ran.
+        Router router = implementedRouter();
+        RestResponse response = router.dispatch(
+            "PUT", "/_ingest/pipeline/p", "/_ingest/pipeline/p",
+            Map.of(
+                "source", List.of("{\"processors\":[]}"),
+                "source_content_type", List.of("application/json")
+            ),
+            Map.of(), new byte[0]
+        );
+
+        assertEquals(RestStatus.OK, response.status());
+        assertTrue(body(response).get("acknowledged").asBoolean());
+    }
+
+    @Test
+    void sourceWithoutContentTypeIs500() throws Exception {
+        // Verified against a live cluster, including the surprising status: 500, not 400.
+        RestResponse response = dispatchWith(implementedRouter(), "PUT", "/_ingest/pipeline/p",
+            Map.of("source", List.of("{\"processors\":[]}")));
+
+        assertEquals(RestStatus.INTERNAL_SERVER_ERROR, response.status());
+        JsonNode error = body(response).get("error");
+        assertEquals("illegal_state_exception", error.get("type").asText());
+        assertEquals("source and source_content_type parameters are required", error.get("reason").asText());
+    }
+
+    @Test
+    void anActualBodyBeatsTheSourceParameter() throws Exception {
+        Router router = implementedRouter();
+        RestResponse response = router.dispatch(
+            "PUT", "/_ingest/pipeline/p", "/_ingest/pipeline/p",
+            Map.of("source", List.of("{\"not\":\"used\"}"), "source_content_type", List.of("application/json")),
+            Map.of(),
+            "{\"processors\":[]}".getBytes(StandardCharsets.UTF_8)
+        );
+
+        assertEquals(RestStatus.OK, response.status());
+    }
+
+    @Test
+    void errorTraceAddsAStackTraceForAGenuineException() throws Exception {
+        HandlerRegistry registry = HandlerRegistry.withAllStubbed().register(new OperationHandler() {
+            @Override
+            public String operationGroup() {
+                return "cluster.health";
+            }
+
+            @Override
+            public RestResponse handle(RestRequest request, OperationContext context) {
+                throw new IllegalStateException("deliberate");
+            }
+        });
+        Router router = Router.fromGeneratedRoutes(registry, TestContexts.factory());
+
+        JsonNode without = body(dispatchWith(router, "GET", "/_cluster/health", Map.of()));
+        assertFalse(without.get("error").has("stack_trace"));
+
+        JsonNode with = body(dispatchWith(router, "GET", "/_cluster/health", Map.of("error_trace", List.of("true"))));
+        assertEquals("illegal_state_exception", with.get("error").get("type").asText());
+        assertTrue(with.get("error").get("stack_trace").asText().contains("IllegalStateException"));
+        // Extra fields are mirrored into root_cause, as the server does.
+        assertTrue(with.get("error").get("root_cause").get(0).has("stack_trace"));
+    }
+
+    /**
+     * A constructed error has no stack to report, and fabricating one would point at nothing. See
+     * {@code ErrorResponses.ERROR_TRACE_LIMITATION}.
+     */
+    @Test
+    void errorTraceAddsNothingToAConstructedError() throws Exception {
+        JsonNode json = body(dispatchWith(implementedRouter(), "DELETE", "/nope",
+            Map.of("error_trace", List.of("true"))));
+
+        assertEquals("index_not_found_exception", json.get("error").get("type").asText());
+        assertFalse(json.get("error").has("stack_trace"));
+    }
+
+    @Test
+    void humanIsAcceptedAndIgnoredRatherThanRejected() throws Exception {
+        // Deliberately unsupported, but a caller sending it gets a correct response, not an error.
+        RestResponse response = dispatchWith(implementedRouter(), "GET", "/", Map.of("human", List.of("true")));
+
+        assertEquals(RestStatus.OK, response.status());
+        assertTrue(body(response).has("version"));
+    }
+
     @Test
     void aliasedRoutesShareOneHandler() {
         Router router = generatedRouter();

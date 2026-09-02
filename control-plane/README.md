@@ -525,31 +525,59 @@ character for character against the server's response.
   implementation artifact leaking into the API — drop the marker if you would rather
   not carry the quirk forward.
 
-## Known gap: the global query parameters
+## The global query parameters
 
 The spec attaches five parameters to every operation, and codegen collects them into
-`GeneratedRoutes.GLOBAL_QUERY_PARAMS`. Only one of them is honoured:
+`GeneratedRoutes.GLOBAL_QUERY_PARAMS`. They are handled centrally — in `Json.response` and
+`Router.dispatch` — so no handler thinks about them and every new handler inherits them.
 
 | parameter | status |
 |---|---|
-| `pretty` | implemented |
-| `filter_path` | **accepted and silently ignored** — a real cluster returns only the selected paths; we return the whole document |
-| `error_trace` | ignored — a real cluster adds `stack_trace` to the error cause |
-| `human` | ignored — a real cluster reformats durations and sizes |
-| `source` | ignored — a real cluster reads the request body from this parameter |
+| `pretty` | implemented; two-space indent matching the server |
+| `filter_path` | implemented; see below |
+| `source` + `source_content_type` | implemented; body supplied in the query string |
+| `error_trace` | partial — see below |
+| `human` | **deliberately not supported** — see below |
 
-Two reasons this is worse than it looks. It is **silent**: a client asking for
-`?filter_path=cluster_name` gets a valid-looking response with every other field still in it, rather
-than an error. And it applies to **every operation**, present and future, so the cost of leaving it
-grows with the surface.
+### filter_path
 
-`source` is the sharpest edge, because `PutPipelineHandler` already tells clients
-`request body or source parameter is required` — wording copied faithfully from OpenSearch — while not
-supporting the parameter it names.
+Semantics verified against a live cluster and diffed filter-by-filter: dot-separated paths keep their
+nesting rather than flattening, `*` matches one segment and `**` matches zero or more, `-` excludes,
+an exclusion prunes inside an inclusion, and nothing matching gives `{}`.
 
-These are cross-cutting request and response concerns, so they belong in one place alongside `pretty`
-rather than in each handler. `filter_path` and `source` are self-contained; `human` needs per-field
-knowledge of which values are durations or byte sizes and is a bigger job.
+Two details that are easy to get wrong, and were:
+
+- **Arrays are transparent.** An array index is not a path segment, so `filter_path=index` over
+  `[{"index":"a","health":"green"}]` gives `[{"index":"a"}]` and `*.index` matches *nothing*.
+- **It does not apply to error responses.** A real cluster ignores `filter_path` when rendering an
+  exception, so `GET /nope?filter_path=status` returns the whole error body. Reproduced by filtering
+  only on the success path.
+
+### error_trace, and why it is partial
+
+A real cluster can render a stack trace for any error because every error *is* a thrown exception.
+Most errors here are constructed rather than thrown — `indexNotFound` builds a response — so there is
+no stack to report, and a fabricated one would point at nothing.
+
+So `error_trace=true` yields a stack trace for an exception that genuinely escaped a handler, and
+nothing for a constructed error. Closing that properly means raising these conditions as exceptions
+and rendering them centrally: a worthwhile refactor, and a larger one than adding a parameter.
+
+### Why human is not supported
+
+Not an omission. Reformatting durations and byte sizes for human eyes is a client-side presentation
+concern; a response format should stay machine-parseable, and a parameter that changes value
+representations mid-API works against that. The view is shared within the OpenSearch community and the
+parameter is a candidate for deprecation, so declining it from the start leaves this service ahead
+rather than behind.
+
+It is **accepted and ignored rather than rejected**, because the control plane should be robust to
+callers that send it: `human=true` gets a correct machine-readable response, not an error.
+
+### One quirk worth knowing
+
+`source` without `source_content_type` is a **500** `illegal_state_exception`, not the 400 a malformed
+request would normally get. Verified, and reproduced.
 
 ## Still unverified
 
@@ -568,6 +596,8 @@ knowledge of which values are durations or byte sizes and is a bigger job.
   when the wait times out. Everything else about create, delete, and their error bodies is
   byte-identical to OpenSearch 3.9.0.
 - Settings are stored unvalidated. A real cluster rejects unknown or malformed settings with 400.
+- `filter_path` behaviour over deeply nested arrays-of-arrays, and interactions between `**` and
+  exclusions, are implemented from the documented model rather than exhaustively diffed.
 - **Processor validation is opt-in, and its data comes from outside.** With `--capabilities` the
   control plane rejects unsupported processor types up front; without it, anything is accepted. See
   [Data plane capabilities](#data-plane-capabilities). The same question is still open for index

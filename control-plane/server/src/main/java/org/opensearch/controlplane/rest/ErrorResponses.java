@@ -85,12 +85,62 @@ public final class ErrorResponses {
         );
     }
 
+    /**
+     * {@code source} supplied without {@code source_content_type}.
+     *
+     * <p>Verified against OpenSearch 3.9.0, including the status: this is a <b>500</b>
+     * {@code illegal_state_exception}, not the 400 a malformed request would normally get.
+     */
+    public static RestResponse sourceParametersRequired(boolean pretty) {
+        return structured(
+            RestStatus.INTERNAL_SERVER_ERROR,
+            "illegal_state_exception",
+            "source and source_content_type parameters are required",
+            pretty
+        );
+    }
+
     /** An unexpected exception escaped a handler. */
     public static RestResponse internalError(Throwable cause, boolean pretty) {
+        return internalError(cause, pretty, false);
+    }
+
+    /**
+     * An unexpected exception escaped a handler.
+     *
+     * @param errorTrace whether {@code ?error_trace} asked for a stack trace. Only a genuine exception
+     *                   has one to give; see the note on {@link #ERROR_TRACE_LIMITATION}.
+     */
+    public static RestResponse internalError(Throwable cause, boolean pretty, boolean errorTrace) {
         ObjectNode node = Json.object();
         node.put("type", exceptionType(cause));
         node.put("reason", cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage());
+        if (errorTrace) {
+            node.put("stack_trace", stackTraceOf(cause));
+        }
         return structured(RestStatus.INTERNAL_SERVER_ERROR, node, pretty, Map.of());
+    }
+
+    /**
+     * Why {@code error_trace} is only partly honoured.
+     *
+     * <p>A real cluster renders a stack trace for any error, because every error <em>is</em> a thrown
+     * exception. Most errors here are constructed directly — {@code indexNotFound} builds a response
+     * rather than throwing — so there is no stack to report, and inventing one would be worse than
+     * omitting it: a fabricated trace points at nothing.
+     *
+     * <p>So {@code error_trace=true} yields a stack trace for an exception that genuinely escaped a
+     * handler, and nothing for a constructed error. Closing the gap properly means raising these
+     * conditions as exceptions and rendering them centrally, which is a worthwhile refactor and a
+     * larger one than adding a parameter.
+     */
+    public static final String ERROR_TRACE_LIMITATION =
+        "stack traces are available only for exceptions that genuinely escaped a handler";
+
+    private static String stackTraceOf(Throwable cause) {
+        java.io.StringWriter writer = new java.io.StringWriter();
+        cause.printStackTrace(new java.io.PrintWriter(writer));
+        return writer.toString();
     }
 
     public static RestResponse structured(RestStatus status, String type, String reason, boolean pretty) {
