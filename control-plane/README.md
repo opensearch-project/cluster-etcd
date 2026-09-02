@@ -515,6 +515,24 @@ takes an `--opensearch-url`. Point it at this service, filtered to the operation
 groups in scope, and it becomes a compatibility suite that proves the surfaces
 match — far more systematic than hand-written curl probes.
 
+## What is hard about the rest
+
+[`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md) surveys the 73 stubbed
+operation groups by what makes them difficult rather than by namespace. The short version:
+
+- **Atomic multi-resource mutation is the one place the per-resource-key design costs us.**
+  `indices.update_aliases` applies a list of actions atomically in OpenSearch because there is one
+  cluster state; the canonical alias swap is unsafe if applied piecewise. Decide the approach before
+  writing it — promoting aliases to their own resource looks better than adding multi-key
+  transactions, and the transaction option would rule out object-store backends entirely.
+- **Index expression resolution** (wildcards, `_all`, aliases, `expand_wildcards`) is the most reused
+  logic in the `indices` namespace and should be written once, deliberately.
+- **Template composition** wants porting from `MetadataIndexTemplateService` rather than reinventing,
+  stopping short of the mapping engine.
+- **`search_pipeline.*` is the best next task** — structurally identical to the ingest pipeline
+  handlers already written.
+- `cluster.pending_tasks` gets *easier* in this architecture: it is a read over our own task keys.
+
 ## Bumping the spec
 
 ```bash
