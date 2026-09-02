@@ -34,6 +34,9 @@ import java.util.Set;
  */
 public final class ErrorResponses {
 
+    /** OpenSearch's sentinel for "no UUID applies here". A literal string, not a placeholder. */
+    private static final String NOT_APPLICABLE = "_na_";
+
     private ErrorResponses() {}
 
     /**
@@ -128,6 +131,56 @@ public final class ErrorResponses {
         cause.put("type", "parse_exception");
         cause.put("reason", "[" + propertyName + "] required property is missing");
         cause.put("property_name", propertyName);
+        return structured(RestStatus.BAD_REQUEST, cause, isPretty(request), Map.of());
+    }
+
+    /**
+     * {@code 404} for an index that does not exist.
+     *
+     * <p>Field set and order verified against OpenSearch 3.9.0: {@code index}, {@code resource.id},
+     * {@code resource.type}, {@code index_uuid}. The dotted keys are literal field names, not nesting.
+     * {@code index_or_alias} is what the server reports even for a path that can only be an index.
+     */
+    public static RestResponse indexNotFound(RestRequest request, String index) {
+        ObjectNode cause = Json.object();
+        cause.put("type", "index_not_found_exception");
+        cause.put("reason", "no such index [" + index + "]");
+        cause.put("index", index);
+        cause.put("resource.id", index);
+        cause.put("resource.type", "index_or_alias");
+        cause.put("index_uuid", NOT_APPLICABLE);
+        return structured(RestStatus.NOT_FOUND, cause, isPretty(request), Map.of());
+    }
+
+    /**
+     * {@code 400} for a create against a name that is already taken.
+     *
+     * <p>Note the reason embeds the existing index's UUID — {@code index [name/uuid] already
+     * exists} — so the UUID is client-visible and has to be the one actually stored, not a freshly
+     * generated one.
+     */
+    public static RestResponse indexAlreadyExists(RestRequest request, String index, String indexUuid) {
+        ObjectNode cause = Json.object();
+        cause.put("type", "resource_already_exists_exception");
+        cause.put("reason", "index [" + index + "/" + indexUuid + "] already exists");
+        cause.put("index", index);
+        cause.put("index_uuid", indexUuid);
+        return structured(RestStatus.BAD_REQUEST, cause, isPretty(request), Map.of());
+    }
+
+    /**
+     * {@code 400} for a name that breaks OpenSearch's index naming rules.
+     *
+     * <p>{@code index_uuid} is the literal string {@code _na_}, since no index was created.
+     *
+     * @param reason the rule text, e.g. {@code must be lowercase}
+     */
+    public static RestResponse invalidIndexName(RestRequest request, String index, String reason) {
+        ObjectNode cause = Json.object();
+        cause.put("type", "invalid_index_name_exception");
+        cause.put("reason", "Invalid index name [" + index + "], " + reason);
+        cause.put("index", index);
+        cause.put("index_uuid", NOT_APPLICABLE);
         return structured(RestStatus.BAD_REQUEST, cause, isPretty(request), Map.of());
     }
 

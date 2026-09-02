@@ -7,6 +7,8 @@ package org.opensearch.controlplane.handler;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.tenant.TenantId;
 
+import java.time.Clock;
+
 /**
  * Per-request collaborators for a handler.
  *
@@ -18,7 +20,21 @@ import org.opensearch.controlplane.tenant.TenantId;
  * Handlers should build keys as if they were the only tenant; the scoping is
  * {@link org.opensearch.controlplane.store.TenantScopedKeyValueStore}'s job.
  *
- * <p>This is where the task registrar and a clock will go when they are needed, which keeps those
- * additions from rippling through the routing and HTTP layers.
+ * <p>{@link #clock()} is injected rather than read from {@code System.currentTimeMillis()} so that
+ * anything stamping a timestamp — index creation dates, task submission times — is deterministic
+ * under test.
+ *
+ * <p>This is where a task registrar will go when the task lifecycle grows beyond writing a record,
+ * which keeps that addition from rippling through the routing and HTTP layers.
  */
-public record OperationContext(TenantId tenant, KeyValueStore store) {}
+public record OperationContext(TenantId tenant, KeyValueStore store, Clock clock) {
+
+    /** Convenience for callers that do not care about time. */
+    public OperationContext(TenantId tenant, KeyValueStore store) {
+        this(tenant, store, Clock.systemUTC());
+    }
+
+    public long nowEpochMillis() {
+        return clock.millis();
+    }
+}

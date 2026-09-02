@@ -10,6 +10,8 @@ import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.tenant.SingleTenantResolver;
 import org.opensearch.controlplane.tenant.TenantResolver;
 
+import java.time.Clock;
+
 /** Context factories for tests. */
 public final class TestContexts {
 
@@ -23,6 +25,11 @@ public final class TestContexts {
     /** Single tenant over the given root store. */
     public static OperationContextFactory factory(KeyValueStore rootStore) {
         return new OperationContextFactory(rootStore, new SingleTenantResolver());
+    }
+
+    /** Single tenant with a fixed clock, for anything asserting on a stored timestamp. */
+    public static OperationContextFactory factory(KeyValueStore rootStore, Clock clock) {
+        return new OperationContextFactory(rootStore, new SingleTenantResolver(), clock);
     }
 
     /** Multi-tenant over the given root store. */

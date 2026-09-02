@@ -7,6 +7,9 @@ package org.opensearch.controlplane.handler;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
 import org.opensearch.controlplane.handler.core.PingHandler;
+import org.opensearch.controlplane.handler.indices.CreateIndexHandler;
+import org.opensearch.controlplane.handler.indices.DeleteIndexHandler;
+import org.opensearch.controlplane.handler.indices.ExistsIndexHandler;
 import org.opensearch.controlplane.handler.ingest.DeletePipelineHandler;
 import org.opensearch.controlplane.handler.ingest.GetPipelineHandler;
 import org.opensearch.controlplane.handler.ingest.PutPipelineHandler;
@@ -56,6 +59,10 @@ public final class ControlPlaneHandlers {
             // _core
             .register(new InfoHandler(identity))
             .register(new PingHandler())
+            // indices
+            .register(new CreateIndexHandler())
+            .register(new ExistsIndexHandler())
+            .register(new DeleteIndexHandler())
             // ingest
             .register(new PutPipelineHandler())
             .register(new GetPipelineHandler())

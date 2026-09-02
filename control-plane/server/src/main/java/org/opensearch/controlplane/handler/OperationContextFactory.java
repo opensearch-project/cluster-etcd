@@ -8,6 +8,7 @@ import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.TenantScopedKeyValueStore;
 import org.opensearch.controlplane.tenant.TenantResolver;
 
+import java.time.Clock;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -23,10 +24,16 @@ public final class OperationContextFactory {
 
     private final KeyValueStore rootStore;
     private final TenantResolver tenantResolver;
+    private final Clock clock;
 
     public OperationContextFactory(KeyValueStore rootStore, TenantResolver tenantResolver) {
+        this(rootStore, tenantResolver, Clock.systemUTC());
+    }
+
+    public OperationContextFactory(KeyValueStore rootStore, TenantResolver tenantResolver, Clock clock) {
         this.rootStore = Objects.requireNonNull(rootStore, "rootStore");
         this.tenantResolver = Objects.requireNonNull(tenantResolver, "tenantResolver");
+        this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     /**
@@ -36,6 +43,6 @@ public final class OperationContextFactory {
      */
     public Optional<OperationContext> create(Map<String, String> headers) {
         return tenantResolver.resolve(headers)
-            .map(tenant -> new OperationContext(tenant, new TenantScopedKeyValueStore(rootStore, tenant)));
+            .map(tenant -> new OperationContext(tenant, new TenantScopedKeyValueStore(rootStore, tenant), clock));
     }
 }

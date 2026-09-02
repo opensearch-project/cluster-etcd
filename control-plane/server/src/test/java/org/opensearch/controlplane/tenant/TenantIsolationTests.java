@@ -168,9 +168,10 @@ class TenantIsolationTests {
 
     @Test
     void unresolvedTenantStillShortCircuitsAStubbedOperation() {
-        // Tenant resolution happens before dispatch, so it beats the 501 too.
-        assertEquals(RestStatus.UNAUTHORIZED, as(null, "PUT", "/my-index", "{}").status());
-        assertEquals(RestStatus.NOT_IMPLEMENTED, as("acme", "PUT", "/my-index", "{}").status());
+        // Tenant resolution happens before dispatch, so it beats the 501 too. cluster.health is used
+        // rather than an indices operation because those are now implemented.
+        assertEquals(RestStatus.UNAUTHORIZED, as(null, "GET", "/_cluster/health", null).status());
+        assertEquals(RestStatus.NOT_IMPLEMENTED, as("acme", "GET", "/_cluster/health", null).status());
     }
 
     @Test

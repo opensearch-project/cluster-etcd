@@ -7,16 +7,15 @@ surface, generated from the
 
 ## Status
 
-Early. The full control plane surface is routed. `info`, `ping`, and ingest pipeline CRUD
-are implemented; everything else returns `501 Not Implemented`.
+Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-128 routes, 81 operation groups, 5 implemented, 76 stubbed
+128 routes, 81 operation groups, 8 implemented, 73 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | — |
+| `indices` | 67 | `create`, `exists`, `delete` |
 | `cluster` | 23 | — |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
@@ -24,7 +23,7 @@ are implemented; everything else returns `501 Not Implemented`.
 | `search_pipeline` | 4 | — |
 | `dangling_indices` | 3 | — |
 
-**The remaining 76 operation groups return `501 Not Implemented`** with a structured
+**The remaining 73 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -34,7 +33,9 @@ clients get an honest answer rather than a 404.
 curl -XPUT localhost:9400/_ingest/pipeline/p -H 'Content-Type: application/json' \
      -d '{"description":"noop","processors":[]}'
 curl localhost:9400/_ingest/pipeline?pretty
-curl -XPUT localhost:9400/my-index          # 501, not yet implemented
+curl -XPUT localhost:9400/my-index -H 'Content-Type: application/json' \
+     -d '{"settings":{"number_of_shards":2}}'
+curl -XGET localhost:9400/_cluster/health   # 501, not yet implemented
 ```
 
 ## Where this sits
@@ -487,6 +488,19 @@ character for character against the server's response.
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
 - Everything about the 76 operations that are still stubbed.
+- **`indices.create` does not resolve templates.** A real create applies matching composable and
+  legacy index templates, merging their settings, mappings and aliases with the request in a defined
+  precedence order. None of that happens yet, so an index created here differs from one created on a
+  cluster with matching templates. This is the largest gap in the operation and wants
+  `MetadataIndexTemplateService`'s composition rules ported before it is trustworthy.
+- **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
+  unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
+  otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
+  when the wait times out. Everything else about create, delete, and their error bodies is
+  byte-identical to OpenSearch 3.9.0.
+- Settings are stored unvalidated. A real cluster rejects unknown or malformed settings with 400.
+- No conformance story covers the indices operations yet: every story under `tests/default/indices/`
+  pulls in operations that are still stubbed.
 - Whether the version filtering matters in practice. At `3.9.0` it drops nothing, so the mechanism is
   exercised only by lowering the target in a scratch scope file. It will start mattering the first
   time the pinned spec adds something above the claimed version.
