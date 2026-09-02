@@ -489,6 +489,45 @@ The 501 shape is ours; OpenSearch never returns 501 because every route it regis
 implemented. It uses the structured form plus an `operation_group` field, which is legal
 because the spec's `ErrorCause` schema permits additional properties.
 
+## Considered divergences
+
+Places where this service deliberately does not match OpenSearch. Each is a decision with a reason,
+not unfinished work — that lives under [Still unverified](#still-unverified). The distinction matters:
+without it, a deliberate choice reads as a bug and someone "fixes" it.
+
+| behaviour | OpenSearch | here | why |
+|---|---|---|---|
+| `human` parameter | reformats durations and sizes | accepted and ignored | presentation is a client concern; responses should stay machine-parseable, and the parameter is a deprecation candidate upstream |
+| `error_trace` | traces any error | traces only exceptions that escaped a handler | an explicitly-checked failure is an expected outcome, not an exceptional one; its `reason` already says what was wrong |
+| `shards_acknowledged` on create | `true` | `false` unless `wait_for_active_shards=0` | we return before any shard exists and will not claim otherwise; `false` is what a real cluster returns when the wait times out |
+| `version.build_type` | `tar` | `controlplane` | this is not a tar build of OpenSearch |
+| `version.build_hash` / `build_date` | real values | `unknown` unless injected at build time | a fabricated hash defeats the only purpose the field has |
+| voting config exclusions | 200 | 400, route absent | a stateless service has no cluster-manager quorum of its own; consensus belongs to etcd or DynamoDB |
+| unknown processor types | rejected | accepted until `--capabilities` is supplied | no accurate built-in list can be shipped; see [Data plane capabilities](#data-plane-capabilities) |
+| `cluster_uuid` | one per cluster | one per tenant | each tenant sees a coherent virtual cluster of its own |
+
+Two notes on scope rather than behaviour:
+
+- **Placeholder names bind per-route**, where OpenSearch's trie stores them per-node — so
+  `indices.rollover` sees `alias` here and `index` there. Never visible on the wire; it matters only
+  to someone porting handler code. See [Design notes](#design-notes).
+- **Superseded `_opendistro` routes are excluded** from the generated table. Currently a no-op for this
+  surface: only `nodes.hot_threads` and `security.cache` carry those markers and both namespaces are
+  out of scope. Listed so it is not mistaken for a divergence if that changes.
+
+### How these get found
+
+Every entry above was found by diffing against a live cluster, not by reading the spec — the spec
+declares none of them. Several near-misses argue for keeping that habit:
+
+- The 400 no-handler message omits the query string while the 405 message includes it. A request
+  without query parameters makes the two look identical, which is how it was missed first time.
+- `filter_path` treats arrays as transparent, so `*.index` matches nothing where it looks like it
+  should match everything.
+- `source` without `source_content_type` is a 500, not the 400 a malformed request would get.
+- Deleting a nonexistent pipeline is a 200 on a pristine cluster and a 404 once any pipeline has ever
+  existed — the trigger is metadata presence, not the current count.
+
 ## Verified against a live cluster
 
 Confirmed against OpenSearch 3.9.0-SNAPSHOT. Bodies marked *byte-exact* were diffed

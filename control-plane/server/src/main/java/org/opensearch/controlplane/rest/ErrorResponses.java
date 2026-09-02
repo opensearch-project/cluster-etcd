@@ -62,10 +62,18 @@ public final class ErrorResponses {
      *
      * <p>Verified: OpenSearch answers 400 (not 404), the message is lower-case, and the body has
      * <em>no</em> {@code status} field — unlike every other error response.
+     *
+     * <p>Takes the <b>path</b>, not the full request target: this message omits the query string where
+     * {@link #methodNotAllowed} includes it. The two come from different places in
+     * {@code RestController} — the same reason one carries a {@code status} field and the other does
+     * not, and one is capitalised and the other is not. Easy to miss, because a request with no query
+     * parameters makes them look identical.
+     *
+     * @param rawPath the request path with the query string already stripped
      */
-    public static RestResponse noHandler(String method, String uri, boolean pretty) {
+    public static RestResponse noHandler(String method, String rawPath, boolean pretty) {
         ObjectNode root = Json.object();
-        root.put("error", "no handler found for uri [" + uri + "] and method [" + method + "]");
+        root.put("error", "no handler found for uri [" + rawPath + "] and method [" + method + "]");
         return RestResponse.json(RestStatus.BAD_REQUEST, Json.write(root, pretty));
     }
 
@@ -73,7 +81,7 @@ public final class ErrorResponses {
      * The path is known but not for this method.
      *
      * <p>Verified: 405 with a comma-separated {@code Allow} header, a capitalised message, and a
-     * {@code status} field present.
+     * {@code status} field present. Unlike {@link #noHandler}, this message includes the query string.
      */
     public static RestResponse methodNotAllowed(String method, String uri, Set<String> allowedMethods, boolean pretty) {
         String allowed = String.join(",", allowedMethods);

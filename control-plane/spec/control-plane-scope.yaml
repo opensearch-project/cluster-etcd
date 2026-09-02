@@ -265,6 +265,8 @@ excluded_operations:
   # service -- it holds no state outside the data store and scales by running more instances -- so
   # there is no quorum of its own to manage; whatever consensus exists belongs to etcd or DynamoDB.
   # Implementing these faithfully is not possible, and pretending would be worse than a clear error.
+  # Listed under "Considered divergences" in the README, since it is observable: a real cluster
+  # answers 200 where this service answers 400 with no handler found.
   cluster.post_voting_config_exclusions: "no cluster-manager quorum exists in a stateless control plane"
   cluster.delete_voting_config_exclusions: "no cluster-manager quorum exists in a stateless control plane"
 

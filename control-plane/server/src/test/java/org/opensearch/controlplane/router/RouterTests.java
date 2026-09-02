@@ -90,6 +90,32 @@ class RouterTests {
         assertEquals(1, json.size());
     }
 
+    /**
+     * The no-handler message omits the query string while the 405 message includes it. Verified
+     * against a live cluster; a request without query parameters makes the two look identical, which
+     * is how this was missed the first time.
+     */
+    @Test
+    void noHandlerOmitsTheQueryStringButMethodNotAllowedKeepsIt() throws Exception {
+        Router router = generatedRouter();
+
+        RestResponse missing = router.dispatch(
+            "GET", "/_nope/_nope/_nope", "/_nope/_nope/_nope?foo=bar",
+            Map.of("foo", List.of("bar")), Map.of(), new byte[0]);
+        assertEquals(
+            "no handler found for uri [/_nope/_nope/_nope] and method [GET]",
+            body(missing).get("error").asText()
+        );
+
+        RestResponse wrongMethod = router.dispatch(
+            "DELETE", "/_cluster/health", "/_cluster/health?level=indices",
+            Map.of("level", List.of("indices")), Map.of(), new byte[0]);
+        assertEquals(
+            "Incorrect HTTP method for uri [/_cluster/health?level=indices] and method [DELETE], allowed: [GET]",
+            body(wrongMethod).get("error").asText()
+        );
+    }
+
     @Test
     void aSingleUnknownSegmentIsTreatedAsAnIndexName() {
         // Documents the consequence of /{index} being a registered route.

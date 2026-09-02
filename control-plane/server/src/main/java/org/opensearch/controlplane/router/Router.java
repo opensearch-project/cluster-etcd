@@ -68,7 +68,8 @@ public final class Router {
 
         PathTrie.PathMatch pathMatch = trie.resolvePath(rawPath);
         if (pathMatch == null) {
-            return ErrorResponses.noHandler(method, uri, pretty);
+            // rawPath, not uri: this message omits the query string. See ErrorResponses.noHandler.
+            return ErrorResponses.noHandler(method, rawPath, pretty);
         }
 
         Route route = pathMatch.routesByMethod().get(method);
