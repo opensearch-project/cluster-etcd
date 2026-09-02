@@ -4,6 +4,8 @@
  */
 package org.opensearch.controlplane.handler;
 
+import org.opensearch.controlplane.capability.DataPlaneCapabilities;
+import org.opensearch.controlplane.capability.PermissiveCapabilities;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
 import org.opensearch.controlplane.handler.core.PingHandler;
@@ -42,11 +44,15 @@ public final class ControlPlaneHandlers {
     }
 
     public static HandlerRegistry build(ClusterIdentity identity) {
-        return registerAll(HandlerRegistry.withAllStubbed(), identity);
+        return build(identity, new PermissiveCapabilities());
+    }
+
+    public static HandlerRegistry build(ClusterIdentity identity, DataPlaneCapabilities capabilities) {
+        return registerAll(HandlerRegistry.withAllStubbed(), identity, capabilities);
     }
 
     public static HandlerRegistry registerAll(HandlerRegistry registry) {
-        return registerAll(registry, ClusterIdentity.defaults());
+        return registerAll(registry, ClusterIdentity.defaults(), new PermissiveCapabilities());
     }
 
     /**
@@ -55,7 +61,11 @@ public final class ControlPlaneHandlers {
      * <p>Anything not registered keeps its {@link NotImplementedHandler} stub, so the routing surface
      * stays complete no matter how little is implemented.
      */
-    public static HandlerRegistry registerAll(HandlerRegistry registry, ClusterIdentity identity) {
+    public static HandlerRegistry registerAll(
+        HandlerRegistry registry,
+        ClusterIdentity identity,
+        DataPlaneCapabilities capabilities
+    ) {
         return registry
             // _core
             .register(new InfoHandler(identity))
@@ -65,10 +75,10 @@ public final class ControlPlaneHandlers {
             .register(new ExistsIndexHandler())
             .register(new DeleteIndexHandler())
             // ingest and search pipelines are the same API twice; see PipelineKind
-            .register(new PutPipelineHandler(PipelineKind.ingest()))
+            .register(new PutPipelineHandler(PipelineKind.ingest(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.ingest()))
             .register(new DeletePipelineHandler(PipelineKind.ingest()))
-            .register(new PutPipelineHandler(PipelineKind.search()))
+            .register(new PutPipelineHandler(PipelineKind.search(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.search()))
             .register(new DeletePipelineHandler(PipelineKind.search()));
     }

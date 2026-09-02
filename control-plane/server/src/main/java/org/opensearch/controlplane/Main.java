@@ -4,6 +4,9 @@
  */
 package org.opensearch.controlplane;
 
+import org.opensearch.controlplane.capability.DataPlaneCapabilities;
+import org.opensearch.controlplane.capability.DeclaredCapabilities;
+import org.opensearch.controlplane.capability.PermissiveCapabilities;
 import org.opensearch.controlplane.handler.ControlPlaneHandlers;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.HandlerRegistry;
@@ -32,6 +35,7 @@ public final class Main {
         boolean dumpRoutes = false;
         Path dataPath = Path.of(DEFAULT_DATA_PATH);
         ClusterIdentity identity = ClusterIdentity.defaults();
+        Path capabilitiesPath = null;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -39,6 +43,7 @@ public final class Main {
                 case "--port" -> port = Integer.parseInt(requireValue(args, ++i, "--port"));
                 case "--data-path" -> dataPath = Path.of(requireValue(args, ++i, "--data-path"));
                 case "--cluster-name" -> identity = identity.withClusterName(requireValue(args, ++i, "--cluster-name"));
+                case "--capabilities" -> capabilitiesPath = Path.of(requireValue(args, ++i, "--capabilities"));
                 case "--dump-routes" -> dumpRoutes = true;
                 case "--help", "-h" -> {
                     printUsage();
@@ -56,9 +61,22 @@ public final class Main {
         // Wiring lives here so the routing and HTTP layers stay unaware of storage and tenancy.
         // Swapping SingleTenantResolver for a principal- or host-derived resolver is the only change
         // needed to serve multiple tenants; see the README's Multi-tenancy section.
+        DataPlaneCapabilities capabilities;
+        if (capabilitiesPath == null) {
+            // Said out loud rather than left implicit: without this, a pipeline naming a processor the
+            // data plane does not have is accepted and only fails when it runs.
+            System.err.println(
+                "warning: no --capabilities file, so processor types are not validated. Generate one "
+                    + "with tools/dump-capabilities.sh <data-plane-url>."
+            );
+            capabilities = new PermissiveCapabilities();
+        } else {
+            capabilities = DeclaredCapabilities.load(capabilitiesPath);
+        }
+
         KeyValueStore store = new FileSystemKeyValueStore(dataPath);
         OperationContextFactory contextFactory = new OperationContextFactory(store, new SingleTenantResolver());
-        HandlerRegistry registry = ControlPlaneHandlers.build(identity);
+        HandlerRegistry registry = ControlPlaneHandlers.build(identity, capabilities);
 
         ControlPlaneServer server = new ControlPlaneServer(host, port, registry, contextFactory);
         if (dumpRoutes) {
@@ -97,11 +115,12 @@ public final class Main {
 
         System.out.printf(
             Locale.ROOT,
-            "OpenSearch control plane listening on %s:%d%n%s%nstore: %s%n",
+            "OpenSearch control plane listening on %s:%d%n%s%nstore: %s%ncapabilities: %s%n",
             host,
             server.boundPort(),
             server.describeSurface(),
-            store
+            store,
+            capabilities
         );
         server.awaitShutdown();
     }
@@ -123,6 +142,8 @@ public final class Main {
               --port <port>       listen port, 0 for ephemeral (default %d)
               --data-path <dir>   filesystem store directory (default %s)
               --cluster-name <n>  cluster_name reported by GET / (default opensearch)
+              --capabilities <f>  data plane capabilities file; without it, processor types
+                                  are not validated. Generate with tools/dump-capabilities.sh
               --dump-routes       print the route table and handler status, then start
               --help              show this message
 

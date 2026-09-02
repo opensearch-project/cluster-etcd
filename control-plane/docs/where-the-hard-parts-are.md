@@ -191,6 +191,21 @@ current `IndexManagementTasks` explicitly is not.
   has on disk that the control plane has no metadata for. Requires node reports.
 - **`indices.rollover` conditions** — as above.
 
+## Plugin availability cuts across every tier
+
+Discovered while implementing search pipelines, and it applies far beyond them. The spec is the union
+of the whole distribution, so a value that is spec-valid may not exist in a given deployment. Pipeline
+processors were the first instance; the same is true of index settings, analyzers, tokenizers, and
+snapshot repository types, all of which plugins extend.
+
+`DataPlaneCapabilities` handles processors today. Each of those other cases will need the same
+treatment, and the same question answered: the control plane cannot know what the data plane has
+unless it is told. Declared config is the stopgap; the durable answer is the shard manager publishing
+capabilities into the store, since it is already the layer that talks to both sides.
+
+Worth doing before implementing `indices.put_settings`, which will otherwise accept plugin settings
+that the data plane silently ignores — a worse failure than rejection, because nothing surfaces it.
+
 ## Two inversions worth noticing
 
 **`cluster.pending_tasks` gets easier, not harder.** In OpenSearch it exposes cluster-manager

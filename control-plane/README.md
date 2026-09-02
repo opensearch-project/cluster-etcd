@@ -244,6 +244,42 @@ combined coverage report.
 
 The harness creates and deletes real resources, so point the server at a throwaway `--data-path`.
 
+## Data plane capabilities
+
+The OpenSearch API specification describes the union of everything in the distribution, every bundled
+plugin included. So **"in the spec" does not mean "available in this deployment"**: a pipeline using
+`normalization-processor` is spec-valid, but a cluster without the neural-search plugin rejects it
+with 400, and nothing in the spec marks that processor as plugin-provided.
+
+Accepting such a definition and letting it fail at execution time is a poor experience, so the control
+plane can be told what its data plane supports and refuse up front.
+
+```bash
+tools/dump-capabilities.sh http://localhost:9200 > capabilities.yaml
+./gradlew :server:run --args="--port 9400 --capabilities capabilities.yaml"
+```
+
+**Generated, not hand-written.** A cluster already reports exactly this under `GET /_nodes` —
+`ingest.processors` plus the three `search_pipelines.*` lists — so the file is produced from the
+cluster the control plane fronts. A hand-maintained list would drift, and drift here means rejecting
+definitions that would have worked: a false rejection breaks a working deployment, while a false
+acceptance only defers an error. Re-run the script when plugins change.
+
+Where a processor is present on only some nodes, the generator excludes it — the control plane should
+not accept a definition whose success depends on where it runs.
+
+Without `--capabilities`, processor types are not validated and startup says so. That is the default
+because there is no accurate list to ship: `DataPlaneCapabilities` is an interface precisely so that
+the durable answer — the shard manager publishing capabilities into the data store — is a change of
+implementation rather than of design.
+
+The two kinds report an unknown type differently, and both wordings are reproduced:
+
+| | exception | reason |
+|---|---|---|
+| ingest | `parse_exception` | `No processor type exists with name [x]`, plus a `processor_type` field |
+| search pipeline | `illegal_argument_exception` | `Invalid processor type x` |
+
 ## Multi-tenancy
 
 One control plane instance serves many tenants. Isolation is **structural**: a handler
@@ -506,13 +542,13 @@ character for character against the server's response.
   when the wait times out. Everything else about create, delete, and their error bodies is
   byte-identical to OpenSearch 3.9.0.
 - Settings are stored unvalidated. A real cluster rejects unknown or malformed settings with 400.
-- **Pipeline processor types are not validated.** A real cluster rejects an unknown processor at PUT
-  time with `400 illegal_argument_exception: Invalid processor type <name>`; we accept it, so a client
-  can store a pipeline that only fails when it runs. Confirmed by direct comparison. Genuinely
-  unresolved rather than merely undone: validity depends on which plugins the *data nodes* have, which
-  the control plane cannot know today. It needs either a registry told what is installed, or the data
-  plane publishing its processor types — a channel that does not exist. Worth deciding before the
-  equivalent question arrives for ingest processors and index settings.
+- **Processor validation is opt-in, and its data comes from outside.** With `--capabilities` the
+  control plane rejects unsupported processor types up front; without it, anything is accepted. See
+  [Data plane capabilities](#data-plane-capabilities). The same question is still open for index
+  settings and analyzers, which are equally plugin-dependent and equally unvalidated.
+- The generated capabilities file is a point-in-time snapshot. Nothing detects that the data plane has
+  changed underneath it, so a stale file rejects newly-available processors. The store-published
+  version would not have this problem.
 - No conformance story covers the indices operations yet: every story under `tests/default/indices/`
   pulls in operations that are still stubbed.
 - Whether the version filtering matters in practice. At `3.9.0` it drops nothing, so the mechanism is

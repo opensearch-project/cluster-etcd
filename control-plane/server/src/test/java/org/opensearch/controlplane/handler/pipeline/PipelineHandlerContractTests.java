@@ -397,6 +397,106 @@ abstract class PipelineHandlerContractTests {
         assertFalse(registry.handlers().containsKey("ingest.simulate"));
     }
 
+    // ------------------------------------------------------------------
+    // processor type validation
+    // ------------------------------------------------------------------
+
+    /**
+     * A body naming one processor in {@code field}. The required property, if this kind has one, is
+     * always present so that a rejection can only be about the processor type.
+     *
+     * <p>Field names are taken in sorted order rather than from the map's iteration order, which for
+     * {@code Map.of} is unspecified.
+     */
+    private String definitionWithProcessor(String field, String type) {
+        StringBuilder body = new StringBuilder("{");
+        if (requiredProperty() != null && requiredProperty().equals(field) == false) {
+            body.append("\"").append(requiredProperty()).append("\":[],");
+        }
+        body.append("\"").append(field).append("\":[{\"").append(type).append("\":{}}]}");
+        return body.toString();
+    }
+
+    /** Processor-holding fields in a deterministic order. */
+    private List<Map.Entry<String, org.opensearch.controlplane.capability.ProcessorKind>> processorFields() {
+        return kind().processorFields().entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .toList();
+    }
+
+    private Router routerWith(org.opensearch.controlplane.capability.DataPlaneCapabilities capabilities) {
+        return Router.fromGeneratedRoutes(
+            ControlPlaneHandlers.registerAll(
+                HandlerRegistry.withAllStubbed(),
+                org.opensearch.controlplane.handler.core.ClusterIdentity.defaults(),
+                capabilities
+            ),
+            TestContexts.factory(store)
+        );
+    }
+
+    /** The default: nothing declared, so a processor the data plane lacks is still accepted. */
+    @Test
+    void permissiveCapabilitiesAcceptAnUnknownProcessor() {
+        String field = processorFields().getFirst().getKey();
+        RestResponse response = put("p", definitionWithProcessor(field, "definitely-not-a-processor"));
+
+        assertEquals(RestStatus.OK, response.status());
+    }
+
+    @Test
+    void declaredCapabilitiesRejectAnUnsupportedProcessor() throws Exception {
+        var field = processorFields().getFirst();
+        // Declare something, but not the type the request names.
+        router = routerWith(new org.opensearch.controlplane.capability.DeclaredCapabilities(
+            Map.of(field.getValue(), Set.of("a-supported-one"))));
+
+        RestResponse response = put("p", definitionWithProcessor(field.getKey(), "unsupported-one"));
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        JsonNode error = body(response).get("error");
+
+        // The two kinds report this differently; both wordings verified against a live cluster.
+        switch (kind().errorStyle()) {
+            case INGEST -> {
+                assertEquals("parse_exception", error.get("type").asText());
+                assertEquals("No processor type exists with name [unsupported-one]", error.get("reason").asText());
+                assertEquals("unsupported-one", error.get("processor_type").asText());
+            }
+            case SEARCH -> {
+                assertEquals("illegal_argument_exception", error.get("type").asText());
+                assertEquals("Invalid processor type unsupported-one", error.get("reason").asText());
+            }
+        }
+        assertEquals(0, pipelineCount(), "a rejected definition must not be stored");
+    }
+
+    @Test
+    void declaredCapabilitiesAcceptASupportedProcessor() {
+        var field = processorFields().getFirst();
+        router = routerWith(new org.opensearch.controlplane.capability.DeclaredCapabilities(
+            Map.of(field.getValue(), Set.of("supported-one"))));
+
+        assertEquals(RestStatus.OK, put("p", definitionWithProcessor(field.getKey(), "supported-one")).status());
+        assertEquals(1, pipelineCount());
+    }
+
+    /** Kinds are separate namespaces, so declaring a type for one must not license it for another. */
+    @Test
+    void supportForOneProcessorKindDoesNotLicenseAnother() {
+        var fields = processorFields();
+        if (fields.size() < 2) {
+            return;
+        }
+        router = routerWith(new org.opensearch.controlplane.capability.DeclaredCapabilities(
+            Map.of(fields.get(0).getValue(), Set.of("shared-name"))));
+
+        // Only meaningful when the two fields hold genuinely different kinds.
+        if (fields.get(0).getValue() != fields.get(1).getValue()) {
+            assertEquals(RestStatus.BAD_REQUEST,
+                put("p", definitionWithProcessor(fields.get(1).getKey(), "shared-name")).status());
+        }
+    }
+
     @Test
     void theTwoKindsDoNotShareAKeySpace() {
         put("shared", minimalDefinition());

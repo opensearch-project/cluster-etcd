@@ -58,6 +58,8 @@ dependencies {
     implementation("io.netty:netty-buffer:$nettyVersion")
     implementation("io.netty:netty-common:$nettyVersion")
     implementation("com.fasterxml.jackson.core:jackson-databind:$jacksonVersion")
+    // The capabilities file is YAML, matching the scope file.
+    implementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:$jacksonVersion")
 
     testImplementation(platform("org.junit:junit-bom:$junitVersion"))
     testImplementation("org.junit.jupiter:junit-jupiter")

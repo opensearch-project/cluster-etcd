@@ -185,6 +185,37 @@ public final class ErrorResponses {
     }
 
     /**
+     * {@code 400} for an ingest processor type the data plane does not have.
+     *
+     * <p>Verified against OpenSearch 3.9.0: {@code parse_exception}, reason
+     * {@code No processor type exists with name [x]} — note the brackets — plus a
+     * {@code processor_type} field. Deliberately different from the search pipeline equivalent, which
+     * uses a different exception type and different wording for the same condition.
+     */
+    public static RestResponse unknownIngestProcessor(RestRequest request, String type) {
+        ObjectNode cause = Json.object();
+        cause.put("type", "parse_exception");
+        cause.put("reason", "No processor type exists with name [" + type + "]");
+        cause.put("processor_type", type);
+        return structured(RestStatus.BAD_REQUEST, cause, isPretty(request), Map.of());
+    }
+
+    /**
+     * {@code 400} for a search pipeline processor type the data plane does not have.
+     *
+     * <p>Verified against OpenSearch 3.9.0: {@code illegal_argument_exception}, reason
+     * {@code Invalid processor type x} — no brackets, and no extra field.
+     */
+    public static RestResponse unknownSearchProcessor(RestRequest request, String type) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "illegal_argument_exception",
+            "Invalid processor type " + type,
+            isPretty(request)
+        );
+    }
+
+    /**
      * Wraps a cause in the structured envelope.
      *
      * <p>{@code root_cause} comes first and repeats the cause verbatim, extra fields included, which

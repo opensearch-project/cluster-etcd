@@ -4,6 +4,10 @@
  */
 package org.opensearch.controlplane.handler.pipeline;
 
+import org.opensearch.controlplane.capability.ProcessorKind;
+
+import java.util.Map;
+
 /**
  * The two flavours of pipeline, and the only things that differ between them.
  *
@@ -29,6 +33,11 @@ package org.opensearch.controlplane.handler.pipeline;
  * @param putGroup           the {@code x-operation-group} for put
  * @param getGroup           the {@code x-operation-group} for get
  * @param deleteGroup        the {@code x-operation-group} for delete
+ * @param processorFields    body fields holding processor arrays, mapped to the kind of processor
+ *                           they contain. Used to validate declared types against what the data plane
+ *                           supports.
+ * @param errorStyle         which unknown-processor error this kind produces; the two differ in
+ *                           exception type and wording
  */
 public record PipelineKind(
     String keyPrefix,
@@ -36,8 +45,13 @@ public record PipelineKind(
     String requiredProperty,
     String putGroup,
     String getGroup,
-    String deleteGroup
+    String deleteGroup,
+    Map<String, ProcessorKind> processorFields,
+    ProcessorErrorStyle errorStyle
 ) {
+
+    /** The two verified unknown-processor error shapes. See {@code ErrorResponses}. */
+    public enum ProcessorErrorStyle { INGEST, SEARCH }
 
     /** {@code /_ingest/pipeline} — requires {@code processors}, despite the spec not saying so. */
     public static PipelineKind ingest() {
@@ -47,7 +61,10 @@ public record PipelineKind(
             "processors",
             "ingest.put_pipeline",
             "ingest.get_pipeline",
-            "ingest.delete_pipeline"
+            "ingest.delete_pipeline",
+            // on_failure holds processors too, and a live cluster validates them the same way.
+            Map.of("processors", ProcessorKind.INGEST, "on_failure", ProcessorKind.INGEST),
+            ProcessorErrorStyle.INGEST
         );
     }
 
@@ -59,7 +76,13 @@ public record PipelineKind(
             null,
             "search_pipeline.put",
             "search_pipeline.get",
-            "search_pipeline.delete"
+            "search_pipeline.delete",
+            Map.of(
+                "request_processors", ProcessorKind.SEARCH_REQUEST,
+                "response_processors", ProcessorKind.SEARCH_RESPONSE,
+                "phase_results_processors", ProcessorKind.SEARCH_PHASE_RESULTS
+            ),
+            ProcessorErrorStyle.SEARCH
         );
     }
 
