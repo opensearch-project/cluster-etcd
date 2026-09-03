@@ -10,12 +10,12 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 14 implemented, 65 stubbed
+126 routes, 79 operation groups, 16 implemented, 63 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create`, `exists`, `delete`, `update_aliases`, `put_alias`, `delete_alias` |
+| `indices` | 67 | `create`, `exists`, `delete`, and the full alias set: `get_alias`, `put_alias`, `delete_alias`, `exists_alias`, `update_aliases` |
 | `cluster` | 21 | — |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
@@ -23,7 +23,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 65 operation groups return `501 Not Implemented`** with a structured
+**The remaining 63 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 

@@ -262,6 +262,88 @@ class AliasActionsTests {
         assertEquals(RestStatus.OK, router.dispatch("HEAD", "/resolvable").status());
     }
 
+    // ------------------------------------------------------------------
+    // reads: get_alias and exists_alias
+    // ------------------------------------------------------------------
+
+    private RestResponse get(String path) {
+        return router.dispatch("GET", path);
+    }
+
+    /** Responses are index-keyed even when the request names an alias. Verified. */
+    @Test
+    void getAliasAnswersIndexKeyedDocuments() throws Exception {
+        actions("{\"actions\":[{\"add\":{\"index\":\"logs-v2\",\"alias\":\"logs\"}}]}");
+
+        JsonNode json = body(get("/_alias/logs"));
+        assertEquals(List.of("logs-v2"), json.propertyStream().map(Map.Entry::getKey).toList());
+        assertTrue(json.get("logs-v2").get("aliases").has("logs"));
+    }
+
+    @Test
+    void getAliasSupportsAliasWildcards() throws Exception {
+        actions("{\"actions\":[{\"add\":{\"index\":\"logs-v2\",\"alias\":\"logs\"}}]}");
+
+        assertTrue(body(get("/_alias/lo*")).has("logs-v2"));
+    }
+
+    /**
+     * The rule that decides both membership and status: with no alias name every matching index is
+     * reported, even one with no aliases; with an alias name, only matches, and none is a 404.
+     */
+    @Test
+    void anIndexWithNoAliasesAppearsOnlyWhenNoAliasNameIsGiven() throws Exception {
+        actions("{\"actions\":[{\"add\":{\"index\":\"logs-v2\",\"alias\":\"logs\"}}]}");
+
+        JsonNode unfiltered = body(get("/_alias"));
+        assertTrue(unfiltered.has("logs-v1"), "reported despite having no aliases");
+        assertTrue(unfiltered.get("logs-v1").get("aliases").isEmpty());
+
+        assertEquals(RestStatus.OK, get("/logs-v1/_alias").status());
+        assertTrue(body(get("/logs-v1/_alias")).get("logs-v1").get("aliases").isEmpty());
+
+        // Filtered by an alias the index does not carry: omitted, and so a 404.
+        assertEquals(RestStatus.NOT_FOUND, get("/logs-v1/_alias/logs").status());
+    }
+
+    /** A read of a missing alias uses the bare-string shape; a delete uses the structured one. */
+    @Test
+    void readingAMissingAliasUsesTheBareStringShape() throws Exception {
+        RestResponse response = get("/_alias/never");
+
+        assertEquals(RestStatus.NOT_FOUND, response.status());
+        JsonNode json = body(response);
+        assertTrue(json.get("error").isTextual(), "bare string, unlike the delete path");
+        assertEquals("alias [never] missing", json.get("error").asText());
+        assertEquals(404, json.get("status").asInt());
+    }
+
+    @Test
+    void existsAliasIsScopedByIndex() {
+        actions("{\"actions\":[{\"add\":{\"index\":\"logs-v2\",\"alias\":\"logs\"}}]}");
+
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/_alias/logs").status());
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/logs-v2/_alias/logs").status());
+        // Both exist, but not together.
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/logs-v1/_alias/logs").status());
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/_alias/never").status());
+    }
+
+    @Test
+    void existsAliasCarriesNoBody() {
+        assertEquals(0, router.dispatch("HEAD", "/_alias/never").body().length);
+    }
+
+    @Test
+    void getAliasReportsPerIndexProperties() throws Exception {
+        actions("{\"actions\":[{\"add\":{\"index\":\"logs-v1\",\"alias\":\"a\",\"search_routing\":\"r\"}},"
+            + "{\"add\":{\"index\":\"logs-v2\",\"alias\":\"a\"}}]}");
+
+        JsonNode json = body(get("/_alias/a"));
+        assertEquals("r", json.get("logs-v1").get("aliases").get("a").get("search_routing").asText());
+        assertTrue(json.get("logs-v2").get("aliases").get("a").isEmpty(), "properties are per index");
+    }
+
     @Test
     void removeIndexActionDeletesTheIndexItself() throws Exception {
         actions("{\"actions\":[{\"add\":{\"index\":\"logs-v1\",\"alias\":\"a\"}}]}");

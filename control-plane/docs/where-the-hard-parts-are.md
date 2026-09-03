@@ -125,11 +125,10 @@ Also in this tier:
 
 The direct consequence of not having a prebuilt cluster-state view.
 
-- **`indices.get_alias`, `indices.exists_alias`** — still to do. Aliases are now their own resource, so
-  alias→indices is a direct read, but these endpoints answer **index-keyed** documents
-  (`GET /_alias/x` returns `{"index": {"aliases": {"x": {}}}}`), so they need index→aliases, which is
-  still a scan. Confirmed against a live cluster. `AliasStore.forIndex` implements it and says why
-  denormalising to avoid it would reintroduce a second source of truth.
+- ~~**`indices.get_alias`, `indices.exists_alias`**~~ — **done.** They answer **index-keyed** documents
+  (`GET /_alias/x` returns `{"index": {"aliases": {"x": {}}}}`) so they need index→aliases, which stays
+  a scan whatever the storage layout. `AliasStore.forIndex` implements it and records why denormalising
+  to avoid it would reintroduce a second source of truth.
 - **`indices.get`, `get_mapping`, `get_settings`, `get_field_mapping`** — all take index
   expressions: wildcards, `_all`, comma-separated lists, alias names, plus `expand_wildcards`
   (open/closed/hidden/none) and `ignore_unavailable`. That resolution logic is shared and should be
