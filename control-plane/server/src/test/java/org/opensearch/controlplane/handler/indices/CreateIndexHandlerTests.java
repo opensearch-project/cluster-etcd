@@ -390,8 +390,7 @@ class CreateIndexHandlerTests {
 
         assertTrue(registry.implemented().containsAll(
             List.of("indices.create", "indices.exists", "indices.delete")));
-        // Template composition is not implemented, so simulation stays stubbed even though template
-        // CRUD has landed.
-        assertTrue(registry.notImplemented().contains("indices.simulate_template"));
+        // Still stubbed, and next on the roadmap.
+        assertTrue(registry.notImplemented().contains("indices.get_settings"));
     }
 }

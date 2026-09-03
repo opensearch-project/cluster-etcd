@@ -95,6 +95,7 @@ public final class ControlPlaneHandlers {
 
         // Templates: four operations across three kinds, which differ more than the pipelines do.
         Templates.handlers().forEach(registry::register);
+        Templates.simulationHandlers().forEach(registry::register);
         return registry;
     }
 }

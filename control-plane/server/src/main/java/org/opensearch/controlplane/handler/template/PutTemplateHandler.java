@@ -26,9 +26,11 @@ import java.io.IOException;
  * {@code action_request_validation_exception} where the newer kinds report
  * {@code Required [index_patterns]}.
  *
- * <p>Not validated: whether {@code composed_of} names component templates that exist, and whether
- * priorities overlap ambiguously with other templates. Both are cross-resource checks that belong with
- * template composition, which is not implemented.
+ * <p>For composable templates, a put is rejected when its patterns overlap another template's at the
+ * same priority — there would be no rule for which applies. Overlap at different priorities is allowed.
+ *
+ * <p>Still not validated: whether {@code composed_of} names component templates that exist. A missing
+ * component is silently skipped during composition rather than rejected here.
  */
 public final class PutTemplateHandler implements OperationHandler {
 
@@ -62,7 +64,26 @@ public final class PutTemplateHandler implements OperationHandler {
             return missingRequired(request);
         }
 
-        new TemplateStore(context.store(), kind).put(request.pathParam("name"), (ObjectNode) parsed);
+        String name = request.pathParam("name");
+        ObjectNode definition = (ObjectNode) parsed;
+
+        // Composable templates may not overlap another template's patterns at the same priority: with
+        // equal priority there would be no rule for which one wins. Overlap at *different* priorities is
+        // fine, since the higher one simply applies. Verified against a live cluster.
+        if (kind.equals(TemplateKind.index())) {
+            var conflicts = new TemplateComposition(context.store()).conflictingTemplates(name, definition);
+            if (conflicts.isEmpty() == false) {
+                return ErrorResponses.conflictingTemplatePriority(
+                    request,
+                    name,
+                    TemplateComposition.patternsOf(definition),
+                    conflicts,
+                    definition.path("priority").asInt(0)
+                );
+            }
+        }
+
+        new TemplateStore(context.store(), kind).put(name, definition);
         return Json.acknowledged(request);
     }
 

@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
+import org.opensearch.controlplane.handler.template.TemplateComposition;
 import org.opensearch.controlplane.rest.ErrorResponses;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.rest.RestRequest;
@@ -48,12 +49,10 @@ import java.util.Optional;
  *
  * <h2>Not yet implemented</h2>
  *
- * <p><b>Template resolution.</b> A real create applies matching composable index templates and
- * legacy templates, merging their settings, mappings and aliases with the request in a defined
- * precedence order. None of that happens here — the request body is stored as given, with only the
- * shard-count defaults filled in. An index created through this handler will therefore differ from
- * one created on a cluster with matching templates. This is the largest single gap in the operation
- * and wants {@code MetadataIndexTemplateService}'s composition rules ported before it is trustworthy.
+ * <p><b>Legacy template application.</b> A matching composable template is applied — see
+ * {@code TemplateComposition} for the precedence rules — but legacy {@code _template} definitions are
+ * not. A real cluster falls back to them when no composable template matches. An index created here
+ * while a matching legacy template exists will differ from one created on a real cluster.
  *
  * <p><b>Settings validation.</b> Unknown or malformed settings are stored rather than rejected. A
  * real cluster validates against registered setting definitions and fails with 400.
@@ -98,9 +97,13 @@ public final class CreateIndexHandler implements OperationHandler {
             requested = Json.object();
         }
 
+        // Composition first: a matching composable template contributes settings, mappings and aliases,
+        // and the request body overrides whatever it supplied.
+        ObjectNode effective = TemplateComposition.composeFor(context.store(), index, requested);
+
         IndexStore indices = new IndexStore(context.store());
         String uuid = IndexStore.newUuid();
-        ObjectNode metadata = buildMetadata(index, uuid, requested, context.nowEpochMillis());
+        ObjectNode metadata = buildMetadata(index, uuid, effective, context.nowEpochMillis());
 
         if (indices.createIfAbsent(metadata, index).isEmpty()) {
             // Lost the create-if-absent, so something else got there first. Report its UUID, not the
@@ -115,7 +118,7 @@ public final class CreateIndexHandler implements OperationHandler {
         // atomic with the index write: a failure here leaves an index without its aliases, which a
         // reconciliation pass can detect. The alternative -- embedding them -- would cost the atomic
         // alias swap that the separate layout buys.
-        JsonNode declaredAliases = requested.path("aliases");
+        JsonNode declaredAliases = effective.path("aliases");
         if (declaredAliases.isObject()) {
             AliasStore aliasStore = new AliasStore(context.store());
             declaredAliases.properties().forEach(alias -> {

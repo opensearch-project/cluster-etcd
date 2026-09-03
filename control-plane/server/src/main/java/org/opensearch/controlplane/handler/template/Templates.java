@@ -23,4 +23,9 @@ public final class Templates {
             ).stream())
             .toList();
     }
+
+    /** The two simulation endpoints, which are pure functions over the composition engine. */
+    public static List<OperationHandler> simulationHandlers() {
+        return List.of(new SimulateTemplateHandler(false), new SimulateTemplateHandler(true));
+    }
 }

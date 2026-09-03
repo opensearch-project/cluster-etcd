@@ -405,6 +405,31 @@ public final class ErrorResponses {
     }
 
     /**
+     * {@code 400} for a composable template overlapping another at the same priority.
+     *
+     * <p>Message format follows the server's, which spells out both sides so the operator can see which
+     * template to change: patterns, the conflicting names, each of their patterns, and the priority.
+     */
+    public static RestResponse conflictingTemplatePriority(
+        RestRequest request,
+        String name,
+        List<String> patterns,
+        List<String> conflicts,
+        int priority
+    ) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "illegal_argument_exception",
+            "index template [" + name + "] has index patterns " + patterns
+                + " matching patterns from existing templates [" + String.join(",", conflicts)
+                + "] with patterns (" + String.join(", ", conflicts) + " => " + patterns
+                + ") that have the same priority [" + priority + "], multiple index templates may not "
+                + "match during index creation, please use a different priority",
+            request
+        );
+    }
+
+    /**
      * Wraps a cause in the structured envelope.
      *
      * <p>{@code root_cause} comes first and repeats the cause verbatim, extra fields included, which

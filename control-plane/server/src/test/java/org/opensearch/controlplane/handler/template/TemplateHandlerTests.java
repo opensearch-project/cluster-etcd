@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -186,6 +187,172 @@ class TemplateHandlerTests {
         assertEquals(1, store.scanPrefix("tenant/default/templates/legacy/").size());
         assertEquals(1, store.scanPrefix("tenant/default/templates/index/").size());
         assertEquals(1, store.scanPrefix("tenant/default/templates/component/").size());
+    }
+
+    // ------------------------------------------------------------------
+    // composition -- precedence established by probing _simulate_index
+    // ------------------------------------------------------------------
+
+    private void component(String name, String template) {
+        put("/_component_template/" + name, "{\"template\":" + template + "}");
+    }
+
+    private JsonNode simulateIndex(String indexName) throws Exception {
+        RestResponse response = router.dispatch("POST", "/_index_template/_simulate_index/" + indexName);
+        assertEquals(RestStatus.OK, response.status());
+        return body(response).get("template");
+    }
+
+    /** Verified: later entries in composed_of win. Reversing the list reverses the outcome. */
+    @Test
+    void componentTemplatesMergeInOrderWithLaterWinning() throws Exception {
+        component("c1", "{\"settings\":{\"number_of_replicas\":9}}");
+        component("c2", "{\"settings\":{\"number_of_replicas\":5}}");
+
+        put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c1\",\"c2\"]}");
+        assertEquals(5, simulateIndex("x-1").get("settings").get("number_of_replicas").asInt());
+
+        put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c2\",\"c1\"]}");
+        assertEquals(9, simulateIndex("x-1").get("settings").get("number_of_replicas").asInt());
+    }
+
+    /** Verified: the template's own block beats every component. */
+    @Test
+    void theTemplatesOwnBlockBeatsItsComponents() throws Exception {
+        component("c1", "{\"settings\":{\"number_of_replicas\":9}}");
+        component("c2", "{\"settings\":{\"number_of_replicas\":5}}");
+        put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c1\",\"c2\"],"
+            + "\"template\":{\"settings\":{\"number_of_replicas\":1}}}");
+
+        assertEquals(1, simulateIndex("x-1").get("settings").get("number_of_replicas").asInt());
+    }
+
+    @Test
+    void mappingsAndAliasesMergeStructurallyAcrossComponents() throws Exception {
+        component("c1", "{\"mappings\":{\"properties\":{\"a\":{\"type\":\"keyword\"}}},\"aliases\":{\"from-c1\":{}}}");
+        component("c2", "{\"mappings\":{\"properties\":{\"b\":{\"type\":\"long\"}}},\"aliases\":{\"from-c2\":{}}}");
+        put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c1\",\"c2\"],"
+            + "\"template\":{\"aliases\":{\"from-t\":{}}}}");
+
+        JsonNode composed = simulateIndex("x-1");
+        JsonNode properties = composed.get("mappings").get("properties");
+        assertEquals("keyword", properties.get("a").get("type").asText());
+        assertEquals("long", properties.get("b").get("type").asText(), "both survive rather than replacing");
+        for (String alias : List.of("from-c1", "from-c2", "from-t")) {
+            assertTrue(composed.get("aliases").has(alias), alias);
+        }
+    }
+
+    /** Templates are selected, not merged with each other: the highest priority wins outright. */
+    @Test
+    void theHighestPriorityTemplateWinsOutright() throws Exception {
+        put("/_index_template/low", "{\"index_patterns\":[\"x-*\"],\"priority\":1,"
+            + "\"template\":{\"settings\":{\"number_of_shards\":1}}}");
+        put("/_index_template/high", "{\"index_patterns\":[\"x-1*\"],\"priority\":50,"
+            + "\"template\":{\"settings\":{\"number_of_replicas\":7}}}");
+
+        JsonNode composed = simulateIndex("x-1");
+        assertEquals(7, composed.get("settings").get("number_of_replicas").asInt());
+        assertFalse(composed.get("settings").has("number_of_shards"), "the loser contributes nothing");
+    }
+
+    @Test
+    void simulateIndexReportsNoMatchAsNotFound() {
+        assertEquals(RestStatus.NOT_FOUND,
+            router.dispatch("POST", "/_index_template/_simulate_index/unmatched").status());
+    }
+
+    @Test
+    void simulateTemplateAcceptsABodyToTryBeforeSaving() throws Exception {
+        component("c1", "{\"settings\":{\"number_of_replicas\":4}}");
+
+        RestResponse response = put("/_index_template/_simulate",
+            "{\"index_patterns\":[\"y-*\"],\"composed_of\":[\"c1\"]}");
+        // The route is POST; a PUT of the same path is not registered, so drive it directly.
+        RestResponse simulated = router.dispatch("POST", "/_index_template/_simulate",
+            "/_index_template/_simulate", Map.of(), Map.of(),
+            "{\"index_patterns\":[\"y-*\"],\"composed_of\":[\"c1\"]}".getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(RestStatus.OK, simulated.status());
+        assertEquals(4, body(simulated).get("template").get("settings").get("number_of_replicas").asInt());
+    }
+
+    // ------------------------------------------------------------------
+    // composition applies to index creation
+    // ------------------------------------------------------------------
+
+    @Test
+    void creatingAnIndexAppliesTheMatchingTemplate() throws Exception {
+        component("c1", "{\"settings\":{\"number_of_shards\":3},\"aliases\":{\"via-template\":{}}}");
+        put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c1\"]}");
+
+        assertEquals(RestStatus.OK, router.dispatch("PUT", "/x-1").status());
+        // The alias the template supplied became a real alias resource.
+        assertEquals(RestStatus.OK, router.dispatch("HEAD", "/_alias/via-template").status());
+    }
+
+    @Test
+    void theRequestBodyOverridesTheTemplate() throws Exception {
+        component("c1", "{\"settings\":{\"number_of_shards\":3}}");
+        put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c1\"]}");
+
+        put("/x-1", "{\"settings\":{\"number_of_shards\":7}}");
+        JsonNode settings = MAPPER.readTree(
+            store.getAsString("tenant/default/indices/x-1").orElseThrow()).get("settings");
+        assertEquals(7, settings.get("index.number_of_shards").asInt(), "the request wins");
+    }
+
+    @Test
+    void anIndexMatchingNoTemplateIsUnaffected() throws Exception {
+        put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],"
+            + "\"template\":{\"settings\":{\"number_of_shards\":9}}}");
+
+        router.dispatch("PUT", "/unmatched");
+        JsonNode settings = MAPPER.readTree(
+            store.getAsString("tenant/default/indices/unmatched").orElseThrow()).get("settings");
+        assertEquals(1, settings.get("index.number_of_shards").asInt(), "the default, not the template");
+    }
+
+    // ------------------------------------------------------------------
+    // put-time conflict validation
+    // ------------------------------------------------------------------
+
+    @Test
+    void overlappingPatternsAtTheSamePriorityAreRejected() throws Exception {
+        put("/_index_template/first", "{\"index_patterns\":[\"x-*\"],\"priority\":10}");
+
+        RestResponse response = put("/_index_template/second", "{\"index_patterns\":[\"x-*\"],\"priority\":10}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        JsonNode error = body(response).get("error");
+        assertEquals("illegal_argument_exception", error.get("type").asText());
+        assertTrue(error.get("reason").asText().contains("same priority [10]"));
+    }
+
+    @Test
+    void overlappingPatternsAtDifferentPrioritiesAreAllowed() {
+        put("/_index_template/first", "{\"index_patterns\":[\"x-*\"],\"priority\":10}");
+
+        assertEquals(RestStatus.OK,
+            put("/_index_template/second", "{\"index_patterns\":[\"x-*\"],\"priority\":20}").status(),
+            "the higher priority simply wins, so there is no ambiguity");
+    }
+
+    @Test
+    void replacingATemplateDoesNotConflictWithItself() {
+        put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"priority\":10}");
+
+        assertEquals(RestStatus.OK, put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"priority\":10}").status());
+    }
+
+    /** Legacy templates are stored but never applied. A real cluster would fall back to them. */
+    @Test
+    void legacyTemplatesAreNotAppliedToCreatedIndices() throws Exception {
+        put("/_template/lt", "{\"index_patterns\":[\"x-*\"],\"settings\":{\"number_of_shards\":9}}");
+
+        router.dispatch("PUT", "/x-1");
+        JsonNode settings = MAPPER.readTree(
+            store.getAsString("tenant/default/indices/x-1").orElseThrow()).get("settings");
+        assertEquals(1, settings.get("index.number_of_shards").asInt(), "known gap, documented");
     }
 
     @Test

@@ -115,9 +115,10 @@ Also in this tier:
 - **`indices.put_settings`** — needs a registry of which settings are static versus dynamic, because
   static settings can only change on a closed index. Not hard, but it needs data we do not have:
   the settings registry itself.
-- **`indices.simulate_template` / `simulate_index_template`** — pure functions over the composition
-  engine, so they come almost free once it exists. Good early validation that the port is correct,
-  and they have conformance stories.
+- ~~**`indices.simulate_template` / `simulate_index_template`**~~ — **done**, and they earned their keep:
+  every precedence rule the composition engine implements was established by probing
+  `_simulate_index` against a live cluster rather than by reading `MetadataIndexTemplateService`, since
+  the composed output is directly observable and the source is large.
 
 ---
 

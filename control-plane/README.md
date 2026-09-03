@@ -10,12 +10,12 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 28 implemented, 51 stubbed
+126 routes, 79 operation groups, 30 implemented, 49 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create`, `exists`, `delete`; the full alias set; legacy + composable template CRUD |
+| `indices` | 67 | `create` (with template composition), `exists`, `delete`; the full alias set; template CRUD + both simulate operations |
 | `cluster` | 21 | component template CRUD |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
@@ -23,7 +23,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 51 operation groups return `501 Not Implemented`** with a structured
+**The remaining 49 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -644,6 +644,13 @@ request would normally get. Verified, and reproduced.
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
   when the wait times out. Everything else about create, delete, and their error bodies is
   byte-identical to OpenSearch 3.9.0.
+- **Legacy `_template` definitions are stored but never applied.** Composable templates are composed
+  into a created index; legacy ones are not, where a real cluster falls back to them when no composable
+  template matches, merging by ascending `order`. An index created here while a matching legacy template
+  exists will differ from one created on a real cluster. The loudest remaining gap in `indices.create`.
+- **Mapping merge has no conflict detection.** Two templates disagreeing about a field's type produce a
+  last-writer-wins mapping rather than the rejection a real cluster raises. Belongs with
+  `indices.put_mapping`.
 - **Settings are stored unnormalised, and a real cluster normalises them.** Given
   `{"settings":{"number_of_shards":1}}`, OpenSearch answers
   `{"settings":{"index":{"number_of_shards":"1"}}}` — nested under `index`, and with the value as a
