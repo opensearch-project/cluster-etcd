@@ -12,8 +12,10 @@ import org.opensearch.controlplane.store.KeyValueStore;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.TreeMap;
 
 /**
@@ -37,10 +39,13 @@ public final class IndexAbstractions {
      */
     public static final String ALIAS_KEY_PREFIX = "aliases/";
 
-    private final Map<String, IndexAbstraction> lookup;
+    private final NavigableMap<String, IndexAbstraction> lookup;
 
     public IndexAbstractions(Map<String, IndexAbstraction> lookup) {
-        this.lookup = Map.copyOf(lookup);
+        // Sorted, not just unmodifiable. Both callers build a TreeMap expecting name order, and
+        // Map.copyOf discarded it -- which quietly made wildcard expansion order, and so the order of
+        // every response built from one, unspecified.
+        this.lookup = Collections.unmodifiableNavigableMap(new TreeMap<>(lookup));
     }
 
     /** Builds the lookup by scanning stored index metadata. */
@@ -86,7 +91,13 @@ public final class IndexAbstractions {
         return lookup.containsKey(name);
     }
 
-    Map<String, IndexAbstraction> all() {
+    /**
+     * Every abstraction, keyed by name, in name order.
+     *
+     * <p>Public because {@code indices.resolve_index} reports on names directly rather than resolving
+     * an expression to concrete indices — see that handler for why it cannot use the resolver.
+     */
+    public NavigableMap<String, IndexAbstraction> all() {
         return lookup;
     }
 

@@ -133,16 +133,19 @@ The direct consequence of not having a prebuilt cluster-state view.
   (`GET /_alias/x` returns `{"index": {"aliases": {"x": {}}}}`) so they need index→aliases, which stays
   a scan whatever the storage layout. `AliasStore.forIndex` implements it and records why denormalising
   to avoid it would reintroduce a second source of truth.
-- **`indices.get`, `get_mapping`, `get_settings`, `get_field_mapping`** — all take index
-  expressions: wildcards, `_all`, comma-separated lists, alias names, plus `expand_wildcards`
-  (open/closed/hidden/none) and `ignore_unavailable`. That resolution logic is shared and should be
-  written once, carefully, as its own component. It is the single most reused piece of logic in the
-  `indices` namespace and getting it wrong is subtly wrong everywhere.
+- ~~**`indices.get`, `get_mapping`, `get_settings`, `get_field_mapping`**~~ — **done**, along with
+  `resolve_index`. They took index expressions — wildcards, `_all`, comma-separated lists, alias names,
+  `expand_wildcards`, `ignore_unavailable` — and the prediction that writing that resolution once and
+  carefully would pay for itself held: all four are now rendering plus `IndexExpressions`, which holds
+  the resolve-or-render-the-error preamble they share.
 
-  ~~`get_settings`~~ — **done.** With the resolver and `Settings` both in place it was rendering plus
-  one new rule: the `{name}` filter matches the full dotted key with no implicit `index.` prefix, and
-  an index filtered down to nothing is dropped from the response rather than rendered empty.
-  `IndexExpressions` now holds the resolve-or-render-the-error preamble the other three will share.
+  Three things the survey did not anticipate. `get_settings` needed a rule of its own — the `{name}`
+  filter matches the full dotted key with no implicit `index.` prefix, and an index filtered down to
+  nothing is dropped rather than rendered empty. `get_field_mapping` cannot report metadata fields
+  (`_index`, `_routing`, …) because they come from the mapping engine's registry rather than from
+  anything a user declared. And **`resolve_index` does not use the resolver at all**: it reports on
+  names rather than resolving them, so an alias stays an alias, `_all` is a literal, and nothing is
+  ever an error.
 - **`indices.resolve_index`** — resolves an expression across indices, aliases *and* data streams
   simultaneously. Effectively a test of the resolver above.
 - **`cluster.state`** — the API that wants the monolith back. It assembles a single document from

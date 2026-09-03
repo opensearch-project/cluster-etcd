@@ -10,12 +10,12 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 31 implemented, 48 stubbed
+126 routes, 79 operation groups, 35 implemented, 44 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create` (with template composition), `exists`, `delete`, `get_settings`; the full alias set; template CRUD + both simulate operations |
+| `indices` | 67 | `create` (with template composition), `exists`, `delete`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
 | `cluster` | 21 | component template CRUD |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
@@ -23,7 +23,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 48 operation groups return `501 Not Implemented`** with a structured
+**The remaining 44 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -543,6 +543,8 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | two write indices for an alias | 500 `illegal_state_exception` | 400 `illegal_argument_exception`, same reason | a request the client got wrong is a client error; reporting it as a server fault tells the caller to retry something that can never succeed. The type follows the status rather than being left inconsistent with it |
 | nested settings key order | `HashMap` order — neither sorted nor as supplied | sorted | reproducing it would mean reproducing Java's hash iteration order. JSON object order is not semantic, and the harness compares parsed structures. The *flat* rendering is sorted on a real cluster too, so that one agrees |
 | `index.version.created` | written into a created index's settings | absent | it records the Lucene and OpenSearch version the index was built with, which this service does not know. `index.replication.type` is *not* in this category — it is a real index setting, accepted on create and defaulted to `DOCUMENT` |
+| mapping key order | reordered by the mapping engine | as declared | the field dictionaries `properties` and `fields` come back sorted, but the other mapping keys follow the mapper's own emission order — `dynamic` before `properties`, neither declared nor alphabetical. Sorting the dictionaries would match a simple mapping and silently diverge on a richer one, while *looking* faithful. Reproducing it means the mapping engine |
+| metadata fields in `get_field_mapping` | `_index`, `_routing`, `_doc_count`, … returned under a wildcard | declared fields only | they come from the mapping engine's field registry, which is version- and plugin-dependent; a hardcoded copy would drift the way a hardcoded settings registry would |
 | `include_defaults` on `get_settings` | a sibling `defaults` block, ~2.6 kB per index | accepted and ignored | **the control plane owns the settings a user explicitly set; computed values belong to the layer that computes them.** A data plane node can already answer `/{index}/_settings?local=true` with the fully resolved settings, defaults included, so putting a settings registry here would duplicate that — and a duplicated registry drifts. Same reasoning as [Data plane capabilities](#data-plane-capabilities) |
 
 Two notes on scope rather than behaviour:
@@ -606,6 +608,21 @@ character for character against the server's response.
   `flat_settings=true`, and `POST /_index_template/_simulate_index/x` are **byte-exact**; the composable
   and component template GETs match to the limit of what could be captured. All eight were diffed
   request for request against 3.9.0 after the `Settings` type landed. See [Settings](#settings).
+- **The `indices` read set.** `get`, `get_mapping`, `get_field_mapping` and `resolve_index` were diffed
+  request for request against 3.9.0 alongside `get_settings` — 22 requests, and every value agrees. The
+  only differences anywhere were key order (the mapping-order divergence above) and the two volatile
+  settings, `index.uuid` and `index.creation_date`. Four rules that are easy to assume wrongly:
+  - **`indices.get` always emits all three blocks**, empty as `{}` — the opposite of `get_settings`
+    with a name filter, where an index with nothing to report is dropped. The two rules look alike.
+  - `get_field_mapping` keys each match by its **full dotted name** but nests the mapping under the
+    field's **leaf** name: `{"user.name": {"full_name": "user.name", "mapping": {"name": {...}}}}`.
+    Object fields match nothing; multi-fields under `fields` are leaves in their own right.
+  - **`resolve_index` does not resolve.** An alias stays under `aliases` rather than flattening to its
+    indices, `_all` is a literal name that matches nothing, and nothing is ever an error — an unmatched
+    name is a 200 with three empty arrays. It is the one index expression that does not go through the
+    resolver, and the reasons are on `ResolveIndexHandler`.
+  - an index with no aliases **omits** the `aliases` key in `resolve_index`, while `attributes` is
+    always present and reports `["hidden", "open"]` in that order.
 - **`indices.get_settings`.** Thirteen requests diffed request for request against 3.9.0 — the name
   filter exact, wildcarded and comma-separated, the unprefixed form, a filter matching nothing,
   `flat_settings`, `provided_name`, `replication.type`, a missing index, a wildcard matching nothing,
@@ -690,7 +707,7 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 48 operation groups that are still stubbed.
+- Everything about the 44 operation groups that are still stubbed.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns

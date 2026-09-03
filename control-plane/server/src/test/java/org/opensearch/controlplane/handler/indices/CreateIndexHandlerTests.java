@@ -434,6 +434,6 @@ class CreateIndexHandlerTests {
         assertTrue(registry.implemented().containsAll(
             List.of("indices.create", "indices.exists", "indices.delete")));
         // Still stubbed, and next on the roadmap.
-        assertTrue(registry.notImplemented().contains("indices.get"));
+        assertTrue(registry.notImplemented().contains("indices.put_mapping"));
     }
 }
