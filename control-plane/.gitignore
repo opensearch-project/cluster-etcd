@@ -22,3 +22,7 @@ data/
 .DS_Store
 *.log
 *.hprof
+
+# Generated from a specific data plane, so deployment-specific rather than source.
+capabilities.yaml
+settings_registry.yaml

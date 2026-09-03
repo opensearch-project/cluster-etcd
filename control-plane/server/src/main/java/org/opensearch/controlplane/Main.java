@@ -39,6 +39,7 @@ public final class Main {
         Path dataPath = Path.of(DEFAULT_DATA_PATH);
         ClusterIdentity identity = ClusterIdentity.defaults();
         Path capabilitiesPath = null;
+        Path settingsRegistryPath = null;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -47,6 +48,8 @@ public final class Main {
                 case "--data-path" -> dataPath = Path.of(requireValue(args, ++i, "--data-path"));
                 case "--cluster-name" -> identity = identity.withClusterName(requireValue(args, ++i, "--cluster-name"));
                 case "--capabilities" -> capabilitiesPath = Path.of(requireValue(args, ++i, "--capabilities"));
+                case "--settings-registry" ->
+                    settingsRegistryPath = Path.of(requireValue(args, ++i, "--settings-registry"));
                 case "--dump-routes" -> dumpRoutes = true;
                 case "--help", "-h" -> {
                     printUsage();
@@ -65,30 +68,35 @@ public final class Main {
         // Swapping SingleTenantResolver for a principal- or host-derived resolver is the only change
         // needed to serve multiple tenants; see the README's Multi-tenancy section.
         DataPlaneCapabilities capabilities;
-        SettingsRegistry settings;
         if (capabilitiesPath == null) {
             // Said out loud rather than left implicit: without this, a pipeline naming a processor the
-            // data plane does not have is accepted and only fails when it runs, and an unknown setting
-            // is stored rather than rejected.
+            // data plane does not have is accepted and only fails when it runs.
             System.err.println(
-                "warning: no --capabilities file, so processor types and settings are not validated. "
-                    + "Generate one with tools/dump-capabilities.sh <data-plane-url>."
+                "warning: no --capabilities file, so processor types are not validated. Generate one "
+                    + "with tools/dump-capabilities.sh <data-plane-url>."
             );
             capabilities = new PermissiveCapabilities();
-            settings = new PermissiveSettings();
         } else {
             capabilities = DeclaredCapabilities.load(capabilitiesPath);
-            // The settings section is optional, so a capabilities file generated before the data plane
-            // exposed its settings registry still loads and simply does not enforce settings.
-            settings = DeclaredSettings.load(capabilitiesPath)
+        }
+
+        // Two files rather than one, because they come from two endpoints with different refresh
+        // cadences and the registry is ~180 kB against the processor list's few hundred bytes. A
+        // capabilities file may still carry the registry under a `settings` key for a deployment that
+        // would rather have one; --settings-registry wins when both are given.
+        SettingsRegistry settings = new PermissiveSettings();
+        Path registrySource = settingsRegistryPath != null ? settingsRegistryPath : capabilitiesPath;
+        if (registrySource != null) {
+            settings = DeclaredSettings.load(registrySource)
                 .map(declared -> (SettingsRegistry) declared)
-                .orElseGet(() -> {
-                    System.err.println(
-                        "warning: --capabilities file has no `settings` section, so settings are not "
-                            + "validated. Regenerate it against a data plane that exposes the registry."
-                    );
-                    return new PermissiveSettings();
-                });
+                .orElse(settings);
+        }
+        if (settings.isEnforcing() == false) {
+            System.err.println(
+                "warning: no settings registry, so unknown and static settings are not rejected. "
+                    + "Generate one with: curl '<data-plane-url>/_cluster/settings_registry?pretty' "
+                    + "-o settings_registry.yaml"
+            );
         }
 
         KeyValueStore store = new FileSystemKeyValueStore(dataPath);
@@ -161,8 +169,11 @@ public final class Main {
               --data-path <dir>   filesystem store directory (default %s)
               --cluster-name <n>  cluster_name reported by GET / (default opensearch)
               --capabilities <f>  data plane capabilities file; without it, processor types
-                                  and settings are not validated. Generate with
-                                  tools/dump-capabilities.sh
+                                  are not validated. Generate with tools/dump-capabilities.sh
+              --settings-registry <f>
+                                  data plane settings registry; without it, unknown and static
+                                  settings are not rejected. Generate with
+                                  curl '<url>/_cluster/settings_registry?pretty' -o <f>
               --dump-routes       print the route table and handler status, then start
               --help              show this message
 

@@ -24,22 +24,27 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * A settings registry read from the file the deployer supplies, generated from their own cluster.
+ * A settings registry read from a file, generated from the cluster this control plane fronts.
  *
- * <p>Folded into the same file as {@link DeclaredCapabilities} rather than carried in a second one:
- * two snapshots are two things to refresh after an upgrade, and the instruction "remember to refresh
- * both" is the kind that gets half-followed.
+ * <p>{@code GET /_cluster/settings_registry} emits it directly, so the whole workflow is a curl:
  *
  * <pre>{@code
- * settings:
- *   index:
- *     - {key: "index.number_of_shards",              kind: exact,  properties: [Final, IndexScope]}
- *     - {key: "index.number_of_replicas",            kind: exact,  properties: [Dynamic, IndexScope]}
- *     - {key: "index.analysis.",                     kind: prefix, properties: [IndexScope]}
- *     - {key: "index.routing.allocation.include.*",  kind: affix,  properties: [Dynamic, IndexScope]}
- *     - {key: "index.uuid",                          kind: exact,  properties: [IndexScope, PrivateIndex]}
- *   cluster:
- *     - {key: "cluster.max_shards_per_node",         kind: exact,  properties: [Dynamic, NodeScope]}
+ * curl 'localhost:9200/_cluster/settings_registry?pretty' -o settings_registry.yaml
+ * ./gradlew :server:run --args="--settings-registry settings_registry.yaml"
+ * }</pre>
+ *
+ * <p>A real cluster reports 221 index settings and 801 cluster settings, so the file is around 180 kB.
+ *
+ * <pre>{@code
+ * version: "3.9.0"
+ * index:
+ *   - {key: "index.number_of_shards",           kind: exact,  properties: [Final, IndexScope]}
+ *   - {key: "index.number_of_replicas",         kind: exact,  properties: [Dynamic, IndexScope]}
+ *   - {key: "index.analysis.",                  kind: prefix, properties: [IndexScope]}
+ *   - {key: "index.uuid",                       kind: exact,  properties: [IndexScope, PrivateIndex]}
+ * cluster:
+ *   - {key: "cluster.max_shards_per_node",      kind: exact,  properties: [Dynamic, NodeScope]}
+ *   - {key: "cluster.remote.*.seeds",           kind: affix,  properties: [Dynamic, NodeScope]}
  * }</pre>
  *
  * <h2>Matching</h2>
@@ -48,17 +53,22 @@ import java.util.stream.Collectors;
  * valid settings:
  *
  * <ul>
- *   <li><b>{@code exact}</b> — the key and nothing else.</li>
+ *   <li><b>{@code exact}</b> — the key and nothing else. 213 of the 221 index settings.</li>
  *   <li><b>{@code prefix}</b> — any key beginning with it. {@code index.analysis.} admits
- *       {@code index.analysis.analyzer.my.tokenizer} and everything else beneath it.</li>
+ *       {@code index.analysis.analyzer.my.tokenizer} and everything else beneath it. All 8 of the
+ *       non-exact index settings are this kind, including the three
+ *       {@code index.routing.allocation.*} groups.</li>
  *   <li><b>{@code affix}</b> — a pattern whose {@code *} stands for one namespace segment, so
- *       {@code index.routing.allocation.include.*} admits
- *       {@code index.routing.allocation.include._name}.</li>
+ *       {@code cluster.remote.*.seeds} admits {@code cluster.remote.other_cluster.seeds}. Only cluster
+ *       settings use these, 45 of them.</li>
  * </ul>
  *
+ * <p>The emitter guarantees an invariant this relies on, and it was checked against a real registry of
+ * 1022 entries: <b>an {@code affix} key always contains a {@code *}, and a {@code prefix} key never
+ * does and always ends with a {@code .}</b> So the two never have to be told apart by inspection.
+ *
  * <p>Exact keys are matched first and by hash lookup; only a miss falls through to the patterns, of
- * which there are a handful. Settings are validated per request, so the common case should not be a
- * scan.
+ * which there are a few dozen. Settings are validated per request, so the common case is not a scan.
  *
  * <h2>Updateability</h2>
  *
@@ -84,28 +94,54 @@ public final class DeclaredSettings implements SettingsRegistry {
         }
     }
 
+    private final String version;
     private final Map<Scope, Map<String, Entry>> exact;
     private final Map<Scope, List<Entry>> patterns;
 
-    private DeclaredSettings(Map<Scope, Map<String, Entry>> exact, Map<Scope, List<Entry>> patterns) {
+    private DeclaredSettings(String version, Map<Scope, Map<String, Entry>> exact, Map<Scope, List<Entry>> patterns) {
+        this.version = version;
         this.exact = exact;
         this.patterns = patterns;
     }
 
     /**
-     * Reads the {@code settings} section of a capabilities file.
+     * The OpenSearch version the registry was generated from, or {@code null} if the file did not say.
      *
-     * @return empty when the file has no {@code settings} section, so a capabilities file predating
-     *         this feature still loads and simply does not enforce settings
+     * <p>Worth surfacing at startup: the registry is a point-in-time snapshot, and a file generated
+     * against a different build than the one being fronted is the failure mode this mechanism has.
+     */
+    public String version() {
+        return version;
+    }
+
+    /**
+     * Reads a settings registry, in either of the two shapes it arrives in.
+     *
+     * <p>The endpoint emits a standalone document with the scopes at the top level, so
+     * {@code curl .../_cluster/settings_registry -o registry.yaml} produces a file this reads directly
+     * with no tooling in between:
+     *
+     * <pre>{@code
+     * version: "3.9.0"
+     * index:   [ ... ]
+     * cluster: [ ... ]
+     * }</pre>
+     *
+     * <p>The same lists are also honoured nested under {@code settings:} inside a capabilities file, for
+     * a deployment that would rather carry one file than two.
+     *
+     * @return empty when the document has neither shape, so a capabilities file predating this feature
+     *         still loads and simply does not enforce settings
      */
     public static Optional<DeclaredSettings> load(Path file) throws IOException {
         ObjectMapper mapper = new ObjectMapper(new YAMLFactory());
         JsonNode root = mapper.readTree(file.toFile());
         if (root == null || root.isObject() == false) {
-            throw new IOException("capabilities file " + file + " is not a YAML mapping");
+            throw new IOException("settings registry " + file + " is not a YAML mapping");
         }
-        JsonNode settings = root.path("settings");
-        if (settings.isObject() == false) {
+        // A capabilities file nests the scopes under `settings`; the endpoint's own document does not.
+        JsonNode settings = root.path("settings").isObject() ? root.get("settings") : root;
+        if (hasAnyScope(settings) == false) {
             return Optional.empty();
         }
 
@@ -115,19 +151,31 @@ public final class DeclaredSettings implements SettingsRegistry {
             exact.put(scope, new HashMap<>());
             patterns.put(scope, new ArrayList<>());
 
-            JsonNode entries = settings.path(scope.name().toLowerCase(Locale.ROOT));
+            JsonNode entries = settings.path(scopeKey(scope));
             if (entries.isMissingNode() || entries.isNull()) {
                 continue;
             }
             if (entries.isArray() == false) {
-                throw new IOException("settings." + scope.name().toLowerCase(Locale.ROOT)
-                    + " must be a list of entries in " + file);
+                throw new IOException(scopeKey(scope) + " must be a list of entries in " + file);
             }
             for (JsonNode entry : entries) {
                 read(file, scope, entry, exact, patterns);
             }
         }
-        return Optional.of(new DeclaredSettings(exact, patterns));
+        return Optional.of(new DeclaredSettings(root.path("version").asText(null), exact, patterns));
+    }
+
+    private static boolean hasAnyScope(JsonNode node) {
+        for (Scope scope : Scope.values()) {
+            if (node.path(scopeKey(scope)).isArray()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String scopeKey(Scope scope) {
+        return scope.name().toLowerCase(Locale.ROOT);
     }
 
     private static void read(
@@ -230,8 +278,10 @@ public final class DeclaredSettings implements SettingsRegistry {
     public String toString() {
         return "enforcing ("
             + Arrays.stream(Scope.values())
-                .map(scope -> scope.name().toLowerCase(Locale.ROOT) + "=" + declaredKeys(scope).size())
+                .map(scope -> scopeKey(scope) + "=" + declaredKeys(scope).size())
                 .collect(Collectors.joining(", "))
-            + " settings declared)";
+            + " settings declared"
+            + (version == null ? "" : ", generated from OpenSearch " + version)
+            + ")";
     }
 }

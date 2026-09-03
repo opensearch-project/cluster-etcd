@@ -323,27 +323,45 @@ changed on an open index. Neither check is possible without knowing what setting
 dynamic — and that cannot be hardcoded here. There are 219 built-in index settings, OpenSearch adds
 more on a semi-regular basis, and plugins register their own.
 
-So it comes from the data plane, in the **same file** as the processor capabilities. One dump, one
-flag, one refresh-after-upgrade step; two files would be two snapshots that drift from each other as
-well as from the cluster.
+So it comes from the data plane, which emits it directly — the whole workflow is a curl:
 
-```yaml
-settings:
-  index:
-    - {key: "index.number_of_shards",             kind: exact,  properties: [Final, IndexScope]}
-    - {key: "index.number_of_replicas",           kind: exact,  properties: [Dynamic, IndexScope]}
-    - {key: "index.analysis.",                    kind: prefix, properties: [IndexScope]}
-    - {key: "index.routing.allocation.include.*", kind: affix,  properties: [Dynamic, IndexScope]}
-  cluster:
-    - {key: "cluster.max_shards_per_node",        kind: exact,  properties: [Dynamic, NodeScope]}
+```bash
+curl 'localhost:9200/_cluster/settings_registry?pretty' -o settings_registry.yaml
+./gradlew :server:run --args="--port 9400 --settings-registry settings_registry.yaml"
 ```
 
+```yaml
+version: "3.9.0"
+index:
+  - {key: "index.number_of_shards",            kind: exact,  properties: [Final, IndexScope]}
+  - {key: "index.number_of_replicas",          kind: exact,  properties: [Dynamic, IndexScope]}
+  - {key: "index.analysis.",                   kind: prefix, properties: [IndexScope]}
+  - {key: "index.routing.allocation.include.", kind: prefix, properties: [Dynamic, IndexScope]}
+cluster:
+  - {key: "cluster.max_shards_per_node",       kind: exact,  properties: [Dynamic, NodeScope]}
+  - {key: "cluster.remote.*.seeds",            kind: affix,  properties: [Dynamic, NodeScope]}
+```
+
+**Its own file, not folded into `capabilities.yaml`** — a reversal of what this section first proposed,
+and worth saying why. The one-file argument was that two snapshots drift. But the two come from
+different endpoints with different refresh cadences, the registry is ~180 kB against the processor
+list's few hundred bytes, and the endpoint emits a standalone document that a plain curl already puts
+in exactly the right shape. Making the dump script merge them would add tooling to avoid a second
+`--` flag. A capabilities file carrying the same lists under a `settings` key is still accepted, for a
+deployment that prefers one file; `--settings-registry` wins when both are given.
+
 **Three entry kinds, and the reason is not fussiness.** OpenSearch splits its registered settings into
-ordinary keys and *complex matchers*, and two of the built-in index settings are the latter:
-`Setting.groupSetting("index.analysis.", ...)` and the same for `index.similarity.`. Anything beneath
-those prefixes is valid, without limit. Affix settings put the variable part in the middle
-(`index.routing.allocation.include.*`). A registry that only knew exact keys would reject every custom
+ordinary keys and *complex matchers*, and eight of the 221 index settings are the latter — including
+`Setting.groupSetting("index.analysis.", ...)`, `index.similarity.`, and the three
+`index.routing.allocation.*` groups. Anything beneath those prefixes is valid, without limit. Affix
+settings put the variable part in the middle (`cluster.remote.*.seeds`); 45 cluster settings are that
+shape and no index setting is. A registry that only knew exact keys would reject every custom
 analyzer — precisely the false rejection this mechanism exists to prevent.
+
+The emitter guarantees an invariant the consumer relies on, verified across all 1022 entries of a real
+registry: **an `affix` key always contains a `*`, and a `prefix` key never does and always ends with a
+`.`** That is why `index.routing.allocation.include.` is a prefix rather than an affix — it is built by
+`Setting.prefixKeySetting`, whose key has no `*` and matches exactly as a prefix does.
 
 `properties` carries OpenSearch's `Setting.Property` values verbatim. `InternalIndex` or
 `PrivateIndex` means a user may not supply the setting at all and outranks the rest; otherwise
@@ -351,13 +369,12 @@ analyzer — precisely the false rejection this mechanism exists to prevent.
 *"`Final`"* — a setting with neither property is static, and keying off `Final` alone would let most
 static settings through.
 
-**Status:** `SettingsRegistry`, `DeclaredSettings` and `PermissiveSettings` are implemented and wired
-into startup; the section is optional, so a capabilities file generated before this existed still
-loads and simply does not enforce settings. What is missing is the data-plane endpoint to generate it
-from — nothing in OpenSearch exposes the registry today. `GET /_cluster/settings?include_defaults=true`
-gives cluster keys and defaults but no properties, and there is no index-scoped equivalent at all. The
-work to add that endpoint to OpenSearch is pending. Until it lands, `tools/dump-capabilities.sh` emits no `settings` section and settings validation
-stays off.
+**Status:** implemented on both sides. The data plane exposes
+`GET /_cluster/settings_registry` (pending upstream in OpenSearch),
+and `SettingsRegistry` / `DeclaredSettings` / `PermissiveSettings` consume it. A real 3.9.0 cluster
+reports **221 index settings and 801 cluster settings**; the file is ~180 kB and loads in about 100 ms.
+Nothing uses it yet — `indices.put_settings` and `cluster.get_settings` / `put_settings` are the next
+operations, and they are the reason it exists.
 
 **A note on heterogeneous clusters.** The capabilities generator *excludes* a processor present on only
 some nodes, since the control plane should not accept a definition whose success depends on where it

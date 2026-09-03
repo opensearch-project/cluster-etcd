@@ -14,6 +14,7 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.opensearch.controlplane.capability.SettingsRegistry.Scope;
@@ -28,19 +29,34 @@ import static org.opensearch.controlplane.capability.SettingsRegistry.Updateabil
  */
 class DeclaredSettingsTests {
 
+    /**
+     * The shape {@code GET /_cluster/settings_registry} emits: scopes at the top level, no wrapper.
+     * A cross-section of the real thing rather than a toy — an exact dynamic setting, an exact static
+     * one, one with no {@code Dynamic} property at all, the {@code index.analysis.} group prefix that
+     * would break a keys-only registry, a cluster affix with the hole in the middle, and a private
+     * setting a user may not supply.
+     */
     private static final String FIXTURE = """
+        version: "3.9.0"
+        index:
+          - {key: "index.number_of_shards",            kind: exact,  properties: [Final, IndexScope]}
+          - {key: "index.number_of_replicas",          kind: exact,  properties: [Dynamic, IndexScope]}
+          - {key: "index.codec",                       kind: exact,  properties: [IndexScope]}
+          - {key: "index.analysis.",                   kind: prefix, properties: [IndexScope]}
+          - {key: "index.routing.allocation.include.", kind: prefix, properties: [Dynamic, IndexScope]}
+          - {key: "index.uuid",                        kind: exact,  properties: [IndexScope, PrivateIndex]}
+        cluster:
+          - {key: "cluster.max_shards_per_node",       kind: exact,  properties: [Dynamic, NodeScope]}
+          - {key: "cluster.remote.*.seeds",            kind: affix,  properties: [Dynamic, NodeScope]}
+        """;
+
+    /** The same registry nested inside a capabilities file, which is also accepted. */
+    private static final String FOLDED = """
         processors:
           ingest: [append]
         settings:
           index:
-            - {key: "index.number_of_shards",             kind: exact,  properties: [Final, IndexScope]}
-            - {key: "index.number_of_replicas",           kind: exact,  properties: [Dynamic, IndexScope]}
-            - {key: "index.codec",                        kind: exact,  properties: [IndexScope]}
-            - {key: "index.analysis.",                    kind: prefix, properties: [IndexScope]}
-            - {key: "index.routing.allocation.include.*", kind: affix,  properties: [Dynamic, IndexScope]}
-            - {key: "index.uuid",                         kind: exact,  properties: [IndexScope, PrivateIndex]}
-          cluster:
-            - {key: "cluster.max_shards_per_node",        kind: exact,  properties: [Dynamic, NodeScope]}
+            - {key: "index.number_of_replicas", kind: exact, properties: [Dynamic, IndexScope]}
         """;
 
     private DeclaredSettings load(Path dir, String yaml) throws IOException {
@@ -85,11 +101,40 @@ class DeclaredSettingsTests {
     void anAffixMatchesOneNamespaceInTheMiddle(@TempDir Path dir) throws Exception {
         DeclaredSettings registry = load(dir, FIXTURE);
 
+        assertTrue(registry.isKnown(Scope.CLUSTER, "cluster.remote.other_cluster.seeds"));
+        assertFalse(registry.isKnown(Scope.CLUSTER, "cluster.remote..seeds"),
+            "the pattern needs something in the hole");
+        assertFalse(registry.isKnown(Scope.CLUSTER, "cluster.remote.other_cluster.mode"),
+            "the suffix is literal");
+    }
+
+    /**
+     * Routing allocation is a {@code prefix}, not an {@code affix} — it is built by
+     * {@code Setting.prefixKeySetting}, whose key has no {@code *} and matches like a prefix. Pinned
+     * because an earlier draft of the format had it the other way round.
+     */
+    @Test
+    void routingAllocationIsAPrefix(@TempDir Path dir) throws Exception {
+        DeclaredSettings registry = load(dir, FIXTURE);
+
         assertTrue(registry.isKnown(Scope.INDEX, "index.routing.allocation.include._name"));
         assertTrue(registry.isKnown(Scope.INDEX, "index.routing.allocation.include.rack"));
-        assertFalse(registry.isKnown(Scope.INDEX, "index.routing.allocation.include"),
-            "the pattern needs something in the hole");
-        assertFalse(registry.isKnown(Scope.INDEX, "index.routing.allocation.exclude._name"));
+        assertFalse(registry.isKnown(Scope.INDEX, "index.routing.allocation.exclude._name"),
+            "a different prefix, not declared here");
+    }
+
+    @Test
+    void alsoReadsTheRegistryNestedInACapabilitiesFile(@TempDir Path dir) throws Exception {
+        DeclaredSettings registry = load(dir, FOLDED);
+
+        assertTrue(registry.isKnown(Scope.INDEX, "index.number_of_replicas"));
+        assertFalse(registry.isKnown(Scope.INDEX, "index.totally_bogus"));
+    }
+
+    @Test
+    void recordsTheVersionItWasGeneratedFrom(@TempDir Path dir) throws Exception {
+        assertEquals("3.9.0", load(dir, FIXTURE).version());
+        assertNull(load(dir, FOLDED).version(), "absent when the file did not say");
     }
 
     /**
@@ -142,7 +187,7 @@ class DeclaredSettingsTests {
 
         assertTrue(registry.isEnforcing());
         assertEquals(6, registry.declaredKeys(Scope.INDEX).size());
-        assertEquals(1, registry.declaredKeys(Scope.CLUSTER).size());
+        assertEquals(2, registry.declaredKeys(Scope.CLUSTER).size());
         assertTrue(registry.declaredKeys(Scope.INDEX).contains("index.analysis."), "patterns are listed too");
     }
 
@@ -150,16 +195,16 @@ class DeclaredSettingsTests {
     void rejectsAMalformedFile(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("bad.yaml");
 
-        Files.writeString(file, "settings:\n  index:\n    - {kind: exact, properties: []}\n");
+        Files.writeString(file, "index:\n  - {kind: exact, properties: []}\n");
         assertTrue(assertThrows(IOException.class, () -> DeclaredSettings.load(file))
             .getMessage().contains("no `key`"));
 
-        Files.writeString(file, "settings:\n  index:\n    - {key: \"a\", kind: sideways}\n");
+        Files.writeString(file, "index:\n  - {key: \"a\", kind: sideways}\n");
         assertTrue(assertThrows(IOException.class, () -> DeclaredSettings.load(file))
             .getMessage().contains("unknown kind [sideways]"));
 
         Files.writeString(file, "settings:\n  index: not-a-list\n");
-        assertThrows(IOException.class, () -> DeclaredSettings.load(file));
+        assertEquals(Optional.empty(), DeclaredSettings.load(file), "no usable scope list");
     }
 
     /** Nothing is declared, so nothing is enforced — the default, and startup says so. */
