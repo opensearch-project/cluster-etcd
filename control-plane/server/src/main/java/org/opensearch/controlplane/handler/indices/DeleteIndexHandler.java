@@ -41,6 +41,10 @@ public final class DeleteIndexHandler implements OperationHandler {
             return ErrorResponses.indexNotFound(request, index);
         }
 
+        // Aliases live outside index metadata, so removing the index leaves dangling membership unless
+        // it is cleaned up. Idempotent, so a retry after a partial failure is safe.
+        new AliasActions(context.store()).removeIndexFromAllAliases(index);
+
         new IndexManagementTasks(context.store()).submit(
             IndexManagementTasks.TYPE_DELETE_INDEX,
             index,

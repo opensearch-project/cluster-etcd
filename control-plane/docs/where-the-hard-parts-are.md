@@ -52,7 +52,7 @@ Also in this tier, all multi-index: `indices.put_alias`, `indices.delete_alias`,
 `indices.put_mapping`, `indices.put_settings`, `indices.open`, `indices.close`,
 `indices.add_block`.
 
-### Decided: aliases become their own resource
+### Done: aliases are their own resource
 
 Multi-key transactions are to be avoided, so aliases move out of index metadata and become
 `aliases/<name>` holding the indices they point at plus their filter, routing and write-index
@@ -66,6 +66,8 @@ the API mainly exists for stops being a problem.
 
 It also removes the scan in Tier 1: looking up an alias by name becomes a direct key read instead of
 walking every index.
+
+Implemented, and a test asserts the swap bumps exactly one key revision.
 
 What remains non-atomic is a request whose actions span several *different* aliases, e.g. adding
 `x` to one index and `y` to another in one call. That is a much weaker requirement, and it is
@@ -123,10 +125,11 @@ Also in this tier:
 
 The direct consequence of not having a prebuilt cluster-state view.
 
-- **`indices.get_alias`, `indices.exists_alias`** — aliases currently live *inside* index metadata,
-  so a lookup by alias name means scanning every index. OpenSearch answers from a prebuilt lookup
-  map. This is the same finding that motivates option 3 above: making aliases their own resource
-  fixes both the atomicity problem and this one.
+- **`indices.get_alias`, `indices.exists_alias`** — still to do. Aliases are now their own resource, so
+  alias→indices is a direct read, but these endpoints answer **index-keyed** documents
+  (`GET /_alias/x` returns `{"index": {"aliases": {"x": {}}}}`), so they need index→aliases, which is
+  still a scan. Confirmed against a live cluster. `AliasStore.forIndex` implements it and says why
+  denormalising to avoid it would reintroduce a second source of truth.
 - **`indices.get`, `get_mapping`, `get_settings`, `get_field_mapping`** — all take index
   expressions: wildcards, `_all`, comma-separated lists, alias names, plus `expand_wildcards`
   (open/closed/hidden/none) and `ignore_unavailable`. That resolution logic is shared and should be

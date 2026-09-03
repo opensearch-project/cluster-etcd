@@ -18,18 +18,23 @@ import java.util.TreeMap;
 /**
  * The name lookup an expression resolves against: every index and alias, keyed by name.
  *
- * <p>OpenSearch keeps this prebuilt in cluster state. Here it has to be assembled, and because aliases
- * currently live <em>inside</em> index metadata, assembling it means scanning every index. That is the
- * cost of the per-resource-key design showing up on the read side.
- *
- * <p>It gets cheaper once aliases become their own keyed resource, which is already the plan for
- * unrelated reasons — see the README. At that point this becomes two prefix scans that need no
- * cross-referencing, and an alias lookup by name becomes a direct read.
+ * <p>OpenSearch keeps this prebuilt in cluster state; here it is assembled from two prefix scans, one
+ * per resource kind. Neither scan needs to cross-reference the other, and resolving a single alias by
+ * name is a direct key read rather than a scan of every index.
  */
 public final class IndexAbstractions {
 
     /** Key layout for index metadata. Shared so the resolver and the indices handlers agree. */
     public static final String INDEX_KEY_PREFIX = "indices/";
+
+    /**
+     * Key layout for alias definitions, one document per alias.
+     *
+     * <p>Aliases are their own resource rather than fields inside index metadata, which is what makes
+     * the canonical swap — move alias {@code x} from index A to index B — a single-key compare-and-swap
+     * instead of two writes to two documents. See the README.
+     */
+    public static final String ALIAS_KEY_PREFIX = "aliases/";
 
     private final Map<String, IndexAbstraction> lookup;
 
@@ -39,31 +44,33 @@ public final class IndexAbstractions {
 
     /** Builds the lookup by scanning stored index metadata. */
     public static IndexAbstractions from(KeyValueStore store) {
-        Map<String, IndexAbstraction> indices = new TreeMap<>();
-        Map<String, List<String>> aliasMembers = new TreeMap<>();
-        Map<String, Boolean> aliasHidden = new TreeMap<>();
+        Map<String, IndexAbstraction> combined = new TreeMap<>();
 
         store.scanPrefix(INDEX_KEY_PREFIX).forEach((key, versioned) -> {
             String name = key.substring(INDEX_KEY_PREFIX.length());
             JsonNode metadata = parse(versioned.value());
-
             boolean hidden = metadata.path("settings").path("index.hidden").asBoolean(false);
             boolean open = "open".equals(metadata.path("state").asText("open"));
-            indices.put(name, IndexAbstraction.index(name, hidden, open));
-
-            metadata.path("aliases").properties().forEach(alias -> {
-                aliasMembers.computeIfAbsent(alias.getKey(), k -> new ArrayList<>()).add(name);
-                // An alias is hidden only if every definition of it says so, matching how OpenSearch
-                // rejects inconsistent is_hidden across an alias's indices.
-                boolean thisHidden = alias.getValue().path("is_hidden").asBoolean(false);
-                aliasHidden.merge(alias.getKey(), thisHidden, (a, b) -> a && b);
-            });
+            combined.put(name, IndexAbstraction.index(name, hidden, open));
         });
 
-        Map<String, IndexAbstraction> combined = new TreeMap<>(indices);
-        aliasMembers.forEach((alias, members) -> {
-            // A concrete index of the same name wins; OpenSearch forbids the collision at write time.
-            combined.putIfAbsent(alias, IndexAbstraction.alias(alias, members, aliasHidden.get(alias)));
+        store.scanPrefix(ALIAS_KEY_PREFIX).forEach((key, versioned) -> {
+            String alias = key.substring(ALIAS_KEY_PREFIX.length());
+            JsonNode definition = parse(versioned.value());
+
+            List<String> members = new ArrayList<>();
+            // Hidden only if every member says so, matching how OpenSearch rejects an alias whose
+            // is_hidden disagrees across its indices.
+            boolean hidden = true;
+            for (Map.Entry<String, JsonNode> member : definition.path("indices").properties()) {
+                members.add(member.getKey());
+                hidden &= member.getValue().path("is_hidden").asBoolean(false);
+            }
+            if (members.isEmpty()) {
+                return;
+            }
+            // A concrete index of the same name wins; the collision is rejected at write time anyway.
+            combined.putIfAbsent(alias, IndexAbstraction.alias(alias, members, hidden));
         });
         return new IndexAbstractions(combined);
     }

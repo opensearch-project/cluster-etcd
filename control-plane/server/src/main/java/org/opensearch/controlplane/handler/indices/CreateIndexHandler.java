@@ -111,6 +111,20 @@ public final class CreateIndexHandler implements OperationHandler {
             return ErrorResponses.indexAlreadyExists(request, index, existingUuid);
         }
 
+        // Aliases are their own resource, so they are written separately rather than embedded. Not
+        // atomic with the index write: a failure here leaves an index without its aliases, which a
+        // reconciliation pass can detect. The alternative -- embedding them -- would cost the atomic
+        // alias swap that the separate layout buys.
+        JsonNode declaredAliases = requested.path("aliases");
+        if (declaredAliases.isObject()) {
+            AliasStore aliasStore = new AliasStore(context.store());
+            declaredAliases.properties().forEach(alias -> {
+                ObjectNode definition = aliasStore.get(alias.getKey()).orElseGet(AliasStore::emptyDefinition);
+                ((ObjectNode) definition.get(AliasStore.INDICES)).set(index, alias.getValue().deepCopy());
+                aliasStore.put(alias.getKey(), definition);
+            });
+        }
+
         new IndexManagementTasks(context.store()).submit(
             IndexManagementTasks.TYPE_CREATE_INDEX,
             index,
@@ -139,7 +153,6 @@ public final class CreateIndexHandler implements OperationHandler {
         metadata.put("state", "open");
         metadata.set("settings", normalizeSettings(requested.path("settings")));
         metadata.set("mappings", requested.has("mappings") ? requested.get("mappings").deepCopy() : Json.object());
-        metadata.set("aliases", requested.has("aliases") ? requested.get("aliases").deepCopy() : Json.object());
         return metadata;
     }
 

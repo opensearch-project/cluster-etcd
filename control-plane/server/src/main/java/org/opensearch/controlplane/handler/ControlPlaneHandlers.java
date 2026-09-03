@@ -10,6 +10,9 @@ import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
 import org.opensearch.controlplane.handler.core.PingHandler;
 import org.opensearch.controlplane.handler.indices.CreateIndexHandler;
+import org.opensearch.controlplane.handler.indices.DeleteAliasHandler;
+import org.opensearch.controlplane.handler.indices.PutAliasHandler;
+import org.opensearch.controlplane.handler.indices.UpdateAliasesHandler;
 import org.opensearch.controlplane.handler.indices.DeleteIndexHandler;
 import org.opensearch.controlplane.handler.indices.ExistsIndexHandler;
 import org.opensearch.controlplane.handler.pipeline.DeletePipelineHandler;
@@ -74,6 +77,9 @@ public final class ControlPlaneHandlers {
             .register(new CreateIndexHandler())
             .register(new ExistsIndexHandler())
             .register(new DeleteIndexHandler())
+            .register(new UpdateAliasesHandler())
+            .register(new PutAliasHandler())
+            .register(new DeleteAliasHandler())
             // ingest and search pipelines are the same API twice; see PipelineKind
             .register(new PutPipelineHandler(PipelineKind.ingest(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.ingest()))

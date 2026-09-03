@@ -6,6 +6,7 @@ package org.opensearch.controlplane.rest;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -274,6 +275,77 @@ public final class ErrorResponses {
             "Invalid processor type " + type,
             isPretty(request)
         );
+    }
+
+    /**
+     * {@code 404} for aliases that were asked to be removed but do not exist.
+     *
+     * <p>Verified against OpenSearch 3.9.0, including the plural wording for a single alias:
+     * {@code aliases [x] missing}, with {@code resource.id} and {@code resource.type}. Note that a
+     * <em>read</em> of a missing alias reports the same condition through the bare-string shape
+     * instead — see {@link #aliasNotFoundOnRead}.
+     */
+    public static RestResponse aliasesNotFound(RestRequest request, String aliases) {
+        ObjectNode cause = Json.object();
+        cause.put("type", "aliases_not_found_exception");
+        cause.put("reason", "aliases [" + aliases + "] missing");
+        cause.put("resource.id", aliases);
+        cause.put("resource.type", "aliases");
+        return structured(RestStatus.NOT_FOUND, cause, isPretty(request), Map.of());
+    }
+
+    /**
+     * {@code 404} for reading an alias that does not exist.
+     *
+     * <p>The same condition as {@link #aliasesNotFound} but reported differently: reads use the
+     * bare-string shape with a {@code status} field, singular wording, and no exception type at all.
+     * Verified. Third instance of one condition having two shapes depending on the code path.
+     */
+    public static RestResponse aliasNotFoundOnRead(RestRequest request, String alias) {
+        return bareString(
+            RestStatus.NOT_FOUND,
+            "alias [" + alias + "] missing",
+            isPretty(request),
+            Map.of()
+        );
+    }
+
+    /**
+     * {@code 400} for an alias name already taken by an index.
+     *
+     * <p>Verified shape, including that {@code index} names the colliding index rather than the one
+     * being aliased.
+     */
+    public static RestResponse invalidAliasName(RestRequest request, String alias, String index, String indexUuid) {
+        ObjectNode cause = Json.object();
+        cause.put("type", "invalid_alias_name_exception");
+        cause.put("reason", "Invalid alias name [" + alias + "], an index exists with the same name as the alias");
+        cause.put("index", index);
+        cause.put("index_uuid", indexUuid);
+        return structured(RestStatus.BAD_REQUEST, cause, isPretty(request), Map.of());
+    }
+
+    /**
+     * More than one write index for an alias.
+     *
+     * <p><b>Considered divergence.</b> OpenSearch answers {@code 500 illegal_state_exception}; this
+     * answers {@code 400 illegal_argument_exception} with the same reason. A request that a client got
+     * wrong is a client error, and reporting it as a server fault tells the caller to retry something
+     * that will never succeed. The type follows the status rather than being left inconsistent with it.
+     * Recorded under considered divergences in the README.
+     */
+    public static RestResponse multipleWriteIndices(RestRequest request, String alias, List<String> writeIndices) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "illegal_argument_exception",
+            "alias [" + alias + "] has more than one write index [" + String.join(", ", writeIndices) + "]",
+            request
+        );
+    }
+
+    /** {@code 400} for an {@code _aliases} request with no actions. Verified wording. */
+    public static RestResponse noActionSpecified(RestRequest request) {
+        return structured(RestStatus.BAD_REQUEST, "illegal_argument_exception", "No action specified", request);
     }
 
     /**

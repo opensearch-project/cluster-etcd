@@ -10,12 +10,12 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 11 implemented, 68 stubbed
+126 routes, 79 operation groups, 14 implemented, 65 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create`, `exists`, `delete` |
+| `indices` | 67 | `create`, `exists`, `delete`, `update_aliases`, `put_alias`, `delete_alias` |
 | `cluster` | 21 | — |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
@@ -23,7 +23,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 68 operation groups return `501 Not Implemented`** with a structured
+**The remaining 65 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -505,6 +505,7 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | voting config exclusions | 200 | 400, route absent | a stateless service has no cluster-manager quorum of its own; consensus belongs to etcd or DynamoDB |
 | unknown processor types | rejected | accepted until `--capabilities` is supplied | no accurate built-in list can be shipped; see [Data plane capabilities](#data-plane-capabilities) |
 | `cluster_uuid` | one per cluster | one per tenant | each tenant sees a coherent virtual cluster of its own |
+| two write indices for an alias | 500 `illegal_state_exception` | 400 `illegal_argument_exception`, same reason | a request the client got wrong is a client error; reporting it as a server fault tells the caller to retry something that can never succeed. The type follows the status rather than being left inconsistent with it |
 
 Two notes on scope rather than behaviour:
 
@@ -674,10 +675,10 @@ match — far more systematic than hand-written curl probes.
 [`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md) surveys the 73 stubbed
 operation groups by what makes them difficult rather than by namespace. The short version:
 
-- **Aliases will become their own keyed resource** rather than fields inside index metadata. That
-  turns the canonical alias swap into a single-key compare-and-swap, so no multi-key transaction
-  support is needed and object-store backends stay viable. It also turns alias lookup from a scan
-  into a direct read.
+- **Aliases are their own keyed resource** (`aliases/<name>`), not fields inside index metadata. The
+  canonical swap is therefore a single-key compare-and-swap: no multi-key transaction support is
+  needed, and object-store backends stay viable. Note the win is narrower than first assumed — alias
+  reads are index-keyed even when queried by alias name, so index→aliases remains a scan.
 - **Index expression resolution** (wildcards, `_all`, aliases, `expand_wildcards`) is the most reused
   logic in the `indices` namespace and should be written once, deliberately.
 - **Template composition** wants porting from `MetadataIndexTemplateService` rather than reinventing,

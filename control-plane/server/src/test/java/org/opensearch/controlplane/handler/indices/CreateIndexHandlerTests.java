@@ -132,12 +132,24 @@ class CreateIndexHandlerTests {
     }
 
     @Test
-    void carriesMappingsAndAliasesThrough() throws Exception {
-        create("my-index", "{\"mappings\":{\"properties\":{\"f\":{\"type\":\"keyword\"}}},\"aliases\":{\"a\":{}}}");
-        JsonNode metadata = metadata("my-index");
+    void carriesMappingsThrough() throws Exception {
+        create("my-index", "{\"mappings\":{\"properties\":{\"f\":{\"type\":\"keyword\"}}}}");
 
-        assertEquals("keyword", metadata.get("mappings").get("properties").get("f").get("type").asText());
-        assertTrue(metadata.get("aliases").has("a"));
+        assertEquals(
+            "keyword",
+            metadata("my-index").get("mappings").get("properties").get("f").get("type").asText()
+        );
+    }
+
+    /** Aliases declared at create time become their own resource, not a field on the index. */
+    @Test
+    void declaredAliasesBecomeAliasResources() throws Exception {
+        create("my-index", "{\"aliases\":{\"a\":{}}}");
+
+        assertFalse(metadata("my-index").has("aliases"), "no second source of truth on the index");
+        JsonNode definition = MAPPER.readTree(
+            store.getAsString(TENANT_PREFIX + AliasStore.key("a")).orElseThrow());
+        assertTrue(definition.get("indices").has("my-index"));
     }
 
     @Test
