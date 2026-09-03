@@ -422,15 +422,80 @@ class TemplateHandlerTests {
         assertEquals(RestStatus.OK, put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"priority\":10}").status());
     }
 
-    /** Legacy templates are stored but never applied. A real cluster would fall back to them. */
+    /**
+     * Legacy templates are merged, not selected: all matching ones apply, in ascending {@code order}.
+     * Verified — the higher order's value wins while the lower one's other settings survive, and
+     * mappings and aliases accumulate across both.
+     */
     @Test
-    void legacyTemplatesAreNotAppliedToCreatedIndices() throws Exception {
-        put("/_template/lt", "{\"index_patterns\":[\"x-*\"],\"settings\":{\"number_of_shards\":9}}");
+    void matchingLegacyTemplatesAllApplyInOrder() throws Exception {
+        put("/_template/l1", "{\"index_patterns\":[\"x-*\"],\"order\":0,"
+            + "\"settings\":{\"number_of_replicas\":3,\"refresh_interval\":\"1s\"},"
+            + "\"mappings\":{\"properties\":{\"fromL1\":{\"type\":\"long\"}}},\"aliases\":{\"a1\":{}}}");
+        put("/_template/l2", "{\"index_patterns\":[\"x-*\"],\"order\":10,"
+            + "\"settings\":{\"number_of_replicas\":5},"
+            + "\"mappings\":{\"properties\":{\"fromL2\":{\"type\":\"text\"}}},\"aliases\":{\"a2\":{}}}");
+
+        router.dispatch("PUT", "/x-1");
+        JsonNode metadata = MAPPER.readTree(store.getAsString("tenant/default/indices/x-1").orElseThrow());
+
+        assertEquals("5", metadata.get("settings").get("index.number_of_replicas").textValue(),
+            "the higher order wins");
+        assertEquals("1s", metadata.get("settings").get("index.refresh_interval").textValue(),
+            "and the lower order's other settings survive");
+        JsonNode properties = metadata.get("mappings").get("properties");
+        assertTrue(properties.has("fromL1") && properties.has("fromL2"), "mappings accumulate");
+        for (String alias : List.of("a1", "a2")) {
+            assertEquals(RestStatus.OK, router.dispatch("HEAD", "/_alias/" + alias).status(), alias);
+        }
+    }
+
+    /** Ties on {@code order} break by name, ascending. Verified against a live cluster. */
+    @Test
+    void legacyTemplatesAtTheSameOrderBreakTiesByName() throws Exception {
+        put("/_template/l2", "{\"index_patterns\":[\"x-*\"],\"order\":10,\"settings\":{\"number_of_replicas\":5}}");
+        put("/_template/l3", "{\"index_patterns\":[\"x-*\"],\"order\":10,\"settings\":{\"number_of_replicas\":8}}");
 
         router.dispatch("PUT", "/x-1");
         JsonNode settings = MAPPER.readTree(
             store.getAsString("tenant/default/indices/x-1").orElseThrow()).get("settings");
-        assertEquals("1", settings.get("index.number_of_shards").textValue(), "known gap, documented");
+        assertEquals("8", settings.get("index.number_of_replicas").textValue(), "the later name wins");
+    }
+
+    /**
+     * The two kinds are alternatives, not layers. Verified: with a composable template matching, the
+     * index fell back to the built-in {@code number_of_replicas} rather than the legacy template's, and
+     * lost its mappings and aliases too.
+     */
+    @Test
+    void aMatchingComposableTemplateSuppressesLegacyEntirely() throws Exception {
+        put("/_template/l1", "{\"index_patterns\":[\"x-*\"],"
+            + "\"settings\":{\"number_of_replicas\":5,\"refresh_interval\":\"1s\"},"
+            + "\"mappings\":{\"properties\":{\"fromL1\":{\"type\":\"long\"}}},\"aliases\":{\"a1\":{}}}");
+        put("/_index_template/v2", "{\"index_patterns\":[\"x-*\"],\"priority\":100,"
+            + "\"template\":{\"settings\":{\"number_of_shards\":7}}}");
+
+        router.dispatch("PUT", "/x-1");
+        JsonNode metadata = MAPPER.readTree(store.getAsString("tenant/default/indices/x-1").orElseThrow());
+        JsonNode settings = metadata.get("settings");
+
+        assertEquals("7", settings.get("index.number_of_shards").textValue(), "the composable one applied");
+        assertEquals("1", settings.get("index.number_of_replicas").textValue(),
+            "the built-in default, not the legacy template's 5");
+        assertFalse(settings.has("index.refresh_interval"), "nothing at all from legacy");
+        assertEquals(0, metadata.get("mappings").size());
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/_alias/a1").status());
+    }
+
+    /** A legacy template that does not match contributes nothing, as any other would. */
+    @Test
+    void legacyTemplatesOnlyApplyToMatchingNames() throws Exception {
+        put("/_template/lt", "{\"index_patterns\":[\"x-*\"],\"settings\":{\"number_of_shards\":9}}");
+
+        router.dispatch("PUT", "/unmatched");
+        JsonNode settings = MAPPER.readTree(
+            store.getAsString("tenant/default/indices/unmatched").orElseThrow()).get("settings");
+        assertEquals("1", settings.get("index.number_of_shards").textValue(), "the default, not the template");
     }
 
     @Test

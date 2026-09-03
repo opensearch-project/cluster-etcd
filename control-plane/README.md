@@ -15,7 +15,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create` (with template composition), `exists`, `delete`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
+| `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
 | `cluster` | 21 | component template CRUD |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
@@ -608,6 +608,13 @@ character for character against the server's response.
   `flat_settings=true`, and `POST /_index_template/_simulate_index/x` are **byte-exact**; the composable
   and component template GETs match to the limit of what could be captured. All eight were diffed
   request for request against 3.9.0 after the `Settings` type landed. See [Settings](#settings).
+- **Legacy template application.** The two kinds are alternatives, not layers, which is the part worth
+  knowing: **if any composable template matches, the legacy ones contribute nothing at all** — verified
+  by watching an index fall back to the built-in `number_of_replicas: 1` rather than a matching legacy
+  template's `5`, losing its mappings and aliases with it. Where composable templates are *selected* by
+  priority, legacy templates are *merged* — all matching ones, in ascending `order`, later winning; that
+  is what `order` is for, and why overlapping patterns are rejected for one kind and legal for the
+  other. Ties on `order` break by name. Eight requests diffed against 3.9.0, all agreeing.
 - **The `indices` read set.** `get`, `get_mapping`, `get_field_mapping` and `resolve_index` were diffed
   request for request against 3.9.0 alongside `get_settings` — 22 requests, and every value agrees. The
   only differences anywhere were key order (the mapping-order divergence above) and the two volatile
@@ -713,10 +720,6 @@ request would normally get. Verified, and reproduced.
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
   when the wait times out. Everything else about create, delete, and their error bodies is
   byte-identical to OpenSearch 3.9.0.
-- **Legacy `_template` definitions are stored but never applied.** Composable templates are composed
-  into a created index; legacy ones are not, where a real cluster falls back to them when no composable
-  template matches, merging by ascending `order`. An index created here while a matching legacy template
-  exists will differ from one created on a real cluster. The loudest remaining gap in `indices.create`.
 - **Mapping merge has no conflict detection.** Two templates disagreeing about a field's type produce a
   last-writer-wins mapping rather than the rejection a real cluster raises. Belongs with
   `indices.put_mapping`.

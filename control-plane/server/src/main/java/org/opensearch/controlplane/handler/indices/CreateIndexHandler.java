@@ -47,15 +47,18 @@ import java.util.Optional;
  * That is precisely true here. Clients that treat it as failure will need the eventual task-status
  * API to find out when shards did become active.
  *
+ * <h2>Template application</h2>
+ *
+ * <p>Both kinds apply, and they are alternatives rather than layers: a matching composable template is
+ * used alone, and only when none matches do the legacy {@code _template} definitions apply, all of them
+ * merged by ascending {@code order}. See {@code TemplateComposition} for the precedence rules and what
+ * was verified.
+ *
  * <h2>Not yet implemented</h2>
  *
- * <p><b>Legacy template application.</b> A matching composable template is applied — see
- * {@code TemplateComposition} for the precedence rules — but legacy {@code _template} definitions are
- * not. A real cluster falls back to them when no composable template matches. An index created here
- * while a matching legacy template exists will differ from one created on a real cluster.
- *
  * <p><b>Settings validation.</b> Unknown or malformed settings are stored rather than rejected. A
- * real cluster validates against registered setting definitions and fails with 400.
+ * real cluster validates against registered setting definitions and fails with 400 — including value
+ * checks, so {@code index.replication.type: "segment"} is rejected where {@code "SEGMENT"} is accepted.
  *
  * <p><b>Server-supplied settings.</b> A real cluster writes {@code index.uuid},
  * {@code index.creation_date}, {@code index.provided_name} and {@code index.version.created} into the

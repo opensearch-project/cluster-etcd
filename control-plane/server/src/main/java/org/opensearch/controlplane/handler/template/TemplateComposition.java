@@ -12,6 +12,7 @@ import org.opensearch.controlplane.rest.NameExpression;
 import org.opensearch.controlplane.store.KeyValueStore;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,12 +43,20 @@ import java.util.Optional;
  * {@code {"number_of_replicas": 5}} produced <em>both</em> keys, and {@code _simulate_index} showed them
  * both where a real cluster shows one.
  *
- * <h2>Not implemented</h2>
+ * <h2>Legacy templates are an alternative, not a layer</h2>
  *
- * <p><b>Legacy {@code _template} application.</b> Legacy templates can be stored and read, but they are
- * never applied to a created index. A real cluster falls back to them when no composable template
- * matches, merging by ascending {@code order}. This is a real gap, and a loud one: an index created here
- * while a matching legacy template exists will differ from one created on a real cluster.
+ * <p>Legacy {@code _template} definitions apply <b>only when no composable template matches</b>. When
+ * one does, the legacy ones contribute nothing whatever. Verified: adding a matching composable
+ * template made a created index fall back to the built-in {@code number_of_replicas: 1} rather than the
+ * {@code 5} a matching legacy template specified, and dropped its mappings and aliases with it.
+ *
+ * <p>Where a composable template is selected, legacy templates are <b>merged</b> — all of them, in
+ * ascending {@code order}, later winning. That is what {@code order} is for, and it is why overlapping
+ * patterns are rejected for composable templates and legal for legacy ones. Verified with two templates
+ * at orders 0 and 10: the higher one's {@code number_of_replicas} won while the lower one's
+ * {@code refresh_interval} survived, and their mappings and aliases both accumulated.
+ *
+ * <h2>Not implemented</h2>
  *
  * <p><b>Mapping conflict detection.</b> Merging is structural, so two templates disagreeing about a
  * field's type produce a last-writer-wins mapping rather than the rejection a real cluster would raise.
@@ -57,10 +66,12 @@ public final class TemplateComposition {
 
     private final TemplateStore indexTemplates;
     private final TemplateStore componentTemplates;
+    private final TemplateStore legacyTemplates;
 
     TemplateComposition(KeyValueStore store) {
         this.indexTemplates = new TemplateStore(store, TemplateKind.index());
         this.componentTemplates = new TemplateStore(store, TemplateKind.component());
+        this.legacyTemplates = new TemplateStore(store, TemplateKind.legacy());
     }
 
     /** A matching template and its name, so callers can report which one applied. */
@@ -104,6 +115,28 @@ public final class TemplateComposition {
                 .ifPresent(component -> accumulator.merge(component.path("template")));
         }
         accumulator.merge(template.path("template"));
+    }
+
+    /**
+     * Every matching legacy template, in the order they should be applied.
+     *
+     * <p>Ascending {@code order}, so a higher one is applied later and wins. Unlike composable
+     * templates these are <b>merged rather than selected</b> — that is what {@code order} is for, and it
+     * is why overlapping patterns are legal here and rejected there.
+     *
+     * <p>Ties are broken by name, ascending. Verified: two templates at {@code order: 10} resolved to
+     * the alphabetically later one's value. OpenSearch sorts on {@code order} alone, so strictly the tie
+     * is however its map happened to iterate; sorting by name makes ours deterministic and matches what
+     * the live cluster did.
+     */
+    private List<ObjectNode> matchingLegacyTemplates(String indexName) {
+        return legacyTemplates.all().entrySet().stream()
+            .filter(entry -> matchesAnyPattern(entry.getValue(), indexName))
+            .sorted(Comparator
+                .<Map.Entry<String, ObjectNode>>comparingInt(entry -> entry.getValue().path("order").asInt(0))
+                .thenComparing(Map.Entry::getKey))
+            .map(Map.Entry::getValue)
+            .toList();
     }
 
     /** Templates whose patterns overlap the given ones at the same priority. Used to validate a put. */
@@ -159,16 +192,32 @@ public final class TemplateComposition {
     }
 
     /**
-     * The composed configuration for a new index: the matching template, overridden by the request.
+     * The composed configuration for a new index: whatever template applies, overridden by the request.
      *
      * <p>Public because {@code CreateIndexHandler} needs it; the rest of the class is package-private.
+     *
+     * <p>Composable and legacy templates are <b>alternatives, not layers</b>. If any composable template
+     * matches, the legacy ones contribute nothing at all — verified against 3.9.0, where adding a
+     * matching composable template made an index fall back to the built-in
+     * {@code number_of_replicas: 1} rather than the {@code 5} a matching legacy template specified, and
+     * dropped its mappings and aliases too. Only when no composable template matches do the legacy ones
+     * apply, and then all of them merge.
      *
      * @param requested the create request body, which wins over anything a template supplied
      */
     public static Composed composeFor(KeyValueStore store, String indexName, ObjectNode requested) {
         TemplateComposition composition = new TemplateComposition(store);
         Accumulator accumulator = new Accumulator();
-        composition.findMatching(indexName).ifPresent(match -> composition.composeInto(accumulator, match.template()));
+
+        Optional<Match> composable = composition.findMatching(indexName);
+        if (composable.isPresent()) {
+            composition.composeInto(accumulator, composable.get().template());
+        } else {
+            // Legacy definitions carry settings/mappings/aliases at their root rather than under a
+            // template block, so the definition itself is the block to merge.
+            composition.matchingLegacyTemplates(indexName).forEach(accumulator::merge);
+        }
+
         // The request body carries the same three blocks and is merged like one more, last, so it wins.
         accumulator.merge(requested);
         return accumulator.composed();

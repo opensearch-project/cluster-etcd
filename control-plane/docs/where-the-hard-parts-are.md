@@ -112,6 +112,11 @@ Copying `MetadataIndexTemplateService` is the right instinct. Notes on doing it:
 
 Also in this tier:
 
+- ~~**Legacy `_template` application**~~ — **done.** The survey filed this under composition, and the
+  merge itself was the easy half. The load-bearing fact turned out to be that the two kinds are
+  *alternatives, not layers*: a matching composable template suppresses every legacy one outright, so
+  an index falls back to built-in defaults rather than to the legacy template that also matched. Legacy
+  templates merge among themselves by ascending `order`, ties by name.
 - **`indices.put_mapping`** — mapping merge with conflict detection: a field's type cannot change,
   and the rules for what counts as a compatible update are subtle. `MapperService.merge`. Deep, and
   multi-index, so it is Tier 2 *and* Tier 3.
