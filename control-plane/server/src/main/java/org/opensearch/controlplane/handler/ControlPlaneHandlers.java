@@ -13,6 +13,7 @@ import org.opensearch.controlplane.handler.indices.CreateIndexHandler;
 import org.opensearch.controlplane.handler.indices.DeleteAliasHandler;
 import org.opensearch.controlplane.handler.indices.ExistsAliasHandler;
 import org.opensearch.controlplane.handler.indices.GetAliasHandler;
+import org.opensearch.controlplane.handler.indices.GetSettingsHandler;
 import org.opensearch.controlplane.handler.indices.PutAliasHandler;
 import org.opensearch.controlplane.handler.indices.UpdateAliasesHandler;
 import org.opensearch.controlplane.handler.indices.DeleteIndexHandler;
@@ -85,6 +86,7 @@ public final class ControlPlaneHandlers {
             .register(new DeleteAliasHandler())
             .register(new GetAliasHandler())
             .register(new ExistsAliasHandler())
+            .register(new GetSettingsHandler())
             // ingest and search pipelines are the same API twice; see PipelineKind
             .register(new PutPipelineHandler(PipelineKind.ingest(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.ingest()))

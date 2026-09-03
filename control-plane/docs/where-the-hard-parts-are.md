@@ -138,6 +138,11 @@ The direct consequence of not having a prebuilt cluster-state view.
   (open/closed/hidden/none) and `ignore_unavailable`. That resolution logic is shared and should be
   written once, carefully, as its own component. It is the single most reused piece of logic in the
   `indices` namespace and getting it wrong is subtly wrong everywhere.
+
+  ~~`get_settings`~~ — **done.** With the resolver and `Settings` both in place it was rendering plus
+  one new rule: the `{name}` filter matches the full dotted key with no implicit `index.` prefix, and
+  an index filtered down to nothing is dropped from the response rather than rendered empty.
+  `IndexExpressions` now holds the resolve-or-render-the-error preamble the other three will share.
 - **`indices.resolve_index`** — resolves an expression across indices, aliases *and* data streams
   simultaneously. Effectively a test of the resolver above.
 - **`cluster.state`** — the API that wants the monolith back. It assembles a single document from

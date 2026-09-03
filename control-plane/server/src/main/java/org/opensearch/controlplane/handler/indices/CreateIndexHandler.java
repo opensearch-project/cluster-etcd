@@ -58,11 +58,10 @@ import java.util.Optional;
  * real cluster validates against registered setting definitions and fails with 400.
  *
  * <p><b>Server-supplied settings.</b> A real cluster writes {@code index.uuid},
- * {@code index.creation_date}, {@code index.provided_name}, {@code index.version.created} and
- * {@code index.replication.type} into the index's settings as part of creating it. The first three are
- * held as top-level metadata fields here and can be rendered into settings when
- * {@code indices.get_settings} lands; the last two are data plane facts this service has no honest
- * value for, and are better sourced from declared capabilities than invented.
+ * {@code index.creation_date}, {@code index.provided_name} and {@code index.version.created} into the
+ * index's settings as part of creating it. The first three are held as top-level metadata fields here
+ * and rendered back into {@code indices.get_settings}; {@code index.version.created} is the Lucene and
+ * OpenSearch version the index was built with, which this service has no honest value for.
  */
 public final class CreateIndexHandler implements OperationHandler {
 
@@ -74,8 +73,19 @@ public final class CreateIndexHandler implements OperationHandler {
     private static final String DEFAULT_NUMBER_OF_SHARDS = "1";
     private static final String DEFAULT_NUMBER_OF_REPLICAS = "1";
 
+    /**
+     * Replication is per index and chosen by whoever creates it: {@code DOCUMENT} replicates each
+     * operation to every copy, {@code SEGMENT} ships segments from the primary. The request decides,
+     * and {@code DOCUMENT} is the default a real cluster applies when it does not say.
+     *
+     * <p>Changing it afterwards is not supported here — it is a static setting, so it belongs with
+     * {@code indices.put_settings} and the static/dynamic registry that operation needs anyway.
+     */
+    private static final String DEFAULT_REPLICATION_TYPE = "DOCUMENT";
+
     private static final String SETTING_SHARDS = "index.number_of_shards";
     private static final String SETTING_REPLICAS = "index.number_of_replicas";
+    private static final String SETTING_REPLICATION_TYPE = "index.replication.type";
 
     @Override
     public String operationGroup() {
@@ -172,6 +182,7 @@ public final class CreateIndexHandler implements OperationHandler {
         metadata.set("settings", effective.settings()
             .withDefault(SETTING_SHARDS, DEFAULT_NUMBER_OF_SHARDS)
             .withDefault(SETTING_REPLICAS, DEFAULT_NUMBER_OF_REPLICAS)
+            .withDefault(SETTING_REPLICATION_TYPE, DEFAULT_REPLICATION_TYPE)
             .toJson(true));
         metadata.set("mappings", effective.mappings());
         return metadata;

@@ -11,11 +11,13 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import org.opensearch.controlplane.rest.Json;
 
+import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 
 /**
  * A settings document, in the one representation OpenSearch actually keeps.
@@ -150,6 +152,32 @@ public final class Settings {
         NavigableMap<String, JsonNode> extended = new TreeMap<>(values);
         extended.put(key, TextNode.valueOf(value));
         return new Settings(extended);
+    }
+
+    /** This document with {@code key} set to {@code value}, replacing whatever was there. */
+    public Settings with(String key, String value) {
+        NavigableMap<String, JsonNode> extended = new TreeMap<>(values);
+        extended.put(key, TextNode.valueOf(value));
+        return new Settings(extended);
+    }
+
+    /**
+     * This document keeping only the keys matching one of {@code patterns}.
+     *
+     * <p>Matched against the <b>full dotted key</b>, which is what {@code GET /{index}/_settings/{name}}
+     * does: {@code index.number_of_shards} and {@code index.number_*} both match, and a bare
+     * {@code number_of_shards} matches nothing. The implicit {@code index.} prefix applies to settings
+     * being written, not to the filter reading them — verified against 3.9.0, where the unprefixed form
+     * answers a bare {@code {}}.
+     */
+    public Settings retainingKeysMatching(List<Pattern> patterns) {
+        NavigableMap<String, JsonNode> kept = new TreeMap<>();
+        values.forEach((key, value) -> {
+            if (patterns.stream().anyMatch(pattern -> pattern.matcher(key).matches())) {
+                kept.put(key, value);
+            }
+        });
+        return kept.isEmpty() ? EMPTY : new Settings(kept);
     }
 
     /**

@@ -6,6 +6,7 @@ package org.opensearch.controlplane.handler.indices;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.resolver.IndexAbstractions;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.store.KeyValueStore;
@@ -54,6 +55,32 @@ final class IndexStore {
 
     Optional<JsonNode> get(String index) {
         return store.get(key(index)).map(versioned -> parse(versioned.value()));
+    }
+
+    /**
+     * An index's settings as a cluster reports them.
+     *
+     * <p>Not simply the stored {@code settings} block. A real cluster writes {@code index.uuid},
+     * {@code index.creation_date} and {@code index.provided_name} into an index's settings when it
+     * creates it; here they are top-level metadata fields, so they are rendered back in on the way out.
+     * Same information, held once rather than twice.
+     *
+     * <p>One that a real cluster adds is deliberately absent: {@code index.version.created} records the
+     * Lucene and OpenSearch version the index was built with, which this service has no honest value
+     * for. See the README's considered divergences.
+     */
+    static Settings reportedSettings(JsonNode metadata) {
+        Settings settings = Settings.forIndex(metadata.path("settings"));
+        if (metadata.hasNonNull("uuid")) {
+            settings = settings.with("index.uuid", metadata.get("uuid").asText());
+        }
+        if (metadata.hasNonNull("creation_date")) {
+            settings = settings.with("index.creation_date", metadata.get("creation_date").asText());
+        }
+        if (metadata.hasNonNull("index")) {
+            settings = settings.with("index.provided_name", metadata.get("index").asText());
+        }
+        return settings;
     }
 
     boolean exists(String index) {

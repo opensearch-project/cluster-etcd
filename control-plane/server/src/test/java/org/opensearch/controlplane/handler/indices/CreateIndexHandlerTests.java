@@ -123,6 +123,20 @@ class CreateIndexHandlerTests {
     }
 
     /**
+     * Replication is chosen per index by whoever creates it, so the request wins and {@code DOCUMENT}
+     * is the fallback. Verified against 3.9.0, which reports {@code index.replication.type: "DOCUMENT"}
+     * on an index created without one.
+     */
+    @Test
+    void replicationTypeDefaultsToDocumentAndIsTakenFromTheRequest() throws Exception {
+        create("defaulted");
+        create("chosen", "{\"settings\":{\"index.replication.type\":\"SEGMENT\"}}");
+
+        assertEquals("DOCUMENT", metadata("defaulted").get("settings").get("index.replication.type").textValue());
+        assertEquals("SEGMENT", metadata("chosen").get("settings").get("index.replication.type").textValue());
+    }
+
+    /**
      * All three accepted shapes normalise to the one canonical form. Verified against 3.9.0: each of
      * these stores {@code index.number_of_shards} as a string.
      */
@@ -420,6 +434,6 @@ class CreateIndexHandlerTests {
         assertTrue(registry.implemented().containsAll(
             List.of("indices.create", "indices.exists", "indices.delete")));
         // Still stubbed, and next on the roadmap.
-        assertTrue(registry.notImplemented().contains("indices.get_settings"));
+        assertTrue(registry.notImplemented().contains("indices.get"));
     }
 }

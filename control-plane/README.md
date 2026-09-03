@@ -10,12 +10,12 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 30 implemented, 49 stubbed
+126 routes, 79 operation groups, 31 implemented, 48 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create` (with template composition), `exists`, `delete`; the full alias set; template CRUD + both simulate operations |
+| `indices` | 67 | `create` (with template composition), `exists`, `delete`, `get_settings`; the full alias set; template CRUD + both simulate operations |
 | `cluster` | 21 | component template CRUD |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
@@ -23,7 +23,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 49 operation groups return `501 Not Implemented`** with a structured
+**The remaining 48 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -542,7 +542,8 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | `cluster_uuid` | one per cluster | one per tenant | each tenant sees a coherent virtual cluster of its own |
 | two write indices for an alias | 500 `illegal_state_exception` | 400 `illegal_argument_exception`, same reason | a request the client got wrong is a client error; reporting it as a server fault tells the caller to retry something that can never succeed. The type follows the status rather than being left inconsistent with it |
 | nested settings key order | `HashMap` order — neither sorted nor as supplied | sorted | reproducing it would mean reproducing Java's hash iteration order. JSON object order is not semantic, and the harness compares parsed structures. The *flat* rendering is sorted on a real cluster too, so that one agrees |
-| `index.version.created`, `index.replication.type` | written into a created index's settings | absent | data plane facts this service has no honest value for; better sourced from declared capabilities than invented |
+| `index.version.created` | written into a created index's settings | absent | it records the Lucene and OpenSearch version the index was built with, which this service does not know. `index.replication.type` is *not* in this category — it is a real index setting, accepted on create and defaulted to `DOCUMENT` |
+| `include_defaults` on `get_settings` | a sibling `defaults` block, ~2.6 kB per index | accepted and ignored | **the control plane owns the settings a user explicitly set; computed values belong to the layer that computes them.** A data plane node can already answer `/{index}/_settings?local=true` with the fully resolved settings, defaults included, so putting a settings registry here would duplicate that — and a duplicated registry drifts. Same reasoning as [Data plane capabilities](#data-plane-capabilities) |
 
 Two notes on scope rather than behaviour:
 
@@ -605,6 +606,21 @@ character for character against the server's response.
   `flat_settings=true`, and `POST /_index_template/_simulate_index/x` are **byte-exact**; the composable
   and component template GETs match to the limit of what could be captured. All eight were diffed
   request for request against 3.9.0 after the `Settings` type landed. See [Settings](#settings).
+- **`indices.get_settings`.** Thirteen requests diffed request for request against 3.9.0 — the name
+  filter exact, wildcarded and comma-separated, the unprefixed form, a filter matching nothing,
+  `flat_settings`, `provided_name`, `replication.type`, a missing index, a wildcard matching nothing,
+  `allow_no_indices=false` and `ignore_unavailable=true` — and all thirteen agree. The only difference
+  anywhere was key order within a nested settings object, which is the sorted-versus-`HashMap`
+  divergence above; the values were identical. Three rules that are easy to get wrong and were verified
+  rather than assumed:
+  - the name filter matches the **full dotted key** and gets no implicit `index.` prefix, so
+    `/_settings/number_of_shards` answers a bare `{}` while `/_settings/index.number_of_shards` works
+  - an index whose filtered settings come out empty is **dropped from the response**, not rendered as
+    `"settings": {}`
+  - `index.replication.type` is a real index setting, not a server-supplied one: it is settable on
+    create, defaults to `DOCUMENT`, and is **case-sensitive** — a real cluster rejects `segment` with
+    `Could not parse ReplicationStrategy for [segment]` and accepts `SEGMENT`. That value check is not
+    reproduced here, since settings are stored unvalidated.
 
 ## The global query parameters
 
@@ -674,7 +690,7 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 76 operations that are still stubbed.
+- Everything about the 48 operation groups that are still stubbed.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
@@ -693,9 +709,9 @@ request would normally get. Verified, and reproduced.
   known settings, which has the same shipping problem as the processor list: any hardcoded list drifts,
   and a false rejection breaks a working deployment. It belongs with `--capabilities`.
 - **`index.uuid`, `index.creation_date` and `index.provided_name` are not in a created index's
-  settings.** A real cluster writes them there; here they are top-level metadata fields, which is the
-  same information in a different place. `indices.get_settings` will have to render them in, and that is
-  the point at which this stops being invisible.
+  settings.** A real cluster writes them there; here they are top-level metadata fields, and
+  `indices.get_settings` renders them back in on the way out. Same information, held once rather than
+  twice — but anything else reading stored metadata directly has to know that.
 - `filter_path` behaviour over deeply nested arrays-of-arrays, and interactions between `**` and
   exclusions, are implemented from the documented model rather than exhaustively diffed.
 - **Processor validation is opt-in, and its data comes from outside.** With `--capabilities` the
