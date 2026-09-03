@@ -4,6 +4,8 @@
  */
 package org.opensearch.controlplane.resolver;
 
+import org.opensearch.controlplane.rest.NameExpression;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -191,7 +193,7 @@ public final class IndexNameExpressionResolver {
     }
 
     private Set<String> expandPattern(String pattern, IndicesOptions options) {
-        Pattern compiled = globToPattern(pattern);
+        Pattern compiled = NameExpression.toPattern(pattern);
         // A dot-prefixed pattern reaches dot-prefixed hidden indices without expand_wildcards=hidden.
         boolean includeHidden = options.expandHidden() || pattern.startsWith(".");
 
@@ -229,24 +231,5 @@ public final class IndexNameExpressionResolver {
 
     private static boolean stateAllowed(IndexAbstraction abstraction, IndicesOptions options) {
         return abstraction.open() ? options.expandOpen() : options.expandClosed();
-    }
-
-    /** {@code *} is the only wildcard; everything else is literal. */
-    private static Pattern globToPattern(String glob) {
-        StringBuilder regex = new StringBuilder(glob.length() + 8);
-        int literalStart = 0;
-        for (int i = 0; i < glob.length(); i++) {
-            if (glob.charAt(i) == '*') {
-                if (i > literalStart) {
-                    regex.append(Pattern.quote(glob.substring(literalStart, i)));
-                }
-                regex.append(".*");
-                literalStart = i + 1;
-            }
-        }
-        if (literalStart < glob.length()) {
-            regex.append(Pattern.quote(glob.substring(literalStart)));
-        }
-        return Pattern.compile(regex.toString());
     }
 }

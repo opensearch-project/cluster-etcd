@@ -10,9 +10,9 @@ import org.opensearch.controlplane.resolver.IndexNameExpressionResolver;
 import org.opensearch.controlplane.resolver.IndexResolution;
 import org.opensearch.controlplane.resolver.IndicesOptions;
 import org.opensearch.controlplane.rest.Json;
+import org.opensearch.controlplane.rest.NameExpression;
 import org.opensearch.controlplane.rest.RestRequest;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.NavigableMap;
 import java.util.Optional;
@@ -79,7 +79,7 @@ final class AliasLookup {
         String aliasExpression
     ) {
         AliasStore aliases = new AliasStore(store);
-        List<Pattern> patterns = aliasExpression == null ? null : patternsFor(aliasExpression);
+        List<Pattern> patterns = aliasExpression == null ? null : NameExpression.parse(aliasExpression);
 
         NavigableMap<String, ObjectNode> byIndex = new java.util.TreeMap<>();
         boolean anyMatched = false;
@@ -87,7 +87,7 @@ final class AliasLookup {
         for (String index : indices) {
             ObjectNode aliasesForIndex = Json.object();
             for (var entry : aliases.forIndex(index).entrySet()) {
-                if (patterns == null || matchesAny(patterns, entry.getKey())) {
+                if (patterns == null || NameExpression.matchesAny(patterns, entry.getKey())) {
                     aliasesForIndex.set(entry.getKey(), entry.getValue().deepCopy());
                     anyMatched = true;
                 }
@@ -100,36 +100,5 @@ final class AliasLookup {
             }
         }
         return new Result(byIndex, anyMatched);
-    }
-
-    /** Comma-separated, {@code *} wildcards, same as an index expression. */
-    private static List<Pattern> patternsFor(String aliasExpression) {
-        List<Pattern> patterns = new ArrayList<>();
-        for (String token : aliasExpression.split(",")) {
-            String alias = token.trim();
-            if (alias.isEmpty()) {
-                continue;
-            }
-            StringBuilder regex = new StringBuilder(alias.length() + 8);
-            int literalStart = 0;
-            for (int i = 0; i < alias.length(); i++) {
-                if (alias.charAt(i) == '*') {
-                    if (i > literalStart) {
-                        regex.append(Pattern.quote(alias.substring(literalStart, i)));
-                    }
-                    regex.append(".*");
-                    literalStart = i + 1;
-                }
-            }
-            if (literalStart < alias.length()) {
-                regex.append(Pattern.quote(alias.substring(literalStart)));
-            }
-            patterns.add(Pattern.compile(regex.toString()));
-        }
-        return patterns;
-    }
-
-    private static boolean matchesAny(List<Pattern> patterns, String alias) {
-        return patterns.stream().anyMatch(pattern -> pattern.matcher(alias).matches());
     }
 }

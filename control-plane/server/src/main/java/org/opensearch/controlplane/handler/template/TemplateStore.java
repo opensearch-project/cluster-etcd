@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.rest.Json;
+import org.opensearch.controlplane.rest.NameExpression;
 import org.opensearch.controlplane.store.KeyValueStore;
 
 import java.io.IOException;
@@ -110,7 +111,7 @@ final class TemplateStore {
                 if (everything == null) {
                     everything = all();
                 }
-                Pattern pattern = globToPattern(name);
+                Pattern pattern = NameExpression.toPattern(name);
                 everything.forEach((candidate, definition) -> {
                     if (pattern.matcher(candidate).matches()) {
                         matched.put(candidate, definition);
@@ -121,24 +122,6 @@ final class TemplateStore {
             }
         }
         return matched;
-    }
-
-    private static Pattern globToPattern(String glob) {
-        StringBuilder regex = new StringBuilder(glob.length() + 8);
-        int literalStart = 0;
-        for (int i = 0; i < glob.length(); i++) {
-            if (glob.charAt(i) == '*') {
-                if (i > literalStart) {
-                    regex.append(Pattern.quote(glob.substring(literalStart, i)));
-                }
-                regex.append(".*");
-                literalStart = i + 1;
-            }
-        }
-        if (literalStart < glob.length()) {
-            regex.append(Pattern.quote(glob.substring(literalStart)));
-        }
-        return Pattern.compile(regex.toString());
     }
 
     private static JsonNode parse(byte[] value) {

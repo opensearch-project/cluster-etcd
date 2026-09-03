@@ -8,13 +8,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.rest.Json;
+import org.opensearch.controlplane.rest.NameExpression;
 import org.opensearch.controlplane.store.KeyValueStore;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.regex.Pattern;
 
 /**
  * Composable index template resolution: which template applies to an index name, and what it composes to.
@@ -134,7 +134,8 @@ public final class TemplateComposition {
     }
 
     private static boolean matchesAnyPattern(ObjectNode template, String indexName) {
-        return patternsOf(template).stream().anyMatch(pattern -> globToPattern(pattern).matcher(indexName).matches());
+        return patternsOf(template).stream()
+            .anyMatch(pattern -> NameExpression.toPattern(pattern).matcher(indexName).matches());
     }
 
     /**
@@ -148,8 +149,8 @@ public final class TemplateComposition {
         for (String a : left) {
             for (String b : right) {
                 if (a.equals(b)
-                    || globToPattern(a).matcher(b).matches()
-                    || globToPattern(b).matcher(a).matches()) {
+                    || NameExpression.toPattern(a).matcher(b).matches()
+                    || NameExpression.toPattern(b).matcher(a).matches()) {
                     return true;
                 }
             }
@@ -228,21 +229,4 @@ public final class TemplateComposition {
         });
     }
 
-    private static Pattern globToPattern(String glob) {
-        StringBuilder regex = new StringBuilder(glob.length() + 8);
-        int literalStart = 0;
-        for (int i = 0; i < glob.length(); i++) {
-            if (glob.charAt(i) == '*') {
-                if (i > literalStart) {
-                    regex.append(Pattern.quote(glob.substring(literalStart, i)));
-                }
-                regex.append(".*");
-                literalStart = i + 1;
-            }
-        }
-        if (literalStart < glob.length()) {
-            regex.append(Pattern.quote(glob.substring(literalStart)));
-        }
-        return Pattern.compile(regex.toString());
-    }
 }

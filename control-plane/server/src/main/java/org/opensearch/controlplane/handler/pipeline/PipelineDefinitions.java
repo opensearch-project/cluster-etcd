@@ -4,6 +4,7 @@
  */
 package org.opensearch.controlplane.handler.pipeline;
 
+import org.opensearch.controlplane.rest.NameExpression;
 import org.opensearch.controlplane.store.KeyValueStore;
 
 import java.util.NavigableMap;
@@ -109,7 +110,7 @@ final class PipelineDefinitions {
                 if (everything == null) {
                     everything = all();
                 }
-                Pattern pattern = globToPattern(id);
+                Pattern pattern = NameExpression.toPattern(id);
                 everything.forEach((candidate, value) -> {
                     if (pattern.matcher(candidate).matches()) {
                         matched.put(candidate, value);
@@ -127,24 +128,5 @@ final class PipelineDefinitions {
 
     static boolean hasWildcard(String idExpression) {
         return idExpression != null && idExpression.indexOf('*') >= 0;
-    }
-
-    /** The spec documents only {@code *}, so everything else is matched literally. */
-    private static Pattern globToPattern(String glob) {
-        StringBuilder regex = new StringBuilder(glob.length() + 8);
-        int literalStart = 0;
-        for (int i = 0; i < glob.length(); i++) {
-            if (glob.charAt(i) == '*') {
-                if (i > literalStart) {
-                    regex.append(Pattern.quote(glob.substring(literalStart, i)));
-                }
-                regex.append(".*");
-                literalStart = i + 1;
-            }
-        }
-        if (literalStart < glob.length()) {
-            regex.append(Pattern.quote(glob.substring(literalStart)));
-        }
-        return Pattern.compile(regex.toString());
     }
 }
