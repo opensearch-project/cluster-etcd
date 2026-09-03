@@ -443,6 +443,25 @@ public final class ErrorResponses {
      * expected to distinguish "no credentials" from "credentials not mapped to a tenant", that will
      * want splitting into 401 and 403.
      */
+    /**
+     * {@code 409} for a read-modify-write that lost its compare-and-set.
+     *
+     * <p><b>This shape is ours.</b> OpenSearch has no equivalent because it serialises metadata updates
+     * through the cluster manager, so a concurrent mapping or settings update never reaches the client
+     * as a conflict. Here each index is its own key and a writer can lose the race, and reporting that
+     * honestly is better than the alternatives: retrying internally hides contention a client should
+     * know about, and an unconditional overwrite would silently lose the other update.
+     *
+     * <p>A client should re-read and retry. The operation is idempotent, so a retry is safe.
+     */
+    public static RestResponse concurrentUpdate(RestRequest request, String index) {
+        ObjectNode cause = Json.object();
+        cause.put("type", "version_conflict_engine_exception");
+        cause.put("reason", "index [" + index + "] was updated concurrently; re-read and retry");
+        cause.put("index", index);
+        return structured(RestStatus.CONFLICT, cause, isPretty(request), Map.of());
+    }
+
     public static RestResponse tenantUnresolved(boolean pretty) {
         return structured(
             RestStatus.UNAUTHORIZED,

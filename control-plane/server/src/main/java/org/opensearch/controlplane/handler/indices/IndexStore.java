@@ -57,6 +57,30 @@ final class IndexStore {
         return store.get(key(index)).map(versioned -> parse(versioned.value()));
     }
 
+    /** Metadata with the revision it was read at, for a read-modify-write that must not lose updates. */
+    Optional<KeyValueStore.Versioned> getVersioned(String index) {
+        return store.get(key(index));
+    }
+
+    /**
+     * Writes metadata back, failing if the index changed since it was read.
+     *
+     * <p>Compare-and-set rather than an unconditional put: {@code put_mapping} is a
+     * read-modify-write, and two concurrent updates to different fields of the same index would
+     * otherwise silently lose one. This is the second reason {@link KeyValueStore} carries revisions,
+     * after create-if-absent.
+     *
+     * @return false if another writer got there first
+     */
+    boolean replace(String index, ObjectNode metadata, long expectedRevision) {
+        try {
+            store.put(key(index), Json.toBytes(metadata), expectedRevision);
+            return true;
+        } catch (RevisionConflictException lostTheRace) {
+            return false;
+        }
+    }
+
     /**
      * An index's settings as a cluster reports them.
      *

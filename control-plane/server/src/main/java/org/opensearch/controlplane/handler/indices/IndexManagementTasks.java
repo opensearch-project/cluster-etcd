@@ -37,6 +37,7 @@ final class IndexManagementTasks {
 
     static final String TYPE_CREATE_INDEX = "create-index";
     static final String TYPE_DELETE_INDEX = "delete-index";
+    static final String TYPE_UPDATE_MAPPING = "update-mapping";
 
     static final String STATE_PENDING = "pending";
 

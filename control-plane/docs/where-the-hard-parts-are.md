@@ -117,9 +117,18 @@ Also in this tier:
   *alternatives, not layers*: a matching composable template suppresses every legacy one outright, so
   an index falls back to built-in defaults rather than to the legacy template that also matched. Legacy
   templates merge among themselves by ascending `order`, ties by name.
-- **`indices.put_mapping`** — mapping merge with conflict detection: a field's type cannot change,
-  and the rules for what counts as a compatible update are subtle. `MapperService.merge`. Deep, and
-  multi-index, so it is Tier 2 *and* Tier 3.
+- ~~**`indices.put_mapping`**~~ — **done**, and cheaper than the survey feared. "The rules for what
+  counts as a compatible update are subtle" is true of `MapperService.merge` as code, but the rules
+  themselves are *declared*: every `Parameter` a field mapper builds carries an `updateable` flag, so
+  the whole compatibility question is a transcribable list — 30 parameter names always immutable, 18
+  always updateable, 3 varying by field type. Carrying the list beat porting the merge.
+
+  The residual gap is defaults, not rules. A real cluster compares against the mapper's *resolved*
+  value, so it can tell `index: true` on a text field (a no-op) from `index: false` (a conflict); we
+  store mappings as sent and cannot, so we reject both. Stricter, never looser, and recorded.
+
+  Tier 3 applies as predicted — it is multi-index — and the answer is to merge against every index
+  before writing any, so a conflict on the last leaves the first untouched.
 - **`indices.put_settings`** — needs a registry of which settings are static versus dynamic, because
   static settings can only change on a closed index. Not hard, but it needs data we do not have:
   the settings registry itself.

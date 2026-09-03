@@ -433,7 +433,11 @@ class CreateIndexHandlerTests {
 
         assertTrue(registry.implemented().containsAll(
             List.of("indices.create", "indices.exists", "indices.delete")));
-        // Still stubbed, and next on the roadmap.
-        assertTrue(registry.notImplemented().contains("indices.put_mapping"));
+        // An invariant rather than a roadmap marker: naming whichever operation is next means this
+        // test breaks the moment that one lands, which says nothing about registration.
+        assertTrue(registry.notImplemented().isEmpty() == false, "the surface is not finished");
+        for (String group : registry.implemented()) {
+            assertFalse(registry.notImplemented().contains(group), group + " is in both lists");
+        }
     }
 }
