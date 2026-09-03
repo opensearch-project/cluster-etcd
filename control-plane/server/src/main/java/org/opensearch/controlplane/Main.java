@@ -6,7 +6,10 @@ package org.opensearch.controlplane;
 
 import org.opensearch.controlplane.capability.DataPlaneCapabilities;
 import org.opensearch.controlplane.capability.DeclaredCapabilities;
+import org.opensearch.controlplane.capability.DeclaredSettings;
 import org.opensearch.controlplane.capability.PermissiveCapabilities;
+import org.opensearch.controlplane.capability.PermissiveSettings;
+import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.ControlPlaneHandlers;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.HandlerRegistry;
@@ -62,16 +65,30 @@ public final class Main {
         // Swapping SingleTenantResolver for a principal- or host-derived resolver is the only change
         // needed to serve multiple tenants; see the README's Multi-tenancy section.
         DataPlaneCapabilities capabilities;
+        SettingsRegistry settings;
         if (capabilitiesPath == null) {
             // Said out loud rather than left implicit: without this, a pipeline naming a processor the
-            // data plane does not have is accepted and only fails when it runs.
+            // data plane does not have is accepted and only fails when it runs, and an unknown setting
+            // is stored rather than rejected.
             System.err.println(
-                "warning: no --capabilities file, so processor types are not validated. Generate one "
-                    + "with tools/dump-capabilities.sh <data-plane-url>."
+                "warning: no --capabilities file, so processor types and settings are not validated. "
+                    + "Generate one with tools/dump-capabilities.sh <data-plane-url>."
             );
             capabilities = new PermissiveCapabilities();
+            settings = new PermissiveSettings();
         } else {
             capabilities = DeclaredCapabilities.load(capabilitiesPath);
+            // The settings section is optional, so a capabilities file generated before the data plane
+            // exposed its settings registry still loads and simply does not enforce settings.
+            settings = DeclaredSettings.load(capabilitiesPath)
+                .map(declared -> (SettingsRegistry) declared)
+                .orElseGet(() -> {
+                    System.err.println(
+                        "warning: --capabilities file has no `settings` section, so settings are not "
+                            + "validated. Regenerate it against a data plane that exposes the registry."
+                    );
+                    return new PermissiveSettings();
+                });
         }
 
         KeyValueStore store = new FileSystemKeyValueStore(dataPath);
@@ -115,12 +132,13 @@ public final class Main {
 
         System.out.printf(
             Locale.ROOT,
-            "OpenSearch control plane listening on %s:%d%n%s%nstore: %s%ncapabilities: %s%n",
+            "OpenSearch control plane listening on %s:%d%n%s%nstore: %s%ncapabilities: %s%nsettings: %s%n",
             host,
             server.boundPort(),
             server.describeSurface(),
             store,
-            capabilities
+            capabilities,
+            settings
         );
         server.awaitShutdown();
     }
@@ -143,7 +161,8 @@ public final class Main {
               --data-path <dir>   filesystem store directory (default %s)
               --cluster-name <n>  cluster_name reported by GET / (default opensearch)
               --capabilities <f>  data plane capabilities file; without it, processor types
-                                  are not validated. Generate with tools/dump-capabilities.sh
+                                  and settings are not validated. Generate with
+                                  tools/dump-capabilities.sh
               --dump-routes       print the route table and handler status, then start
               --help              show this message
 

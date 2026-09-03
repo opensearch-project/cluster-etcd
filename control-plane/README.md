@@ -315,6 +315,55 @@ to spell a setting the same way. A component saying `{"index": {"number_of_repli
 template block saying `{"number_of_replicas": 5}` produced *two keys for one setting*, and
 `_simulate_index` reported both where a real cluster reports one.
 
+### The settings registry
+
+The same argument, applied to a registry that moves faster. A real cluster rejects an unknown setting
+with `settings_exception`, `unknown setting [index.totally_bogus]`, and rejects a *static* setting
+changed on an open index. Neither check is possible without knowing what settings exist and which are
+dynamic — and that cannot be hardcoded here. There are 219 built-in index settings, OpenSearch adds
+more on a semi-regular basis, and plugins register their own.
+
+So it comes from the data plane, in the **same file** as the processor capabilities. One dump, one
+flag, one refresh-after-upgrade step; two files would be two snapshots that drift from each other as
+well as from the cluster.
+
+```yaml
+settings:
+  index:
+    - {key: "index.number_of_shards",             kind: exact,  properties: [Final, IndexScope]}
+    - {key: "index.number_of_replicas",           kind: exact,  properties: [Dynamic, IndexScope]}
+    - {key: "index.analysis.",                    kind: prefix, properties: [IndexScope]}
+    - {key: "index.routing.allocation.include.*", kind: affix,  properties: [Dynamic, IndexScope]}
+  cluster:
+    - {key: "cluster.max_shards_per_node",        kind: exact,  properties: [Dynamic, NodeScope]}
+```
+
+**Three entry kinds, and the reason is not fussiness.** OpenSearch splits its registered settings into
+ordinary keys and *complex matchers*, and two of the built-in index settings are the latter:
+`Setting.groupSetting("index.analysis.", ...)` and the same for `index.similarity.`. Anything beneath
+those prefixes is valid, without limit. Affix settings put the variable part in the middle
+(`index.routing.allocation.include.*`). A registry that only knew exact keys would reject every custom
+analyzer — precisely the false rejection this mechanism exists to prevent.
+
+`properties` carries OpenSearch's `Setting.Property` values verbatim. `InternalIndex` or
+`PrivateIndex` means a user may not supply the setting at all and outranks the rest; otherwise
+`Dynamic` is dynamic and anything else is fixed once set. Note that is *"not `Dynamic`"* rather than
+*"`Final`"* — a setting with neither property is static, and keying off `Final` alone would let most
+static settings through.
+
+**Status:** `SettingsRegistry`, `DeclaredSettings` and `PermissiveSettings` are implemented and wired
+into startup; the section is optional, so a capabilities file generated before this existed still
+loads and simply does not enforce settings. What is missing is the data-plane endpoint to generate it
+from — nothing in OpenSearch exposes the registry today. `GET /_cluster/settings?include_defaults=true`
+gives cluster keys and defaults but no properties, and there is no index-scoped equivalent at all. The
+work to add that endpoint to OpenSearch is pending. Until it lands, `tools/dump-capabilities.sh` emits no `settings` section and settings validation
+stays off.
+
+**A note on heterogeneous clusters.** The capabilities generator *excludes* a processor present on only
+some nodes, since the control plane should not accept a definition whose success depends on where it
+runs. A setting present on only some nodes is a different thing — a misconfiguration, usually a plugin
+installed unevenly — and should be reported loudly rather than silently dropped.
+
 ## Multi-tenancy
 
 One control plane instance serves many tenants. Isolation is **structural**: a handler
