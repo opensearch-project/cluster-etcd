@@ -10,20 +10,20 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 16 implemented, 63 stubbed
+126 routes, 79 operation groups, 28 implemented, 51 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create`, `exists`, `delete`, and the full alias set: `get_alias`, `put_alias`, `delete_alias`, `exists_alias`, `update_aliases` |
-| `cluster` | 21 | — |
+| `indices` | 67 | `create`, `exists`, `delete`; the full alias set; legacy + composable template CRUD |
+| `cluster` | 21 | component template CRUD |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 63 operation groups return `501 Not Implemented`** with a structured
+**The remaining 51 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -644,7 +644,14 @@ request would normally get. Verified, and reproduced.
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
   when the wait times out. Everything else about create, delete, and their error bodies is
   byte-identical to OpenSearch 3.9.0.
-- Settings are stored unvalidated. A real cluster rejects unknown or malformed settings with 400.
+- **Settings are stored unnormalised, and a real cluster normalises them.** Given
+  `{"settings":{"number_of_shards":1}}`, OpenSearch answers
+  `{"settings":{"index":{"number_of_shards":"1"}}}` — nested under `index`, and with the value as a
+  *string*. We store what was sent. Affects templates today and `indices.get_settings` when it lands,
+  and `indices.create` currently normalises to a third form (flat `index.number_of_shards`, native
+  types) for the shard manager's benefit. Three representations is one too many; worth settling once,
+  as a shared `Settings` type, rather than per endpoint.
+- Settings are also stored unvalidated. A real cluster rejects unknown or malformed settings with 400.
 - `filter_path` behaviour over deeply nested arrays-of-arrays, and interactions between `**` and
   exclusions, are implemented from the documented model rather than exhaustively diffed.
 - **Processor validation is opt-in, and its data comes from outside.** With `--capabilities` the

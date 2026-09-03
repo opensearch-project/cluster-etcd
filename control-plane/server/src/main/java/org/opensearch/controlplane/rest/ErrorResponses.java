@@ -349,6 +349,62 @@ public final class ErrorResponses {
     }
 
     /**
+     * {@code 404} for a template GET that matched nothing.
+     *
+     * @param noun {@code "index template"} or {@code "component template"} — the wording differs per kind
+     */
+    public static RestResponse templateNotFound(RestRequest request, String noun, String name) {
+        return structured(
+            RestStatus.NOT_FOUND,
+            "resource_not_found_exception",
+            noun + " matching [" + name + "] not found",
+            request
+        );
+    }
+
+    /**
+     * {@code 404} for deleting a template that is not there.
+     *
+     * <p>Verified: all three template kinds report this identically, as
+     * {@code index_template_missing_exception} with {@code index_template [x] missing} — including
+     * component templates, which are neither index templates nor described that way anywhere else.
+     */
+    public static RestResponse templateMissing(RestRequest request, String name) {
+        return structured(
+            RestStatus.NOT_FOUND,
+            "index_template_missing_exception",
+            "index_template [" + name + "] missing",
+            request
+        );
+    }
+
+    /** {@code 400} for a template body missing a required property. Wording verified per kind. */
+    public static RestResponse requiredProperty(RestRequest request, String property) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "illegal_argument_exception",
+            "Required [" + property + "]",
+            request
+        );
+    }
+
+    /**
+     * {@code 400} for a legacy template with no index patterns.
+     *
+     * <p>Legacy templates validate through a different path than the newer kinds and report it
+     * differently: {@code action_request_validation_exception} with OpenSearch's accumulating
+     * "Validation Failed: 1: ...;" format, rather than {@code Required [index_patterns]}. Verified.
+     */
+    public static RestResponse legacyTemplateValidationFailed(RestRequest request, String message) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "action_request_validation_exception",
+            "Validation Failed: 1: " + message + ";",
+            request
+        );
+    }
+
+    /**
      * Wraps a cause in the structured envelope.
      *
      * <p>{@code root_cause} comes first and repeats the cause verbatim, extra fields included, which

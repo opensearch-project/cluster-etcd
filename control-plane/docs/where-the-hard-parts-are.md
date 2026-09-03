@@ -153,9 +153,11 @@ Worth knowing which these are, because several are near-copies of code that alre
   `{}`.
 - **stored scripts** (`put/get/delete_script`) — one key per script id.
   `get_script_context` / `get_script_languages` are static lists.
-- **component and index templates** (`put/get/delete/exists` × both) — one key per template. The
-  *storage* is Tier 0; only `put` validation and any use of them is Tier 2, so the CRUD can land
-  first and composition can follow.
+- ~~**component and index templates**~~ — **done**, all twelve groups across three kinds. They turned
+  out to differ more than expected: legacy answers a name-keyed map and a bare `{}` on a miss, the
+  newer kinds answer an array under a wrapper key and a structured error, and the required property and
+  its error differ per kind. Only `delete`-missing is uniform. Composition remains Tier 2 and unbuilt;
+  `composed_of` references and priority overlaps are unvalidated.
 - **`cluster.get/put_settings`** — a single key, modulo the static/dynamic distinction.
 - **decommission awareness and weighted routing** (6 groups) — single key each, pure config.
 - **`snapshot.create/get/delete_repository`** — one key per repository. `verify_repository` is not

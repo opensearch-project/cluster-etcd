@@ -21,6 +21,7 @@ import org.opensearch.controlplane.handler.pipeline.DeletePipelineHandler;
 import org.opensearch.controlplane.handler.pipeline.GetPipelineHandler;
 import org.opensearch.controlplane.handler.pipeline.PipelineKind;
 import org.opensearch.controlplane.handler.pipeline.PutPipelineHandler;
+import org.opensearch.controlplane.handler.template.Templates;
 
 /**
  * The single place where implemented operations are registered.
@@ -71,7 +72,7 @@ public final class ControlPlaneHandlers {
         ClusterIdentity identity,
         DataPlaneCapabilities capabilities
     ) {
-        return registry
+        registry
             // _core
             .register(new InfoHandler(identity))
             .register(new PingHandler())
@@ -91,5 +92,9 @@ public final class ControlPlaneHandlers {
             .register(new PutPipelineHandler(PipelineKind.search(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.search()))
             .register(new DeletePipelineHandler(PipelineKind.search()));
+
+        // Templates: four operations across three kinds, which differ more than the pipelines do.
+        Templates.handlers().forEach(registry::register);
+        return registry;
     }
 }
