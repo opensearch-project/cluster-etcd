@@ -116,19 +116,48 @@ class CreateIndexHandlerTests {
         create("my-index");
         JsonNode settings = metadata("my-index").get("settings");
 
-        assertEquals(1, settings.get("index.number_of_shards").asInt());
-        assertEquals(1, settings.get("index.number_of_replicas").asInt());
+        // Stringified, like every settings value on a real cluster -- textValue, not asInt, so that a
+        // regression to native types fails here rather than being papered over by Jackson's coercion.
+        assertEquals("1", settings.get("index.number_of_shards").textValue());
+        assertEquals("1", settings.get("index.number_of_replicas").textValue());
     }
 
+    /**
+     * All three accepted shapes normalise to the one canonical form. Verified against 3.9.0: each of
+     * these stores {@code index.number_of_shards} as a string.
+     */
     @Test
-    void acceptsBothSettingsFormsAndStoresOne() throws Exception {
+    void acceptsAllThreeSettingsFormsAndStoresOne() throws Exception {
         create("flat", "{\"settings\":{\"number_of_shards\":2}}");
         create("nested", "{\"settings\":{\"index\":{\"number_of_shards\":3}}}");
         create("prefixed", "{\"settings\":{\"index.number_of_shards\":4}}");
 
-        assertEquals(2, metadata("flat").get("settings").get("index.number_of_shards").asInt());
-        assertEquals(3, metadata("nested").get("settings").get("index.number_of_shards").asInt());
-        assertEquals(4, metadata("prefixed").get("settings").get("index.number_of_shards").asInt());
+        assertEquals("2", metadata("flat").get("settings").get("index.number_of_shards").textValue());
+        assertEquals("3", metadata("nested").get("settings").get("index.number_of_shards").textValue());
+        assertEquals("4", metadata("prefixed").get("settings").get("index.number_of_shards").textValue());
+    }
+
+    /**
+     * A dotted key beats the nested spelling of the same setting whichever came first in the document.
+     * Verified against 3.9.0 in both orders — it is not last-writer-wins.
+     */
+    @Test
+    void aDottedKeyBeatsTheNestedSpellingInEitherOrder() throws Exception {
+        create("dotted-first", "{\"settings\":{\"index.number_of_shards\":2,\"index\":{\"number_of_shards\":3}}}");
+        create("nested-first", "{\"settings\":{\"index\":{\"number_of_shards\":3},\"index.number_of_shards\":2}}");
+
+        assertEquals("2", metadata("dotted-first").get("settings").get("index.number_of_shards").textValue());
+        assertEquals("2", metadata("nested-first").get("settings").get("index.number_of_shards").textValue());
+    }
+
+    /** Lists stay lists of strings rather than collapsing to text. Verified against 3.9.0. */
+    @Test
+    void listValuedSettingsStayLists() throws Exception {
+        create("my-index", "{\"settings\":{\"index\":{\"routing\":{\"allocation\":{\"include\":{\"_name\":[\"a\",\"b\"]}}}}}}");
+
+        JsonNode value = metadata("my-index").get("settings").get("index.routing.allocation.include._name");
+        assertTrue(value.isArray());
+        assertEquals(List.of("a", "b"), List.of(value.get(0).textValue(), value.get(1).textValue()));
     }
 
     @Test
@@ -184,7 +213,7 @@ class CreateIndexHandlerTests {
         create("my-index", "{\"settings\":{\"number_of_shards\":2}}");
         create("my-index", "{\"settings\":{\"number_of_shards\":9}}");
 
-        assertEquals(2, metadata("my-index").get("settings").get("index.number_of_shards").asInt(),
+        assertEquals("2", metadata("my-index").get("settings").get("index.number_of_shards").textValue(),
             "create-if-absent must not clobber");
         assertEquals(1, taskCount(), "only the successful create enqueues");
     }

@@ -46,7 +46,8 @@ public final class GetTemplateHandler implements OperationHandler {
     @Override
     public RestResponse handle(RestRequest request, OperationContext context) {
         String name = request.pathParam("name");
-        NavigableMap<String, ObjectNode> matched = new TemplateStore(context.store(), kind).resolve(name);
+        TemplateStore templates = new TemplateStore(context.store(), kind);
+        NavigableMap<String, ObjectNode> matched = templates.resolve(name);
 
         if (matched.isEmpty() && name != null) {
             return kind.isNameKeyedResponse()
@@ -55,9 +56,13 @@ public final class GetTemplateHandler implements OperationHandler {
                 : ErrorResponses.templateNotFound(request, kind.notFoundNoun(), name);
         }
 
+        // Settings are stored flat and nested on the way out, except where flat_settings says otherwise
+        // and the kind honours it. See TemplateStore.rendered.
+        boolean flatSettings = request.paramAsBoolean("flat_settings", false);
+
         if (kind.isNameKeyedResponse()) {
             ObjectNode body = Json.object();
-            matched.forEach(body::set);
+            matched.forEach((templateName, definition) -> body.set(templateName, templates.rendered(definition, flatSettings)));
             return Json.response(RestStatus.OK, body, request);
         }
 
@@ -65,7 +70,7 @@ public final class GetTemplateHandler implements OperationHandler {
         matched.forEach((templateName, definition) -> {
             ObjectNode item = Json.object();
             item.put("name", templateName);
-            item.set(kind.itemKey(), definition);
+            item.set(kind.itemKey(), templates.rendered(definition, flatSettings));
             items.add(item);
         });
         ObjectNode body = Json.object();

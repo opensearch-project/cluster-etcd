@@ -280,6 +280,41 @@ The two kinds report an unknown type differently, and both wordings are reproduc
 | ingest | `parse_exception` | `No processor type exists with name [x]`, plus a `processor_type` field |
 | search pipeline | `illegal_argument_exception` | `Invalid processor type x` |
 
+## Settings
+
+A client may write a setting three ways, and OpenSearch accepts all three. It stores **one**:
+
+```
+{"number_of_shards": 2}                 ─┐
+{"index.number_of_shards": 2}            ├─►   index.number_of_shards = "2"
+{"index": {"number_of_shards": 2}}      ─┘
+```
+
+That canonical form — a sorted map of dotted keys to *strings* — is what
+`org.opensearch.controlplane.metadata.Settings` holds, and what this service stores, for index
+metadata and for all three template kinds. The shapes seen on the wire are renderings chosen on the
+way out: nested by default, dotted under `flat_settings=true`.
+
+Verified against 3.9.0, and none of it is in the spec:
+
+- **Templates normalise too**, not just index metadata. A template written
+  `{"settings": {"number_of_shards": 2}}` reads back `{"settings": {"index": {"number_of_shards": "2"}}}`
+  for legacy, composable and component alike, and `_simulate_index` agrees.
+- Normalisation happens **before** validation — sending `{"totally_bogus": 1}` is rejected as
+  `unknown setting [index.totally_bogus]`, a key the client never wrote.
+- Numbers and booleans stringify. **Lists stay lists of strings.** **`null` stays null**, not `"null"`.
+- **A dotted key beats the nested spelling of the same setting in either document order.** It is not
+  last-writer-wins; `Settings.flatten` reproduces it by descending into objects before applying leaves.
+- `flat_settings` is **per operation**: `GET /_settings` and legacy `GET /_template` honour it,
+  `GET /_index_template` ignores it. That matches which operations declare the parameter in the spec.
+
+**Why flat is the stored form** rather than the nested shape a client sees: composing a template means
+overriding settings key by key, and on a flat map that is a `put` — exact, and independent of which
+shape either side used. Merging the nested documents structurally only worked when both sides happened
+to spell a setting the same way. A component saying `{"index": {"number_of_replicas": 9}}` beneath a
+template block saying `{"number_of_replicas": 5}` produced *two keys for one setting*, and
+`_simulate_index` reported both where a real cluster reports one.
+
 ## Multi-tenancy
 
 One control plane instance serves many tenants. Isolation is **structural**: a handler
@@ -506,6 +541,8 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | unknown processor types | rejected | accepted until `--capabilities` is supplied | no accurate built-in list can be shipped; see [Data plane capabilities](#data-plane-capabilities) |
 | `cluster_uuid` | one per cluster | one per tenant | each tenant sees a coherent virtual cluster of its own |
 | two write indices for an alias | 500 `illegal_state_exception` | 400 `illegal_argument_exception`, same reason | a request the client got wrong is a client error; reporting it as a server fault tells the caller to retry something that can never succeed. The type follows the status rather than being left inconsistent with it |
+| nested settings key order | `HashMap` order — neither sorted nor as supplied | sorted | reproducing it would mean reproducing Java's hash iteration order. JSON object order is not semantic, and the harness compares parsed structures. The *flat* rendering is sorted on a real cluster too, so that one agrees |
+| `index.version.created`, `index.replication.type` | written into a created index's settings | absent | data plane facts this service has no honest value for; better sourced from declared capabilities than invented |
 
 Two notes on scope rather than behaviour:
 
@@ -564,6 +601,10 @@ character for character against the server's response.
   `PipelineStore.METADATA_MARKER_KEY` replicates this. It is faithfully reproducing an
   implementation artifact leaking into the API — drop the marker if you would rather
   not carry the quirk forward.
+- **Settings normalisation on every template surface.** `GET /_template/x`, the same with
+  `flat_settings=true`, and `POST /_index_template/_simulate_index/x` are **byte-exact**; the composable
+  and component template GETs match to the limit of what could be captured. All eight were diffed
+  request for request against 3.9.0 after the `Settings` type landed. See [Settings](#settings).
 
 ## The global query parameters
 
@@ -634,11 +675,6 @@ request would normally get. Verified, and reproduced.
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
 - Everything about the 76 operations that are still stubbed.
-- **`indices.create` does not resolve templates.** A real create applies matching composable and
-  legacy index templates, merging their settings, mappings and aliases with the request in a defined
-  precedence order. None of that happens yet, so an index created here differs from one created on a
-  cluster with matching templates. This is the largest gap in the operation and wants
-  `MetadataIndexTemplateService`'s composition rules ported before it is trustworthy.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
@@ -651,14 +687,15 @@ request would normally get. Verified, and reproduced.
 - **Mapping merge has no conflict detection.** Two templates disagreeing about a field's type produce a
   last-writer-wins mapping rather than the rejection a real cluster raises. Belongs with
   `indices.put_mapping`.
-- **Settings are stored unnormalised, and a real cluster normalises them.** Given
-  `{"settings":{"number_of_shards":1}}`, OpenSearch answers
-  `{"settings":{"index":{"number_of_shards":"1"}}}` — nested under `index`, and with the value as a
-  *string*. We store what was sent. Affects templates today and `indices.get_settings` when it lands,
-  and `indices.create` currently normalises to a third form (flat `index.number_of_shards`, native
-  types) for the shard manager's benefit. Three representations is one too many; worth settling once,
-  as a shared `Settings` type, rather than per endpoint.
-- Settings are also stored unvalidated. A real cluster rejects unknown or malformed settings with 400.
+- Settings are stored unvalidated. A real cluster rejects unknown or malformed settings with 400 —
+  `settings_exception`, `unknown setting [index.totally_bogus] please check that any required plugins
+  are installed...` — on index creation *and* on a template put. Doing the same needs a registry of
+  known settings, which has the same shipping problem as the processor list: any hardcoded list drifts,
+  and a false rejection breaks a working deployment. It belongs with `--capabilities`.
+- **`index.uuid`, `index.creation_date` and `index.provided_name` are not in a created index's
+  settings.** A real cluster writes them there; here they are top-level metadata fields, which is the
+  same information in a different place. `indices.get_settings` will have to render them in, and that is
+  the point at which this stops being invisible.
 - `filter_path` behaviour over deeply nested arrays-of-arrays, and interactions between `**` and
   exclusions, are implemented from the documented model rather than exhaustively diffed.
 - **Processor validation is opt-in, and its data comes from outside.** With `--capabilities` the
@@ -723,6 +760,7 @@ codegen/                  reads spec + scope, emits the route table
 server/
   router/                 PathTrie, Router, Route, GeneratedRoutes (generated)
   rest/                   RestRequest, RestResponse, RestStatus, Json, ErrorResponses
+  metadata/               Settings -- the canonical settings representation
   store/                  KeyValueStore, FileSystemKeyValueStore,
                           TenantScopedKeyValueStore
   tenant/                 TenantId, TenantResolver + implementations

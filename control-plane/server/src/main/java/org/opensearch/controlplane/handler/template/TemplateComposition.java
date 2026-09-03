@@ -6,6 +6,7 @@ package org.opensearch.controlplane.handler.template;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.store.KeyValueStore;
 
@@ -33,6 +34,13 @@ import java.util.regex.Pattern;
  *   <li>Among several matching templates the highest {@code priority} wins outright — templates are
  *       selected, not merged with each other.</li>
  * </ul>
+ *
+ * <p>"Settings override key by key" is the reason settings are accumulated as a {@link Settings} rather
+ * than merged structurally like the other two blocks. On the flat canonical form an override is a map
+ * {@code put}, so it lands whichever of the accepted shapes each side used. Structurally it did not: a
+ * component saying {@code {"index": {"number_of_replicas": 9}}} beneath a template block saying
+ * {@code {"number_of_replicas": 5}} produced <em>both</em> keys, and {@code _simulate_index} showed them
+ * both where a real cluster shows one.
  *
  * <h2>Not implemented</h2>
  *
@@ -82,23 +90,20 @@ public final class TemplateComposition {
 
     /**
      * Composes a template to the {@code settings}/{@code mappings}/{@code aliases} an index would get.
-     *
-     * @return an object with those three keys, each possibly empty
      */
-    ObjectNode compose(ObjectNode template) {
-        ObjectNode composed = Json.object();
-        composed.set("settings", Json.object());
-        composed.set("mappings", Json.object());
-        composed.set("aliases", Json.object());
+    Composed compose(ObjectNode template) {
+        Accumulator accumulator = new Accumulator();
+        composeInto(accumulator, template);
+        return accumulator.composed();
+    }
 
-        // Components first, in order, each overriding the last.
+    /** Components first, in {@code composed_of} order; then the template's own block, which beats them. */
+    private void composeInto(Accumulator accumulator, ObjectNode template) {
         for (JsonNode reference : template.path("composed_of")) {
             componentTemplates.get(reference.asText())
-                .ifPresent(component -> mergeInto(composed, component.path("template")));
+                .ifPresent(component -> accumulator.merge(component.path("template")));
         }
-        // Then the template's own block, which beats every component.
-        mergeInto(composed, template.path("template"));
-        return composed;
+        accumulator.merge(template.path("template"));
     }
 
     /** Templates whose patterns overlap the given ones at the same priority. Used to validate a put. */
@@ -159,13 +164,53 @@ public final class TemplateComposition {
      *
      * @param requested the create request body, which wins over anything a template supplied
      */
-    public static ObjectNode composeFor(KeyValueStore store, String indexName, ObjectNode requested) {
+    public static Composed composeFor(KeyValueStore store, String indexName, ObjectNode requested) {
         TemplateComposition composition = new TemplateComposition(store);
-        ObjectNode effective = composition.findMatching(indexName)
-            .map(match -> composition.compose(match.template()))
-            .orElseGet(Json::object);
-        mergeInto(effective, requested);
-        return effective;
+        Accumulator accumulator = new Accumulator();
+        composition.findMatching(indexName).ifPresent(match -> composition.composeInto(accumulator, match.template()));
+        // The request body carries the same three blocks and is merged like one more, last, so it wins.
+        accumulator.merge(requested);
+        return accumulator.composed();
+    }
+
+    /**
+     * What a template composes to.
+     *
+     * <p>Settings stay a {@link Settings} rather than JSON because the two callers want different
+     * renderings of them: {@code indices.create} stores the flat canonical form, while
+     * {@code _simulate_index} answers the nested one.
+     */
+    public record Composed(Settings settings, ObjectNode mappings, ObjectNode aliases) {
+
+        /** The wire shape both simulate operations return: three keys, each possibly empty. */
+        ObjectNode toJson() {
+            ObjectNode json = Json.object();
+            json.set("settings", settings.toJson(false));
+            json.set("mappings", mappings);
+            json.set("aliases", aliases);
+            return json;
+        }
+    }
+
+    /** Accumulates blocks in precedence order: settings flat and key-by-key, the rest structurally. */
+    private static final class Accumulator {
+
+        private Settings settings = Settings.EMPTY;
+        private final ObjectNode mappings = Json.object();
+        private final ObjectNode aliases = Json.object();
+
+        void merge(JsonNode block) {
+            if (block.isObject() == false) {
+                return;
+            }
+            settings = settings.mergedWith(Settings.forIndex(block.path("settings")));
+            mergeInto(mappings, block.path("mappings"));
+            mergeInto(aliases, block.path("aliases"));
+        }
+
+        Composed composed() {
+            return new Composed(settings, mappings, aliases);
+        }
     }
 
     /** Structural merge, later winning. Objects recurse; anything else replaces. */

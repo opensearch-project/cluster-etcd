@@ -76,7 +76,7 @@ public final class SimulateTemplateHandler implements OperationHandler {
         }
 
         ObjectNode body = Json.object();
-        body.set("template", composition.compose(template));
+        body.set("template", composition.compose(template).toJson());
         return Json.response(RestStatus.OK, body, request);
     }
 }

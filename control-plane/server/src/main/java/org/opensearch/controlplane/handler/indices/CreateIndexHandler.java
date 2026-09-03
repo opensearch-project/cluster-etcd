@@ -56,12 +56,23 @@ import java.util.Optional;
  *
  * <p><b>Settings validation.</b> Unknown or malformed settings are stored rather than rejected. A
  * real cluster validates against registered setting definitions and fails with 400.
+ *
+ * <p><b>Server-supplied settings.</b> A real cluster writes {@code index.uuid},
+ * {@code index.creation_date}, {@code index.provided_name}, {@code index.version.created} and
+ * {@code index.replication.type} into the index's settings as part of creating it. The first three are
+ * held as top-level metadata fields here and can be rendered into settings when
+ * {@code indices.get_settings} lands; the last two are data plane facts this service has no honest
+ * value for, and are better sourced from declared capabilities than invented.
  */
 public final class CreateIndexHandler implements OperationHandler {
 
-    /** OpenSearch's defaults, needed by the shard manager to allocate anything at all. */
-    private static final int DEFAULT_NUMBER_OF_SHARDS = 1;
-    private static final int DEFAULT_NUMBER_OF_REPLICAS = 1;
+    /**
+     * OpenSearch's defaults, needed by the shard manager to allocate anything at all.
+     *
+     * <p>Strings because that is what a settings value is — see {@link org.opensearch.controlplane.metadata.Settings}.
+     */
+    private static final String DEFAULT_NUMBER_OF_SHARDS = "1";
+    private static final String DEFAULT_NUMBER_OF_REPLICAS = "1";
 
     private static final String SETTING_SHARDS = "index.number_of_shards";
     private static final String SETTING_REPLICAS = "index.number_of_replicas";
@@ -99,7 +110,7 @@ public final class CreateIndexHandler implements OperationHandler {
 
         // Composition first: a matching composable template contributes settings, mappings and aliases,
         // and the request body overrides whatever it supplied.
-        ObjectNode effective = TemplateComposition.composeFor(context.store(), index, requested);
+        TemplateComposition.Composed effective = TemplateComposition.composeFor(context.store(), index, requested);
 
         IndexStore indices = new IndexStore(context.store());
         String uuid = IndexStore.newUuid();
@@ -118,15 +129,12 @@ public final class CreateIndexHandler implements OperationHandler {
         // atomic with the index write: a failure here leaves an index without its aliases, which a
         // reconciliation pass can detect. The alternative -- embedding them -- would cost the atomic
         // alias swap that the separate layout buys.
-        JsonNode declaredAliases = effective.path("aliases");
-        if (declaredAliases.isObject()) {
-            AliasStore aliasStore = new AliasStore(context.store());
-            declaredAliases.properties().forEach(alias -> {
-                ObjectNode definition = aliasStore.get(alias.getKey()).orElseGet(AliasStore::emptyDefinition);
-                ((ObjectNode) definition.get(AliasStore.INDICES)).set(index, alias.getValue().deepCopy());
-                aliasStore.put(alias.getKey(), definition);
-            });
-        }
+        AliasStore aliasStore = new AliasStore(context.store());
+        effective.aliases().properties().forEach(alias -> {
+            ObjectNode definition = aliasStore.get(alias.getKey()).orElseGet(AliasStore::emptyDefinition);
+            ((ObjectNode) definition.get(AliasStore.INDICES)).set(index, alias.getValue().deepCopy());
+            aliasStore.put(alias.getKey(), definition);
+        });
 
         new IndexManagementTasks(context.store()).submit(
             IndexManagementTasks.TYPE_CREATE_INDEX,
@@ -147,50 +155,25 @@ public final class CreateIndexHandler implements OperationHandler {
         return "0".equals(request.param("wait_for_active_shards"));
     }
 
-    private static ObjectNode buildMetadata(String index, String uuid, ObjectNode requested, long nowEpochMillis) {
+    private static ObjectNode buildMetadata(
+        String index,
+        String uuid,
+        TemplateComposition.Composed effective,
+        long nowEpochMillis
+    ) {
         ObjectNode metadata = Json.object();
         metadata.put("index", index);
         metadata.put("uuid", uuid);
         // OpenSearch stores creation_date as epoch millis in a string.
         metadata.put("creation_date", Long.toString(nowEpochMillis));
         metadata.put("state", "open");
-        metadata.set("settings", normalizeSettings(requested.path("settings")));
-        metadata.set("mappings", requested.has("mappings") ? requested.get("mappings").deepCopy() : Json.object());
+        // Stored flat, which is the canonical form -- see Settings. The shard manager reads these keys
+        // directly, and indices.get_settings renders them nested on the way out.
+        metadata.set("settings", effective.settings()
+            .withDefault(SETTING_SHARDS, DEFAULT_NUMBER_OF_SHARDS)
+            .withDefault(SETTING_REPLICAS, DEFAULT_NUMBER_OF_REPLICAS)
+            .toJson(true));
+        metadata.set("mappings", effective.mappings());
         return metadata;
-    }
-
-    /**
-     * Flattens settings to the {@code index.}-prefixed form and fills in the shard defaults.
-     *
-     * <p>OpenSearch accepts both {@code {"number_of_shards": 2}} and
-     * {@code {"index": {"number_of_shards": 2}}}, and normalises internally. The shard manager needs
-     * one predictable shape to read, so both are accepted and one is stored.
-     *
-     * <p>Only the two shard settings are understood. Everything else is carried through unchanged and
-     * unvalidated; see the class javadoc.
-     */
-    private static ObjectNode normalizeSettings(JsonNode requestedSettings) {
-        ObjectNode settings = Json.object();
-
-        if (requestedSettings.isObject()) {
-            requestedSettings.properties().forEach(entry -> {
-                if ("index".equals(entry.getKey()) && entry.getValue().isObject()) {
-                    entry.getValue().properties()
-                        .forEach(nested -> settings.set("index." + nested.getKey(), nested.getValue().deepCopy()));
-                } else if (entry.getKey().startsWith("index.")) {
-                    settings.set(entry.getKey(), entry.getValue().deepCopy());
-                } else {
-                    settings.set("index." + entry.getKey(), entry.getValue().deepCopy());
-                }
-            });
-        }
-
-        if (settings.has(SETTING_SHARDS) == false) {
-            settings.put(SETTING_SHARDS, DEFAULT_NUMBER_OF_SHARDS);
-        }
-        if (settings.has(SETTING_REPLICAS) == false) {
-            settings.put(SETTING_REPLICAS, DEFAULT_NUMBER_OF_REPLICAS);
-        }
-        return settings;
     }
 }

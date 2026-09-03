@@ -6,6 +6,7 @@ package org.opensearch.controlplane.handler.template;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.store.KeyValueStore;
 
@@ -19,11 +20,14 @@ import java.util.regex.Pattern;
 /**
  * Template definitions in the key/value store, one document per template.
  *
- * <p>Stored verbatim. A real cluster normalises settings on the way in — nesting them under
- * {@code index} and stringifying values, so {@code {"number_of_shards": 1}} comes back as
- * {@code {"index": {"number_of_shards": "1"}}} — and this does not. That divergence is recorded in the
- * README rather than fixed here, because it is not specific to templates: index settings have the same
- * question, and it wants solving once for both.
+ * <p>Settings are stored in the one canonical form — flat dotted keys, string values — rather than as
+ * the client sent them, because that is what a real cluster does: {@code {"number_of_shards": 1}} in a
+ * template of any of the three kinds comes back as {@code {"index": {"number_of_shards": "1"}}}. See
+ * {@link Settings}.
+ *
+ * <p>Normalising here rather than in {@link PutTemplateHandler} makes it a property of the store, so
+ * neither a future write path nor {@link TemplateComposition} can read a definition that skipped it.
+ * The nesting a client sees is applied on the way out by {@link #rendered}.
  */
 final class TemplateStore {
 
@@ -44,7 +48,34 @@ final class TemplateStore {
     }
 
     void put(String name, ObjectNode definition) {
-        store.put(key(name), Json.toBytes(definition));
+        store.put(key(name), Json.toBytes(canonical(definition)));
+    }
+
+    /** A definition with its settings normalised. Copies rather than mutating the caller's node. */
+    private ObjectNode canonical(ObjectNode definition) {
+        ObjectNode copy = definition.deepCopy();
+        ObjectNode block = kind.blockOf(copy);
+        if (block != null && block.has("settings")) {
+            block.set("settings", Settings.forIndex(block.get("settings")).toJson(true));
+        }
+        return copy;
+    }
+
+    /**
+     * A stored definition rendered for the wire.
+     *
+     * <p>Nested settings by default. {@code flat_settings=true} leaves them dotted, but only for the
+     * kinds that honour it — legacy does, the other two ignore the parameter. See {@link TemplateKind}.
+     */
+    ObjectNode rendered(ObjectNode definition, boolean flatSettings) {
+        ObjectNode block = kind.blockOf(definition);
+        if (block == null || block.has("settings") == false) {
+            return definition;
+        }
+        boolean flat = flatSettings && kind.honoursFlatSettings();
+        ObjectNode copy = definition.deepCopy();
+        kind.blockOf(copy).set("settings", Settings.forIndex(block.get("settings")).toJson(flat));
+        return copy;
     }
 
     boolean delete(String name) {

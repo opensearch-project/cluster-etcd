@@ -5,6 +5,7 @@
 package org.opensearch.controlplane.resolver;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.store.KeyValueStore;
 
@@ -49,7 +50,9 @@ public final class IndexAbstractions {
         store.scanPrefix(INDEX_KEY_PREFIX).forEach((key, versioned) -> {
             String name = key.substring(INDEX_KEY_PREFIX.length());
             JsonNode metadata = parse(versioned.value());
-            boolean hidden = metadata.path("settings").path("index.hidden").asBoolean(false);
+            // Through Settings rather than a direct path read: values are stored as text, so
+            // JsonNode.asBoolean would read the string "true" as false.
+            boolean hidden = Settings.forIndex(metadata.path("settings")).getAsBoolean("index.hidden", false);
             boolean open = "open".equals(metadata.path("state").asText("open"));
             combined.put(name, IndexAbstraction.index(name, hidden, open));
         });

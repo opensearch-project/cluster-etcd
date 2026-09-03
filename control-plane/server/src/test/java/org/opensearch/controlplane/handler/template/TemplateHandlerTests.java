@@ -190,6 +190,56 @@ class TemplateHandlerTests {
     }
 
     // ------------------------------------------------------------------
+    // settings normalisation -- a real cluster normalises templates too
+    // ------------------------------------------------------------------
+
+    /**
+     * Verified against 3.9.0 for all three kinds: whichever shape a template's settings were written
+     * in, a GET answers them nested under {@code index} with the values as strings.
+     */
+    @Test
+    void templateSettingsAreNormalisedForEveryKind() throws Exception {
+        put("/_index_template/it", "{\"index_patterns\":[\"a-*\"],\"template\":{\"settings\":{\"number_of_shards\":2}}}");
+        put("/_component_template/ct", "{\"template\":{\"settings\":{\"index.number_of_replicas\":7}}}");
+        put("/_template/lt", "{\"index_patterns\":[\"b-*\"],\"settings\":{\"index\":{\"number_of_replicas\":6}}}");
+
+        JsonNode index = body(router.dispatch("GET", "/_index_template/it"))
+            .get("index_templates").get(0).get("index_template").get("template").get("settings");
+        assertEquals("2", index.get("index").get("number_of_shards").textValue());
+
+        JsonNode component = body(router.dispatch("GET", "/_component_template/ct"))
+            .get("component_templates").get(0).get("component_template").get("template").get("settings");
+        assertEquals("7", component.get("index").get("number_of_replicas").textValue());
+
+        JsonNode legacy = body(router.dispatch("GET", "/_template/lt")).get("lt").get("settings");
+        assertEquals("6", legacy.get("index").get("number_of_replicas").textValue());
+    }
+
+    /**
+     * Verified: {@code flat_settings=true} is honoured by legacy {@code GET /_template} and ignored by
+     * {@code GET /_index_template}. The parameter is declared on the one and not the other in the spec,
+     * and a live cluster follows suit.
+     */
+    @Test
+    void flatSettingsIsHonouredByLegacyAndIgnoredByTheNewerKinds() throws Exception {
+        put("/_template/lt", "{\"index_patterns\":[\"b-*\"],\"settings\":{\"number_of_replicas\":6}}");
+        put("/_index_template/it", "{\"index_patterns\":[\"a-*\"],\"template\":{\"settings\":{\"number_of_shards\":2}}}");
+
+        JsonNode legacy = get("/_template/lt").get("lt").get("settings");
+        assertEquals("6", legacy.get("index.number_of_replicas").textValue(), "flattened on request");
+        assertFalse(legacy.has("index"), "and not also nested");
+
+        JsonNode index = get("/_index_template/it")
+            .get("index_templates").get(0).get("index_template").get("template").get("settings");
+        assertEquals("2", index.get("index").get("number_of_shards").textValue(), "parameter ignored");
+    }
+
+    /** A GET with {@code flat_settings=true}. */
+    private JsonNode get(String path) throws Exception {
+        return body(router.dispatch("GET", path, path, Map.of("flat_settings", List.of("true")), Map.of(), new byte[0]));
+    }
+
+    // ------------------------------------------------------------------
     // composition -- precedence established by probing _simulate_index
     // ------------------------------------------------------------------
 
@@ -203,6 +253,15 @@ class TemplateHandlerTests {
         return body(response).get("template");
     }
 
+    /**
+     * The composed settings, nested under {@code index} and stringified as a real cluster renders them.
+     * Verified: {@code _simulate_index} answers {@code {"settings":{"index":{"number_of_shards":"2"}}}}
+     * whichever of the accepted shapes the template was written in.
+     */
+    private JsonNode composedSettings(JsonNode composed) {
+        return composed.get("settings").get("index");
+    }
+
     /** Verified: later entries in composed_of win. Reversing the list reverses the outcome. */
     @Test
     void componentTemplatesMergeInOrderWithLaterWinning() throws Exception {
@@ -210,10 +269,29 @@ class TemplateHandlerTests {
         component("c2", "{\"settings\":{\"number_of_replicas\":5}}");
 
         put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c1\",\"c2\"]}");
-        assertEquals(5, simulateIndex("x-1").get("settings").get("number_of_replicas").asInt());
+        assertEquals("5", composedSettings(simulateIndex("x-1")).get("number_of_replicas").textValue());
 
         put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c2\",\"c1\"]}");
-        assertEquals(9, simulateIndex("x-1").get("settings").get("number_of_replicas").asInt());
+        assertEquals("9", composedSettings(simulateIndex("x-1")).get("number_of_replicas").textValue());
+    }
+
+    /**
+     * Overriding is key by key on the canonical flat form, so it lands across differing shapes.
+     *
+     * <p>The regression this pins: merging the nested documents structurally left
+     * {@code {"index":{"number_of_replicas":9},"number_of_replicas":5}} — two keys for one setting,
+     * where a real cluster reports one.
+     */
+    @Test
+    void anOverrideLandsEvenWhenTheTwoSidesSpellTheSettingDifferently() throws Exception {
+        component("c1", "{\"settings\":{\"index\":{\"number_of_replicas\":9}}}");
+        put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c1\"],"
+            + "\"template\":{\"settings\":{\"number_of_replicas\":5}}}");
+
+        JsonNode settings = simulateIndex("x-1").get("settings");
+        assertEquals("5", settings.get("index").get("number_of_replicas").textValue());
+        assertEquals(1, settings.size(), "one setting, not one per spelling");
+        assertEquals(1, settings.get("index").size());
     }
 
     /** Verified: the template's own block beats every component. */
@@ -224,7 +302,7 @@ class TemplateHandlerTests {
         put("/_index_template/t", "{\"index_patterns\":[\"x-*\"],\"composed_of\":[\"c1\",\"c2\"],"
             + "\"template\":{\"settings\":{\"number_of_replicas\":1}}}");
 
-        assertEquals(1, simulateIndex("x-1").get("settings").get("number_of_replicas").asInt());
+        assertEquals("1", composedSettings(simulateIndex("x-1")).get("number_of_replicas").textValue());
     }
 
     @Test
@@ -252,8 +330,8 @@ class TemplateHandlerTests {
             + "\"template\":{\"settings\":{\"number_of_replicas\":7}}}");
 
         JsonNode composed = simulateIndex("x-1");
-        assertEquals(7, composed.get("settings").get("number_of_replicas").asInt());
-        assertFalse(composed.get("settings").has("number_of_shards"), "the loser contributes nothing");
+        assertEquals("7", composedSettings(composed).get("number_of_replicas").textValue());
+        assertFalse(composedSettings(composed).has("number_of_shards"), "the loser contributes nothing");
     }
 
     @Test
@@ -274,7 +352,7 @@ class TemplateHandlerTests {
             "{\"index_patterns\":[\"y-*\"],\"composed_of\":[\"c1\"]}".getBytes(StandardCharsets.UTF_8));
 
         assertEquals(RestStatus.OK, simulated.status());
-        assertEquals(4, body(simulated).get("template").get("settings").get("number_of_replicas").asInt());
+        assertEquals("4", composedSettings(body(simulated).get("template")).get("number_of_replicas").textValue());
     }
 
     // ------------------------------------------------------------------
@@ -299,7 +377,7 @@ class TemplateHandlerTests {
         put("/x-1", "{\"settings\":{\"number_of_shards\":7}}");
         JsonNode settings = MAPPER.readTree(
             store.getAsString("tenant/default/indices/x-1").orElseThrow()).get("settings");
-        assertEquals(7, settings.get("index.number_of_shards").asInt(), "the request wins");
+        assertEquals("7", settings.get("index.number_of_shards").textValue(), "the request wins");
     }
 
     @Test
@@ -310,7 +388,7 @@ class TemplateHandlerTests {
         router.dispatch("PUT", "/unmatched");
         JsonNode settings = MAPPER.readTree(
             store.getAsString("tenant/default/indices/unmatched").orElseThrow()).get("settings");
-        assertEquals(1, settings.get("index.number_of_shards").asInt(), "the default, not the template");
+        assertEquals("1", settings.get("index.number_of_shards").textValue(), "the default, not the template");
     }
 
     // ------------------------------------------------------------------
@@ -352,7 +430,7 @@ class TemplateHandlerTests {
         router.dispatch("PUT", "/x-1");
         JsonNode settings = MAPPER.readTree(
             store.getAsString("tenant/default/indices/x-1").orElseThrow()).get("settings");
-        assertEquals(1, settings.get("index.number_of_shards").asInt(), "known gap, documented");
+        assertEquals("1", settings.get("index.number_of_shards").textValue(), "known gap, documented");
     }
 
     @Test

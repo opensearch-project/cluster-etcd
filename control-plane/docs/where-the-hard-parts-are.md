@@ -95,8 +95,11 @@ Copying `MetadataIndexTemplateService` is the right instinct. Notes on doing it:
 - **It is coupled to types, not just to cluster state.** Beyond `ClusterState` and `Metadata` it
   wants `IndexMetadata`, `Settings`, `CompressedXContent`, `IndexScopedSettings`, and — for
   validation — `MapperService`. Swapping the state read for a store read is the easy part; deciding
-  how far to follow the type graph is the real work. `Settings` in particular is load-bearing and
-  has its own flatten/normalise semantics that our current `index.`-prefixed map only approximates.
+  how far to follow the type graph is the real work. ~~`Settings` in particular is load-bearing and
+  has its own flatten/normalise semantics that our current `index.`-prefixed map only approximates.~~
+  **`Settings` is done** — `org.opensearch.controlplane.metadata.Settings` reproduces the
+  flatten/normalise semantics, established by probing rather than by porting, and every template
+  surface was diffed against a live cluster afterwards. See the README's Settings section.
 - **`validateIndexTemplateV2` actually builds the mappings** to check them, which pulls in the
   mapping engine. That is likely the boundary worth stopping at: compose templates, but defer full
   mapping validation and accept that a bad mapping is caught later than a real cluster catches it.
