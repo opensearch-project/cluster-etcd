@@ -212,9 +212,20 @@ current `IndexManagementTasks` explicitly is not.
   The write-index alias switch is now a single-key update (see above). What is left for the control
   plane is implicit target naming (`logs-000001` → `logs-000002`), `dry_run`, and driving the
   exchange. Still last, but for orchestration reasons rather than atomicity ones.
-- **`snapshot.create/restore/clone/delete`, `cleanup_repository`, `verify_repository`** — long-running
-  work against a repository backend, plus progress reporting through `snapshot.status`.
-- **`indices.open`, `close`** — state transitions that the shard manager must act on.
+- **`snapshot.create` and `snapshot.restore` are out of scope by decision, not difficulty.** Taking and
+  restoring a snapshot is data plane work: it reads and writes shard data against a repository backend,
+  and nothing about it needs cluster-wide coordination that a data node cannot do. OpenSearch treats
+  them as cluster-manager operations, and that is the part we deliberately disagree with — it is why
+  those operations are long-running and awkward there in the first place. **The control plane keeps
+  repository configuration** (`create/get/delete_repository`, Tier 0) and the snapshot *metadata* reads
+  (`snapshot.get`, Tier 1); the transfers themselves belong to the layer holding the data. When this is
+  implemented, both operation groups need excluding in `spec/control-plane-scope.yaml` with that reason,
+  since the scope file demands one per group.
+- **`snapshot.clone/delete`, `cleanup_repository`, `verify_repository`** — still open. Which of these
+  follow create and restore into the data plane is worth deciding as a set rather than one at a time.
+- ~~**`indices.open`, `close`**~~ — **done.** State transitions the shard manager must act on, so each
+  writes a task; the response asymmetries and the closed-index settings rules are on
+  `ChangeIndexStateHandler` and `PutIndexSettingsHandler`.
 
 ## Tier 5: facts we do not own
 

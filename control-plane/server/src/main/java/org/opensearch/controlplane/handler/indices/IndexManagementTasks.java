@@ -4,9 +4,17 @@
  */
 package org.opensearch.controlplane.handler.indices;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.store.KeyValueStore;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Index management tasks written for the shard manager to pick up.
@@ -31,9 +39,9 @@ import org.opensearch.controlplane.store.KeyValueStore;
  * <p>Timestamps are taken from the caller rather than the clock so that tests are deterministic and
  * so a future implementation can use whatever clock the rest of the service agrees on.
  */
-final class IndexManagementTasks {
+public final class IndexManagementTasks {
 
-    static final String KEY_PREFIX = "tasks/index-management/";
+    public static final String KEY_PREFIX = "tasks/index-management/";
 
     static final String TYPE_CREATE_INDEX = "create-index";
     static final String TYPE_DELETE_INDEX = "delete-index";
@@ -43,6 +51,30 @@ final class IndexManagementTasks {
     static final String TYPE_OPEN_INDEX = "open-index";
 
     static final String STATE_PENDING = "pending";
+
+    /** Field names, shared with {@code cluster.pending_tasks}, which reports these records. */
+    public static final String TYPE = "type";
+    public static final String INDEX = "index";
+    public static final String TASK_ID = "task_id";
+    public static final String SUBMITTED_AT = "submitted_at";
+
+    /**
+     * Submission order within this process, so tasks written in the same millisecond stay ordered.
+     *
+     * <p>Needed because {@code submitted_at} is millisecond-resolution and one request can submit
+     * several tasks — {@code put_settings} across a wildcard writes one per index, all in the same
+     * millisecond. Without this they would be ordered by their random IDs, which is to say not at all,
+     * and {@code cluster.pending_tasks} would report an {@code insert_order} that did not reflect
+     * submission.
+     *
+     * <p><b>Per process, not global.</b> Two instances each start at zero, so across instances ordering
+     * falls back to the timestamp and ties within a millisecond are arbitrary. A global counter would
+     * mean a shared key every task write contended on, which is a bad trade for a display field —
+     * OpenSearch can afford a real counter because it has one writer.
+     */
+    public static final String SEQUENCE = "sequence";
+
+    private static final AtomicLong SEQUENCER = new AtomicLong();
 
     private final KeyValueStore store;
 
@@ -67,12 +99,13 @@ final class IndexManagementTasks {
         String taskId = IndexStore.newUuid();
 
         ObjectNode task = Json.object();
-        task.put("task_id", taskId);
-        task.put("type", type);
-        task.put("index", index);
+        task.put(TASK_ID, taskId);
+        task.put(TYPE, type);
+        task.put(INDEX, index);
         task.put("index_uuid", indexUuid);
         task.put("state", STATE_PENDING);
-        task.put("submitted_at", submittedAtEpochMillis);
+        task.put(SUBMITTED_AT, submittedAtEpochMillis);
+        task.put(SEQUENCE, SEQUENCER.incrementAndGet());
 
         store.put(key(taskId), Json.toBytes(task));
         return taskId;
@@ -80,5 +113,37 @@ final class IndexManagementTasks {
 
     int pendingCount() {
         return store.scanPrefix(KEY_PREFIX).size();
+    }
+
+    /**
+     * Every task the control plane still believes is pending, oldest first.
+     *
+     * <p>Ordered by submission time, then by {@link #SEQUENCE}, then by ID. The store scans in key order
+     * and the keys are UUIDs, so without the sort the order would be arbitrary. The sequence matters
+     * more than it looks: {@code submitted_at} is millisecond-resolution and one request can submit
+     * several tasks, so timestamp alone leaves them tied and {@code insert_order} meaningless for
+     * exactly the case where a client submitted a batch.
+     *
+     * <p><b>Nothing removes a task, so this only grows.</b> Completion is the shard manager's half of
+     * the contract and is not built; see the class javadoc on lifecycle. {@code cluster.pending_tasks}
+     * reports this list faithfully, which makes the gap visible rather than hiding it.
+     */
+    public static List<JsonNode> pending(KeyValueStore store) {
+        List<JsonNode> tasks = new ArrayList<>();
+        store.scanPrefix(KEY_PREFIX).forEach((key, versioned) -> tasks.add(parse(versioned.value())));
+        tasks.sort(
+            Comparator.comparingLong((JsonNode task) -> task.path(SUBMITTED_AT).asLong(0))
+                .thenComparingLong(task -> task.path(SEQUENCE).asLong(0))
+                .thenComparing(task -> task.path(TASK_ID).asText(""))
+        );
+        return tasks;
+    }
+
+    private static JsonNode parse(byte[] value) {
+        try {
+            return Json.parse(value);
+        } catch (IOException e) {
+            throw new UncheckedIOException("corrupt index management task", e);
+        }
     }
 }

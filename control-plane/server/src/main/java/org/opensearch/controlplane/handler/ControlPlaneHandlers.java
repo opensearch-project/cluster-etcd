@@ -9,6 +9,7 @@ import org.opensearch.controlplane.capability.PermissiveCapabilities;
 import org.opensearch.controlplane.capability.PermissiveSettings;
 import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.cluster.GetClusterSettingsHandler;
+import org.opensearch.controlplane.handler.cluster.PendingTasksHandler;
 import org.opensearch.controlplane.handler.cluster.PutClusterSettingsHandler;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
@@ -125,6 +126,7 @@ public final class ControlPlaneHandlers {
             // cluster
             .register(new GetClusterSettingsHandler())
             .register(new PutClusterSettingsHandler(settings))
+            .register(new PendingTasksHandler())
             // ingest and search pipelines are the same API twice; see PipelineKind
             .register(new PutPipelineHandler(PipelineKind.ingest(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.ingest()))
