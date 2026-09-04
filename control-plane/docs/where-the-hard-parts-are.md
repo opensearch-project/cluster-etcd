@@ -212,17 +212,61 @@ current `IndexManagementTasks` explicitly is not.
   The write-index alias switch is now a single-key update (see above). What is left for the control
   plane is implicit target naming (`logs-000001` → `logs-000002`), `dry_run`, and driving the
   exchange. Still last, but for orchestration reasons rather than atomicity ones.
-- **`snapshot.create` and `snapshot.restore` are out of scope by decision, not difficulty.** Taking and
-  restoring a snapshot is data plane work: it reads and writes shard data against a repository backend,
-  and nothing about it needs cluster-wide coordination that a data node cannot do. OpenSearch treats
-  them as cluster-manager operations, and that is the part we deliberately disagree with — it is why
-  those operations are long-running and awkward there in the first place. **The control plane keeps
-  repository configuration** (`create/get/delete_repository`, Tier 0) and the snapshot *metadata* reads
-  (`snapshot.get`, Tier 1); the transfers themselves belong to the layer holding the data. When this is
-  implemented, both operation groups need excluding in `spec/control-plane-scope.yaml` with that reason,
-  since the scope file demands one per group.
-- **`snapshot.clone/delete`, `cleanup_repository`, `verify_repository`** — still open. Which of these
-  follow create and restore into the data plane is worth deciding as a set rather than one at a time.
+### The snapshot boundary: three planes, not two
+
+The first cut of this asked "data plane or control plane?" and got a good answer to the wrong question.
+The real split has a middle:
+
+| plane | snapshot work | why |
+|---|---|---|
+| **control plane** | repository **registration** — `create/get/delete_repository` | a single key; completes within the request |
+| **management plane** | `cleanup_repository`, `clone`, `delete`, `verify_repository`, and the progress reporting behind `status` | long-running jobs against object storage, needing retries and leases |
+| **data plane** | `create`, `restore` | move shard data to and from running nodes |
+
+**"Not the data plane" does not make something the control plane's.** That is the correction. Cleaning up
+a repository touches no running data node, so the two-plane version put it here — but it is a
+long-running job, and this service does short-lived CRUD only. Same for cloning a snapshot: it copies
+blobs, which is neither a data node's work nor a request-scoped operation.
+
+`snapshot.create` and `snapshot.restore` remain out of scope for the original reason: they move shard
+data on running nodes. OpenSearch treats them as cluster-manager operations, and that is the part we
+deliberately disagree with — it is *why* they are long-running and awkward there.
+
+#### What this buys: no second outbound seam
+
+The two-plane version implied one. `RepositoryData` — which snapshots exist, their state, which indices
+each holds — lives in `index-N` blobs **inside the repository**, not in cluster state, so every snapshot
+operation except registration is a repository read. Putting those here would have meant a
+`SnapshotRepository` interface alongside `KeyValueStore` and an S3/Azure/GCS dependency surface, breaking
+the property that the key/value store is this service's only outbound seam.
+
+Moving them to the management plane **removes the problem rather than solving it.** The management plane
+is where repository credentials and clients belong anyway: it is the layer that already needs to talk to
+infrastructure to allocate shards.
+
+#### Two things still undecided
+
+- **`snapshot.get` and `snapshot.status`.** Both are reads, so they look like control plane work — but
+  both read the repository, which reintroduces the seam. Either the management plane projects snapshot
+  metadata into the shared store for this service to read (consistent with how capabilities and the
+  settings registry are heading), or these move out too. The first is more attractive and is the same
+  shape of answer as everywhere else.
+- **`status` spans planes regardless.** It reports in-flight progress, and after this split
+  `create`/`restore` run on the data plane while `clone`/`delete` run on the management plane. Whatever
+  reports it needs both, or it answers partially and says so.
+
+#### Done: the slice that needs none of that
+
+~~`snapshot.create_repository`, `get_repository`, `delete_repository`~~ — **done.** Repository
+**configuration**: a name, a type, a settings block. One key per repository, no repository access, no new
+dependency, and independent of every decision above.
+
+The behaviour was not as simple as the shape. `GET /_snapshot/foo*` is a **404 on a cluster that has
+never had a repository and a 200 on one that has** — `TransportGetRepositoriesAction` takes an early
+branch when `RepositoriesMetadata` is absent, naming the first token verbatim, and the normal path lets a
+pattern matching nothing contribute nothing. That is the second instance of this artifact in the API
+after `IngestMetadata`, and probing an empty cluster shows only one side of it. `DELETE` follows different
+rules again: a single glob rather than a comma list, with `*` exempt from the 404 where `foo*` is not.
 - ~~**`indices.open`, `close`**~~ — **done.** State transitions the shard manager must act on, so each
   writes a task; the response asymmetries and the closed-index settings rules are on
   `ChangeIndexStateHandler` and `PutIndexSettingsHandler`.

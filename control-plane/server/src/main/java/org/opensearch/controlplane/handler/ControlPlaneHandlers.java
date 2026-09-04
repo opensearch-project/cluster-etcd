@@ -34,6 +34,7 @@ import org.opensearch.controlplane.handler.pipeline.DeletePipelineHandler;
 import org.opensearch.controlplane.handler.pipeline.GetPipelineHandler;
 import org.opensearch.controlplane.handler.pipeline.PipelineKind;
 import org.opensearch.controlplane.handler.pipeline.PutPipelineHandler;
+import org.opensearch.controlplane.handler.snapshot.RepositoryHandlers;
 import org.opensearch.controlplane.handler.template.Templates;
 
 /**
@@ -137,6 +138,9 @@ public final class ControlPlaneHandlers {
 
         // close and open are mirror images, so one implementation serves both.
         ChangeIndexStateHandler.handlers().forEach(registry::register);
+
+        // Snapshot repository configuration -- the only snapshot operations that need no repository access.
+        RepositoryHandlers.handlers().forEach(registry::register);
 
         // Templates: four operations across three kinds, which differ more than the pipelines do.
         Templates.handlers(settings).forEach(registry::register);

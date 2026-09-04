@@ -598,6 +598,36 @@ public final class ErrorResponses {
         );
     }
 
+    /** {@code 404} for a snapshot repository that is not configured. Verified on GET and DELETE. */
+    public static RestResponse repositoryMissing(RestRequest request, String repository) {
+        return structured(
+            RestStatus.NOT_FOUND,
+            "repository_missing_exception",
+            "[" + repository + "] missing",
+            request
+        );
+    }
+
+    /**
+     * {@code 400} for a request that failed {@code ActionRequestValidationException}.
+     *
+     * <p>Same rendering as {@link #noSettingsToUpdate}, which is one instance of it: one-based, each
+     * error terminated by a semicolon, and <b>no space between entries</b>. See
+     * {@link #privateSettingsRejected} on why that detail is worth stating.
+     */
+    public static RestResponse validationFailed(RestRequest request, String... errors) {
+        StringBuilder validation = new StringBuilder("Validation Failed: ");
+        for (int i = 0; i < errors.length; i++) {
+            validation.append(i + 1).append(": ").append(errors[i]).append(';');
+        }
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "action_request_validation_exception",
+            validation.toString(),
+            request
+        );
+    }
+
     public static RestResponse noSettingsToUpdate(RestRequest request) {
         return structured(
             RestStatus.BAD_REQUEST,

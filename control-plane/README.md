@@ -10,20 +10,20 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 42 implemented, 37 stubbed
+126 routes, 79 operation groups, 45 implemented, 34 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
 | `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
 | `cluster` | 21 | component template CRUD, `get_settings`, `put_settings`, `pending_tasks` |
-| `snapshot` | 16 | — |
+| `snapshot` | 16 | repository registration: `create_repository`, `get_repository`, `delete_repository` |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 37 operation groups return `501 Not Implemented`** with a structured
+**The remaining 34 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -40,21 +40,48 @@ curl -XGET localhost:9400/_cluster/health   # 501, not yet implemented
 
 ## Where this sits
 
-Three layers communicating loosely through a shared data store:
+Three planes communicating loosely through a shared data store:
 
-| layer | responsibility |
-|---|---|
-| **control plane** (this repo) | operations on the resources that exist — index, alias, template, pipeline, snapshot configuration; owns task lifecycle including retries and cleanup |
-| **shard manager** | allocates resources to data nodes: reads registered index management tasks, sees which data nodes exist from their published heartbeats, writes per-node configuration |
-| **data plane** | indexes and searches shards; "regular" OpenSearch plus a plugin that fetches configuration from the data store and synthesizes local cluster state in-process |
+| plane | responsibility | lifetime of its work |
+|---|---|---|
+| **control plane** (this repo) | **short-lived CRUD only.** Operations on the resources that exist — index, alias, template, pipeline configuration, and snapshot repository *registration* | completes within the request |
+| **management plane** | longer-running orchestration, as several logical services that may or may not be colocated: shard allocation (the "shard manager"), repository cleanup and cloning, health checking, and the task lifecycle — retries, leases, cleanup | minutes to hours |
+| **data plane** | hosts the physical indices and serves customer interactions with that data: "regular" OpenSearch plus a plugin that fetches configuration from the data store and synthesizes local cluster state in-process | per request, on the data |
 
 A create-index request therefore ends, from this service's point of view, at
 "validate, write the index configuration, register an index management task". The
-shard manager assigns shards; the data nodes consume their updated configuration and
-do the actual create-shard work. No layer calls another directly.
+management plane assigns shards; the data nodes consume their updated configuration
+and do the actual create-shard work. No plane calls another directly.
 
 This is why an `OperationHandler` returning a response is a complete operation:
 nothing here blocks on shard work.
+
+### "Short-lived CRUD only" is the line, and it decides scope
+
+The sharper version of the older test ("answerable from cluster state and metadata
+alone"), and it settles cases that one left ambiguous. If an operation cannot
+finish inside its own request, it does not belong here — it belongs to the
+management plane, and this service's part of it is to validate, write metadata, and
+register a task.
+
+That is why **snapshot repository registration is here and snapshot administration
+is not**. Registering a repository is a single key. Cleaning one up, cloning a
+snapshot, or verifying a repository are long-running jobs against object storage —
+and although they touch no running data node, "not the data plane" does not make
+them the control plane's. See
+[`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md).
+
+It also explains a gap this service has today rather than excusing it:
+`cluster.pending_tasks` reports a list that only grows, because marking a task
+complete is the management plane's half of the handoff and there is no management
+plane yet.
+
+*On the name:* "management plane" comes from networking, where the classic split is
+data / control / management. Be aware the conventional networking meaning is not
+quite this one — there it tends to mean the operator-facing configuration and
+monitoring surface, which is closer to what this repo does. Used here it means the
+long-running orchestration layer, which is what the definition above says and what
+matters.
 
 ## How the API surface is defined
 
@@ -118,9 +145,10 @@ Currently out of scope wholesale: `cat` and `list` (text/plain table rendering),
 line to re-enable.
 
 `indices.clone` / `shrink` / `split` / `rollover` are in scope even though they
-move data: the control plane validates and creates the target index metadata,
-initiates the work, hands the shard copy off to the data plane, and owns the
-overarching task lifecycle including retries and cleanup.
+move data, on the same terms as `indices.create`: the control plane validates,
+creates the target index metadata and registers a task. The copy itself and the
+task's lifecycle — retries, cleanup, reporting — belong to the management plane,
+which is what keeps these short-lived CRUD from this side.
 
 The `tasks` namespace is the one deliberate gap in that story. It is deferred, not
 out of scope — exposing `_tasks` compatibly needs a task identity decision first,
@@ -702,6 +730,15 @@ character for character against the server's response.
   priority, legacy templates are *merged* — all matching ones, in ascending `order`, later winning; that
   is what `order` is for, and why overlapping patterns are rejected for one kind and legal for the
   other. Ties on `order` break by name. Eight requests diffed against 3.9.0, all agreeing.
+- **Snapshot repository registration.** Eleven requests diffed against 3.9.0 — all byte-exact. But every
+  one of them ran against a cluster that has **never had a repository**, and that is a different code
+  path: `TransportGetRepositoriesAction` takes an early branch when `RepositoriesMetadata` is absent,
+  reporting the first token verbatim. Once metadata exists, a pattern matching nothing contributes nothing
+  instead, so **`GET /_snapshot/foo*` is a 404 on a pristine cluster and a 200 on one that has ever had a
+  repository.** The second instance of this artifact after `IngestMetadata`, reproduced the same way with
+  a marker key. Read from the source, because probing an empty cluster only ever shows one side.
+  `DELETE` follows different rules again — a single glob rather than a comma list, with `*` exempt from
+  the 404 where `foo*` is not, exactly as with deleting an ingest pipeline.
 - **`cluster.pending_tasks`** answers `{"tasks":[]}` byte-exact on an idle control plane. The non-empty
   shape could **not** be verified against a live cluster and is not claimed to be: a pending task exists
   only while a cluster-state update is queued, so there is no way to hold one still long enough to
@@ -877,7 +914,7 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 37 operation groups that are still stubbed.
+- Everything about the 34 operation groups that are still stubbed.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
@@ -892,6 +929,12 @@ request would normally get. Verified, and reproduced.
   there (which insists on `SEGMENT`), and an incomplete analyzer definition is accepted here and fails
   with `Failed to build analyzers` there. Values stay the data plane's authority — the same boundary
   that keeps `include_defaults` out.
+- **The repository success shapes are unverified.** `{"acknowledged": true}` on create and the name-keyed
+  GET body come from the spec's schemas, not from a diff: creating a real repository needs `path.repo`
+  configured on the cluster, which the probe cluster does not have, so no repository could be created to
+  read back. Also unverified for the same reason: whether `uuid` appears in a GET, and the
+  post-metadata resolution rules — those were read from `TransportGetRepositoriesAction` rather than
+  observed.
 - **`index.uuid`, `index.creation_date` and `index.provided_name` are not in a created index's
   settings.** A real cluster writes them there; here they are top-level metadata fields, and
   `indices.get_settings` renders them back in on the way out. Same information, held once rather than
