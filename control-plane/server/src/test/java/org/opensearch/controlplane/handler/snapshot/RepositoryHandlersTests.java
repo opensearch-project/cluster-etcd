@@ -27,10 +27,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Snapshot repository configuration: {@code PUT}, {@code GET} and {@code DELETE} on
  * {@code /_snapshot/{repository}}.
  *
- * <p>Every error path here was verified against OpenSearch 3.9.0. The <b>success</b> shapes could not
- * be: creating a real repository needs {@code path.repo} configured on the cluster, which the probe
- * cluster does not have, so {@code {"acknowledged": true}} and the name-keyed GET body come from the
- * spec's schemas rather than from a diff. Marked in the README's "Still unverified" accordingly.
+ * <p>Verified against OpenSearch 3.9.0 in <b>both</b> cluster states, which matters here more than
+ * usual: 11 requests against a cluster that has never had a repository, and a 17-step stateful sequence
+ * against one with {@code path.repo} configured so real repositories could be created. The two states
+ * take different code paths, and the first set alone would have hidden half the rules.
+ *
+ * <p>Confirmed by the second run: settings round-trip nested and stringified, {@code uuid} does not
+ * appear in a GET even though the spec allows it, and a pattern matching nothing answers {@code 200 {}}
+ * once metadata exists where it is a 404 before.
  */
 class RepositoryHandlersTests {
 
@@ -173,7 +177,10 @@ class RepositoryHandlersTests {
      * — so an expression of only such patterns answers a bare {@code {}}. On a pristine cluster the same
      * request is a 404. See {@link RepositoryStore} on the metadata marker.
      *
-     * <p>This is the trap: probing only an empty cluster shows the 404 and hides the rule.
+     * <p>This is the trap: probing only an empty cluster shows the 404 and hides the rule. Confirmed
+     * directly against a live cluster afterwards, including the decisive case — <b>zero</b> repositories
+     * but metadata once present still answers {@code 200 {}}, so the trigger is the presence of metadata
+     * rather than the count.
      */
     @Test
     void aPatternMatchingNothingIsFineOnceARepositoryHasExisted() throws Exception {

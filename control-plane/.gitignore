@@ -25,4 +25,6 @@ data/
 
 # Generated from a specific data plane, so deployment-specific rather than source.
 capabilities.yaml
+capabilities.json
 settings_registry.yaml
+settings_registry.json

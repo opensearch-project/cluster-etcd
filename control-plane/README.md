@@ -730,15 +730,22 @@ character for character against the server's response.
   priority, legacy templates are *merged* — all matching ones, in ascending `order`, later winning; that
   is what `order` is for, and why overlapping patterns are rejected for one kind and legal for the
   other. Ties on `order` break by name. Eight requests diffed against 3.9.0, all agreeing.
-- **Snapshot repository registration.** Eleven requests diffed against 3.9.0 — all byte-exact. But every
-  one of them ran against a cluster that has **never had a repository**, and that is a different code
-  path: `TransportGetRepositoriesAction` takes an early branch when `RepositoriesMetadata` is absent,
-  reporting the first token verbatim. Once metadata exists, a pattern matching nothing contributes nothing
-  instead, so **`GET /_snapshot/foo*` is a 404 on a pristine cluster and a 200 on one that has ever had a
-  repository.** The second instance of this artifact after `IngestMetadata`, reproduced the same way with
-  a marker key. Read from the source, because probing an empty cluster only ever shows one side.
-  `DELETE` follows different rules again — a single glob rather than a comma list, with `*` exempt from
-  the 404 where `foo*` is not, exactly as with deleting an ingest pipeline.
+- **Snapshot repository registration**, verified in both cluster states — 11 requests against a cluster
+  that has never had a repository, and a **17-step stateful sequence** against one with `path.repo`
+  configured so real repositories could be created. All agree; 25 of the 28 byte-exact, the rest
+  prefix-matched where the body listed two repositories.
+  - **`GET /_snapshot/foo*` is a 404 on a pristine cluster and a 200 on one that has ever had a
+    repository.** `TransportGetRepositoriesAction` takes an early branch when `RepositoriesMetadata` is
+    absent, reporting the first token verbatim; the normal path lets a pattern matching nothing
+    contribute nothing. Confirmed directly: with **zero** repositories but metadata once present, the
+    same request answers `200 {}`. So the trigger is presence of metadata, not the count — the second
+    instance of this artifact after `IngestMetadata`, reproduced the same way with a marker key. It was
+    read from the source first, because probing an empty cluster only ever shows one side, and a first
+    implementation got it wrong in both directions.
+  - `DELETE` follows different rules again — a single glob rather than a comma list, with `*` exempt from
+    the 404 where `foo*` is not, exactly as with deleting an ingest pipeline.
+  - repository settings **round-trip nested and stringified**, and `uuid` is **not** in a GET response
+    even though the spec's schema allows it.
 - **`cluster.pending_tasks`** answers `{"tasks":[]}` byte-exact on an idle control plane. The non-empty
   shape could **not** be verified against a live cluster and is not claimed to be: a pending task exists
   only while a cluster-state update is queued, so there is no way to hold one still long enough to
@@ -929,12 +936,6 @@ request would normally get. Verified, and reproduced.
   there (which insists on `SEGMENT`), and an incomplete analyzer definition is accepted here and fails
   with `Failed to build analyzers` there. Values stay the data plane's authority — the same boundary
   that keeps `include_defaults` out.
-- **The repository success shapes are unverified.** `{"acknowledged": true}` on create and the name-keyed
-  GET body come from the spec's schemas, not from a diff: creating a real repository needs `path.repo`
-  configured on the cluster, which the probe cluster does not have, so no repository could be created to
-  read back. Also unverified for the same reason: whether `uuid` appears in a GET, and the
-  post-metadata resolution rules — those were read from `TransportGetRepositoriesAction` rather than
-  observed.
 - **`index.uuid`, `index.creation_date` and `index.provided_name` are not in a created index's
   settings.** A real cluster writes them there; here they are top-level metadata fields, and
   `indices.get_settings` renders them back in on the way out. Same information, held once rather than

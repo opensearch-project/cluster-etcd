@@ -244,16 +244,25 @@ Moving them to the management plane **removes the problem rather than solving it
 is where repository credentials and clients belong anyway: it is the layer that already needs to talk to
 infrastructure to allocate shards.
 
-#### Two things still undecided
+#### Decided: the management plane projects snapshot metadata into the shared store
 
-- **`snapshot.get` and `snapshot.status`.** Both are reads, so they look like control plane work — but
-  both read the repository, which reintroduces the seam. Either the management plane projects snapshot
-  metadata into the shared store for this service to read (consistent with how capabilities and the
-  settings registry are heading), or these move out too. The first is more attractive and is the same
-  shape of answer as everywhere else.
-- **`status` spans planes regardless.** It reports in-flight progress, and after this split
-  `create`/`restore` run on the data plane while `clone`/`delete` run on the management plane. Whatever
-  reports it needs both, or it answers partially and says so.
+`snapshot.get` and `snapshot.status` are reads, so they look like control plane work — but both read the
+*repository*, which would reintroduce the seam. **The management plane reads the repository and projects
+snapshot metadata into the shared store; this service reads it from there.** Same shape of answer as the
+capabilities file and the settings registry, and it keeps the one-outbound-seam property intact.
+
+Two things that makes better rather than merely tolerable:
+
+- **The repository-read code can be reused from OpenSearch**, and it stays out of this repository. That
+  is a good reason to put the read where the reuse is easy rather than reimplementing blob parsing here.
+- **It is a deliberate improvement on the existing snapshot model.** Today the authoritative list of
+  snapshots is only in the repository, so reading it means a blob round trip on every call and there is
+  no way to query across repositories. Projecting it into the store makes snapshot metadata queryable
+  like everything else.
+
+`status` still spans planes: it reports in-flight progress, and `create`/`restore` run on the data plane
+while `clone`/`delete` run on the management plane. Whatever answers it needs both, or answers partially
+and says so — worth settling when the management plane exists to have the conversation with.
 
 #### Done: the slice that needs none of that
 
