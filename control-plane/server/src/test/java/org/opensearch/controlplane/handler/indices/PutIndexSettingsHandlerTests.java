@@ -265,15 +265,26 @@ class PutIndexSettingsHandlerTests {
         assertTrue(reasonOf(response).contains("[[index.codec]]"));
     }
 
-    /** Verified: a private setting reports as unknown, not as a distinct private-setting error. */
+    /**
+     * A private setting has its own message here, distinct from both the unknown-setting message and
+     * from what {@code indices.create} says for the same condition — {@code AbstractScopedSettings}
+     * reaches it rather than {@code MetadataCreateIndexService}.
+     *
+     * <p>Pinned because an earlier version of this test asserted it reported as <em>unknown</em>, on the
+     * strength of a probe using {@code index.provided_name} — which is absent from the registry rather
+     * than private, so it was really exercising the unknown path.
+     */
     @Test
-    void aPrivateSettingReportsAsUnknown(@TempDir Path dir) throws Exception {
+    void aPrivateSettingHasItsOwnMessage(@TempDir Path dir) throws Exception {
         Router router = enforcing(dir);
         create(router, "my-index", null);
 
         RestResponse response = put(router, "/my-index/_settings", "{\"index\":{\"uuid\":\"x\"}}");
         assertEquals(RestStatus.BAD_REQUEST, response.status());
-        assertTrue(reasonOf(response).startsWith("unknown setting [index.uuid]"), reasonOf(response));
+        assertEquals("settings_exception", MAPPER.readTree(new String(response.body(), StandardCharsets.UTF_8))
+            .get("error").get("type").asText());
+        assertEquals("can not update private setting [index.uuid]; this setting is managed by OpenSearch",
+            reasonOf(response));
     }
 
     @Test

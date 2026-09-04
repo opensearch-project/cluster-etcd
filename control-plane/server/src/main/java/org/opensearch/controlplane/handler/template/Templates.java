@@ -4,6 +4,7 @@
  */
 package org.opensearch.controlplane.handler.template;
 
+import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.OperationHandler;
 
 import java.util.List;
@@ -13,10 +14,10 @@ public final class Templates {
 
     private Templates() {}
 
-    public static List<OperationHandler> handlers() {
+    public static List<OperationHandler> handlers(SettingsRegistry registry) {
         return List.of(TemplateKind.legacy(), TemplateKind.index(), TemplateKind.component()).stream()
             .flatMap(kind -> List.<OperationHandler>of(
-                new PutTemplateHandler(kind),
+                new PutTemplateHandler(kind, registry),
                 new GetTemplateHandler(kind),
                 new DeleteTemplateHandler(kind),
                 new ExistsTemplateHandler(kind)

@@ -36,11 +36,14 @@ import java.util.Set;
  * <p>Three outcomes, all verified against OpenSearch 3.9.0:
  *
  * <ul>
+ *   <li><b>Private setting</b> — {@code 400 settings_exception},
+ *       {@code can not update private setting [index.uuid]; this setting is managed by OpenSearch}.
+ *       Distinct from both the unknown-setting message and from what {@code indices.create} says for
+ *       the same condition.</li>
  *   <li><b>Unknown setting</b> — {@code 400 settings_exception},
  *       {@code unknown setting [index.totally_bogus] please check that any required plugins are
  *       installed...}, or {@code ... did you mean [index.number_of_shards]?} when a registered key
- *       scores close enough. A setting the user may not supply reports identically; see
- *       {@link ErrorResponses#unknownSetting}.</li>
+ *       scores close enough.</li>
  *   <li><b>Static setting on an open index</b> — {@code 400 illegal_argument_exception},
  *       {@code Can't update non dynamic settings [[index.number_of_shards]] for open indices
  *       [[my-index/uuid]]}. Both lists render with their own brackets, hence the doubling.</li>
@@ -109,6 +112,9 @@ public final class PutIndexSettingsHandler implements OperationHandler {
             String key = problems.unknown().getFirst();
             return ErrorResponses.unknownSetting(request, key,
                 SettingsValidation.didYouMean(key, registry.exactKeys(SettingsRegistry.Scope.INDEX)).orElse(null));
+        }
+        if (problems.notUserSettable().isEmpty() == false) {
+            return ErrorResponses.privateSettingOnUpdate(request, problems.notUserSettable().getFirst());
         }
 
         IndexExpressions.Resolved resolved =

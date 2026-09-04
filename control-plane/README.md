@@ -700,6 +700,22 @@ character for character against the server's response.
   priority, legacy templates are *merged* — all matching ones, in ascending `order`, later winning; that
   is what `order` is for, and why overlapping patterns are rejected for one kind and legal for the
   other. Ties on `order` break by name. Eight requests diffed against 3.9.0, all agreeing.
+- **Settings validation on `indices.create` and the template puts.** Fourteen requests diffed against
+  3.9.0 — zero divergences. The interesting part is that **one condition has three different messages**
+  depending on which service reaches it first, and all three are now reproduced:
+  | supplying a private setting to | type | message |
+  |---|---|---|
+  | `put_settings` | `settings_exception` | `can not update private setting [index.uuid]; this setting is managed by OpenSearch` |
+  | `create` | `validation_exception` | `Validation Failed: 1: private index setting [index.uuid] can not be set explicitly;` |
+  | any template put | `invalid_index_template_exception` | `index_template [t] invalid, cause [Validation Failed: 1: ...;]` |
+
+  Two further details that were wrong on the first attempt. An **unknown** setting on a template put is
+  *not* wrapped — it answers a bare `settings_exception` where a **private** one is wrapped, for all
+  three kinds. And `ValidationException` renders multiple errors with **no space between them**
+  (`explicitly;2: private...`), which is easy to add by accident.
+
+  Static settings are permitted on create and on template puts, because that is where they are set;
+  only `put_settings` rejects them.
 - **`cluster.get_settings` / `put_settings`.** A **14-step stateful sequence** replayed against 3.9.0 —
   set persistent, set another, read both, set transient, `flat_settings` on read and on write, a nested
   key, four rejections, a removal, read again. Zero divergences, nine of the fourteen byte-exact and the
@@ -840,12 +856,12 @@ request would normally get. Verified, and reproduced.
 - **Mapping merge has no conflict detection.** Two templates disagreeing about a field's type produce a
   last-writer-wins mapping rather than the rejection a real cluster raises. Belongs with
   `indices.put_mapping`.
-- **Settings are validated on `put_settings` and nowhere else yet.** With a `--settings-registry` an
-  unknown or static setting is rejected there exactly as a real cluster does; without one, nothing is
-  checked. `indices.create` and the template puts still store whatever they are given, so
-  `PUT /i {"settings":{"totally_bogus":1}}` is accepted here and a 400 on a real cluster. Closing that
-  is now a call to the same validator, with one difference worth getting right: **create legitimately
-  sets static settings**, so it checks existence and not-user-settable but not dynamism.
+- **Settings existence and permission are validated; values are not.** With a `--settings-registry`,
+  every write path rejects an unknown or private setting as a real cluster does. What is not checked is
+  whether a *value* is well-formed, so `index.replication.type: "segment"` is accepted here and rejected
+  there (which insists on `SEGMENT`), and an incomplete analyzer definition is accepted here and fails
+  with `Failed to build analyzers` there. Values stay the data plane's authority — the same boundary
+  that keeps `include_defaults` out.
 - **`index.uuid`, `index.creation_date` and `index.provided_name` are not in a created index's
   settings.** A real cluster writes them there; here they are top-level metadata fields, and
   `indices.get_settings` renders them back in on the way out. Same information, held once rather than

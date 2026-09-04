@@ -17,20 +17,41 @@ import java.util.Set;
 /**
  * Checks a settings document against the registry: does every key exist, and may every key be written.
  *
- * <p>Shared by the index and cluster write paths, which ask slightly different questions of the same
- * data. Both reject an unknown key; only {@code indices.put_settings} rejects a <em>static</em> one,
- * because {@code indices.create} is where static settings are legitimately set.
+ * <p>Shared by four write paths that ask overlapping but distinct questions of the same data, and
+ * report the answers in four different shapes. The distinctions are real and were each verified:
+ *
+ * <table border="1">
+ *   <caption>Who rejects what</caption>
+ *   <tr><th></th><th>unknown</th><th>private</th><th>static</th></tr>
+ *   <tr><td>{@code indices.put_settings}</td><td>yes</td><td>yes</td><td><b>yes</b></td></tr>
+ *   <tr><td>{@code cluster.put_settings}</td><td>yes</td><td>n/a</td><td><b>yes</b></td></tr>
+ *   <tr><td>{@code indices.create}</td><td>yes</td><td>yes</td><td><b>no</b></td></tr>
+ *   <tr><td>template puts</td><td>yes</td><td>yes</td><td><b>no</b></td></tr>
+ * </table>
+ *
+ * <p>Create and the template puts permit static settings because they are <em>where static settings are
+ * set</em> — {@code index.number_of_shards} is the obvious case. Only an update to something that
+ * already exists has to care.
  *
  * <p>Does nothing when the registry is not enforcing — that is the default, and the whole point of it
  * being a default is that these call sites do not have to check.
  */
 public final class SettingsValidation {
 
-    /** What was wrong, in the order a real cluster reports it: existence first, then updateability. */
-    public record Problems(List<String> unknown, List<String> notDynamic) {
+    /**
+     * What was wrong, in the order a real cluster reports it: existence, then permission, then
+     * updateability.
+     *
+     * <p>{@code notUserSettable} is kept apart from {@code unknown} because the three write paths report
+     * it three different ways — see {@code ErrorResponses}. An earlier version folded the two together
+     * on the strength of a probe that used {@code index.provided_name}, which is <em>absent</em> from
+     * the registry rather than private, so it was really testing the unknown path. A registered private
+     * setting has its own message.
+     */
+    public record Problems(List<String> unknown, List<String> notUserSettable, List<String> notDynamic) {
 
         public boolean isEmpty() {
-            return unknown.isEmpty() && notDynamic.isEmpty();
+            return unknown.isEmpty() && notUserSettable.isEmpty() && notDynamic.isEmpty();
         }
     }
 
@@ -46,22 +67,24 @@ public final class SettingsValidation {
         boolean requireDynamic
     ) {
         List<String> unknown = new ArrayList<>();
+        List<String> notUserSettable = new ArrayList<>();
         List<String> notDynamic = new ArrayList<>();
         if (registry.isEnforcing() == false) {
-            return new Problems(unknown, notDynamic);
+            return new Problems(unknown, notUserSettable, notDynamic);
         }
         for (String key : settings.keys()) {
-            Updateability updateability = registry.updateabilityOf(scope, key);
-            // A setting a user may not supply reads as unknown on the wire. Verified against 3.9.0:
-            // PUT /i/_settings {"index":{"provided_name":"x"}} answers `unknown setting
-            // [index.provided_name]`, the same message a genuinely unregistered key gets.
-            if (registry.isKnown(scope, key) == false || updateability == Updateability.NOT_USER_SETTABLE) {
+            if (registry.isKnown(scope, key) == false) {
                 unknown.add(key);
+                continue;
+            }
+            Updateability updateability = registry.updateabilityOf(scope, key);
+            if (updateability == Updateability.NOT_USER_SETTABLE) {
+                notUserSettable.add(key);
             } else if (requireDynamic && updateability != Updateability.DYNAMIC) {
                 notDynamic.add(key);
             }
         }
-        return new Problems(unknown, notDynamic);
+        return new Problems(unknown, notUserSettable, notDynamic);
     }
 
     /**

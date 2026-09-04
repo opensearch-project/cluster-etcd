@@ -6,9 +6,11 @@ package org.opensearch.controlplane.handler.indices;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
 import org.opensearch.controlplane.handler.template.TemplateComposition;
+import org.opensearch.controlplane.metadata.SettingsValidation;
 import org.opensearch.controlplane.rest.ErrorResponses;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.rest.RestRequest;
@@ -56,9 +58,14 @@ import java.util.Optional;
  *
  * <h2>Not yet implemented</h2>
  *
- * <p><b>Settings validation.</b> Unknown or malformed settings are stored rather than rejected. A
- * real cluster validates against registered setting definitions and fails with 400 — including value
- * checks, so {@code index.replication.type: "segment"} is rejected where {@code "SEGMENT"} is accepted.
+ * <p><b>Settings values are not validated.</b> Existence and permission are, against the settings
+ * registry: an unknown setting is a 400 and a private one is rejected with the wording
+ * {@code MetadataCreateIndexService} uses. What is not checked is whether a value is well-formed, so
+ * {@code index.replication.type: "segment"} is accepted here and rejected on a real cluster, which
+ * insists on {@code "SEGMENT"}. Values remain the data plane's authority.
+ *
+ * <p>Static settings are deliberately permitted — this is where {@code index.number_of_shards} is set.
+ * Only {@code indices.put_settings} rejects them.
  *
  * <p><b>Server-supplied settings.</b> A real cluster writes {@code index.uuid},
  * {@code index.creation_date}, {@code index.provided_name} and {@code index.version.created} into the
@@ -67,6 +74,12 @@ import java.util.Optional;
  * OpenSearch version the index was built with, which this service has no honest value for.
  */
 public final class CreateIndexHandler implements OperationHandler {
+
+    private final SettingsRegistry registry;
+
+    public CreateIndexHandler(SettingsRegistry registry) {
+        this.registry = registry;
+    }
 
     /**
      * OpenSearch's defaults, needed by the shard manager to allocate anything at all.
@@ -124,6 +137,19 @@ public final class CreateIndexHandler implements OperationHandler {
         // Composition first: a matching composable template contributes settings, mappings and aliases,
         // and the request body overrides whatever it supplied.
         TemplateComposition.Composed effective = TemplateComposition.composeFor(context.store(), index, requested);
+
+        // Validated after composition, so a template's contribution is checked too -- and before
+        // anything is written. Static settings are permitted: this is where they are set.
+        SettingsValidation.Problems problems =
+            SettingsValidation.check(effective.settings(), registry, SettingsRegistry.Scope.INDEX, false);
+        if (problems.unknown().isEmpty() == false) {
+            String key = problems.unknown().getFirst();
+            return ErrorResponses.unknownSetting(request, key,
+                SettingsValidation.didYouMean(key, registry.exactKeys(SettingsRegistry.Scope.INDEX)).orElse(null));
+        }
+        if (problems.notUserSettable().isEmpty() == false) {
+            return ErrorResponses.privateSettingsRejected(request, problems.notUserSettable(), null);
+        }
 
         IndexStore indices = new IndexStore(context.store());
         String uuid = IndexStore.newUuid();

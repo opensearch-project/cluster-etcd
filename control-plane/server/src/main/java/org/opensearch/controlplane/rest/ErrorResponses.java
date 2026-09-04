@@ -470,9 +470,11 @@ public final class ErrorResponses {
      * {@code SettingsValidation.didYouMean}. A typo gets the suggestion; a genuinely invented key gets
      * the generic advice.
      *
-     * <p>A setting the user may not supply — {@code PrivateIndex} or {@code InternalIndex} — reports
-     * through here too, identically. Verified: {@code index.provided_name} answers
-     * {@code unknown setting [index.provided_name]}, not a distinct private-setting message.
+     * <p>A setting the user may not supply does <b>not</b> report through here — it has its own message
+     * on each path; see {@link #privateSettingOnUpdate} and {@link #privateSettingsRejected}. An earlier
+     * version of this claimed otherwise on the strength of a probe using {@code index.provided_name},
+     * which is absent from the registry rather than private, so it took this path for the ordinary
+     * reason.
      *
      * @param suggestion the rendered {@code did you mean} target, or {@code null} for the generic advice
      */
@@ -528,6 +530,55 @@ public final class ErrorResponses {
      * neither {@code persistent} nor {@code transient} — {@code {"bogus":{...}}} gets this rather than
      * an unknown-scope error, because the server simply finds nothing to apply.
      */
+    /**
+     * {@code 400} for changing a private setting on an existing index.
+     *
+     * <p>{@code AbstractScopedSettings} line 658. Distinct from the create and template wording, which
+     * comes from {@code MetadataCreateIndexService} instead — one condition, three messages, depending
+     * on which service reached it first.
+     */
+    public static RestResponse privateSettingOnUpdate(RestRequest request, String key) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "settings_exception",
+            "can not update private setting [" + key + "]; this setting is managed by OpenSearch",
+            request
+        );
+    }
+
+    /**
+     * {@code 400} for supplying a private setting when creating an index or putting a template.
+     *
+     * <p>{@code MetadataCreateIndexService} line 1766 collects these into a {@code ValidationException},
+     * which renders as {@code Validation Failed: 1: <error>;2: <error>;} — one-based, each terminated by a
+     * semicolon and <b>no space between entries</b>. The missing space is easy to add by accident.
+     *
+     * <p>The template kinds wrap the same text in {@code InvalidIndexTemplateException}:
+     * {@code index_template [name] invalid, cause [...]}. All three kinds say {@code index_template},
+     * including component and legacy — the same quirk as the DELETE-missing message.
+     *
+     * @param templateName the template being put, or {@code null} when this is an index create
+     */
+    public static RestResponse privateSettingsRejected(RestRequest request, List<String> keys, String templateName) {
+        // ValidationException.toString: "Validation Failed: " once, then "N: <error>;" per error with no
+        // separator between them -- so the second onwards follow the previous semicolon directly, with no
+        // space. Verified byte for byte against a two-error response.
+        StringBuilder validation = new StringBuilder("Validation Failed: ");
+        for (int i = 0; i < keys.size(); i++) {
+            validation.append(i + 1).append(": private index setting [")
+                .append(keys.get(i)).append("] can not be set explicitly;");
+        }
+        if (templateName == null) {
+            return structured(RestStatus.BAD_REQUEST, "validation_exception", validation.toString(), request);
+        }
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "invalid_index_template_exception",
+            "index_template [" + templateName + "] invalid, cause [" + validation + "]",
+            request
+        );
+    }
+
     public static RestResponse noSettingsToUpdate(RestRequest request) {
         return structured(
             RestStatus.BAD_REQUEST,

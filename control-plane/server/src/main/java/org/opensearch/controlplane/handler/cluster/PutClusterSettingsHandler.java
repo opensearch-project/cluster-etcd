@@ -18,6 +18,8 @@ import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.rest.RestStatus;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -120,9 +122,14 @@ public final class PutClusterSettingsHandler implements OperationHandler {
         SettingsValidation.Problems problems = SettingsValidation.check(
             scope.assignments(), registry, SettingsRegistry.Scope.CLUSTER, true);
 
-        if (problems.unknown().isEmpty() == false) {
+        // notUserSettable is folded in with unknown here, and only here: PrivateIndex and InternalIndex
+        // are index-scoped properties, so a cluster setting never carries them. Handled rather than
+        // ignored so a future registry that did mark one cannot slip a rejection.
+        List<String> unrecognized = new ArrayList<>(problems.unknown());
+        unrecognized.addAll(problems.notUserSettable());
+        if (unrecognized.isEmpty() == false) {
             return ErrorResponses.clusterSettingRejected(
-                request, scope.name(), problems.unknown().getFirst(), "not recognized");
+                request, scope.name(), unrecognized.getFirst(), "not recognized");
         }
         if (problems.notDynamic().isEmpty() == false) {
             return ErrorResponses.clusterSettingRejected(

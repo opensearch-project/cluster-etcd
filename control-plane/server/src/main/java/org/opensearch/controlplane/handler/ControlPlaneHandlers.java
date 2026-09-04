@@ -106,7 +106,7 @@ public final class ControlPlaneHandlers {
             .register(new InfoHandler(identity))
             .register(new PingHandler())
             // indices
-            .register(new CreateIndexHandler())
+            .register(new CreateIndexHandler(settings))
             .register(new ExistsIndexHandler())
             .register(new DeleteIndexHandler())
             .register(new UpdateAliasesHandler())
@@ -133,7 +133,7 @@ public final class ControlPlaneHandlers {
             .register(new DeletePipelineHandler(PipelineKind.search()));
 
         // Templates: four operations across three kinds, which differ more than the pipelines do.
-        Templates.handlers().forEach(registry::register);
+        Templates.handlers(settings).forEach(registry::register);
         Templates.simulationHandlers().forEach(registry::register);
         return registry;
     }
