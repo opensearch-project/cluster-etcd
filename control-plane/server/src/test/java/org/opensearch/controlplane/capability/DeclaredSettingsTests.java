@@ -138,17 +138,23 @@ class DeclaredSettingsTests {
     }
 
     /**
-     * Static means "not Dynamic", not "declared Final". Most static settings carry neither property,
-     * so keying off Final alone would let them all through.
+     * A <b>four-way</b> split, and the two middle values must not be collapsed. {@code Final} means
+     * never; the absence of both {@code Dynamic} and {@code Final} means "only while the index is
+     * closed". Verified against 3.9.0: {@code index.codec} carries neither and is accepted on a closed
+     * index, while {@code index.number_of_shards} is {@code Final} and is refused even then.
+     *
+     * <p>An earlier version treated "not {@code Dynamic}" as final, which would refuse 45 of the 221
+     * index settings that a real cluster permits on a closed index.
      */
     @Test
     void updateabilityComesFromTheProperties(@TempDir Path dir) throws Exception {
         DeclaredSettings registry = load(dir, FIXTURE);
 
         assertEquals(Updateability.DYNAMIC, registry.updateabilityOf(Scope.INDEX, "index.number_of_replicas"));
-        assertEquals(Updateability.FINAL, registry.updateabilityOf(Scope.INDEX, "index.number_of_shards"));
-        assertEquals(Updateability.FINAL, registry.updateabilityOf(Scope.INDEX, "index.codec"),
-            "no Dynamic property means static, even without Final");
+        assertEquals(Updateability.FINAL, registry.updateabilityOf(Scope.INDEX, "index.number_of_shards"),
+            "declared Final: never updateable");
+        assertEquals(Updateability.STATIC, registry.updateabilityOf(Scope.INDEX, "index.codec"),
+            "neither Dynamic nor Final: updateable only while closed");
         assertEquals(Updateability.DYNAMIC,
             registry.updateabilityOf(Scope.INDEX, "index.routing.allocation.include._name"),
             "a pattern's updateability applies to everything it matches");
@@ -168,7 +174,8 @@ class DeclaredSettingsTests {
     void anUnknownKeyIsNotDynamic(@TempDir Path dir) throws Exception {
         DeclaredSettings registry = load(dir, FIXTURE);
 
-        assertEquals(Updateability.FINAL, registry.updateabilityOf(Scope.INDEX, "index.totally_bogus"));
+        assertEquals(Updateability.FINAL, registry.updateabilityOf(Scope.INDEX, "index.totally_bogus"),
+            "the most restrictive answer, so a caller checking in the wrong order cannot permit it");
     }
 
     /** A capabilities file written before this feature existed must still load. */

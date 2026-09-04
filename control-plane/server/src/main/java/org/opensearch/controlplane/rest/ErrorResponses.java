@@ -579,6 +579,25 @@ public final class ErrorResponses {
         );
     }
 
+    /**
+     * {@code 400} for a {@code Final} setting on a <b>closed</b> index — never updateable, not even then.
+     *
+     * <p>{@code AbstractScopedSettings} line 937: {@code "final " + type + " setting [" + key + "], not
+     * updateable"}, where {@code type} is caller-supplied and is the index name on this path. The same
+     * template produces the cluster path's {@code persistent setting [x], not recognized}.
+     *
+     * <p>Only reached once every target index is closed. While any is open, a real cluster pre-filters
+     * everything non-dynamic and reports the "for open indices" message instead, final or not.
+     */
+    public static RestResponse finalSetting(RestRequest request, String index, String key) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "settings_exception",
+            "final " + index + " setting [" + key + "], not updateable",
+            request
+        );
+    }
+
     public static RestResponse noSettingsToUpdate(RestRequest request) {
         return structured(
             RestStatus.BAD_REQUEST,

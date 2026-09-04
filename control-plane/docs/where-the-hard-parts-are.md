@@ -49,7 +49,7 @@ Applied non-atomically there is a window where `logs` points at nothing, or at b
 this being atomic; it is the documented way to do a reindex cutover.
 
 Also in this tier, all multi-index: `indices.put_alias`, `indices.delete_alias`,
-`indices.put_mapping`, `indices.put_settings`, `indices.open`, `indices.close`,
+`indices.put_mapping`, ~~`indices.put_settings`~~, ~~`indices.open`~~, ~~`indices.close`~~,
 `indices.add_block`.
 
 ### Done: aliases are their own resource

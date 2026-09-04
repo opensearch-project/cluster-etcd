@@ -44,15 +44,27 @@ import java.util.Set;
  *       {@code unknown setting [index.totally_bogus] please check that any required plugins are
  *       installed...}, or {@code ... did you mean [index.number_of_shards]?} when a registered key
  *       scores close enough.</li>
- *   <li><b>Static setting on an open index</b> — {@code 400 illegal_argument_exception},
- *       {@code Can't update non dynamic settings [[index.number_of_shards]] for open indices
- *       [[my-index/uuid]]}. Both lists render with their own brackets, hence the doubling.</li>
+ *   <li><b>Non-dynamic setting while any target index is open</b> —
+ *       {@code 400 illegal_argument_exception}, {@code Can't update non dynamic settings
+ *       [[index.number_of_shards]] for open indices [[my-index/uuid]]}. Both lists render with their own
+ *       brackets, hence the doubling.</li>
+ *   <li><b>Final setting once every target is closed</b> — {@code 400 settings_exception},
+ *       {@code final my-index setting [index.number_of_shards], not updateable}.</li>
  *   <li><b>Anything else</b> — {@code {"acknowledged": true}}.</li>
  * </ul>
  *
- * <p>Every index here is open, because {@code indices.close} is not implemented. A real cluster permits
- * a static setting on a <em>closed</em> index, so when close lands this check has to consult the index's
- * state rather than assuming. The message already names the open indices, which is the hook for it.
+ * <h2>State decides which rejection applies</h2>
+ *
+ * <p>The distinction that makes {@code indices.close} worth having. A <b>static</b> setting — neither
+ * {@code Dynamic} nor {@code Final}, which is 45 of the 221 index settings — may be changed on a
+ * <em>closed</em> index and not on an open one. A {@code Final} setting may not be changed even then.
+ *
+ * <p>And the two report differently depending on state, which took a probe to establish. While any
+ * target index is open, a real cluster pre-filters everything non-dynamic before reaching the code that
+ * tells static from final, so both answer the "for open indices" message. Once every target is closed,
+ * static settings are simply applied and only final ones are refused — with their own wording. Verified:
+ * {@code index.codec} is accepted on a closed index and refused on an open one, while
+ * {@code index.number_of_shards} is refused on both, differently.
  *
  * <h2>Two behaviours that look like details and are not</h2>
  *
@@ -134,16 +146,28 @@ public final class PutIndexSettingsHandler implements OperationHandler {
                 return ErrorResponses.indexNotFound(request, index);
             }
             ObjectNode metadata = (ObjectNode) parse(stored.get());
-            // Rendered the way OpenSearch's Index.toString does, brackets included; see
-            // ErrorResponses.nonDynamicSettings for why that matters to the message.
-            openIndices.add("[" + index + "/" + metadata.path("uuid").asText("_na_") + "]");
+            if (IndexStore.isOpen(metadata)) {
+                // Rendered the way OpenSearch's Index.toString does, brackets included; see
+                // ErrorResponses.nonDynamicSettings for why that matters to the message.
+                openIndices.add("[" + index + "/" + metadata.path("uuid").asText("_na_") + "]");
+            }
             pending.add(new Pending(index, metadata, stored.get().revision()));
         }
 
-        // Reported once for the whole request, naming every index it would have applied to, which is
-        // what a real cluster does -- it is one cluster-state update there.
-        if (problems.notDynamic().isEmpty() == false) {
-            return ErrorResponses.nonDynamicSettings(request, problems.notDynamic(), openIndices);
+        // Which rejection applies depends on the indices' state, and the split is not cosmetic.
+        //
+        // While any target index is open, a real cluster pre-filters everything non-dynamic before it
+        // reaches the code that distinguishes static from final, so both report the same "for open
+        // indices" message. Once every target is closed, static settings become legal and only final
+        // ones are refused -- with their own wording, naming the index rather than listing it.
+        if (openIndices.isEmpty() == false) {
+            List<String> refused = problems.allNotDynamic();
+            if (refused.isEmpty() == false) {
+                return ErrorResponses.nonDynamicSettings(request, refused, openIndices);
+            }
+        } else if (problems.notEverUpdateable().isEmpty() == false) {
+            return ErrorResponses.finalSetting(
+                request, pending.getFirst().index(), problems.notEverUpdateable().getFirst());
         }
 
         IndexManagementTasks tasks = new IndexManagementTasks(context.store());

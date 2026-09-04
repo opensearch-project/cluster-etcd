@@ -13,6 +13,7 @@ import org.opensearch.controlplane.handler.cluster.PutClusterSettingsHandler;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
 import org.opensearch.controlplane.handler.core.PingHandler;
+import org.opensearch.controlplane.handler.indices.ChangeIndexStateHandler;
 import org.opensearch.controlplane.handler.indices.CreateIndexHandler;
 import org.opensearch.controlplane.handler.indices.DeleteAliasHandler;
 import org.opensearch.controlplane.handler.indices.ExistsAliasHandler;
@@ -131,6 +132,9 @@ public final class ControlPlaneHandlers {
             .register(new PutPipelineHandler(PipelineKind.search(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.search()))
             .register(new DeletePipelineHandler(PipelineKind.search()));
+
+        // close and open are mirror images, so one implementation serves both.
+        ChangeIndexStateHandler.handlers().forEach(registry::register);
 
         // Templates: four operations across three kinds, which differ more than the pipelines do.
         Templates.handlers(settings).forEach(registry::register);

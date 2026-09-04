@@ -48,29 +48,52 @@ public final class SettingsValidation {
      * the registry rather than private, so it was really testing the unknown path. A registered private
      * setting has its own message.
      */
-    public record Problems(List<String> unknown, List<String> notUserSettable, List<String> notDynamic) {
+    public record Problems(
+        List<String> unknown,
+        List<String> notUserSettable,
+        List<String> notDynamic,
+        List<String> notEverUpdateable
+    ) {
 
         public boolean isEmpty() {
-            return unknown.isEmpty() && notUserSettable.isEmpty() && notDynamic.isEmpty();
+            return unknown.isEmpty() && notUserSettable.isEmpty()
+                && notDynamic.isEmpty() && notEverUpdateable.isEmpty();
+        }
+
+        /**
+         * Static and final together, which is how an <em>open</em> index reports them.
+         *
+         * <p>A real cluster pre-filters everything non-dynamic before it reaches the code that
+         * distinguishes final from static, so on an open index both answer
+         * {@code Can't update non dynamic settings ...}. Only once every target index is closed does
+         * final get its own message. Sorted, since the server interpolates a set.
+         */
+        public List<String> allNotDynamic() {
+            return java.util.stream.Stream.concat(notDynamic.stream(), notEverUpdateable.stream())
+                .sorted()
+                .toList();
         }
     }
 
     private SettingsValidation() {}
 
     /**
-     * @param requireDynamic reject settings that exist but may not be changed after creation
+     * @param requireUpdateable reject settings that exist but may not be changed after creation. False
+     *                          for {@code indices.create} and the template puts, which are where static
+     *                          and final settings are legitimately set.
      */
     public static Problems check(
         Settings settings,
         SettingsRegistry registry,
         Scope scope,
-        boolean requireDynamic
+        boolean requireUpdateable
     ) {
         List<String> unknown = new ArrayList<>();
         List<String> notUserSettable = new ArrayList<>();
         List<String> notDynamic = new ArrayList<>();
+        List<String> notEverUpdateable = new ArrayList<>();
         if (registry.isEnforcing() == false) {
-            return new Problems(unknown, notUserSettable, notDynamic);
+            return new Problems(unknown, notUserSettable, notDynamic, notEverUpdateable);
         }
         for (String key : settings.keys()) {
             if (registry.isKnown(scope, key) == false) {
@@ -80,11 +103,13 @@ public final class SettingsValidation {
             Updateability updateability = registry.updateabilityOf(scope, key);
             if (updateability == Updateability.NOT_USER_SETTABLE) {
                 notUserSettable.add(key);
-            } else if (requireDynamic && updateability != Updateability.DYNAMIC) {
+            } else if (requireUpdateable && updateability == Updateability.STATIC) {
                 notDynamic.add(key);
+            } else if (requireUpdateable && updateability == Updateability.FINAL) {
+                notEverUpdateable.add(key);
             }
         }
-        return new Problems(unknown, notUserSettable, notDynamic);
+        return new Problems(unknown, notUserSettable, notDynamic, notEverUpdateable);
     }
 
     /**

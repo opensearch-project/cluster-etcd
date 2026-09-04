@@ -37,6 +37,22 @@ final class IndexStore {
     /** Shared with the resolver, which scans the same prefix. */
     static final String KEY_PREFIX = IndexAbstractions.INDEX_KEY_PREFIX;
 
+    static final String STATE = "state";
+
+    /** OpenSearch's own spellings: {@code IndexMetadata.State} serialises as {@code open} / {@code close}. */
+    static final String STATE_OPEN = "open";
+    static final String STATE_CLOSE = "close";
+
+    /**
+     * Written into an index's settings when it is closed and removed when it is reopened.
+     *
+     * <p>Not invented here — a real cluster does exactly this, and it is observable:
+     * {@code GET /i/_settings} on a closed index reports
+     * {@code index.verified_before_close: "true"}, and reopening removes the key rather than setting it
+     * to false. Reproduced so a closed index's settings match.
+     */
+    static final String SETTING_VERIFIED_BEFORE_CLOSE = "index.verified_before_close";
+
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final KeyValueStore store;
@@ -109,6 +125,10 @@ final class IndexStore {
 
     boolean exists(String index) {
         return store.get(key(index)).isPresent();
+    }
+
+    static boolean isOpen(JsonNode metadata) {
+        return STATE_OPEN.equals(metadata.path(STATE).asText(STATE_OPEN));
     }
 
     NavigableMap<String, JsonNode> all() {

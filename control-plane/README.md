@@ -10,12 +10,12 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 39 implemented, 40 stubbed
+126 routes, 79 operation groups, 41 implemented, 38 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
+| `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
 | `cluster` | 21 | component template CRUD, `get_settings`, `put_settings` |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
@@ -23,7 +23,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 40 operation groups return `501 Not Implemented`** with a structured
+**The remaining 38 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -628,6 +628,7 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | `index.version.created` | written into a created index's settings | absent | it records the Lucene and OpenSearch version the index was built with, which this service does not know. `index.replication.type` is *not* in this category — it is a real index setting, accepted on create and defaulted to `DOCUMENT` |
 | restating an immutable mapping parameter at its default | accepted — the mapper resolves defaults, so `index: true` on a text field is a no-op | rejected | we store mappings as sent and have no defaults to resolve against, so an immutable parameter the stored mapping never declared cannot be told apart from a real change. Erring towards rejection is deliberate: accepting a change to how data is indexed leaves a mapping the data plane cannot honour, while a false rejection is immediate and is worked around by sending only the fields being added |
 | the `from [x]` clause in a mapping conflict | `Cannot update parameter [index] from [true] to [false]` | `Cannot update parameter [index] to [false]` when the old value was never declared | same cause — there is no honest previous value to name, so the clause is dropped rather than invented. Byte-exact whenever the stored mapping did declare it |
+| `shards_acknowledged` on reopen | `true` after awaiting shards | `true` | the one place this is *more* optimistic than `indices.create`'s deliberate `false`. On close it is honest — there are no shards left to wait for — and a request that changed nothing reports `false` as a real cluster does. Reopen genuinely awaits shards upstream, so `true` there is the same claim create declines to make |
 | mapping key order | reordered by the mapping engine | as declared | the field dictionaries `properties` and `fields` come back sorted, but the other mapping keys follow the mapper's own emission order — `dynamic` before `properties`, neither declared nor alphabetical. Sorting the dictionaries would match a simple mapping and silently diverge on a richer one, while *looking* faithful. Reproducing it means the mapping engine |
 | metadata fields in `get_field_mapping` | `_index`, `_routing`, `_doc_count`, … returned under a wildcard | declared fields only | they come from the mapping engine's field registry, which is version- and plugin-dependent; a hardcoded copy would drift the way a hardcoded settings registry would |
 | `include_defaults` on `get_settings` | a sibling `defaults` block, ~2.6 kB per index | accepted and ignored | **the control plane owns the settings a user explicitly set; computed values belong to the layer that computes them.** A data plane node can already answer `/{index}/_settings?local=true` with the fully resolved settings, defaults included, so putting a settings registry here would duplicate that — and a duplicated registry drifts. Same reasoning as [Data plane capabilities](#data-plane-capabilities) |
@@ -700,6 +701,28 @@ character for character against the server's response.
   priority, legacy templates are *merged* — all matching ones, in ascending `order`, later winning; that
   is what `order` is for, and why overlapping patterns are rejected for one kind and legal for the
   other. Ties on `order` break by name. Eight requests diffed against 3.9.0, all agreeing.
+- **`indices.close` / `open`, and the `put_settings` branch they unlock.** A 15-step stateful sequence
+  against 3.9.0 — zero divergences. Implemented for one reason: **a static setting may be changed on a
+  closed index and not on an open one**, so until close existed there was a branch of `put_settings` no
+  request could reach. What the probing turned up:
+  - **`Final` and "merely static" are different things**, and collapsing them is wrong in a way that
+    matters. `index.codec` carries neither `Dynamic` nor `Final` and is accepted on a closed index;
+    `index.number_of_shards` is `Final` and is refused even then. Of the 221 index settings, 142 are
+    dynamic, **45 are static** and 34 are final — so treating "not dynamic" as final would refuse 45
+    settings a real cluster allows.
+  - **the same setting reports differently depending on state.** While *any* target index is open, a real
+    cluster pre-filters everything non-dynamic before reaching the code that tells static from final, so
+    both answer `Can't update non dynamic settings [[...]] for open indices [[...]]`. Once every target
+    is closed, only final is refused, as `final my-index setting [index.number_of_shards], not
+    updateable`. One open index among closed ones is enough to trigger the first, and the message names
+    only the open ones.
+  - **wildcard expansion is asymmetric**: close expands to *open* indices, open expands to *closed* ones,
+    so each reaches exactly what it would change. From `CloseIndexRequest`/`OpenIndexRequest`'s own
+    defaults.
+  - close's `indices` block lists **only what this request actually closed** — closing an already-closed
+    index answers `"indices":{}` with `shards_acknowledged: false` — and open has no `indices` block at
+    all. Closing writes `index.verified_before_close`; reopening **removes** it rather than setting it
+    false.
 - **Settings validation on `indices.create` and the template puts.** Fourteen requests diffed against
   3.9.0 — zero divergences. The interesting part is that **one condition has three different messages**
   depending on which service reaches it first, and all three are now reproduced:
@@ -847,7 +870,7 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 40 operation groups that are still stubbed.
+- Everything about the 38 operation groups that are still stubbed.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns

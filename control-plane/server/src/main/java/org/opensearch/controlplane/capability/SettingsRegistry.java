@@ -41,11 +41,21 @@ import java.util.Set;
  */
 public interface SettingsRegistry {
 
-    /** What a setting permits, once it is known to exist. */
+    /**
+     * What a setting permits, once it is known to exist.
+     *
+     * <p>Four values rather than three, because {@code Final} and "merely static" are genuinely
+     * different and the difference is observable. Verified against 3.9.0: {@code index.codec} carries
+     * neither {@code Dynamic} nor {@code Final} and can be changed on a <em>closed</em> index, while
+     * {@code index.number_of_shards} is {@code Final} and is refused even then — with its own message.
+     * Of the 221 index settings, 142 are dynamic, 45 are static and 34 are final.
+     */
     enum Updateability {
-        /** Changeable on a live index or cluster. */
+        /** Changeable at any time. */
         DYNAMIC,
-        /** Fixed once set; {@code Setting.Property.Final}. */
+        /** Changeable only while the index is closed; neither {@code Dynamic} nor {@code Final}. */
+        STATIC,
+        /** Never changeable after creation; {@code Setting.Property.Final}. */
         FINAL,
         /** {@code InternalIndex} or {@code PrivateIndex} — a user may not supply it at all. */
         NOT_USER_SETTABLE

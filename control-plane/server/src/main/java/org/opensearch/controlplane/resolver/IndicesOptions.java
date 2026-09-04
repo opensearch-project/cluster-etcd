@@ -40,6 +40,27 @@ public record IndicesOptions(
         return new IndicesOptions(true, true, false, false, true);
     }
 
+    /**
+     * As used by {@code indices.open}: wildcards expand to <b>closed</b> indices only.
+     *
+     * <p>{@code OpenIndexRequest.indicesOptions} is {@code fromOptions(false, true, false, true)}. It
+     * looks odd until you see the symmetry with close — each operation expands only to the state it can
+     * actually act on, so {@code POST /*​/_open} opens everything closed and touches nothing else.
+     */
+    public static IndicesOptions forOpen() {
+        return new IndicesOptions(false, true, false, false, true);
+    }
+
+    /**
+     * As used by {@code indices.close}: wildcards expand to <b>open</b> indices only.
+     *
+     * <p>{@code CloseIndexRequest.indicesOptions} is {@code strictExpandOpen()}, the mirror of
+     * {@link #forOpen()}.
+     */
+    public static IndicesOptions forClose() {
+        return strictExpandOpen();
+    }
+
     /** Nothing is an error; used by APIs that report on whatever happens to be there. */
     public static IndicesOptions lenient() {
         return new IndicesOptions(true, false, false, true, true);

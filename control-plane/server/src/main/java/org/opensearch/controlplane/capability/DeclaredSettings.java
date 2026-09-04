@@ -73,12 +73,20 @@ import java.util.stream.Collectors;
  * <h2>Updateability</h2>
  *
  * <p>Derived from the {@code properties} list, which carries OpenSearch's {@code Setting.Property}
- * enum verbatim. {@code InternalIndex} or {@code PrivateIndex} means a user may not supply the setting
- * at all and outranks the rest; otherwise {@code Dynamic} is dynamic and anything else — {@code Final}
- * included, and equally the absence of {@code Dynamic} — is fixed once set.
+ * enum verbatim, and it is a <b>four-way</b> split rather than a two-way one:
  *
- * <p>Note "not {@code Dynamic}" rather than "{@code Final}": a setting with neither property is static,
- * and treating only explicit {@code Final} as immutable would let most static settings through.
+ * <ul>
+ *   <li>{@code InternalIndex} or {@code PrivateIndex} — the user may not supply it at all. Outranks
+ *       the rest.</li>
+ *   <li>{@code Dynamic} — changeable at any time.</li>
+ *   <li>{@code Final} — never changeable, not even on a closed index.</li>
+ *   <li>neither — <b>static</b>: changeable only while the index is closed.</li>
+ * </ul>
+ *
+ * <p>The last two are easy to collapse and must not be. Verified: {@code index.codec} has neither
+ * property and is accepted on a closed index, while {@code index.number_of_shards} is {@code Final} and
+ * is refused even then. Treating "not {@code Dynamic}" as final would refuse 45 of the 221 index
+ * settings that a real cluster allows on a closed index.
  */
 public final class DeclaredSettings implements SettingsRegistry {
 
@@ -223,6 +231,7 @@ public final class DeclaredSettings implements SettingsRegistry {
     /** {@code Setting.Property} values, read the way OpenSearch reads them. */
     private static Updateability updateabilityOf(JsonNode properties) {
         boolean dynamic = false;
+        boolean isFinal = false;
         for (JsonNode property : properties) {
             String name = property.asText();
             if (name.equals("InternalIndex") || name.equals("PrivateIndex")) {
@@ -231,9 +240,16 @@ public final class DeclaredSettings implements SettingsRegistry {
             }
             if (name.equals("Dynamic")) {
                 dynamic = true;
+            } else if (name.equals("Final")) {
+                isFinal = true;
             }
         }
-        return dynamic ? Updateability.DYNAMIC : Updateability.FINAL;
+        if (dynamic) {
+            return Updateability.DYNAMIC;
+        }
+        // Final means never; the absence of both means "only while closed". Collapsing the two would
+        // wrongly refuse a static setting on a closed index, which is the case indices.close exists for.
+        return isFinal ? Updateability.FINAL : Updateability.STATIC;
     }
 
     @Override
