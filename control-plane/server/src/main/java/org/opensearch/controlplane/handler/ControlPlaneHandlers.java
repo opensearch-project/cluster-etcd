@@ -6,6 +6,8 @@ package org.opensearch.controlplane.handler;
 
 import org.opensearch.controlplane.capability.DataPlaneCapabilities;
 import org.opensearch.controlplane.capability.PermissiveCapabilities;
+import org.opensearch.controlplane.capability.PermissiveSettings;
+import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
 import org.opensearch.controlplane.handler.core.PingHandler;
@@ -19,6 +21,7 @@ import org.opensearch.controlplane.handler.indices.GetMappingHandler;
 import org.opensearch.controlplane.handler.indices.GetSettingsHandler;
 import org.opensearch.controlplane.handler.indices.ResolveIndexHandler;
 import org.opensearch.controlplane.handler.indices.PutAliasHandler;
+import org.opensearch.controlplane.handler.indices.PutIndexSettingsHandler;
 import org.opensearch.controlplane.handler.indices.PutMappingHandler;
 import org.opensearch.controlplane.handler.indices.UpdateAliasesHandler;
 import org.opensearch.controlplane.handler.indices.DeleteIndexHandler;
@@ -60,11 +63,28 @@ public final class ControlPlaneHandlers {
     }
 
     public static HandlerRegistry build(ClusterIdentity identity, DataPlaneCapabilities capabilities) {
-        return registerAll(HandlerRegistry.withAllStubbed(), identity, capabilities);
+        return build(identity, capabilities, new PermissiveSettings());
+    }
+
+    public static HandlerRegistry build(
+        ClusterIdentity identity,
+        DataPlaneCapabilities capabilities,
+        SettingsRegistry settings
+    ) {
+        return registerAll(HandlerRegistry.withAllStubbed(), identity, capabilities, settings);
     }
 
     public static HandlerRegistry registerAll(HandlerRegistry registry) {
-        return registerAll(registry, ClusterIdentity.defaults(), new PermissiveCapabilities());
+        return registerAll(registry, ClusterIdentity.defaults(), new PermissiveCapabilities(), new PermissiveSettings());
+    }
+
+    /** Without a settings registry, which means settings are not validated. */
+    public static HandlerRegistry registerAll(
+        HandlerRegistry registry,
+        ClusterIdentity identity,
+        DataPlaneCapabilities capabilities
+    ) {
+        return registerAll(registry, identity, capabilities, new PermissiveSettings());
     }
 
     /**
@@ -76,7 +96,8 @@ public final class ControlPlaneHandlers {
     public static HandlerRegistry registerAll(
         HandlerRegistry registry,
         ClusterIdentity identity,
-        DataPlaneCapabilities capabilities
+        DataPlaneCapabilities capabilities,
+        SettingsRegistry settings
     ) {
         registry
             // _core
@@ -97,6 +118,7 @@ public final class ControlPlaneHandlers {
             .register(new GetFieldMappingHandler())
             .register(new ResolveIndexHandler())
             .register(new PutMappingHandler())
+            .register(new PutIndexSettingsHandler(settings))
             // ingest and search pipelines are the same API twice; see PipelineKind
             .register(new PutPipelineHandler(PipelineKind.ingest(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.ingest()))

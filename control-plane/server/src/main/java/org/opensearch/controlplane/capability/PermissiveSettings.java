@@ -38,6 +38,11 @@ public final class PermissiveSettings implements SettingsRegistry {
     }
 
     @Override
+    public Set<String> exactKeys(Scope scope) {
+        return Set.of();
+    }
+
+    @Override
     public String toString() {
         return "not enforcing (no settings registry declared; unknown settings are accepted)";
     }

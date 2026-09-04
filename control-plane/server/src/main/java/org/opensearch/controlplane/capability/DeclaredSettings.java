@@ -268,6 +268,11 @@ public final class DeclaredSettings implements SettingsRegistry {
     }
 
     @Override
+    public Set<String> exactKeys(Scope scope) {
+        return Set.copyOf(exact.get(scope).keySet());
+    }
+
+    @Override
     public Set<String> declaredKeys(Scope scope) {
         Set<String> keys = new TreeSet<>(exact.get(scope).keySet());
         patterns.get(scope).forEach(entry -> keys.add(entry.key()));

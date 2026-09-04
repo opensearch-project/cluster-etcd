@@ -82,4 +82,13 @@ public interface SettingsRegistry {
 
     /** The declared keys and patterns for a scope, for diagnostics. Empty when not enforcing. */
     Set<String> declaredKeys(Scope scope);
+
+    /**
+     * Only the exact keys, without the prefix and affix patterns.
+     *
+     * <p>Separate from {@link #declaredKeys} because "did you mean" scores against exact keys alone —
+     * OpenSearch scores over its {@code keySettings} map and not {@code complexMatchers}, and
+     * suggesting {@code index.analysis.} for a typo would be noise rather than help.
+     */
+    Set<String> exactKeys(Scope scope);
 }

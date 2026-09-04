@@ -462,6 +462,65 @@ public final class ErrorResponses {
         return structured(RestStatus.CONFLICT, cause, isPretty(request), Map.of());
     }
 
+    /**
+     * {@code 400} for a setting the data plane does not have.
+     *
+     * <p>Verified against 3.9.0. The suffix has two branches, and which one appears depends on whether
+     * any registered key scores above {@code 0.7} on Lucene's normalised Levenshtein similarity — see
+     * {@code SettingsValidation.didYouMean}. A typo gets the suggestion; a genuinely invented key gets
+     * the generic advice.
+     *
+     * <p>A setting the user may not supply — {@code PrivateIndex} or {@code InternalIndex} — reports
+     * through here too, identically. Verified: {@code index.provided_name} answers
+     * {@code unknown setting [index.provided_name]}, not a distinct private-setting message.
+     *
+     * @param suggestion the rendered {@code did you mean} target, or {@code null} for the generic advice
+     */
+    public static RestResponse unknownSetting(RestRequest request, String key, String suggestion) {
+        String reason = "unknown setting [" + key + "]"
+            + (suggestion == null
+                ? " please check that any required plugins are installed, or check the breaking changes "
+                    + "documentation for removed settings"
+                : " did you mean " + suggestion + "?");
+        return structured(RestStatus.BAD_REQUEST, "settings_exception", reason, request);
+    }
+
+    /**
+     * {@code 400} for a static setting changed on an open index.
+     *
+     * <p>Byte-exact against 3.9.0, doubled brackets and all — and they double for two different
+     * reasons, which is why this is easy to get wrong. The format is
+     * {@code "Can't update non dynamic settings [%s] for open indices %s"}: the settings list gets its
+     * brackets from the format string wrapping a {@code List.toString()}, while the index list gets
+     * them from {@code Index.toString()} already rendering as {@code [name/uuid]} inside a list.
+     *
+     * @param indices each already rendered as {@code [name/uuid]}, the way {@code Index.toString} does
+     */
+    public static RestResponse nonDynamicSettings(RestRequest request, List<String> keys, List<String> indices) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "illegal_argument_exception",
+            "Can't update non dynamic settings [" + keys + "] for open indices " + indices,
+            request
+        );
+    }
+
+    /**
+     * {@code 400} for a cluster setting that is unknown or cannot be updated.
+     *
+     * <p>Different wording from the index path, verified: {@code persistent setting [cluster.x], not
+     * recognized} and {@code persistent setting [cluster.name], not dynamically updateable}. The scope
+     * word is part of the message, so a transient update says {@code transient setting [...]}.
+     */
+    public static RestResponse clusterSettingRejected(RestRequest request, String scope, String key, String why) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "settings_exception",
+            scope + " setting [" + key + "], " + why,
+            request
+        );
+    }
+
     public static RestResponse tenantUnresolved(boolean pretty) {
         return structured(
             RestStatus.UNAUTHORIZED,

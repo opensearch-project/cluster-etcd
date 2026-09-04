@@ -101,7 +101,7 @@ public final class Main {
 
         KeyValueStore store = new FileSystemKeyValueStore(dataPath);
         OperationContextFactory contextFactory = new OperationContextFactory(store, new SingleTenantResolver());
-        HandlerRegistry registry = ControlPlaneHandlers.build(identity, capabilities);
+        HandlerRegistry registry = ControlPlaneHandlers.build(identity, capabilities, settings);
 
         ControlPlaneServer server = new ControlPlaneServer(host, port, registry, contextFactory);
         if (dumpRoutes) {

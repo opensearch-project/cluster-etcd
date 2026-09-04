@@ -11,11 +11,13 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import org.opensearch.controlplane.rest.Json;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 
@@ -198,6 +200,54 @@ public final class Settings {
 
     public boolean isEmpty() {
         return values.isEmpty();
+    }
+
+    /** The dotted keys, in order. */
+    public Set<String> keys() {
+        return Collections.unmodifiableSet(values.navigableKeySet());
+    }
+
+    /** Whether a key was supplied at all, which an explicit null still counts as. */
+    public boolean contains(String key) {
+        return values.containsKey(key);
+    }
+
+    /**
+     * This document with the keys whose value is an explicit null removed entirely.
+     *
+     * <p>What {@code indices.put_settings} means by a null: verified against 3.9.0, sending
+     * {@code {"index":{"refresh_interval":null}}} leaves the index with no {@code refresh_interval} at
+     * all rather than a null one, so the setting reverts to its default.
+     */
+    public Settings withoutNulls() {
+        NavigableMap<String, JsonNode> kept = new TreeMap<>();
+        values.forEach((key, value) -> {
+            if (value.isNull() == false) {
+                kept.put(key, value);
+            }
+        });
+        return kept.isEmpty() ? EMPTY : new Settings(kept);
+    }
+
+    /** The keys explicitly set to null, which a merge should remove rather than carry. */
+    public Set<String> nullKeys() {
+        NavigableMap<String, JsonNode> nulls = new TreeMap<>();
+        values.forEach((key, value) -> {
+            if (value.isNull()) {
+                nulls.put(key, value);
+            }
+        });
+        return Collections.unmodifiableSet(nulls.navigableKeySet());
+    }
+
+    /** This document with the given keys removed. */
+    public Settings without(Set<String> keys) {
+        if (keys.isEmpty()) {
+            return this;
+        }
+        NavigableMap<String, JsonNode> kept = new TreeMap<>(values);
+        keys.forEach(kept::remove);
+        return kept.isEmpty() ? EMPTY : new Settings(kept);
     }
 
     /**

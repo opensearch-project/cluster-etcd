@@ -10,12 +10,12 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 36 implemented, 43 stubbed
+126 routes, 79 operation groups, 37 implemented, 42 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
+| `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
 | `cluster` | 21 | component template CRUD |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
@@ -23,7 +23,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 43 operation groups return `501 Not Implemented`** with a structured
+**The remaining 42 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -369,7 +369,7 @@ registry: **an `affix` key always contains a `*`, and a `prefix` key never does 
 *"`Final`"* — a setting with neither property is static, and keying off `Final` alone would let most
 static settings through.
 
-**Status:** implemented on both sides. The data plane exposes
+**Status:** implemented on both sides, and `indices.put_settings` is the first consumer. The data plane exposes
 `GET /_cluster/settings_registry` (pending upstream in OpenSearch),
 and `SettingsRegistry` / `DeclaredSettings` / `PermissiveSettings` consume it. A real 3.9.0 cluster
 reports **221 index settings and 801 cluster settings**; the file is ~180 kB and loads in about 100 ms.
@@ -683,6 +683,19 @@ character for character against the server's response.
   priority, legacy templates are *merged* — all matching ones, in ascending `order`, later winning; that
   is what `order` is for, and why overlapping patterns are rejected for one kind and legal for the
   other. Ties on `order` break by name. Eight requests diffed against 3.9.0, all agreeing.
+- **`indices.put_settings`.** Eleven updates diffed against 3.9.0 with the real registry loaded —
+  **zero status divergences and zero message divergences**, byte-exact wherever the live body was short
+  enough to capture whole. Three findings worth keeping:
+  - a **null removes** the setting rather than storing one, so it reverts to its default; and
+    `preserve_existing=true` skips a key the index already has rather than failing on it.
+  - the static-setting message doubles its brackets **for two different reasons** —
+    `Can't update non dynamic settings [[index.number_of_shards]] for open indices [[my-index/uuid]]`.
+    The settings list gets its brackets from the format string wrapping a `List.toString()`; the index
+    list gets them from `Index.toString()` already rendering as `[name/uuid]` inside a list.
+  - the `did you mean` suffix is reproduced, and getting it right needed Lucene's exact normalisation:
+    **the edit distance is divided by the longer of the two strings**. A first cut divided by the
+    shorter, which scores every candidate too low and silently truncates the suggestion list — caught
+    only because a live cluster suggested two settings where this suggested one.
 - **`indices.put_mapping`.** Fourteen updates diffed against 3.9.0 — **zero status divergences**, and
   ten of the fourteen messages byte-exact including the two-line parameter-conflict wording with its
   literal newline and tab. The four that differ are the `from [x]` clause described above. The
@@ -790,7 +803,7 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 43 operation groups that are still stubbed.
+- Everything about the 42 operation groups that are still stubbed.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
@@ -799,11 +812,12 @@ request would normally get. Verified, and reproduced.
 - **Mapping merge has no conflict detection.** Two templates disagreeing about a field's type produce a
   last-writer-wins mapping rather than the rejection a real cluster raises. Belongs with
   `indices.put_mapping`.
-- Settings are stored unvalidated. A real cluster rejects unknown or malformed settings with 400 —
-  `settings_exception`, `unknown setting [index.totally_bogus] please check that any required plugins
-  are installed...` — on index creation *and* on a template put. Doing the same needs a registry of
-  known settings, which has the same shipping problem as the processor list: any hardcoded list drifts,
-  and a false rejection breaks a working deployment. It belongs with `--capabilities`.
+- **Settings are validated on `put_settings` and nowhere else yet.** With a `--settings-registry` an
+  unknown or static setting is rejected there exactly as a real cluster does; without one, nothing is
+  checked. `indices.create` and the template puts still store whatever they are given, so
+  `PUT /i {"settings":{"totally_bogus":1}}` is accepted here and a 400 on a real cluster. Closing that
+  is now a call to the same validator, with one difference worth getting right: **create legitimately
+  sets static settings**, so it checks existence and not-user-settable but not dynamism.
 - **`index.uuid`, `index.creation_date` and `index.provided_name` are not in a created index's
   settings.** A real cluster writes them there; here they are top-level metadata fields, and
   `indices.get_settings` renders them back in on the way out. Same information, held once rather than
