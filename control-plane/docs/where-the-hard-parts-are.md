@@ -184,7 +184,10 @@ Worth knowing which these are, because several are near-copies of code that alre
   newer kinds answer an array under a wrapper key and a structured error, and the required property and
   its error differ per kind. Only `delete`-missing is uniform. Composition remains Tier 2 and unbuilt;
   `composed_of` references and priority overlaps are unvalidated.
-- **`cluster.get/put_settings`** — a single key, modulo the static/dynamic distinction.
+- ~~**`cluster.get/put_settings`**~~ — **done**, and "a single key, modulo the static/dynamic
+  distinction" was right on both counts. The static/dynamic question was answered by the settings
+  registry rather than by a hand-built list, and the single key made the update a compare-and-swap. The
+  only thing the survey missed is that the PUT response echoes the request rather than the state.
 - **decommission awareness and weighted routing** (6 groups) — single key each, pure config.
 - **`snapshot.create/get/delete_repository`** — one key per repository. `verify_repository` is not
   Tier 0: it does real I/O against the backend.

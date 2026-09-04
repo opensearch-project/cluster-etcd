@@ -10,20 +10,20 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 37 implemented, 42 stubbed
+126 routes, 79 operation groups, 39 implemented, 40 stubbed
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
 | `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
-| `cluster` | 21 | component template CRUD |
+| `cluster` | 21 | component template CRUD, `get_settings`, `put_settings` |
 | `snapshot` | 16 | — |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 | `dangling_indices` | 3 | — |
 
-**The remaining 42 operation groups return `501 Not Implemented`** with a structured
+**The remaining 40 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -373,13 +373,30 @@ static settings through.
 `GET /_cluster/settings_registry` (pending upstream in OpenSearch),
 and `SettingsRegistry` / `DeclaredSettings` / `PermissiveSettings` consume it. A real 3.9.0 cluster
 reports **221 index settings and 801 cluster settings**; the file is ~180 kB and loads in about 100 ms.
-Nothing uses it yet — `indices.put_settings` and `cluster.get_settings` / `put_settings` are the next
-operations, and they are the reason it exists.
+Consumed by `indices.put_settings` and `cluster.put_settings`, which are the reason it exists.
 
 **A note on heterogeneous clusters.** The capabilities generator *excludes* a processor present on only
 some nodes, since the control plane should not accept a definition whose success depends on where it
 runs. A setting present on only some nodes is a different thing — a misconfiguration, usually a plugin
 installed unevenly — and should be reported loudly rather than silently dropped.
+
+### Cluster settings: two scopes, uninterpreted
+
+`persistent` and `transient` are stored separately and neither is interpreted. The control plane's job
+is to remember what a client set, in the scope it set it in.
+
+**Which one wins is the data plane's question**, and it resolves it by merging with transient taking
+precedence — the semantics OpenSearch already has. So there is no need for a precedence rule here, and
+not having one is what keeps this a store rather than a policy. A data plane that implements only the
+merged view is still correct; it just cannot report the two apart, which is a read-side concern.
+
+One document per tenant rather than one key per setting, because an update is naturally
+read-modify-write over the whole set. That makes it a single-key compare-and-swap — genuinely atomic on
+any backend, the same property that made aliases their own resource, reached from the opposite
+direction.
+
+Each tenant has its own cluster settings, since the store a handler gets is already tenant-confined.
+Same choice as `cluster_uuid` being per tenant: each tenant sees a coherent virtual cluster of its own.
 
 ## Multi-tenancy
 
@@ -683,6 +700,17 @@ character for character against the server's response.
   priority, legacy templates are *merged* — all matching ones, in ascending `order`, later winning; that
   is what `order` is for, and why overlapping patterns are rejected for one kind and legal for the
   other. Ties on `order` break by name. Eight requests diffed against 3.9.0, all agreeing.
+- **`cluster.get_settings` / `put_settings`.** A **14-step stateful sequence** replayed against 3.9.0 —
+  set persistent, set another, read both, set transient, `flat_settings` on read and on write, a nested
+  key, four rejections, a removal, read again. Zero divergences, nine of the fourteen byte-exact and the
+  rest prefix-matched to the truncation limit. Because it is a sequence rather than independent cases,
+  the accumulated state had to agree at every read, not just each response shape. Two findings:
+  - **the PUT response echoes what the request assigned, not the cluster's settings.** With
+    `cluster.max_shards_per_node` already set, a request setting `cluster.blocks.read_only` answers only
+    the latter; a request that *removes* a setting answers `{}` for that scope, having assigned nothing.
+  - **a body naming neither scope is "no settings to update"**, not an unknown-scope error:
+    `{"bogus":{...}}` and `{}` both give `action_request_validation_exception`,
+    `Validation Failed: 1: no settings to update;`.
 - **`indices.put_settings`.** Eleven updates diffed against 3.9.0 with the real registry loaded —
   **zero status divergences and zero message divergences**, byte-exact wherever the live body was short
   enough to capture whole. Three findings worth keeping:
@@ -803,7 +831,7 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 42 operation groups that are still stubbed.
+- Everything about the 40 operation groups that are still stubbed.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns

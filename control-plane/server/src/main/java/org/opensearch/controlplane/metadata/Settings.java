@@ -107,6 +107,20 @@ public final class Settings {
     }
 
     /**
+     * Normalises a settings document that carries no implicit prefix.
+     *
+     * <p>Cluster settings, where the key is written out in full: {@code cluster.max_shards_per_node} is
+     * accepted dotted, nested as {@code {"cluster":{"max_shards_per_node":...}}}, or any mixture, and
+     * all of them flatten to the same key. Everything else about the representation — stringified
+     * values, lists of strings, null meaning unset — is shared with {@link #forIndex}.
+     */
+    public static Settings of(JsonNode settings) {
+        NavigableMap<String, JsonNode> flat = new TreeMap<>();
+        flatten("", settings, flat);
+        return flat.isEmpty() ? EMPTY : new Settings(flat);
+    }
+
+    /**
      * Renders back to JSON.
      *
      * @param flat dotted keys, as {@code flat_settings=true} asks for; otherwise nested under each

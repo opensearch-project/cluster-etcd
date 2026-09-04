@@ -521,6 +521,22 @@ public final class ErrorResponses {
         );
     }
 
+    /**
+     * {@code 400} for a cluster settings update that sets nothing.
+     *
+     * <p>Verified: reached by an empty body object and, less obviously, by a body whose only keys are
+     * neither {@code persistent} nor {@code transient} — {@code {"bogus":{...}}} gets this rather than
+     * an unknown-scope error, because the server simply finds nothing to apply.
+     */
+    public static RestResponse noSettingsToUpdate(RestRequest request) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "action_request_validation_exception",
+            "Validation Failed: 1: no settings to update;",
+            request
+        );
+    }
+
     public static RestResponse tenantUnresolved(boolean pretty) {
         return structured(
             RestStatus.UNAUTHORIZED,
