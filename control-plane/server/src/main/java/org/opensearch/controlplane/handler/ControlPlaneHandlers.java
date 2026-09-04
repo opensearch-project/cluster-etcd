@@ -14,6 +14,7 @@ import org.opensearch.controlplane.handler.cluster.PutClusterSettingsHandler;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
 import org.opensearch.controlplane.handler.core.PingHandler;
+import org.opensearch.controlplane.handler.core.StoredScriptHandlers;
 import org.opensearch.controlplane.handler.indices.ChangeIndexStateHandler;
 import org.opensearch.controlplane.handler.indices.CreateIndexHandler;
 import org.opensearch.controlplane.handler.indices.DeleteAliasHandler;
@@ -138,6 +139,9 @@ public final class ControlPlaneHandlers {
 
         // close and open are mirror images, so one implementation serves both.
         ChangeIndexStateHandler.handlers().forEach(registry::register);
+
+        // Stored scripts: one key each, the same shape as the pipelines.
+        StoredScriptHandlers.handlers().forEach(registry::register);
 
         // Snapshot repository configuration -- the only snapshot operations that need no repository access.
         RepositoryHandlers.handlers().forEach(registry::register);

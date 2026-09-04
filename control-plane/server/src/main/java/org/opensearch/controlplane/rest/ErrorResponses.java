@@ -628,6 +628,23 @@ public final class ErrorResponses {
         );
     }
 
+    /** {@code 400 illegal_argument_exception} — the general shape for a rejected argument. */
+    public static RestResponse illegalArgument(RestRequest request, String reason) {
+        return structured(RestStatus.BAD_REQUEST, "illegal_argument_exception", reason, request);
+    }
+
+    /**
+     * {@code 400 parsing_exception} — a body whose structure is wrong rather than whose values are.
+     *
+     * <p>A real cluster adds {@code line} and {@code col} from its XContent parser's token location.
+     * Those are <b>deliberately absent</b> here: this service parses with a different parser on a
+     * different pass, so any numbers it produced would be plausible and wrong, which is worse than
+     * absent. The {@code reason} already names the offending field.
+     */
+    public static RestResponse scriptParsingFailure(RestRequest request, String reason) {
+        return structured(RestStatus.BAD_REQUEST, "parsing_exception", reason, request);
+    }
+
     public static RestResponse noSettingsToUpdate(RestRequest request) {
         return structured(
             RestStatus.BAD_REQUEST,

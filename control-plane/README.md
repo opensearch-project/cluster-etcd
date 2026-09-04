@@ -10,7 +10,7 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-123 routes, 76 operation groups, 45 implemented, 31 stubbed
+123 routes, 76 operation groups, 48 implemented, 28 stubbed
 ```
 
 | namespace | routes | implemented |
@@ -18,11 +18,11 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
 | `cluster` | 21 | component template CRUD, `get_settings`, `put_settings`, `pending_tasks` |
 | `snapshot` | 16 | repository registration: `create_repository`, `get_repository`, `delete_repository` |
-| `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
+| `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script` |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 
-**The remaining 31 operation groups return `501 Not Implemented`** with a structured
+**The remaining 28 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -667,6 +667,7 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | the `from [x]` clause in a mapping conflict | `Cannot update parameter [index] from [true] to [false]` | `Cannot update parameter [index] to [false]` when the old value was never declared | same cause — there is no honest previous value to name, so the clause is dropped rather than invented. Byte-exact whenever the stored mapping did declare it |
 | `shards_acknowledged` on reopen | `true` after awaiting shards | `true` | the one place this is *more* optimistic than `indices.create`'s deliberate `false`. On close it is honest — there are no shards left to wait for — and a request that changed nothing reports `false` as a real cluster does. Reopen genuinely awaits shards upstream, so `true` there is the same claim create declines to make |
 | `time_in_queue` / `time_in_execution` on `pending_tasks` | a string beside each `_millis` field, emitted *unconditionally* rather than under `human` | omitted; only the `_millis` fields | the same call as `human`, in a harder place. Formatting a duration as `1.5s` is a presentation decision, and the server does not know the caller's locale or precision needs. The spec marks neither field required, so the response stays valid, and a client with `1500` can render it however it likes |
+| `line` / `col` on a stored-script parse error | reported from the XContent parser's token location | omitted | this service parses with a different parser on a different pass, so any position it produced would be plausible and wrong — worse than absent. The `reason` already names the offending field |
 | mapping key order | reordered by the mapping engine | as declared | the field dictionaries `properties` and `fields` come back sorted, but the other mapping keys follow the mapper's own emission order — `dynamic` before `properties`, neither declared nor alphabetical. Sorting the dictionaries would match a simple mapping and silently diverge on a richer one, while *looking* faithful. Reproducing it means the mapping engine |
 | metadata fields in `get_field_mapping` | `_index`, `_routing`, `_doc_count`, … returned under a wildcard | declared fields only | they come from the mapping engine's field registry, which is version- and plugin-dependent; a hardcoded copy would drift the way a hardcoded settings registry would |
 | `include_defaults` on `get_settings` | a sibling `defaults` block, ~2.6 kB per index | accepted and ignored | **the control plane owns the settings a user explicitly set; computed values belong to the layer that computes them.** A data plane node can already answer `/{index}/_settings?local=true` with the fully resolved settings, defaults included, so putting a settings registry here would duplicate that — and a duplicated registry drifts. Same reasoning as [Data plane capabilities](#data-plane-capabilities) |
@@ -739,6 +740,16 @@ character for character against the server's response.
   priority, legacy templates are *merged* — all matching ones, in ascending `order`, later winning; that
   is what `order` is for, and why overlapping patterns are rejected for one kind and legal for the
   other. Ties on `order` break by name. Eight requests diffed against 3.9.0, all agreeing.
+- **Stored scripts.** Sixteen requests diffed against 3.9.0 — **all byte-exact**, the cleanest run so
+  far, and two of the rules would have been guessed wrong:
+  - **`lang` is checked before `source`**, so `{"script":{}}` answers `must specify lang`. The reverse
+    order is the intuitive one and would misreport the commonest malformed body.
+  - **an empty body object stores a `mustache` script with an empty source** and answers 200. Not a
+    guess — `StoredScriptSource.parse` returns exactly that for an immediately-closing object, alongside
+    a deprecation warning that "empty templates should no longer be used". Reproduced because it is
+    observable and cheap; it should go when upstream removes it.
+  - missing reports two ways again: `GET` answers an ordinary `{"_id":"x","found":false}` with **no error
+    document**, while `DELETE` answers `resource_not_found_exception`.
 - **Snapshot repository registration**, verified in both cluster states — 11 requests against a cluster
   that has never had a repository, and a **17-step stateful sequence** against one with `path.repo`
   configured so real repositories could be created. All agree; 25 of the 28 byte-exact, the rest
@@ -930,7 +941,7 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 31 operation groups that are still stubbed.
+- Everything about the 28 operation groups that are still stubbed.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
@@ -939,6 +950,11 @@ request would normally get. Verified, and reproduced.
 - **Mapping merge has no conflict detection.** Two templates disagreeing about a field's type produce a
   last-writer-wins mapping rather than the rejection a real cluster raises. Belongs with
   `indices.put_mapping`.
+- **A stored script's `lang` is not validated.** A real cluster rejects an unsupported language, and
+  which languages exist depends on installed modules. Unlike repository types there *is* a source for
+  this — `GET /_script_language` reports the languages and their contexts — which makes it the one
+  capability gap with an obvious fix: implement `get_script_languages` and the capabilities file has
+  something to carry.
 - **Settings existence and permission are validated; values are not.** With a `--settings-registry`,
   every write path rejects an unknown or private setting as a real cluster does. What is not checked is
   whether a *value* is well-formed, so `index.replication.type: "segment"` is accepted here and rejected
