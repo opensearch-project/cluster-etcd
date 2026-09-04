@@ -51,6 +51,21 @@ excluded_namespaces:
   # once the task identity and persistence model is settled.
   tasks: "deferred pending the task identity model, not because it is out of scope"
 
+  # Dangling indices are excluded on principle rather than on layering: these
+  # operations ARE control-plane-shaped, and we still do not want them.
+  #
+  # A dangling index is one whose data exists on a node but whose metadata is
+  # absent from cluster state -- the two sources of truth having diverged. The API
+  # exists to reconcile that by hand. In this architecture index metadata lives in
+  # the shared store and nodes derive their configuration from it, so there is only
+  # one source of truth and no way for the two to disagree. If a dangling index
+  # ever appears here, the distributed system is incorrect and the answer is to fix
+  # it, not to offer an API for importing the wreckage.
+  #
+  # Implementing these would mean building the divergence they assume, and giving
+  # operators a tool whose existence implies the model is unsound.
+  dangling_indices: "their existence would mean our model is broken; reconciling by hand is not a feature we want"
+
   # Control-plane-shaped, but plugin-provided. Flip these to reviewed_namespaces
   # once the core namespaces land -- they are the natural phase 2.
   ism: "index management plugin; control-plane-shaped, enable after core namespaces land"
@@ -88,7 +103,6 @@ reviewed_namespaces:
   - cluster
   - ingest
   - snapshot
-  - dangling_indices
   - search_pipeline
 
 # ---------------------------------------------------------------------------
@@ -142,11 +156,18 @@ included_operations:
   - indices.create_data_stream
   - indices.get_data_stream
   - indices.delete_data_stream
-  # resize / rollover. These do move data, but the control plane owns the
-  # operation: it validates and creates the target index metadata, initiates the
-  # work, hands the shard copy off to the data plane, and owns the overarching
-  # task lifecycle including retries and cleanup. See the `tasks` note in
-  # excluded_namespaces for the API surface that will eventually expose that.
+  # resize / rollover. In scope but DEFERRED, and deliberately not yet designed.
+  #
+  # The control plane's part is the short-lived half: validate, create the target
+  # index metadata, register a task. The copy itself and the task lifecycle --
+  # retries, leases, cleanup -- belong to the management plane, not here. (An
+  # earlier version of this comment claimed the control plane owned that
+  # lifecycle; it does not. See the README's plane table.)
+  #
+  # Deferred because these are the operations most likely to look different in this
+  # architecture rather than the same, and reproducing OpenSearch's shape before
+  # deciding what they should be would bake in the old one. Revisit when the
+  # management plane exists to design against.
   - indices.clone
   - indices.shrink
   - indices.split
@@ -188,11 +209,6 @@ included_operations:
   - snapshot.clone
   - snapshot.restore
   - snapshot.status
-
-  # -- dangling indices: pure metadata reconciliation.
-  - dangling_indices.list_dangling_indices
-  - dangling_indices.import_dangling_index
-  - dangling_indices.delete_dangling_index
 
   # -- search pipelines: definitions live in cluster state.
   - search_pipeline.get

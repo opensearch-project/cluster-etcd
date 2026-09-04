@@ -166,7 +166,8 @@ The direct consequence of not having a prebuilt cluster-state view.
   every per-resource key, filtered by `metric` and `index`. Ironically the hardest read in the
   system precisely because of the design choice that makes writes easy. Worth checking who actually
   calls it before investing: it may be used mostly by tooling we do not need to satisfy.
-- **`snapshot.get`, `snapshot.status`** — scan across snapshot records.
+- ~~**`snapshot.get`, `snapshot.status`**~~ — deferred; the management plane projects snapshot metadata
+  into the shared store and this reads it from there. See the snapshot boundary section.
 
 ## Tier 0: the easy wins, roughly in order of ratio
 

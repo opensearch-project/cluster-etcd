@@ -10,7 +10,7 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-126 routes, 79 operation groups, 45 implemented, 34 stubbed
+123 routes, 76 operation groups, 45 implemented, 31 stubbed
 ```
 
 | namespace | routes | implemented |
@@ -21,9 +21,8 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping` |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
-| `dangling_indices` | 3 | — |
 
-**The remaining 34 operation groups return `501 Not Implemented`** with a structured
+**The remaining 31 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -143,6 +142,16 @@ Currently out of scope wholesale: `cat` and `list` (text/plain table rendering),
 `security` (needs an auth backend), the index-management plugins (`ism`, `sm`,
 `rollups`, `transforms`, `wlm`), and everything node- or shard-level. Each is one
 line to re-enable.
+
+**`dangling_indices` is excluded on principle rather than on layering**, and it is
+the only exclusion of that kind. Those three operations *are* control-plane-shaped,
+and we still do not want them. A dangling index is one whose data exists on a node
+while its metadata is absent from cluster state — two sources of truth having
+diverged — and the API exists to reconcile that by hand. Here index metadata lives
+in the shared store and nodes derive their configuration from it, so there is one
+source of truth and no way for the two to disagree. **If a dangling index ever
+appears, the distributed system is incorrect**, and the answer is to fix it rather
+than to ship a tool for importing the wreckage.
 
 `indices.clone` / `shrink` / `split` / `rollover` are in scope even though they
 move data, on the same terms as `indices.create`: the control plane validates,
@@ -921,7 +930,7 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 34 operation groups that are still stubbed.
+- Everything about the 31 operation groups that are still stubbed.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
