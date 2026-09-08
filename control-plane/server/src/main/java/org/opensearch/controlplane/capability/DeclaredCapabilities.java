@@ -10,8 +10,12 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.stream.Collectors;
@@ -41,13 +45,19 @@ import java.util.stream.Collectors;
 public final class DeclaredCapabilities implements DataPlaneCapabilities {
 
     private final Map<ProcessorKind, Set<String>> processors;
+    private final ScriptLanguages scriptLanguages;
 
     public DeclaredCapabilities(Map<ProcessorKind, Set<String>> processors) {
+        this(processors, null);
+    }
+
+    public DeclaredCapabilities(Map<ProcessorKind, Set<String>> processors, ScriptLanguages scriptLanguages) {
         EnumMap<ProcessorKind, Set<String>> copy = new EnumMap<>(ProcessorKind.class);
         for (ProcessorKind kind : ProcessorKind.values()) {
             copy.put(kind, Set.copyOf(processors.getOrDefault(kind, Set.of())));
         }
         this.processors = copy;
+        this.scriptLanguages = scriptLanguages;
     }
 
     public static DeclaredCapabilities load(Path file) throws IOException {
@@ -75,7 +85,48 @@ public final class DeclaredCapabilities implements DataPlaneCapabilities {
             entry.getValue().forEach(type -> types.add(type.asText()));
             declared.put(kind, types);
         }
-        return new DeclaredCapabilities(declared);
+        return new DeclaredCapabilities(declared, readScriptLanguages(root));
+    }
+
+    /**
+     * The optional {@code script_languages} section, straight from {@code GET /_script_language}:
+     *
+     * <pre>{@code
+     * script_languages:
+     *   types_allowed: [inline, stored]
+     *   language_contexts:
+     *     painless: [aggs, field, filter, score, ...]
+     *     mustache: [template]
+     * }</pre>
+     *
+     * <p>Absent rather than empty when the section is missing, so a capabilities file generated before
+     * this existed keeps working and {@code get_script_languages} stays stubbed rather than answering
+     * "no languages". See {@link DataPlaneCapabilities#scriptLanguages}.
+     */
+    private static ScriptLanguages readScriptLanguages(JsonNode root) throws IOException {
+        JsonNode section = root.path("script_languages");
+        if (section.isObject() == false) {
+            return null;
+        }
+        List<String> typesAllowed = new ArrayList<>();
+        section.path("types_allowed").forEach(type -> typesAllowed.add(type.asText()));
+
+        JsonNode contexts = section.path("language_contexts");
+        if (contexts.isObject() == false) {
+            throw new IOException("script_languages.language_contexts must be a mapping of language to contexts");
+        }
+        Map<String, List<String>> byLanguage = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonNode> entry : contexts.properties()) {
+            List<String> names = new ArrayList<>();
+            entry.getValue().forEach(context -> names.add(context.asText()));
+            byLanguage.put(entry.getKey(), names);
+        }
+        return new ScriptLanguages(typesAllowed, byLanguage);
+    }
+
+    @Override
+    public Optional<ScriptLanguages> scriptLanguages() {
+        return Optional.ofNullable(scriptLanguages);
     }
 
     @Override
@@ -99,6 +150,8 @@ public final class DeclaredCapabilities implements DataPlaneCapabilities {
             + processors.entrySet().stream()
                 .map(e -> e.getKey().configKey() + "=" + e.getValue().size())
                 .collect(Collectors.joining(", "))
-            + " processor types declared)";
+            + " processor types declared"
+            + scriptLanguages().map(languages -> ", script languages " + languages.languages()).orElse("")
+            + ")";
     }
 }

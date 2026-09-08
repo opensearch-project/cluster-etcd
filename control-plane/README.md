@@ -11,6 +11,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 
 ```
 123 routes, 76 operation groups, 48 implemented, 28 stubbed
+(49 / 27 when the capabilities file declares script languages)
 ```
 
 | namespace | routes | implemented |
@@ -18,9 +19,16 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
 | `cluster` | 21 | component template CRUD, `get_settings`, `put_settings`, `pending_tasks` |
 | `snapshot` | 16 | repository registration: `create_repository`, `get_repository`, `delete_repository` |
-| `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script` |
+| `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`† |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
+
+**† `get_script_languages` is registered only when the capabilities file declares script
+languages.** It is a pure passthrough of that data, so with none declared there is no operation to
+perform and it keeps its stub — answering `{"types_allowed":[],"language_contexts":[]}` would tell a
+client it may use no language at all, which is a confident wrong answer where a 501 is an honest one.
+Every other capability-dependent behaviour degrades to *not validating*; this one has nothing to
+degrade to, because the capability data **is** the response.
 
 **The remaining 28 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
@@ -351,6 +359,31 @@ shape either side used. Merging the nested documents structurally only worked wh
 to spell a setting the same way. A component saying `{"index": {"number_of_replicas": 9}}` beneath a
 template block saying `{"number_of_replicas": 5}` produced *two keys for one setting*, and
 `_simulate_index` reported both where a real cluster reports one.
+
+### Script languages
+
+The one data-plane capability with a first-class source of its own, and the reason
+`get_script_languages` could be implemented at all. Which languages exist depends on installed
+modules — `painless` is core, `expression` and `mustache` are modules — so the control plane cannot
+know. But unlike processor types (reported only inside `GET /_nodes`) or repository types (reported
+nowhere), a cluster exposes exactly this as `GET /_script_language`, which is both where the
+capabilities file gets it and the operation this service then serves.
+
+```yaml
+script_languages:
+  types_allowed: [inline, stored]
+  language_contexts:
+    painless: [aggs, field, filter, score, ...]
+    mustache: [template]
+```
+
+`tools/dump-capabilities.sh` reads it alongside `GET /_nodes`. The section is optional: a capabilities
+file generated before it existed still loads, and the query is allowed to fail — an older cluster, or
+one behind a proxy that blocks it, simply yields no section rather than an empty one.
+
+Declaring it does two things: `get_script_languages` starts answering instead of returning 501, and a
+stored script whose `lang` the data plane does not have is rejected with the message a real cluster
+uses. Without it, both degrade — the read stays stubbed and any `lang` is accepted.
 
 ### The settings registry
 
@@ -740,6 +773,12 @@ character for character against the server's response.
   priority, legacy templates are *merged* — all matching ones, in ascending `order`, later winning; that
   is what `order` is for, and why overlapping patterns are rejected for one kind and legal for the
   other. Ties on `order` break by name. Eight requests diffed against 3.9.0, all agreeing.
+- **`get_script_languages`.** The response shape is **byte-exact for the first 283 bytes** of what a
+  live 3.9.0 cluster returns — covering `types_allowed`, the array-of-`{language, contexts}` shape, the
+  field order within each entry, the language ordering, and two complete context lists. The comparison
+  stops there because the sandbox proxy truncates the live body at 324 bytes and the remainder is
+  `painless`'s context list, which is pass-through data rather than shape. Run
+  `tools/dump-capabilities.sh` against a real cluster to close that last part.
 - **Stored scripts.** Sixteen requests diffed against 3.9.0 — **all byte-exact**, the cleanest run so
   far, and two of the rules would have been guessed wrong:
   - **`lang` is checked before `source`**, so `{"script":{}}` answers `must specify lang`. The reverse

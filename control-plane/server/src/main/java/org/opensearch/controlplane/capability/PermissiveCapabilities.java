@@ -4,6 +4,7 @@
  */
 package org.opensearch.controlplane.capability;
 
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -32,6 +33,12 @@ public final class PermissiveCapabilities implements DataPlaneCapabilities {
     @Override
     public Set<String> supportedProcessors(ProcessorKind kind) {
         return Set.of();
+    }
+
+    /** Nobody said, so there is nothing to report and nothing to validate against. */
+    @Override
+    public Optional<ScriptLanguages> scriptLanguages() {
+        return Optional.empty();
     }
 
     @Override

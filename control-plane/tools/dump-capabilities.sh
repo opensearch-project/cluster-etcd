@@ -13,6 +13,14 @@
 # maintained by hand would drift -- causing the control plane to reject definitions that would
 # actually have worked.
 #
+# Two sources, because the cluster reports these two capabilities in two places:
+#   GET /_nodes            processor types, per node, intersected below
+#   GET /_script_language  scripting languages and their contexts
+#
+# The second is also an operation the control plane serves: with it declared, get_script_languages
+# answers instead of returning 501, and stored scripts get their lang validated. Without it, both
+# degrade -- which is why it is emitted only when the query succeeds rather than as empty lists.
+#
 # Run this against the cluster this control plane fronts, and re-run it when plugins change.
 
 set -euo pipefail
@@ -28,13 +36,24 @@ nodes_json="$(curl -fsS -m 30 "$URL/_nodes?filter_path=nodes.*.ingest.processors
   exit 1
 }
 
-printf '%s' "$nodes_json" | python3 -c '
+# Not fatal: an older cluster, or one behind a proxy that blocks it, simply yields no section.
+languages_json="$(curl -fsS -m 30 "$URL/_script_language" 2>/dev/null || true)"
+
+printf '%s\n%s' "$nodes_json" "${languages_json:-}" | python3 -c '
 import json, sys
 
+raw = sys.stdin.read().split("\n", 1)
 try:
-    doc = json.load(sys.stdin)
+    doc = json.loads(raw[0])
 except json.JSONDecodeError as e:
     sys.exit(f"error: could not parse the _nodes response ({e})")
+
+languages = None
+if len(raw) > 1 and raw[1].strip():
+    try:
+        languages = json.loads(raw[1])
+    except json.JSONDecodeError:
+        languages = None
 
 nodes = doc.get("nodes") or {}
 if not nodes:
@@ -73,4 +92,22 @@ for key in kinds:
         print(f"  {key}:")
         for t in types:
             print(f"    - {t}")
+
+if languages:
+    print()
+    print("# From GET /_script_language. With this present the control plane serves")
+    print("# get_script_languages and validates the lang of a stored script; without it, both degrade.")
+    print("script_languages:")
+    types_allowed = languages.get("types_allowed") or []
+    print("  types_allowed: [" + ", ".join(types_allowed) + "]")
+    contexts = languages.get("language_contexts") or []
+    if not contexts:
+        print("  language_contexts: {}")
+    else:
+        print("  language_contexts:")
+        for entry in sorted(contexts, key=lambda e: e.get("language", "")):
+            names = sorted(entry.get("contexts") or [])
+            print("    " + entry.get("language", "") + ":")
+            for name in names:
+                print(f"      - {name}")
 '

@@ -4,6 +4,7 @@
  */
 package org.opensearch.controlplane.capability;
 
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -56,4 +57,14 @@ public interface DataPlaneCapabilities {
 
     /** The declared set for a kind, for diagnostics. Empty when not enforcing. */
     Set<String> supportedProcessors(ProcessorKind kind);
+
+    /**
+     * The scripting languages the data plane has, if they were declared.
+     *
+     * <p>An {@link Optional} rather than an empty default, because "no languages" and "nobody said" are
+     * different answers and the difference is visible: {@code get_script_languages} is a pure passthrough
+     * of this data, so with nothing declared there is no operation to perform. Reporting empty lists
+     * would tell a client it may use no language at all, which is worse than admitting we cannot say.
+     */
+    Optional<ScriptLanguages> scriptLanguages();
 }

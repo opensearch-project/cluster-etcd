@@ -14,6 +14,7 @@ import org.opensearch.controlplane.handler.cluster.PutClusterSettingsHandler;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
 import org.opensearch.controlplane.handler.core.PingHandler;
+import org.opensearch.controlplane.handler.core.GetScriptLanguagesHandler;
 import org.opensearch.controlplane.handler.core.StoredScriptHandlers;
 import org.opensearch.controlplane.handler.indices.ChangeIndexStateHandler;
 import org.opensearch.controlplane.handler.indices.CreateIndexHandler;
@@ -141,7 +142,13 @@ public final class ControlPlaneHandlers {
         ChangeIndexStateHandler.handlers().forEach(registry::register);
 
         // Stored scripts: one key each, the same shape as the pipelines.
-        StoredScriptHandlers.handlers().forEach(registry::register);
+        StoredScriptHandlers.handlers(capabilities).forEach(registry::register);
+
+        // get_script_languages is a passthrough of declared capability data, so it is registered only
+        // when there is data to pass through. With none it keeps its 501 stub, which is honest -- an
+        // empty language list would tell a client it may use nothing. See GetScriptLanguagesHandler.
+        capabilities.scriptLanguages()
+            .ifPresent(languages -> registry.register(new GetScriptLanguagesHandler(languages)));
 
         // Snapshot repository configuration -- the only snapshot operations that need no repository access.
         RepositoryHandlers.handlers().forEach(registry::register);

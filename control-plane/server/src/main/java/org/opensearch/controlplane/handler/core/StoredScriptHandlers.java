@@ -6,6 +6,8 @@ package org.opensearch.controlplane.handler.core;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.capability.DataPlaneCapabilities;
+import org.opensearch.controlplane.capability.ScriptLanguages;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
 import org.opensearch.controlplane.rest.ErrorResponses;
@@ -56,12 +58,15 @@ import java.util.Optional;
  * would be plausible and wrong, which is worse than absent — the {@code reason} already names the
  * offending field.
  *
- * <p><b>{@code lang} is not validated.</b> A real cluster answers
- * {@code unable to put stored script with unsupported lang [x]}, and which languages exist depends on
- * installed modules. Unlike repository types there <em>is</em> a source for this —
- * {@code GET /_script_language} reports the languages and their contexts — so this is the one capability
- * gap with an obvious fix: that operation is still stubbed, and implementing it would give the
- * capabilities file something to carry. Until then any lang is accepted.
+ * <p><b>{@code lang} is validated only when the data plane's languages were declared.</b> With a
+ * capabilities file carrying a {@code script_languages} section, an unsupported language is rejected as a
+ * real cluster rejects it — {@code unable to put stored script with unsupported lang [x]}. Without one,
+ * any language is accepted, exactly as processor types were before {@code --capabilities} existed.
+ *
+ * <p>That section comes from {@code GET /_script_language}, which is also
+ * {@link GetScriptLanguagesHandler}. Script languages are the only data-plane capability with a
+ * first-class source of their own, which is why this one gap could be closed while repository types
+ * cannot be.
  *
  * <h2>One quirk carried forward on purpose</h2>
  *
@@ -92,8 +97,8 @@ public final class StoredScriptHandlers {
 
     private StoredScriptHandlers() {}
 
-    public static List<OperationHandler> handlers() {
-        return List.of(new Put(), new Get(), new Delete());
+    public static List<OperationHandler> handlers(DataPlaneCapabilities capabilities) {
+        return List.of(new Put(capabilities), new Get(), new Delete());
     }
 
     static String key(String id) {
@@ -102,6 +107,12 @@ public final class StoredScriptHandlers {
 
     /** {@code PUT} and {@code POST /_scripts/{id}}, with or without a trailing context. */
     static final class Put implements OperationHandler {
+
+        private final DataPlaneCapabilities capabilities;
+
+        Put(DataPlaneCapabilities capabilities) {
+            this.capabilities = capabilities;
+        }
 
         @Override
         public String operationGroup() {
@@ -146,8 +157,17 @@ public final class StoredScriptHandlers {
                 if (script.path(SOURCE).isTextual() == false) {
                     return ErrorResponses.illegalArgument(request, "must specify source for stored script");
                 }
+                String lang = script.get(LANG).asText();
+                // Only when the data plane's languages were declared; otherwise anything is accepted,
+                // as with processor types before --capabilities existed.
+                Optional<ScriptLanguages> languages = capabilities.scriptLanguages();
+                if (languages.isPresent() && languages.get().supports(lang) == false) {
+                    return ErrorResponses.illegalArgument(
+                        request, "unable to put stored script with unsupported lang [" + lang + "]");
+                }
+
                 definition = Json.object();
-                definition.put(LANG, script.get(LANG).asText());
+                definition.put(LANG, lang);
                 definition.put(SOURCE, script.get(SOURCE).asText());
                 if (script.path(OPTIONS).isObject()) {
                     definition.set(OPTIONS, script.get(OPTIONS).deepCopy());
