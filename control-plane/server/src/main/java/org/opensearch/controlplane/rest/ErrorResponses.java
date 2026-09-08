@@ -508,6 +508,58 @@ public final class ErrorResponses {
     }
 
     /**
+     * {@code 409} for a weighted routing write whose {@code _version} is not the stored one.
+     *
+     * <p>{@code WeightedRoutingService.ensureNoVersionConflict}. <b>Note the trailing space</b>, which
+     * comes from the format string being written as two concatenated literals — {@code "...is at a "} and
+     * {@code "different version %s "} — and is part of the message a client sees.
+     *
+     * <p>Reached on {@code PUT} and {@code DELETE} alike, and on both the "no weights yet" and "weights
+     * exist" paths: with nothing stored the version compared against is {@code -1}, so a {@code DELETE}
+     * with no body at all conflicts {@code -2} against {@code -1} rather than reporting nothing to
+     * delete. Verified.
+     *
+     * @param actual the stored version, or {@code -1} when nothing is stored
+     */
+    public static RestResponse weightedRoutingVersionConflict(RestRequest request, long requested, long actual) {
+        return structured(
+            RestStatus.CONFLICT,
+            "unsupported_weighted_routing_state_exception",
+            "requested version is " + requested
+                + " but cluster weighted routing metadata is at a different version " + actual + " ",
+            request
+        );
+    }
+
+    /**
+     * {@code 409} for weights a real cluster's state will not accept.
+     *
+     * <p>{@code UnsupportedWeightedRoutingStateException}, which is a 409 rather than the 400 its
+     * contents suggest. The one instance this service can raise is a forced awareness value left without
+     * a weight; the decommission-related instances belong to a plane that does not exist yet.
+     */
+    public static RestResponse unsupportedWeightedRoutingState(RestRequest request, String reason) {
+        return structured(RestStatus.CONFLICT, "unsupported_weighted_routing_state_exception", reason, request);
+    }
+
+    /**
+     * {@code 400} for a value that had to be a number and was not.
+     *
+     * <p>The reason is {@link NumberFormatException}'s own message, quotes included:
+     * {@code For input string: "abc"}. It reaches a client unwrapped because OpenSearch parses weights
+     * with {@code Double.parseDouble} inside the request parser and lets the exception escape, so this is
+     * a raw JDK message rather than one the server composed. Verified against 3.9.0.
+     */
+    public static RestResponse numberFormat(RestRequest request, String input) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "number_format_exception",
+            "For input string: \"" + input + "\"",
+            request
+        );
+    }
+
+    /**
      * {@code 400} for a cluster setting that is unknown or cannot be updated.
      *
      * <p>Different wording from the index path, verified: {@code persistent setting [cluster.x], not

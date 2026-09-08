@@ -10,14 +10,14 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-123 routes, 76 operation groups, 48 implemented, 28 stubbed
-(49 / 27 when the capabilities file declares script languages)
+123 routes, 76 operation groups, 51 implemented, 25 stubbed
+(52 / 24 when the capabilities file declares script languages)
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
 | `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
-| `cluster` | 21 | component template CRUD, `get_settings`, `put_settings`, `pending_tasks` |
+| `cluster` | 21 | component template CRUD, `get_settings`, `put_settings`, `pending_tasks`, weighted routing (`get`/`put`/`delete_weighted_routing`) |
 | `snapshot` | 16 | repository registration: `create_repository`, `get_repository`, `delete_repository` |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`† |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
@@ -30,7 +30,7 @@ client it may use no language at all, which is a confident wrong answer where a 
 Every other capability-dependent behaviour degrades to *not validating*; this one has nothing to
 degrade to, because the capability data **is** the response.
 
-**The remaining 28 operation groups return `501 Not Implemented`** with a structured
+**The remaining 25 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -704,6 +704,10 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | mapping key order | reordered by the mapping engine | as declared | the field dictionaries `properties` and `fields` come back sorted, but the other mapping keys follow the mapper's own emission order — `dynamic` before `properties`, neither declared nor alphabetical. Sorting the dictionaries would match a simple mapping and silently diverge on a richer one, while *looking* faithful. Reproducing it means the mapping engine |
 | metadata fields in `get_field_mapping` | `_index`, `_routing`, `_doc_count`, … returned under a wildcard | declared fields only | they come from the mapping engine's field registry, which is version- and plugin-dependent; a hardcoded copy would drift the way a hardcoded settings registry would |
 | `include_defaults` on `get_settings` | a sibling `defaults` block, ~2.6 kB per index | accepted and ignored | **the control plane owns the settings a user explicitly set; computed values belong to the layer that computes them.** A data plane node can already answer `/{index}/_settings?local=true` with the fully resolved settings, defaults included, so putting a settings registry here would duplicate that — and a duplicated registry drifts. Same reasoning as [Data plane capabilities](#data-plane-capabilities) |
+| `PUT` weighted routing with no body | **500** `null_pointer_exception`, the reason naming `WeightedRouting.attributeName()` | 400 `parse_exception`, `request body is required` | the body is never parsed, so the request object stays null and `validate()` dereferences it. Reproducing a crash is not compatibility, and the message leaks a server-internal class name at a status that tells the caller to retry. Third place OpenSearch answers 5xx for a plain client error, after `source` without `source_content_type` and an unknown repository type |
+| weight keys in a weighted routing response | `HashMap` order | sorted | same call as nested settings key order, and for the same reasons. It does **not** extend to the two error messages that embed a rendered weights map: those are strings a client may compare, so hash order is reproduced there deliberately |
+| discovered awareness values on a weighted routing `PUT` | rejects a weight set that leaves any value a routing node actually carries without a weight | not checked; the *forced* half of the same rule is | the value set comes from the live node list, which this service cannot read and should not cache — node attributes change as nodes join and leave, so a generated file would go stale while claiming authority, and the failure mode is rejecting a legitimate update. `cluster.routing.allocation.awareness.force.<attribute>.values` **is** a setting this service owns, so that half is enforced. Becomes a store read once the management plane projects live node state |
+| awareness attributes set only in `opensearch.yml` | resolved from node settings too | invisible; weighted routing then rejects every attribute | this service knows which settings *exist*, not what a node has them set to. So weighted routing requires the attributes to have been set through this service. Accepting any attribute name instead would trade a visible rejection for weights that are silently never applied |
 
 Two notes on scope rather than behaviour:
 
@@ -732,6 +736,44 @@ declares none of them. Several near-misses argue for keeping that habit:
 Confirmed against OpenSearch 3.9.0-SNAPSHOT. Bodies marked *byte-exact* were diffed
 character for character against the server's response.
 
+- **Weighted routing is one document, not one per attribute.** The API reads as though
+  `{attribute}` identifies a resource; it does not. A `PUT` for `rack` *replaces* weights
+  previously set for `zone`, and a `GET` validates its path attribute and then ignores it — with
+  weights stored for `zone`, `GET /_cluster/routing/awareness/rack/weights` returns them. Only
+  `DELETE` compares the attribute against the stored one, and 404s when they differ. All three
+  reproduced deliberately: the single-document shape is what the version counter counts.
+- **The `_version` type differs between `PUT` and `DELETE`.** A number on `PUT`, either on
+  `DELETE`. Not a quirk to smooth over — `PUT` parses its body with `mapOrdered` and `DELETE` with
+  `mapStrings`, which coerces every scalar to a string first, so the asymmetry falls out of the two
+  REST handlers. A string version on `PUT` is a parse error naming the *attribute*; a numeric one on
+  `DELETE` is accepted.
+- **Weights are strings on the wire and doubles underneath.** `"1"` comes back as `"1.0"`. A JSON
+  number is a parse error whose message names the *previously* parsed weight — so a first bad weight
+  reports `[null]`, because the server's parser keeps that variable outside its loop. Reproduced,
+  oddity included.
+- **A successful write stores `sent + 1`**, so a first write sends `-1` and lands at `0`. A `PUT`
+  whose weights match what is stored is acknowledged *without* bumping the version. `DELETE` empties
+  the document rather than removing it and bumps the version doing so — including when the weights
+  were already empty, so it is not idempotent in the version.
+- **`GET` on a cluster that has never had weights is `200 {}`**, an entirely empty object, where
+  after a delete it is `{"weights":{},"_version":N,"discovered_cluster_manager":true}`. Another
+  instance of a pristine cluster hiding behaviour: once weights have ever been set the metadata
+  custom never goes away, so that branch cannot be re-entered without wiping the data directory.
+- **`DELETE` does not validate the awareness attribute** where `GET` and `PUT` do — an unconfigured
+  name gives `404`, not the `400` the others give. Nor does it need one: with nothing stored, the
+  version compared against is `-1`, so a bodiless `DELETE` conflicts `-2` against `-1` rather than
+  reporting nothing to delete.
+- **Check order on `PUT`**, which decides which of several applicable errors a client sees: parse →
+  `validate()` → awareness attribute → forced awareness values → version conflict. A malformed body
+  outranks an invalid attribute; a stale version is reported last of all.
+- **One condition, two messages, again.** The zero-weight majority check runs twice with different
+  wording — `There are too many attribute values [...]` from the request's own `validate()`, and
+  `There are too many discovered attribute values [...]` from the cluster-state task. Both embed the
+  weights map rendered by `HashMap.toString()`, e.g. `{a=0.0, b=0.0, c=1.0}`.
+- **A non-numeric weight escapes as a raw `number_format_exception`**, reason `For input string:
+  "abc"` — the JDK's own message, because the server lets `Double.parseDouble` throw out of its
+  parser rather than catching it into a validation error. Its `Weight is not a number` branch is
+  therefore unreachable over REST.
 - **Unknown path** → `400`, lower-case `no handler found for uri [...] and method
   [...]`, **no `status` field**. Byte-exact.
 - **Wrong method** → `405`, capitalised `Incorrect HTTP method for uri [...]`, with
@@ -979,7 +1021,13 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 28 operation groups that are still stubbed.
+- Everything about the 25 operation groups that are still stubbed.
+- **One byte of the weighted routing version-conflict message.** The reason ends
+  `...is at a different version N ` — with a trailing space, because the server's format string is
+  written as two concatenated literals and the second ends in one. Taken from
+  `WeightedRoutingService.ensureNoVersionConflict` rather than observed: the sandbox proxy truncates
+  the response at 172 bytes and the message's last character sits at 178. Everything before it is
+  diffed byte for byte.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns

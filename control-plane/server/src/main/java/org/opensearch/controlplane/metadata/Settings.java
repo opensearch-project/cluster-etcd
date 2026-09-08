@@ -11,6 +11,8 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import org.opensearch.controlplane.rest.Json;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -210,6 +212,35 @@ public final class Settings {
     /** Values are stored as text, so a reader that wants a boolean parses one. */
     public boolean getAsBoolean(String key, boolean defaultValue) {
         return get(key).map(Boolean::parseBoolean).orElse(defaultValue);
+    }
+
+    /**
+     * A list-valued setting, however the client happened to spell it.
+     *
+     * <p>OpenSearch accepts both spellings for the same setting and {@code Settings.getAsList} folds
+     * them together: a real list stays a list, and a single string is split on commas with each element
+     * <b>trimmed</b> and empties dropped. So {@code ["zone", "rack"]} and {@code "zone, rack"} are the
+     * same two attributes, which is what makes
+     * {@code cluster.routing.allocation.awareness.attributes: zone,rack} work in {@code opensearch.yml}
+     * and as JSON alike.
+     *
+     * <p>Empty for an absent setting and for an explicit null, consistent with {@link #get}.
+     */
+    public List<String> getAsList(String key) {
+        JsonNode value = values.get(key);
+        if (value == null || value.isNull()) {
+            return List.of();
+        }
+        if (value.isArray()) {
+            List<String> elements = new ArrayList<>(value.size());
+            value.forEach(element -> elements.add(element.asText()));
+            return Collections.unmodifiableList(elements);
+        }
+        // Strings.splitStringByCommaToArray on an empty string yields nothing rather than one empty item.
+        return Arrays.stream(value.asText().split(","))
+            .map(String::trim)
+            .filter(element -> element.isEmpty() == false)
+            .toList();
     }
 
     public boolean isEmpty() {

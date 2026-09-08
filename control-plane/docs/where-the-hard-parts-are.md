@@ -189,7 +189,16 @@ Worth knowing which these are, because several are near-copies of code that alre
   distinction" was right on both counts. The static/dynamic question was answered by the settings
   registry rather than by a hand-built list, and the single key made the update a compare-and-swap. The
   only thing the survey missed is that the PUT response echoes the request rather than the state.
-- **decommission awareness and weighted routing** (6 groups) — single key each, pure config.
+- ~~**weighted routing**~~ (3 groups) — **done**, and "single key, pure config" was right about the
+  storage and wrong about everything around it. `{attribute}` looks like a resource identifier and is
+  not: there is one document, so a `PUT` for a second attribute replaces the first and a `GET` ignores
+  its own path parameter. It also carries a client-visible `_version` — the first optimistic-concurrency
+  token in this service, sitting alongside the store's own revision rather than replacing it — and its
+  validation depends on the *values* of two cluster settings, which made it the first reader of the
+  settings store as configuration. The half of the rule that needs the live node list is deliberately
+  not checked; see the README.
+- **decommission awareness** (3 groups) — CRUD-shaped, but `put` initiates a node drain, so it is
+  Tier 4 work in a Tier 0 costume.
 - **`snapshot.create/get/delete_repository`** — one key per repository. `verify_repository` is not
   Tier 0: it does real I/O against the backend.
 - **`ingest.processor_grok`** — returns OpenSearch's built-in grok pattern list. Trivial logic, but

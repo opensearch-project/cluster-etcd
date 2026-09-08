@@ -11,6 +11,7 @@ import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.cluster.GetClusterSettingsHandler;
 import org.opensearch.controlplane.handler.cluster.PendingTasksHandler;
 import org.opensearch.controlplane.handler.cluster.PutClusterSettingsHandler;
+import org.opensearch.controlplane.handler.cluster.WeightedRoutingHandlers;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
 import org.opensearch.controlplane.handler.core.PingHandler;
@@ -140,6 +141,9 @@ public final class ControlPlaneHandlers {
 
         // close and open are mirror images, so one implementation serves both.
         ChangeIndexStateHandler.handlers().forEach(registry::register);
+
+        // Weighted shard routing: three operations over a single versioned document.
+        WeightedRoutingHandlers.handlers().forEach(registry::register);
 
         // Stored scripts: one key each, the same shape as the pipelines.
         StoredScriptHandlers.handlers(capabilities).forEach(registry::register);
