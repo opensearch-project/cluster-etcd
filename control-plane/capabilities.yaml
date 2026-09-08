@@ -59,3 +59,48 @@ processors:
     - split
     - truncate_hits
   search_phase_results: []
+
+# From GET /_script_language. With this present the control plane serves
+# get_script_languages and validates the lang of a stored script; without it, both degrade.
+script_languages:
+  types_allowed: [inline, stored]
+  language_contexts:
+    expression:
+      - aggregation_selector
+      - aggs
+      - bucket_aggregation
+      - field
+      - filter
+      - number_sort
+      - score
+      - terms_set
+    mustache:
+      - template
+    painless:
+      - aggregation_selector
+      - aggs
+      - aggs_combine
+      - aggs_init
+      - aggs_map
+      - aggs_reduce
+      - analysis
+      - bucket_aggregation
+      - context_aware_grouping
+      - derived_field
+      - field
+      - filter
+      - ingest
+      - interval
+      - moving-function
+      - number_sort
+      - painless_test
+      - processor_conditional
+      - score
+      - script_heuristic
+      - search
+      - similarity
+      - similarity_weight
+      - string_sort
+      - template
+      - terms_set
+      - update
