@@ -682,6 +682,21 @@ public final class ErrorResponses {
         );
     }
 
+    /**
+     * {@code 400} for creating a data stream whose name is taken.
+     *
+     * <p>Same exception type as an index collision but a plainer reason — no UUID, because the caller has
+     * not been given one to reconcile against. Verified: {@code data_stream [logs] already exists}.
+     */
+    public static RestResponse dataStreamAlreadyExists(RestRequest request, String name) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "resource_already_exists_exception",
+            "data_stream [" + name + "] already exists",
+            request
+        );
+    }
+
     /** {@code 400 illegal_argument_exception} — the general shape for a rejected argument. */
     public static RestResponse illegalArgument(RestRequest request, String reason) {
         return structured(RestStatus.BAD_REQUEST, "illegal_argument_exception", reason, request);

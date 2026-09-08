@@ -19,6 +19,7 @@ import org.opensearch.controlplane.handler.core.GetScriptLanguagesHandler;
 import org.opensearch.controlplane.handler.core.StoredScriptHandlers;
 import org.opensearch.controlplane.handler.indices.ChangeIndexStateHandler;
 import org.opensearch.controlplane.handler.indices.CreateIndexHandler;
+import org.opensearch.controlplane.handler.indices.DataStreamHandlers;
 import org.opensearch.controlplane.handler.indices.DeleteAliasHandler;
 import org.opensearch.controlplane.handler.indices.ExistsAliasHandler;
 import org.opensearch.controlplane.handler.indices.GetAliasHandler;
@@ -144,6 +145,10 @@ public final class ControlPlaneHandlers {
 
         // Weighted shard routing: three operations over a single versioned document.
         WeightedRoutingHandlers.handlers().forEach(registry::register);
+
+        // Data streams: create and delete. get_data_stream stays stubbed -- its required status field is
+        // backing-index health, which needs the data plane. See DataStreamHandlers.
+        DataStreamHandlers.handlers().forEach(registry::register);
 
         // Stored scripts: one key each, the same shape as the pipelines.
         StoredScriptHandlers.handlers(capabilities).forEach(registry::register);

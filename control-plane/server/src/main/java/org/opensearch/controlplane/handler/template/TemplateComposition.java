@@ -75,7 +75,19 @@ public final class TemplateComposition {
     }
 
     /** A matching template and its name, so callers can report which one applied. */
-    record Match(String name, ObjectNode template) {}
+    public record Match(String name, ObjectNode template) {}
+
+    /**
+     * The highest-priority composable template whose patterns match, {@code findV2Template}'s job.
+     *
+     * <p>Public for the data stream handlers, which need the <em>template</em> and not just what it
+     * composes to: creating a data stream reads the template's {@code data_stream} block for the timestamp
+     * field, and reports the template's name both in its errors and in {@code get_data_stream}. Every
+     * other caller wants {@link #composeFor}.
+     */
+    public static Optional<Match> matchingIndexTemplate(KeyValueStore store, String indexName) {
+        return new TemplateComposition(store).findMatching(indexName);
+    }
 
     /**
      * The highest-priority composable template whose patterns match, if any.

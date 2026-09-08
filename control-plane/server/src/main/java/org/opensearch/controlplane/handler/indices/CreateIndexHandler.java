@@ -168,12 +168,7 @@ public final class CreateIndexHandler implements OperationHandler {
         // atomic with the index write: a failure here leaves an index without its aliases, which a
         // reconciliation pass can detect. The alternative -- embedding them -- would cost the atomic
         // alias swap that the separate layout buys.
-        AliasStore aliasStore = new AliasStore(context.store());
-        effective.aliases().properties().forEach(alias -> {
-            ObjectNode definition = aliasStore.get(alias.getKey()).orElseGet(AliasStore::emptyDefinition);
-            ((ObjectNode) definition.get(AliasStore.INDICES)).set(index, alias.getValue().deepCopy());
-            aliasStore.put(alias.getKey(), definition);
-        });
+        applyAliases(new AliasStore(context.store()), index, effective.aliases());
 
         new IndexManagementTasks(context.store()).submit(
             IndexManagementTasks.TYPE_CREATE_INDEX,
@@ -194,7 +189,29 @@ public final class CreateIndexHandler implements OperationHandler {
         return "0".equals(request.param("wait_for_active_shards"));
     }
 
-    private static ObjectNode buildMetadata(
+    /**
+     * Points each of a template's aliases at a newly created index.
+     *
+     * <p>Shared with {@code DataStreamHandlers}: verified that a data stream's backing index inherits its
+     * template's aliases exactly as an ordinary index does, so a template with
+     * {@code aliases: {"logs": {}}} leaves {@code logs} pointing at {@code .ds-...-000001}.
+     */
+    static void applyAliases(AliasStore aliasStore, String index, ObjectNode aliases) {
+        aliases.properties().forEach(alias -> {
+            ObjectNode definition = aliasStore.get(alias.getKey()).orElseGet(AliasStore::emptyDefinition);
+            ((ObjectNode) definition.get(AliasStore.INDICES)).set(index, alias.getValue().deepCopy());
+            aliasStore.put(alias.getKey(), definition);
+        });
+    }
+
+    /**
+     * The stored form of a new index.
+     *
+     * <p>Package-private rather than private because {@code DataStreamHandlers} creates backing indices,
+     * and a backing index is an ordinary index — sharing this is what keeps the shard/replica defaults and
+     * the flat settings form in one place instead of two.
+     */
+    static ObjectNode buildMetadata(
         String index,
         String uuid,
         TemplateComposition.Composed effective,

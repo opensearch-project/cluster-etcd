@@ -10,13 +10,13 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-123 routes, 76 operation groups, 51 implemented, 25 stubbed
-(52 / 24 when the capabilities file declares script languages)
+123 routes, 76 operation groups, 53 implemented, 23 stubbed
+(54 / 22 when the capabilities file declares script languages)
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations |
+| `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations; `create_data_stream`, `delete_data_stream` |
 | `cluster` | 21 | component template CRUD, `get_settings`, `put_settings`, `pending_tasks`, weighted routing (`get`/`put`/`delete_weighted_routing`) |
 | `snapshot` | 16 | repository registration: `create_repository`, `get_repository`, `delete_repository` |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`† |
@@ -30,7 +30,7 @@ client it may use no language at all, which is a confident wrong answer where a 
 Every other capability-dependent behaviour degrades to *not validating*; this one has nothing to
 degrade to, because the capability data **is** the response.
 
-**The remaining 25 operation groups return `501 Not Implemented`** with a structured
+**The remaining 23 operation groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -736,6 +736,29 @@ declares none of them. Several near-misses argue for keeping that habit:
 Confirmed against OpenSearch 3.9.0-SNAPSHOT. Bodies marked *byte-exact* were diffed
 character for character against the server's response.
 
+- **A data stream cannot exist without a composable template that has a `data_stream` block.** Two
+  separate errors, both `illegal_argument_exception`: no matching template at all, and a matching
+  template that is not a data stream template. The template supplies the timestamp field name, so its
+  absence is a rejection rather than a set of defaults.
+- **Templates are matched against the stream name, not the backing index name.** `.ds-logs-000001`
+  matches `logs*` nowhere, yet it gets that template's settings. Verified by giving a template three
+  shards and reading them back off the backing index — byte-exact. Get this backwards and it fails
+  silently, with the backing index quietly taking built-in defaults.
+- **`create_data_stream` is not an upsert**, unlike templates and pipelines: a second `PUT` is
+  `400 resource_already_exists_exception`, `data_stream [logs] already exists`. The existence check runs
+  *before* name validation.
+- **Data stream names are the index rules plus one, rewrapped.** The index reasons are reused verbatim
+  under a `data_stream [x]` prefix and reported as `illegal_argument_exception` rather than the
+  `invalid_index_name_exception` the index path gives. The extra rule: a data stream **may not start with
+  a dot**, where an index may. It is checked after the shared rules, so `..` reports
+  `must not be '.' or '..'` and `.logs` reports `must not start with '.'`.
+- **`delete_data_stream` never reports a miss.** Every name is a glob matched against the streams that
+  exist, with no not-found check anywhere — `resolveDataStreams` is a bare `Regex.simpleMatch` loop. A
+  concrete name that does not exist is `200`, and so is a wildcard matching nothing. Unlike pipelines and
+  repositories this is *not* the metadata-presence quirk; it is unconditional. It also deletes the
+  backing indices, which is the one place an index disappears without `indices.delete` being called.
+- **A backing index inherits its template's aliases**, exactly as an ordinary index does, and carries
+  `index.hidden: true` on top of whatever the template composed.
 - **Weighted routing is one document, not one per attribute.** The API reads as though
   `{attribute}` identifies a resource; it does not. A `PUT` for `rack` *replaces* weights
   previously set for `zone`, and a `GET` validates its path attribute and then ignores it — with
@@ -1026,7 +1049,28 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 25 operation groups that are still stubbed.
+- Everything about the 23 operation groups that are still stubbed.
+- **`indices.get_data_stream` is stubbed for a specific reason, not just because it is next.** Its
+  `status` field is a `HealthStatus` over the backing indices and the spec marks it **required**, so
+  unlike `pending_tasks`' prose durations it cannot simply be omitted and leave a valid response. Health
+  is shard state, which is the same dependency that keeps `cluster.health` stubbed; when the management
+  plane projects it into the shared store this becomes an ordinary store read. `create_data_stream` and
+  `delete_data_stream` need none of it and are implemented.
+- **`indices.get_data_stream`'s other fields are unverified against ours** for the same reason — there is
+  nothing to diff yet. The shape a real cluster returns *was* captured while probing:
+  `{"data_streams":[{"name":..,"timestamp_field":{"name":".."},"indices":[{"index_name":..,"index_uuid":..}],"generation":N,"status":"GREEN","template":".."}]}`,
+  sorted by name, with a concrete miss answering `404 index_not_found_exception` — note **index**, not
+  data stream — and a wildcard miss answering `200 {"data_streams":[]}`.
+- **`indices.get_alias` excludes hidden indices where a real cluster includes them.** `AliasLookup`
+  defaults to `IndicesOptions.lenient()`, which expands wildcards to open indices only, but
+  `GetAliasesRequest` defaults to `strictExpandHidden()` — open, closed **and** hidden, with
+  `ignore_unavailable` false rather than true. Nothing exposed this until data streams created the first
+  hidden index: a template alias on a backing index is written correctly and then not reported.
+  Pre-existing, and its own fix — the three flags want probing against closed and hidden indices
+  together rather than being flipped on the strength of the source alone.
+- **Data streams stay at generation 1.** `rollover` is what advances the generation and add a backing
+  index, and it is deferred with the rest of the resize family. The stored `generation` counter exists so
+  that rollover has something to increment.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns

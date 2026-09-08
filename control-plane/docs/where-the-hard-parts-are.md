@@ -52,6 +52,42 @@ Also in this tier, all multi-index: `indices.put_alias`, `indices.delete_alias`,
 `indices.put_mapping`, ~~`indices.put_settings`~~, ~~`indices.open`~~, ~~`indices.close`~~,
 `indices.add_block`.
 
+### `indices.add_block` needs block enforcement first
+
+Listed just above as multi-index, which is the Tier 3 half of its problem. Probing 3.9.0 on 2026-09-08
+showed there is a second, larger one, and the operation was deferred on that basis.
+
+Adding a block writes `index.blocks.<name>: true` and installs a cluster block. Two of the six blocks
+carry `METADATA_WRITE`, and that level is enforced against **subsequent metadata operations**:
+
+| block | id | levels | who enforces |
+|---|---|---|---|
+| `read_only` | 5 | `WRITE`, `METADATA_WRITE` | metadata half is ours |
+| `metadata` | 9 | `METADATA_WRITE`, `METADATA_READ` | ours |
+| `read` | 7 | `READ` | data plane |
+| `write` | 8 | `WRITE` | data plane |
+| `search_only` | — | `WRITE` | data plane |
+| `read_only_allow_delete` | — | — | rejected outright: `read_only_allow_delete block is for internal use only` |
+
+Verified: with a `metadata` block set, a further `add_block` **and** a `put_settings` both answer
+`403 cluster_block_exception`, `index [x] blocked by: [FORBIDDEN/9/index metadata (api)];`. This service
+enforces none of it — `index.blocks.*` is stored as an ordinary setting and nothing reads it — so
+implementing `add_block` alone would store a block this service then ignores, and the operation could not
+correctly refuse itself.
+
+The scope answer follows the three-plane model rather than being a matter of taste: a `METADATA_WRITE`
+block gates metadata operations, which is all this service does, so enforcing that level belongs here.
+`READ` and `WRITE` blocks gate data traffic, so the data plane honours those by reading the setting. What
+is missing is a shared check over the metadata write paths — `put_settings`, `put_mapping`, `delete`, the
+alias operations, `close`/`open`, and `add_block` itself — plus the 403 shape. That is a cross-cutting
+change to roughly eight handlers, which is why it is its own piece of work and not a rider on a small
+operation.
+
+There is one wrinkle to reproduce when it happens: OpenSearch deliberately lets a settings request
+through if it contains **exactly one** setting and that setting is a block setting
+(`TransportUpdateSettingsAction.checkBlock`), because otherwise a blocked index could never be unblocked.
+Sending two block settings at once is refused; sending them one at a time works.
+
 ### Done: aliases are their own resource
 
 Multi-key transactions are to be avoided, so aliases move out of index metadata and become
@@ -203,9 +239,15 @@ Worth knowing which these are, because several are near-copies of code that alre
   Tier 0: it does real I/O against the backend.
 - **`ingest.processor_grok`** — returns OpenSearch's built-in grok pattern list. Trivial logic, but
   needs the pattern data copied across.
-- **`indices.create_data_stream/get/delete`** — mostly CRUD, but data streams own a backing-index
-  naming convention and a designated write index, so they are Tier 0 storage with Tier 2 rules
-  layered on.
+- ~~**`indices.create_data_stream/delete_data_stream`**~~ — **done**, and "Tier 0 storage with Tier 2
+  rules layered on" was right, though the Tier 2 rules turned out to be borrowed rather than new: the
+  hard part is the composable template, which was already built. A stream cannot exist without a matching
+  template carrying a `data_stream` block, so `findV2Template` — `TemplateComposition.matchingIndexTemplate`
+  here — is a hard prerequisite, and the template is matched against the *stream* name while the index is
+  written under the backing name. The backing index is an ordinary index document, which is what lets
+  every existing index read serve it for free.
+  **`get_data_stream` is not done**: its required `status` field is health over the backing indices, so it
+  is blocked on the same thing `cluster.health` is.
 
 ## Tier 4: orchestration
 
