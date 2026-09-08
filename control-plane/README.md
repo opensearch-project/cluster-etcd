@@ -774,6 +774,11 @@ character for character against the server's response.
   "abc"` — the JDK's own message, because the server lets `Double.parseDouble` throw out of its
   parser rather than catching it into a validation error. Its `Weight is not a number` branch is
   therefore unreachable over REST.
+- **The weighted routing version-conflict reason ends in a trailing space.** `requested version is 7
+  but cluster weighted routing metadata is at a different version 17 ` — the server's format string is
+  two concatenated literals and the second ends in one. Byte-exact, including that space, which needed
+  reading outside the sandbox: the proxy truncates the response six bytes short of the message's last
+  character.
 - **Unknown path** → `400`, lower-case `no handler found for uri [...] and method
   [...]`, **no `status` field**. Byte-exact.
 - **Wrong method** → `405`, capitalised `Incorrect HTTP method for uri [...]`, with
@@ -1022,12 +1027,6 @@ request would normally get. Verified, and reproduced.
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
 - Everything about the 25 operation groups that are still stubbed.
-- **One byte of the weighted routing version-conflict message.** The reason ends
-  `...is at a different version N ` — with a trailing space, because the server's format string is
-  written as two concatenated literals and the second ends in one. Taken from
-  `WeightedRoutingService.ensureNoVersionConflict` rather than observed: the sandbox proxy truncates
-  the response at 172 bytes and the message's last character sits at 178. Everything before it is
-  diffed byte for byte.
 - **`shards_acknowledged` deliberately diverges.** A real cluster returns `true`; this returns `false`
   unless `wait_for_active_shards=0`, because it returns before any shard exists and will not claim
   otherwise. `false` is not an error signal in OpenSearch either — it is what a real cluster returns
@@ -1036,11 +1035,6 @@ request would normally get. Verified, and reproduced.
 - **Mapping merge has no conflict detection.** Two templates disagreeing about a field's type produce a
   last-writer-wins mapping rather than the rejection a real cluster raises. Belongs with
   `indices.put_mapping`.
-- **A stored script's `lang` is not validated.** A real cluster rejects an unsupported language, and
-  which languages exist depends on installed modules. Unlike repository types there *is* a source for
-  this — `GET /_script_language` reports the languages and their contexts — which makes it the one
-  capability gap with an obvious fix: implement `get_script_languages` and the capabilities file has
-  something to carry.
 - **Settings existence and permission are validated; values are not.** With a `--settings-registry`,
   every write path rejects an unknown or private setting as a real cluster does. What is not checked is
   whether a *value* is well-formed, so `index.replication.type: "segment"` is accepted here and rejected

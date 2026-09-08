@@ -512,7 +512,9 @@ public final class ErrorResponses {
      *
      * <p>{@code WeightedRoutingService.ensureNoVersionConflict}. <b>Note the trailing space</b>, which
      * comes from the format string being written as two concatenated literals — {@code "...is at a "} and
-     * {@code "different version %s "} — and is part of the message a client sees.
+     * {@code "different version %s "} — and is part of the message a client sees. Verified against a live
+     * 3.9.0 cluster, space included; the sandbox proxy truncates the response six bytes short of it, so
+     * that last byte had to be read outside the sandbox.
      *
      * <p>Reached on {@code PUT} and {@code DELETE} alike, and on both the "no weights yet" and "weights
      * exist" paths: with nothing stored the version compared against is {@code -1}, so a {@code DELETE}
