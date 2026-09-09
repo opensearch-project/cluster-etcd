@@ -48,6 +48,28 @@ import java.util.concurrent.TimeoutException;
  * <p>{@code <root>/<key>}, UTF-8. The root keeps a control plane's keys from colliding with anything else
  * on the cluster and makes {@code scanPrefix("")} a bounded range rather than the whole keyspace.
  *
+ * <h2>What was checked against a real cluster</h2>
+ *
+ * <p>Every assumption below was probed against etcd 3.7.1 directly, through its HTTP/JSON gateway, rather
+ * than inferred from the documentation or from the tests passing:
+ *
+ * <ul>
+ *   <li>A put's <b>header revision equals the key's new {@code mod_revision}</b>, which is what
+ *       {@link #put(String, byte[])} returns.</li>
+ *   <li><b>Comparing {@code mod_revision} to 0 means "absent"</b> — the transaction succeeds on a key that
+ *       does not exist and fails once it does. This is what lets {@link KeyValueStore#ABSENT} be an
+ *       ordinary revision rather than a special case.</li>
+ *   <li><b>Rewriting an identical value still moves the revision.</b> The contract requires this, and etcd
+ *       only skips the bump under {@code IGNORE_VALUE}, which is not used here.</li>
+ *   <li>A failed transaction's else-branch range <b>carries the key's current {@code mod_revision}</b>, so
+ *       a conflict reports the real revision without a second round trip.</li>
+ *   <li><b>A prefix range returns keys in ascending order</b>, so the {@code TreeMap} agrees with etcd
+ *       rather than reordering behind its back.</li>
+ *   <li>A delete of an absent key reports <b>zero deleted</b>, and a delete transaction comparing
+ *       {@code mod_revision} to 0 on an absent key <b>succeeds</b> with nothing deleted — which is
+ *       precisely why {@code delete(key, ABSENT)} answers {@code false} instead of throwing.</li>
+ * </ul>
+ *
  * <h2>Limitations</h2>
  *
  * <ul>

@@ -203,11 +203,12 @@ An operator selects one by URI scheme:
 |---|---|---|
 | `file:///path` | `:store-api` | bundled. Real CAS *within one process* only — one process per directory |
 | `zk://host:2181/root` | `:store-zookeeper` | verified against ZooKeeper 3.9 |
-| `etcd://host:2379/root` | `:store-etcd` | in progress |
+| `etcd://host:2379/prefix` | `:store-etcd` | verified against etcd 3.7 |
 
 ```bash
---store file:///var/lib/control-plane      # bundled
---store zk://a:2181,b:2181/controlplane    # needs :store-zookeeper on the classpath
+--store file:///var/lib/control-plane        # bundled
+--store zk://a:2181,b:2181/controlplane      # needs :store-zookeeper on the classpath
+--store etcd://a:2379,b:2379/controlplane    # needs :store-etcd on the classpath
 ```
 
 Backend jars are not dependencies of `:server`; they go on the runtime classpath and are found by
