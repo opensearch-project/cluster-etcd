@@ -49,8 +49,32 @@ val generateRoutes by tasks.registering(JavaExec::class) {
 
 sourceSets["main"].java.srcDir(generateRoutes.map { generatedSourcesDir.get() })
 
+// ---------------------------------------------------------------------------
+// Optional store backends on the runtime classpath
+//
+// Backends are not dependencies of this module: :server names none of them, which is the whole point of
+// the provider seam. But that left no way to actually run against one, so `--store zk://...` failed with
+// "no store provider for scheme [zk]" and `--help` listed only the filesystem store.
+//
+// Any coordinate given here is added to the runtime classpath only. Deliberately a coordinate rather than
+// a shorthand like "zk": a shorthand would mean this file naming the backends it knows about, which is
+// the coupling the seam exists to avoid. Set it once in gradle.properties and forget it:
+//
+//     storeJars=org.opensearch.controlplane:store-zookeeper:0.1.0-SNAPSHOT
+//
+// or per invocation:
+//
+//     ./gradlew :server:run -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT
+// ---------------------------------------------------------------------------
+val storeJars: List<String> = ((findProperty("storeJars") as String?) ?: "")
+    .split(",")
+    .map(String::trim)
+    .filter { it.isNotEmpty() }
+
 dependencies {
     codegenClasspath(project(":codegen"))
+
+    storeJars.forEach { coordinate -> runtimeOnly(coordinate) }
 
     // The persistence SPI, from the shared ../opensearch-kv-store build. A coordinate rather than a
     // project(...) reference because it is a separate build; Gradle substitutes the local project via the

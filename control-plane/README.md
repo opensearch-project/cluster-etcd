@@ -220,6 +220,33 @@ An operator selects one by URI scheme:
 --store etcd://a:2379,b:2379/controlplane    # needs store-etcd on the classpath
 ```
 
+**"needs … on the classpath" is literal, and it catches everyone once.** `:server` does not depend on any
+backend — that is what makes them pluggable — so a plain `./gradlew :server:run` has only the filesystem
+store and `--store zk://…` fails with *no store provider for scheme [zk]*. `--help` lists what the running
+classpath actually provides, so a short list means a missing jar rather than a missing feature.
+
+To run against one, name its coordinate:
+
+```bash
+./gradlew :server:run -PstoreJars=org.opensearch.controlplane:store-zookeeper:0.1.0-SNAPSHOT \
+  --args="--port 9400 --store zk://localhost:2181/controlplane"
+```
+
+Or set it once, in `gradle.properties`:
+
+```properties
+storeJars=org.opensearch.controlplane:store-zookeeper:0.1.0-SNAPSHOT,\
+          org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT
+```
+
+`storeJars` takes coordinates rather than a shorthand like `zk` on purpose: a shorthand would mean this
+repository's build naming the backends it knows about, which is the coupling the provider seam exists to
+remove. Outside Gradle it is just a classpath — put the jar on it.
+
+**Deploying**, the same rule applies: the distribution ships `:server` plus `store-api`, and an operator
+adds whichever backend jar and its client library they intend to use. That is the point — a deployment on
+etcd need not carry Curator, and one on ZooKeeper need not carry gRPC.
+
 Backend jars are not dependencies of `:server`; they go on the runtime classpath and are found by
 `ServiceLoader`. Each brings its own client library, so adding one adds its transitive dependencies —
 Curator for ZooKeeper, gRPC for etcd — which is the reason they are separate modules rather than
