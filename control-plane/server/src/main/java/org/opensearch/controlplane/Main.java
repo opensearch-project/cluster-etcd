@@ -14,10 +14,11 @@ import org.opensearch.controlplane.handler.ControlPlaneHandlers;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.HandlerRegistry;
 import org.opensearch.controlplane.handler.OperationContextFactory;
-import org.opensearch.controlplane.store.FileSystemKeyValueStore;
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.KeyValueStores;
 import org.opensearch.controlplane.tenant.SingleTenantResolver;
 
+import java.io.IOException;
 import java.net.BindException;
 import java.net.SocketException;
 import java.nio.file.Path;
@@ -36,6 +37,7 @@ public final class Main {
         String host = DEFAULT_HOST;
         int port = DEFAULT_PORT;
         boolean dumpRoutes = false;
+        String storeSpec = null;
         Path dataPath = Path.of(DEFAULT_DATA_PATH);
         ClusterIdentity identity = ClusterIdentity.defaults();
         Path capabilitiesPath = null;
@@ -45,6 +47,7 @@ public final class Main {
             switch (args[i]) {
                 case "--host" -> host = requireValue(args, ++i, "--host");
                 case "--port" -> port = Integer.parseInt(requireValue(args, ++i, "--port"));
+                case "--store" -> storeSpec = requireValue(args, ++i, "--store");
                 case "--data-path" -> dataPath = Path.of(requireValue(args, ++i, "--data-path"));
                 case "--cluster-name" -> identity = identity.withClusterName(requireValue(args, ++i, "--cluster-name"));
                 case "--capabilities" -> capabilitiesPath = Path.of(requireValue(args, ++i, "--capabilities"));
@@ -99,7 +102,20 @@ public final class Main {
             );
         }
 
-        KeyValueStore store = new FileSystemKeyValueStore(dataPath);
+        // --data-path is the filesystem store spelled the old way, kept working because it is in every
+        // README example and script. It is exactly --store file://<abs path>, so it resolves through the
+        // same provider seam rather than bypassing it.
+        if (storeSpec == null) {
+            storeSpec = dataPath.toAbsolutePath().toUri().toString();
+        }
+        KeyValueStore store;
+        try {
+            store = KeyValueStores.open(storeSpec);
+        } catch (IOException e) {
+            System.err.println("error: " + e.getMessage());
+            System.exit(1);
+            return;
+        }
         OperationContextFactory contextFactory = new OperationContextFactory(store, new SingleTenantResolver());
         HandlerRegistry registry = ControlPlaneHandlers.build(identity, capabilities, settings);
 
@@ -166,7 +182,10 @@ public final class Main {
 
               --host <addr>       bind address (default %s)
               --port <port>       listen port, 0 for ephemeral (default %d)
-              --data-path <dir>   filesystem store directory (default %s)
+              --store <uri>       persistence backend, by URI scheme. A backend is a jar on the
+                                  runtime classpath, found through ServiceLoader; the schemes
+                                  actually available are listed below.
+              --data-path <dir>   shorthand for --store file://<dir> (default %s)
               --cluster-name <n>  cluster_name reported by GET / (default opensearch)
               --capabilities <f>  data plane capabilities file; without it, processor types
                                   are not validated. Generate with tools/dump-capabilities.sh
@@ -177,6 +196,8 @@ public final class Main {
               --dump-routes       print the route table and handler status, then start
               --help              show this message
 
+            %s
+
             Reports itself as OpenSearch %s. That is a build-time property, set by
             target_opensearch_version in spec/control-plane-scope.yaml, because it also decides
             which operations the route table contains.
@@ -184,6 +205,9 @@ public final class Main {
             DEFAULT_HOST,
             DEFAULT_PORT,
             DEFAULT_DATA_PATH,
+            // Listed from the classpath rather than hardcoded, so --help tells the truth about which
+            // backend jars this deployment actually has.
+            KeyValueStores.describeAvailable(),
             ClusterIdentity.DEFAULT_VERSION
         );
     }

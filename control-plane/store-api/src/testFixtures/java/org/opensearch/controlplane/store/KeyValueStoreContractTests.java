@@ -20,10 +20,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The {@link KeyValueStore} contract, run against every implementation.
  *
  * <p>Written entirely against the interface. A behaviour asserted here is one the control plane is
- * entitled to rely on regardless of backend, so etcd and DynamoDB implementations should extend this
- * too.
+ * entitled to rely on regardless of backend, so <b>every</b> implementation extends this — it is
+ * published as a test fixture of {@code :store-api} for exactly that reason, and a backend module gets
+ * it with {@code testImplementation(testFixtures(project(":store-api")))}.
+ *
+ * <p>Two assertions here constrain backend design more than they look, and are worth reading before
+ * writing one:
+ *
+ * <ul>
+ *   <li>{@code emptyValuesRoundTrip} — an empty value must be distinguishable from an absent key,
+ *       because marker keys rely on it. A backend cannot use "no data" to mean "not a key".</li>
+ *   <li>{@code dotDotIsAnOrdinaryKeySegment} — {@code ..} is an ordinary segment and must never
+ *       resolve. Any backend that maps keys onto a path-like namespace has to encode it; ZooKeeper
+ *       rejects {@code .} and {@code ..} as znode names outright.</li>
+ * </ul>
  */
-abstract class KeyValueStoreContractTests {
+public abstract class KeyValueStoreContractTests {
 
     /** A fresh, empty store. */
     protected abstract KeyValueStore newStore();

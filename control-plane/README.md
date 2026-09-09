@@ -184,6 +184,52 @@ transport layer, and a standalone control plane has no node IDs to put there.
 this service talks to anything else: an ordered key/value store of opaque byte
 payloads. Keys are namespaced by resource, e.g. `ingest/pipeline/<id>`.
 
+### Backends are pluggable jars
+
+The interface, the two JDK-only implementations, and the shared contract test suite live in their own
+module, **`:store-api`**, which has no dependencies at all. A backend is a separate jar depending on
+`:store-api` and its own client library, and `server` names none of them:
+
+```
+:store-api          KeyValueStore, the provider SPI, FileSystemKeyValueStore,
+                    InMemoryKeyValueStore + KeyValueStoreContractTests (test fixtures)
+:server             depends on :store-api only
+<backend jars>      dropped on the runtime classpath, found via ServiceLoader
+```
+
+An operator selects one by URI scheme:
+
+```bash
+--store file:///var/lib/control-plane      # bundled
+--store etcd://a:2379,b:2379/controlplane  # needs the etcd backend jar
+```
+
+`--data-path <dir>` still works and is exactly `--store file://<dir>`, resolved through the same seam
+rather than bypassing it. `--help` lists the schemes the running classpath actually provides, and an
+unknown scheme says which ones it found — the likely cause being a missing jar.
+
+**Why `ServiceLoader` here when [Design notes](#design-notes) rejects it for handlers.** The reasons
+given there are good and simply do not transfer. A handler always exists in this repo, so an explicit
+list can name every one; a backend lives in a jar that may not be present, and the point is that
+`server` need not know it exists. The failure modes differ too: a missed handler registration is silent
+(the operation answers 501), where a missing store provider is fatal at startup and reports what it did
+find. And selection stays explicit where it counts — the operator names a scheme, so the backend in use
+is a configuration fact rather than whichever jar was found first.
+
+### Writing a backend
+
+Implement `KeyValueStore` and `KeyValueStoreProvider`, declare the provider in
+`META-INF/services/org.opensearch.controlplane.store.KeyValueStoreProvider`, and extend
+`KeyValueStoreContractTests` — `testImplementation(testFixtures(project(":store-api")))`. Two of its
+assertions constrain the design more than they look:
+
+- **`emptyValuesRoundTrip`** — an empty value must be distinguishable from an absent key, because marker
+  keys rely on it. A backend may not use "has no data" to mean "is not a key".
+- **`dotDotIsAnOrdinaryKeySegment`** — `..` is an ordinary key segment and must never resolve. Any
+  backend mapping keys onto a path-like namespace has to encode it; ZooKeeper rejects `.` and `..` as
+  znode names outright, and `scanPrefix` is specified over key prefixes rather than path boundaries, so
+  a non-segment-aligned prefix like `tenant/acme/x` has to work too.
+
 Every key carries a monotonically increasing revision, and writes can be conditional
 on it. That is not speculative — `indices.create` has to fail with
 `resource_already_exists_exception` rather than clobber an existing index

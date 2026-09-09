@@ -52,6 +52,10 @@ sourceSets["main"].java.srcDir(generateRoutes.map { generatedSourcesDir.get() })
 dependencies {
     codegenClasspath(project(":codegen"))
 
+    // The persistence SPI. Backends are NOT dependencies: they are jars an operator adds to the
+    // runtime classpath, found through ServiceLoader. Naming one here would defeat the point.
+    implementation(project(":store-api"))
+
     implementation("io.netty:netty-codec-http:$nettyVersion")
     implementation("io.netty:netty-handler:$nettyVersion")
     implementation("io.netty:netty-transport:$nettyVersion")
@@ -64,6 +68,8 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:$junitVersion"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // InMemoryKeyValueStore, which most handler tests run against.
+    testImplementation(testFixtures(project(":store-api")))
 }
 
 application {

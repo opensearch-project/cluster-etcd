@@ -1,6 +1,7 @@
 rootProject.name = "opensearch-control-plane"
 
 include("codegen")
+include("store-api")
 include("server")
 
 dependencyResolutionManagement {
