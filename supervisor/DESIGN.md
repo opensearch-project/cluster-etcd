@@ -345,6 +345,11 @@ Alarming the first time is how a correct system earns a reputation for crying wo
 `info` and escalates on **age** — `passes ≥ 10`. That rule generalises: for every finding, the alarm is that
 it is *old*, never that it exists.
 
+**A move adds before it removes, always.** Relocating a copy is two writes to two nodes' assignments with
+no transaction between them, so the order is the difference between a window with two copies and a window
+with none. Add first, and do not remove the old copy until the new one reports `STARTED` — an extra copy is
+a `SURPLUS_COPY` finding that clears itself, where a missing one is an outage. §12 has the audit.
+
 **Document replication constrains the order of the plan, not just its contents.** A docrep replica resolves
 its primary from `tenant/<t>/status/indices/<uuid>` and cannot make progress until one is serving, so a plan
 that places replicas before primaries converges only by accident — and in the worst case not at all, if the
@@ -480,21 +485,112 @@ a reconciler that observes correctly and acts on nothing is safe and immediately
 before it observes correctly is neither. Step 4 sits between them because leader election is easiest to
 trust when the worst a bug can do is compute the same diff twice.
 
-## 12. Open questions
+## 12. Torn reads, and where they can cost more than a pass
 
-1. **Cross-pool data migration** — §4. The supported path only covers the case where nodes can move with
+The store has no cross-key transaction, and **`scanPrefix` is not a snapshot either**. Its contract is
+"every key beginning with this prefix, in ascending key order" and nothing more: etcd serves it as one
+range request and is therefore atomic at a revision, but ZooKeeper walks the subtree with separate
+`getChildren` and `getData` calls, and the filesystem store walks a directory. So an `Observation` is a
+collection of reads taken at different instants, and every composite this system builds can be torn.
+
+This section is the audit, because "level-triggered, so it converges" is true of almost all of it and
+dangerously close to true of the rest. The distinction that matters is not whether a read can be torn —
+they all can — but **whether acting on the torn view costs a pass or costs data.**
+
+### The rule that makes most of it safe
+
+Every action is either idempotent or gated. A torn read then produces a wrong *decision*, the next pass
+observes reality again and produces a different one, and the cost is latency. That covers:
+
+| torn read | what the reader may see | cost |
+|---|---|---|
+| assignment vs. the index document it names | config revisions disagree | node applies what it read; supervisor re-issues |
+| assignment vs. `status/indices` | projection predates the assignment | peer resolution returns "not yet"; retry |
+| `status/indices` vs. `status/nodes` | a peer's address read after its placement | stale address; connection fails; retry |
+| heartbeat vs. inventory | digests disagree | documented already: use the inventory, re-read next pass |
+| two nodes' inventories | a shard seen on both, or neither, mid-move | `SURPLUS_COPY` or `UNASSIGNED_*`; both self-clear |
+| pool binding vs. node pool | a supervisor acts on a node just moved to another pool | CAS on the observed revision loses the race |
+
+### Three that were not safe, and are now
+
+**A node resolves its index document by name, and its assignment identifies the index by uuid.** Delete an
+index and recreate it with the same name and the node can read the successor's settings and mappings while
+building a shard for the predecessor's uuid — silently, because both documents are individually valid. The
+node must compare the `uuid` field in the index document with the uuid its assignment named and treat a
+mismatch as "not present yet". `NODE_CONTRACT.md` now requires it.
+
+**A heartbeat and an inventory can straddle a restart.** A node writes registration, then inventory, then
+heartbeat, so within one process the inventory is never older than the heartbeat that announces it — but
+across a restart the supervisor can read the previous process's heartbeat with the new process's inventory.
+Both carry `ephemeral_id`, so it is detectable; the contract now says to check, to prefer the inventory, and
+to treat the ack as void when they disagree.
+
+**A move is two writes to two nodes' assignments.** Remove-then-add leaves a window with no copy at all; the
+planner must always add before removing, and must not count the new copy until the node reports it serving.
+This was implied by "a move is a copy added and then a copy removed"; it is now a stated planning rule
+rather than an inference.
+
+### The one that a retry cannot fix
+
+**Promoting a primary is two writes and there is no fencing token.**
+
+Moving a primary from node A to node B means writing A's assignment and B's assignment, in some order, with
+no transaction. Every ordering has a window:
+
+- **Promote B first:** A and B both believe they are primary. Under document replication both accept
+  writes, and the two copies diverge. No later pass repairs that — the data is already different.
+- **Demote A first:** the shard has no primary and rejects writes until B is promoted. Availability, not
+  correctness, and recoverable.
+
+Ordering alone cannot close it, because the failure that matters is not the write window. A partitioned or
+paused node A never sees its demotion at all: it holds an assignment saying `PRIMARY` and, by this
+contract's own level-triggered rules, is behaving correctly by continuing to serve as one. The supervisor
+cannot revoke something by writing a key the other party is not reading.
+
+This is what OpenSearch's **primary term** exists for: a monotonic number per shard, incremented on every
+promotion, carried on every replication request, and rejected by a replica that has seen a higher one. It
+converts "two nodes believe they are primary" from a divergence into a rejected write. `cluster-etcd`'s
+per-copy `allocationId` plays part of the same role.
+
+Nothing in this design has one. It costs a number per shard in the assignment and the same number in
+`status/indices`, and the enforcement is in the data plane. **It is a prerequisite for document replication
+being safe, not an optimisation**, and it is the one finding from this audit that is not already fixed.
+
+Segment replication is unaffected: copies pull from a remote store rather than accepting replicated writes,
+so two nodes believing they are primary produces a wasted upload rather than divergent data.
+
+### Why the projection is safe to resolve peers from
+
+One invariant carries more weight than it looks: **`tenant/<t>/status/indices/<uuid>` is derived from
+observation, never from intent.** It names a node as primary only after that node reported itself primary.
+So the projection lags reality and never leads it, and a replica reading it can point at a node that *was*
+primary but never at one that has merely been *asked* to become primary.
+
+That is what makes peer resolution safe against a torn read in one direction. In the other direction — a
+primary that has been demoted since the projection was written — it is the same hazard as above, and it
+wants the same fix.
+
+## 13. Open questions
+
+1. **No primary term.** §12: promoting a primary is two writes with no fencing token, so under document
+   replication two nodes can both believe they are primary and their copies diverge — which no later pass
+   repairs. Needs a monotonic per-shard number in the assignment and the status projection, enforced in the
+   data plane. A prerequisite for docrep being safe rather than an optimisation.
+2. **Cross-pool data migration** — §4. The supported path only covers the case where nodes can move with
    their data. Everything else is a sketch.
-2. **The dedicated-pool ceiling** — a single tenant too large for one supervisor has no answer short of
+3. **The dedicated-pool ceiling** — a single tenant too large for one supervisor has no answer short of
    index-pattern binding, which costs the single-writer property on `tenant/<t>/status/cluster`.
-3. **Tenant discovery** needs the control plane to write a `tenants/<id>` registry; proposal handed over at
+4. **Tenant discovery** needs the control plane to write a `tenants/<id>` registry; proposal handed over at
    `../opensearch-control-plane/docs/proposed-tenant-registry.md`. Configuration is the fallback.
-4. **Two contradictions in `REQUIREMENTS.md`**, both resolved in `SUPERVISOR_KEYS.md`, both worth
+5. **Two contradictions in `REQUIREMENTS.md`**, both resolved in `SUPERVISOR_KEYS.md`, both worth
    confirming: R5.5 versus the control plane's tenant-scoped store, and R5.5 versus R4.3's requirement to
    reap tasks the control plane owns.
-5. **Replica recovery source** — does the node find the primary through the status projection, or does the
-   assignment name it? (`NODE_CONTRACT.md` open question 2.) Cross-pool recovery in §4 depends on the answer.
-6. **Allocation policy is entirely undesigned.** This document says where the decision is made and how it is
+6. **Primary before replica** is a planning rule the planner does not yet have — a docrep replica cannot
+   converge until a primary is serving, so a plan that places replicas first converges only by accident.
+   Milestone 5. (Replica recovery source is no longer open: the node resolves peers from the status
+   projection. Cross-pool recovery in §4 still depends on that path existing across a pool boundary.)
+7. **Allocation policy is entirely undesigned.** This document says where the decision is made and how it is
    bounded, logged and reversible; it says nothing about how to choose a node. Awareness, disk watermarks
    and rebalancing are their own document.
-7. **Rollover.** `generation` only advances on rollover, which the control plane does not implement. By the
+8. **Rollover.** `generation` only advances on rollover, which the control plane does not implement. By the
    lifetime rule it is the supervisor's, but that is not yet agreed with the other side.

@@ -284,6 +284,12 @@ The node's full desired state. Written only when it changes.
 - **`config_revision`** tells the node which revision of the index document to build against. If the node
   reads `tenant/acme/indices/my-index` and finds a different revision, the assignment is stale by one pass
   and it should apply what it read — the supervisor will re-issue.
+- **The node must check the index document's `uuid` against the uuid its assignment named**, and treat a
+  mismatch as "this index is not present yet" rather than as configuration to apply. The assignment
+  identifies an index by uuid but the index document is keyed by *name*, so an index deleted and recreated
+  under the same name gives the node a perfectly valid document describing a different index. Both halves
+  read cleanly; only the pair is wrong. This is the one torn read in the contract that a later pass would
+  not correct, because the node would have built the shard already.
 - **A tenant entry with `role: coordinator`** and no `indices` means "serve queries for this tenant, hold no
   data". Where the coordinator gets the routing table it needs is the next section.
 - **Size budget: 512 KiB hard**, same reasoning. If a node's assignment would exceed it the supervisor
@@ -402,6 +408,7 @@ than a retry loop that happens to work.
 | `applied.assignment_version` < assignment `version` | node has not caught up | normal; a finding only after N passes |
 | `applied.assignment_version` > assignment `version` | the supervisor read a stale assignment, or another supervisor is writing | verify the lease, discard the pass, recompute (R6.3) |
 | `ephemeral_id` changed | node restarted | discard cached inventory and every ack; re-read |
+| heartbeat and inventory disagree on `ephemeral_id` | the pair straddles a restart | **prefer the inventory** and treat the ack as void. A node writes registration, then inventory, then heartbeat, so within one process the inventory is never the older of the two; across a restart the previous process's heartbeat can outlive it |
 | the assignment's `pool` ≠ the node's current pool | written by the pool's previous owner, or the node has just been moved | the new owner rewrites it; the old owner must stop, and the `epoch` says which is which |
 | a node in my pool holds copies of a tenant bound elsewhere | a rebind in progress, or an abandoned one | `FOREIGN_COPY`; remove only once the binding shows no `moving_to` and the finding has aged |
 | inventory names an index uuid absent from desired state | index deleted — **or** desired state is torn | finding `ORPHANED_COPY`; **do not delete until it has been observed for K consecutive passes** |
