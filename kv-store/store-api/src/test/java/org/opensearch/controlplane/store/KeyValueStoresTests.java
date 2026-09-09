@@ -106,4 +106,17 @@ class KeyValueStoresTests {
         assertTrue(description.startsWith("available stores:"), description);
         assertTrue(description.contains("file:///path/to/dir"), description);
     }
+
+    /**
+     * The list is short in any deployment carrying only the bundled backend, and without saying why it
+     * reads as though etcd and ZooKeeper do not exist rather than as though their jars are missing. That
+     * is a real confusion this hit in practice, so the explanation is asserted rather than left to drift.
+     */
+    @Test
+    void theAvailableDescriptionExplainsWhyTheListMayBeShort() {
+        String description = KeyValueStores.describeAvailable();
+
+        assertTrue(description.contains("separate jars"), description);
+        assertTrue(description.contains("storeJars"), description);
+    }
 }

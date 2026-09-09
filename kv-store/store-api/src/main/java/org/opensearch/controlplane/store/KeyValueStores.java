@@ -93,6 +93,12 @@ public final class KeyValueStores {
         }
         StringBuilder description = new StringBuilder("available stores:");
         providers.forEach((scheme, provider) -> description.append("\n  ").append(provider.usage()));
+        // Without this, a deployment carrying only the bundled backend reads as though etcd and ZooKeeper
+        // do not exist, rather than as though their jars were not installed. The list is honest but says
+        // nothing about why it is short.
+        description.append("\n\nOther backends are separate jars; add one to the runtime classpath and it")
+            .append("\nappears here. Building from source:")
+            .append("\n  ./gradlew :server:run -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT");
         return description.toString();
     }
 }
