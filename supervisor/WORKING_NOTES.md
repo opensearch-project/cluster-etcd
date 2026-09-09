@@ -10,6 +10,21 @@ hours to discover while building the control plane next door, written down so th
   `~/.gradle/caches/modules-2/files-2.1` and `~/.m2/repository`. Ask a human to run `./gradlew build`, and
   report honestly that the Gradle build is unverified.
 
+  **Now solved for this repository: `tools/jbuild.sh`.** It resolves jars from both local caches, compiles
+  every module in dependency order with `--release 21`, and runs the tests through `tools/JUnitRunner.java`.
+  `./gradlew --version` does work, which is misleading — the failure only appears once a task needs the
+  lock service:
+
+  ```
+  > Could not create service of type FileLockContentionHandler
+     > java.net.SocketException: Operation not permitted
+  ```
+
+  Two things the runner does on purpose: it **fails when it discovers zero tests**, because silently
+  passing nothing looks exactly like a green build and there is no working Gradle here to contradict it;
+  and it compiles `store-api` from `../opensearch-kv-store/store-api/src` rather than using that build's
+  jars, so a change over there cannot go stale here.
+
 - **No listening sockets.** `bind()` is `EPERM`, so the service cannot be started locally and no embedded
   test server (ZooKeeper's `TestingServer`, an etcd test container) can run either.
 - **No raw TCP, even to localhost.** `connect()` to `127.0.0.1` on any port is `EPERM`. Outbound traffic is
