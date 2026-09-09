@@ -65,9 +65,22 @@ Implement `KeyValueStore` and `KeyValueStoreProvider`, declare the provider in
   `scanPrefix` is specified over key prefixes rather than path boundaries, so a non-segment-aligned prefix
   such as `tenant/acme/x` has to work too.
 
-Tests that need a real server go behind `@EnabledIfSystemProperty` and skip without one:
+## Running the integration tests
+
+Each backend's contract tests need a real server, and find one in this order:
+
+1. **`-Dcontrolplane.<backend>=host:port`** — a server you are already running. Wins when set, because
+   starting a container costs seconds and pointing the suite at a specific build is sometimes the point.
+2. **A container**, if Docker is available. This is what CI uses: **no configuration, just Docker.**
+3. Otherwise the tests **skip**, which is not a failure — this repository is also worked on in an
+   environment with no Docker and no outbound sockets, where `ZooKeeperKeysTests` still runs and still
+   carries most of the risk.
 
 ```bash
-./gradlew :store-zookeeper:test -Dcontrolplane.zookeeper=localhost:2181
-./gradlew :store-etcd:test      -Dcontrolplane.etcd=localhost:2379
+./gradlew test                                          # containers, if Docker is up
+./gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379   # a server you already have
+./gradlew :store-zookeeper:test -Dcontrolplane.zookeeper.image=zookeeper:3.8   # a different version
 ```
+
+One container per JVM, started lazily and left for Ryuk to reap. Every test isolates itself in a fresh
+root znode or key prefix, so sharing one is safe and starting thirty is not worth the minutes.

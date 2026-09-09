@@ -7,7 +7,7 @@ package org.opensearch.controlplane.store.etcd;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.KeyValueStoreContractTests;
 import org.opensearch.controlplane.store.KeyValueStores;
@@ -42,12 +42,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Each test gets a fresh key prefix, so a failed run leaves its keys behind for inspection without
  * affecting the next.
  */
-@EnabledIfSystemProperty(
-    named = "controlplane.etcd",
-    matches = ".+",
-    disabledReason = "needs -Dcontrolplane.etcd=host:port pointing at a real etcd"
+@EnabledIf(
+    value = "serverAvailable",
+    disabledReason = "needs Docker, or -Dcontrolplane.etcd=host:port pointing at a real etcd"
 )
 class EtcdKeyValueStoreTests extends KeyValueStoreContractTests {
+
+    /** Referenced by {@code @EnabledIf}; see {@link EtcdTestServer}. */
+    static boolean serverAvailable() {
+        return EtcdTestServer.available();
+    }
 
     private static final AtomicInteger PREFIXES = new AtomicInteger();
 
@@ -68,8 +72,7 @@ class EtcdKeyValueStoreTests extends KeyValueStoreContractTests {
     @Override
     protected KeyValueStore newStore() {
         try {
-            KeyValueStore store = KeyValueStores.open(
-                "etcd://" + System.getProperty("controlplane.etcd") + prefix);
+            KeyValueStore store = KeyValueStores.open("etcd://" + EtcdTestServer.endpoint() + prefix);
             opened.add(store);
             return store;
         } catch (Exception e) {
@@ -155,7 +158,7 @@ class EtcdKeyValueStoreTests extends KeyValueStoreContractTests {
 
     @Test
     void aPrefixIsRequired() {
-        String host = System.getProperty("controlplane.etcd");
+        String host = EtcdTestServer.endpoint();
 
         IOException e = assertThrows(IOException.class, () -> KeyValueStores.open("etcd://" + host));
         assertTrue(e.getMessage().contains("needs a key prefix"), e.getMessage());

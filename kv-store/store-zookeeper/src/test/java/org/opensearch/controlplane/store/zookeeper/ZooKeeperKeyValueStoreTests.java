@@ -7,7 +7,7 @@ package org.opensearch.controlplane.store.zookeeper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.KeyValueStoreContractTests;
 import org.opensearch.controlplane.store.KeyValueStores;
@@ -46,12 +46,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Each test gets a fresh root znode, so a failed run leaves its state behind for inspection without
  * poisoning the next one.
  */
-@EnabledIfSystemProperty(
-    named = "controlplane.zookeeper",
-    matches = ".+",
-    disabledReason = "needs -Dcontrolplane.zookeeper=host:port pointing at a real ensemble"
+@EnabledIf(
+    value = "serverAvailable",
+    disabledReason = "needs Docker, or -Dcontrolplane.zookeeper=host:port pointing at a real ensemble"
 )
 class ZooKeeperKeyValueStoreTests extends KeyValueStoreContractTests {
+
+    /** Referenced by {@code @EnabledIf}; see {@link ZooKeeperTestServer}. */
+    static boolean serverAvailable() {
+        return ZooKeeperTestServer.available();
+    }
 
     private static final AtomicInteger ROOTS = new AtomicInteger();
 
@@ -72,8 +76,7 @@ class ZooKeeperKeyValueStoreTests extends KeyValueStoreContractTests {
     @Override
     protected KeyValueStore newStore() {
         try {
-            KeyValueStore store = KeyValueStores.open(
-                "zk://" + System.getProperty("controlplane.zookeeper") + root);
+            KeyValueStore store = KeyValueStores.open("zk://" + ZooKeeperTestServer.endpoint() + root);
             opened.add(store);
             return store;
         } catch (Exception e) {
@@ -184,7 +187,7 @@ class ZooKeeperKeyValueStoreTests extends KeyValueStoreContractTests {
     /** The root path is mandatory, so a control plane cannot scatter keys across an ensemble root. */
     @Test
     void aConnectionStringWithoutARootIsRejected() {
-        String host = System.getProperty("controlplane.zookeeper");
+        String host = ZooKeeperTestServer.endpoint();
 
         Exception e = org.junit.jupiter.api.Assertions.assertThrows(
             java.io.IOException.class, () -> KeyValueStores.open("zk://" + host));
