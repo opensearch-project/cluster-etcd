@@ -1,0 +1,289 @@
+package org.opensearch.supervisor.fakenode;
+
+import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.supervisor.model.Keys;
+import org.opensearch.supervisor.model.NodeId;
+import org.opensearch.supervisor.model.TenantId;
+import org.opensearch.supervisor.model.node.Assignment;
+import org.opensearch.supervisor.model.node.AppliedOutcome;
+import org.opensearch.supervisor.model.node.Heartbeat;
+import org.opensearch.supervisor.model.node.NodeJson;
+import org.opensearch.supervisor.model.node.Registration;
+import org.opensearch.supervisor.model.node.ShardInventory;
+import org.opensearch.supervisor.model.node.ShardState;
+
+import java.time.Clock;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.TreeMap;
+
+/**
+ * A data plane node, as far as the store is concerned: it registers, heartbeats, keeps a shard inventory,
+ * and obeys its assignment. It holds no data and serves nothing.
+ *
+ * <p>This is the first implementation of {@code NODE_CONTRACT.md} written from the document rather than
+ * from the supervisor, which makes it the contract's first real review. Where the document was silent, the
+ * choice made here is marked <b>GAP</b> in a comment and listed in that file's open questions — a contract
+ * that needs a reader to guess is a contract that two implementations will guess differently.
+ *
+ * <p>{@link #tick()} is explicit rather than a background thread, for the same reason the supervisor's loop
+ * is: a pass that only advances when asked is a pass a test can reason about.
+ */
+public final class FakeNode {
+
+    private final KeyValueStore store;
+    private final Clock clock;
+    private final NodeId nodeId;
+    private final Registration template;
+    private final String ephemeralId;
+
+    private ShardInventory inventory;
+    private String inventoryDigest;
+    private long appliedVersion = Heartbeat.NO_ASSIGNMENT;
+    private AppliedOutcome outcome = AppliedOutcome.APPLIED;
+    private String failureDetail;
+
+    public FakeNode(KeyValueStore store, Registration template, Clock clock) {
+        this(store, template, clock, "eph-" + Long.toHexString(clock.millis()));
+    }
+
+    public FakeNode(KeyValueStore store, Registration template, Clock clock, String ephemeralId) {
+        this.store = Objects.requireNonNull(store, "store");
+        this.template = Objects.requireNonNull(template, "template");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.ephemeralId = Objects.requireNonNull(ephemeralId, "ephemeralId");
+        this.nodeId = template.nodeId();
+        this.inventory = ShardInventory.empty(nodeId, ephemeralId, clock.millis());
+    }
+
+    /**
+     * Announce this process. A new {@code ephemeralId} is what tells the supervisor the node restarted, so
+     * this is written on every start even when nothing else about the node has changed.
+     */
+    public void start() {
+        Registration registration = new Registration(
+            nodeId,
+            ephemeralId,
+            template.name(),
+            template.pool(),
+            template.roles(),
+            template.address(),
+            template.port(),
+            template.version(),
+            template.attributes(),
+            template.heartbeatIntervalMillis(),
+            clock.millis()
+        );
+        store.put(Keys.nodeRegistration(nodeId), NodeJson.write(registration));
+    }
+
+    /**
+     * One pass: read the assignment, move the inventory one step toward it, and heartbeat.
+     *
+     * <p>The write order is the contract's, and it is not incidental. The inventory goes first, then the
+     * heartbeat announcing its digest, so that a mismatch always means "the heartbeat is behind the
+     * inventory" — safe for the supervisor to act on. The reverse ordering would have it chase an inventory
+     * that does not exist yet.
+     */
+    public void tick() {
+        Optional<Assignment> assignment = readAssignment();
+        Map<Desired, ShardState> desired = assignment.map(FakeNode::desiredOf).orElse(null);
+
+        if (desired != null) {
+            converge(desired, assignment.get());
+        }
+
+        ShardInventory current = inventory;
+        byte[] inventoryBytes;
+        try {
+            inventoryBytes = NodeJson.write(current);
+        } catch (RuntimeException e) {
+            // NODE_CONTRACT.md: a node that cannot write its inventory writes nothing and says so. A
+            // truncated or absent inventory read as "these copies are gone" is how the supervisor would be
+            // told to replace shards that exist.
+            outcome = AppliedOutcome.FAILED;
+            failureDetail = "could not serialise inventory: " + e.getMessage();
+            heartbeat(current);
+            return;
+        }
+
+        String digest = NodeJson.digest(inventoryBytes);
+        if (digest.equals(inventoryDigest) == false) {
+            store.put(Keys.nodeShards(nodeId), inventoryBytes);
+            inventoryDigest = digest;
+        }
+
+        heartbeat(current);
+    }
+
+    private Optional<Assignment> readAssignment() {
+        return store.get(Keys.nodeAssignment(nodeId)).map(versioned -> {
+            try {
+                return NodeJson.readAssignment(versioned.value());
+            } catch (RuntimeException e) {
+                // An unreadable assignment is treated as no assignment, never as an empty one. An empty
+                // assignment means "drop everything you hold", and inferring that from a parse failure
+                // would let one corrupt write delete a node's shards.
+                outcome = AppliedOutcome.FAILED;
+                failureDetail = "could not parse assignment: " + e.getMessage();
+                return null;
+            }
+        }).filter(Objects::nonNull);
+    }
+
+    /** One desired copy: which tenant, which index, which shard. */
+    private record Desired(TenantId tenant, String indexUuid, String indexName, long configRevision, int shard)
+        implements Comparable<Desired> {
+
+        @Override
+        public int compareTo(Desired other) {
+            int byTenant = tenant.compareTo(other.tenant);
+            if (byTenant != 0) {
+                return byTenant;
+            }
+            int byIndex = indexUuid.compareTo(other.indexUuid);
+            return byIndex != 0 ? byIndex : Integer.compare(shard, other.shard);
+        }
+    }
+
+    private static Map<Desired, ShardState> desiredOf(Assignment assignment) {
+        Map<Desired, ShardState> desired = new TreeMap<>();
+        assignment.tenants().forEach((tenant, tenantAssignment) ->
+            tenantAssignment.indices().forEach((uuid, index) ->
+                index.shards().forEach((shard, state) ->
+                    desired.put(new Desired(tenant, uuid, index.name(), index.configRevision(), shard), state)
+                )
+            )
+        );
+        return desired;
+    }
+
+    /**
+     * Move one step toward the assignment.
+     *
+     * <p>A new copy appears as {@code INITIALIZING} and becomes serving on the following tick, so that the
+     * supervisor's handling of a copy that exists but cannot yet serve is exercised by something other
+     * than a hand-written fixture. Copies the assignment does not name are removed: the assignment is the
+     * complete desired set, never a delta.
+     */
+    private void converge(Map<Desired, ShardState> desired, Assignment assignment) {
+        Map<Desired, ShardInventory.ShardCopy> held = flatten(inventory);
+        Map<Desired, ShardInventory.ShardCopy> next = new TreeMap<>();
+
+        for (Map.Entry<Desired, ShardState> entry : desired.entrySet()) {
+            Desired want = entry.getKey();
+            ShardInventory.ShardCopy have = held.get(want);
+
+            if (have == null) {
+                next.put(want, ShardInventory.ShardCopy.of(ShardState.INITIALIZING));
+            } else if (have.state() != entry.getValue()) {
+                // Covers both the INITIALIZING copy becoming serving and a promotion between PRIMARY and
+                // REPLICA. A real node would have considerably more to do for either.
+                next.put(want, ShardInventory.ShardCopy.of(entry.getValue(), simulatedSize(want)));
+            } else {
+                next.put(want, have);
+            }
+        }
+        // Anything held and not desired is absent from next, and so is gone. Nothing models a slow delete.
+
+        appliedVersion = assignment.version();
+        failureDetail = null;
+        outcome = matches(next, desired) ? AppliedOutcome.APPLIED : AppliedOutcome.APPLYING;
+
+        // Rebuild only when the copies actually changed. The rebuilt document carries a fresh
+        // generated_at, so rebuilding unconditionally would give the inventory new bytes and a new digest
+        // on every tick — which would have the supervisor re-read it every pass and put the document that
+        // scales with shard count back onto the hot path. See NODE_CONTRACT.md: generated_at means "when
+        // this inventory last changed", not "when it was last computed".
+        if (next.equals(held) == false) {
+            inventory = rebuild(next);
+        }
+    }
+
+    /** Whether the inventory now says exactly what the assignment asked for. */
+    private static boolean matches(Map<Desired, ShardInventory.ShardCopy> next, Map<Desired, ShardState> desired) {
+        for (Map.Entry<Desired, ShardState> entry : desired.entrySet()) {
+            ShardInventory.ShardCopy copy = next.get(entry.getKey());
+            if (copy == null || copy.state() != entry.getValue()) {
+                return false;
+            }
+        }
+        return next.size() == desired.size();
+    }
+
+
+    private Map<Desired, ShardInventory.ShardCopy> flatten(ShardInventory from) {
+        Map<Desired, ShardInventory.ShardCopy> flat = new TreeMap<>();
+        from.tenants().forEach((tenant, tenantShards) ->
+            tenantShards.indices().forEach((uuid, index) ->
+                index.shards().forEach((shard, copy) ->
+                    flat.put(new Desired(tenant, uuid, index.name(), index.configRevision(), shard), copy)
+                )
+            )
+        );
+        return flat;
+    }
+
+    private ShardInventory rebuild(Map<Desired, ShardInventory.ShardCopy> copies) {
+        Map<TenantId, Map<String, IndexBuilder>> byTenant = new TreeMap<>();
+        copies.forEach((where, copy) -> byTenant
+            .computeIfAbsent(where.tenant(), t -> new TreeMap<>())
+            .computeIfAbsent(where.indexUuid(), u -> new IndexBuilder(where.indexName(), where.configRevision()))
+            .shards.put(where.shard(), copy));
+
+        Map<TenantId, ShardInventory.TenantShards> tenants = new LinkedHashMap<>();
+        byTenant.forEach((tenant, indices) -> {
+            Map<String, ShardInventory.IndexShards> built = new LinkedHashMap<>();
+            indices.forEach((uuid, builder) ->
+                built.put(uuid, new ShardInventory.IndexShards(builder.name, builder.configRevision, builder.shards)));
+            tenants.put(tenant, new ShardInventory.TenantShards(built));
+        });
+
+        return new ShardInventory(nodeId, ephemeralId, clock.millis(), tenants);
+    }
+
+    private static final class IndexBuilder {
+        private final String name;
+        private final long configRevision;
+        private final Map<Integer, ShardInventory.ShardCopy> shards = new TreeMap<>();
+
+        IndexBuilder(String name, long configRevision) {
+            this.name = name;
+            this.configRevision = configRevision;
+        }
+    }
+
+    /** Deterministic, so a test can assert a digest without pinning a random number. */
+    private static long simulatedSize(Desired where) {
+        return 1_000_000L + Math.abs((where.indexUuid() + where.shard()).hashCode() % 100_000);
+    }
+
+    private void heartbeat(ShardInventory current) {
+        Heartbeat heartbeat = new Heartbeat(
+            nodeId,
+            ephemeralId,
+            clock.millis(),
+            new Heartbeat.Applied(appliedVersion, outcome, failureDetail),
+            inventoryDigest,
+            current.copyCount(),
+            new Heartbeat.Capacity(994_663_170_048L, 856_882_249_728L, 41, 5, 1.2)
+        );
+        store.put(Keys.nodeHeartbeat(nodeId), NodeJson.write(heartbeat));
+    }
+
+    // ---------------------------------------------------------------- for tests
+
+    public NodeId nodeId() {
+        return nodeId;
+    }
+
+    public String ephemeralId() {
+        return ephemeralId;
+    }
+
+    public ShardInventory inventory() {
+        return inventory;
+    }
+}

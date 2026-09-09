@@ -1,5 +1,8 @@
 package org.opensearch.supervisor.model;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
 import java.util.Objects;
 import java.util.regex.Pattern;
 
@@ -10,7 +13,7 @@ import java.util.regex.Pattern;
  * exactly one supervisor at a time. See {@code DESIGN.md} §2 — every other single-writer property in the
  * system falls out of that.
  */
-public record PoolId(String value) implements Comparable<PoolId> {
+public record PoolId(@JsonValue String value) implements Comparable<PoolId> {
 
     private static final Pattern VALID = Pattern.compile("[a-zA-Z0-9][a-zA-Z0-9_.\\-]{0,63}");
 
@@ -24,6 +27,7 @@ public record PoolId(String value) implements Comparable<PoolId> {
         }
     }
 
+    @JsonCreator
     public static PoolId of(String value) {
         return new PoolId(value);
     }

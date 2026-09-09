@@ -1,5 +1,8 @@
 package org.opensearch.supervisor.model;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
 import java.util.Objects;
 import java.util.regex.Pattern;
 
@@ -12,7 +15,7 @@ import java.util.regex.Pattern;
  * {@code SUPERVISOR_KEYS.md} §6 exists to make impossible. If the control plane widens its pattern, this
  * one has to widen with it.
  */
-public record TenantId(String value) implements Comparable<TenantId> {
+public record TenantId(@JsonValue String value) implements Comparable<TenantId> {
 
     private static final Pattern VALID = Pattern.compile("[a-zA-Z0-9][a-zA-Z0-9_.\\-]{0,127}");
 
@@ -26,6 +29,7 @@ public record TenantId(String value) implements Comparable<TenantId> {
         }
     }
 
+    @JsonCreator
     public static TenantId of(String value) {
         return new TenantId(value);
     }

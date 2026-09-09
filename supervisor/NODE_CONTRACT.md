@@ -191,12 +191,23 @@ Ground truth for actual state: what this node **has**, not what it was told (R3.
   one state nobody owns.
 - **`size_bytes`** is what a disk-aware decider needs. Doc counts and per-shard statistics are not here;
   they are an observability concern and would put an unbounded, fast-changing field into a document that is
-  supposed to change only when placement does.
+  supposed to change only when placement does. It is **omitted rather than zero** while a copy is
+  initializing, because zero is a real size and would tell a decider the copy costs nothing.
+- **`generated_at` means "when this inventory last changed", not "when it was last computed".** Found by
+  implementing it: a node that stamps the current time every time it recomputes produces different bytes,
+  and therefore a different digest, on every heartbeat — so the supervisor re-reads the inventory every
+  pass and the document that scales with shard count is back on the hot path, which is the one thing this
+  split exists to prevent. The node must leave the document untouched when the copies have not changed.
+- **An empty inventory is still written.** "I have nothing" and "I have not yet said" are different facts,
+  and only one of them is safe to place shards against. A node with no copies publishes
+  `{"tenants":{}}` rather than leaving the key absent, so the supervisor has one code path instead of two.
 
-**Size budget: 512 KiB hard**, well clear of ZooKeeper's 1 MiB default and etcd's 1.5 MiB. At roughly 80
-bytes per copy that is several thousand copies per node. A node that would exceed it must write nothing and
-report `outcome: failed` — a truncated inventory is worse than a missing one, because the supervisor would
-read it as "those copies are gone" and start replacing shards that exist.
+**Size budget: 512 KiB hard**, well clear of ZooKeeper's 1 MiB default and etcd's 1.5 MiB. **Measured** at
+54 bytes per copy with realistic index uuids and names, so 5,000 copies serialise to 270 KiB — 52% of the
+budget, and roughly 9,700 copies before it binds. The earlier estimate of 80 bytes per copy was
+conservative. A node that would exceed the budget must write nothing and report `outcome: failed` — a
+truncated inventory is worse than a missing one, because the supervisor would read it as "those copies are
+gone" and start replacing shards that exist.
 
 ## What the supervisor writes back
 
@@ -230,8 +241,17 @@ The node's full desired state. Written only when it changes.
 - **It is the complete desired set, never a delta.** A shard copy the node holds and this document does not
   name must be removed. This is R2.1 pushed all the way down: a data plane that applied deltas would have
   the same edge-triggered bug one layer lower, and it would be harder to see.
+- **An absent assignment is not an empty one.** Added after implementing the node, which had to guess:
+  read as "the complete desired set is empty", a missing key means *drop every shard you hold* — and a
+  supervisor that has not written one yet, a pool between owners, and a lost key all look exactly like
+  that. **Absent means no instruction**: the node keeps what it has and keeps reporting the last version it
+  applied. Only an assignment that is present and names nothing drops everything.
+- **Only `PRIMARY` and `REPLICA` may be assigned.** `INITIALIZING` and `FAILED` are things a node reports,
+  not things it can be told to be; asking for one is a state the node can never converge to, so the diff
+  would never empty. Rejected when the document is built rather than discovered in a reconciliation loop.
 - **`version`** is monotonic **per node** and means nothing across nodes. The node echoes it in
-  `applied.assignment_version`.
+  `applied.assignment_version`. **Versions start at 1**, because 0 is the heartbeat's "nothing applied
+  yet" and an assignment numbered 0 would be indistinguishable from never having been given one.
 - **`pool` and `epoch`** identify who wrote this and under what leadership: the pool the writer believed
   this node was in, and that pool's lease epoch. The node ignores both. They exist so that an assignment
   written by a supervisor that had already lost the pool is identifiable after the fact — and so that a node
@@ -263,6 +283,26 @@ together. See [`SUPERVISOR_KEYS.md`](SUPERVISOR_KEYS.md).
 
 Coordinators therefore read their own `nodes/assignment/<id>` to learn *which* tenants they serve, then
 `scanPrefix("tenant/<t>/status/indices/")` for each.
+
+## Forward compatibility
+
+Added after implementing both sides. A rolling upgrade means one side is routinely newer than the other, so
+this is the normal case rather than the exceptional one.
+
+- **Unknown fields are ignored.** Failing the parse loses the whole document, and for an inventory that
+  reads as "this node has no shards" — the most destructive possible response to an unrecognised field.
+- **An unknown enum value becomes a sentinel, and the sentinel is never counted as healthy.** An
+  unrecognised shard state is neither serving (which would have the supervisor believe a shard is served
+  when it is not) nor absent (which would have it place a duplicate). It is "something is there and I
+  cannot say what", which is a finding for a human.
+- **A document carrying a sentinel cannot be written back.** Reading one is required; re-serialising it
+  would fabricate a document claiming a value no peer ever reported.
+
+One implementation note, because it cost an afternoon and will cost the next person the same: with Jackson,
+this cannot be done with `@JsonValue` on the enum. Jackson builds an enum's *deserializer* by calling that
+accessor on every constant to construct its lookup table, so a sentinel that throws on write also breaks
+reading — defeating the one thing it exists for. The guard belongs on a registered serializer, which runs
+only when something genuinely tries to write.
 
 ## Liveness
 
@@ -317,10 +357,17 @@ index and costs nothing else; not waiting costs the shard.
 
 ## Open questions
 
+0. **Resolved by implementing it** — recorded here so the list stays honest rather than looking untouched.
+   `generated_at` means "last changed"; an absent assignment is not an empty one; an empty inventory is
+   still published; only serving states are assignable; assignment versions start at 1. Each was a silence
+   in this document that `fake-node` had to guess at, and each is now stated above.
+
 1. **Does the node need to be told its tenants' index documents, or does it find them?** As written it
    reads `tenant/<t>/indices/<name>` itself, which means the data plane needs the tenant prefix convention
    and a store client. The alternative — inlining settings and mappings into the assignment — removes that
    dependency and makes the assignment document large and hot. Current answer: the node reads.
+   **`fake-node` does neither** — it echoes the `config_revision` the assignment gave it, which is enough
+   to exercise the seam and is exactly the shortcut a real node cannot take.
 2. **Replica recovery source.** The assignment says a node should hold `REPLICA` of shard 1 but not where to
    recover it from. Either the node finds the primary through `tenant/<t>/status/indices/<uuid>` (the same
    document coordinators route with), or the supervisor names a source in the assignment. Unresolved.

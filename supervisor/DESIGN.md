@@ -3,7 +3,8 @@
 How the service works, as distinct from what it must do (`REQUIREMENTS.md`) and what it reads and writes
 (`KEY_LAYOUT.md`, [`NODE_CONTRACT.md`](NODE_CONTRACT.md), [`SUPERVISOR_KEYS.md`](SUPERVISOR_KEYS.md)).
 
-No code exists. This is the design to argue with before any is written.
+Milestones 1 and 2 are built (§11); everything from §3 onward is still design to argue with rather than
+code to read. Where implementing something changed the design, the section says so.
 
 ## 0. Decisions taken, and what they cost
 
@@ -450,8 +451,11 @@ false and zero fields, so a failed transaction has no `succeeded` key.
    fallback for this sandbox. Carries the identifier types, `Keys` (the three contract documents as
    executable code), and `TenantDiscovery`, which is the thin vertical slice that proves the composite
    build, the store API and the test fixtures all resolve. `./gradlew build` verified green on Java 21.
-2. **The node contract.** Codecs for all four documents, size-budget tests, and `fake-node` writing
-   registration, heartbeat and inventory. First real test of `NODE_CONTRACT.md`.
+2. **The node contract.** ✅ *Done.* Codecs for all four documents in `supervisor-model`, size budgets as
+   tests, and a `fake-node` that registers, heartbeats, keeps an inventory and obeys its assignment.
+   Implementing the contract from the document alone found five silences in it, all now decided and
+   recorded there — the most consequential being that `generated_at` has to mean "last changed" rather than
+   "last computed", and that an absent assignment is not an empty one.
 3. **Observe and diff, read-only, one pool.** Pool definitions, bindings, tenant discovery, the revision
    cache, liveness, `diff`, and the full R7 projection. **Acts on nothing.** Worth shipping alone: a service
    that answers "what is wrong" and cannot break anything.
