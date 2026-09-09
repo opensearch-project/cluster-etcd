@@ -37,7 +37,7 @@ import java.util.Optional;
  *
  * <p>Implementations must be safe for concurrent use.
  */
-public interface KeyValueStore {
+public interface KeyValueStore extends AutoCloseable {
 
     /**
      * Revision meaning "this key must not exist". Pass as the expected revision to a conditional
@@ -90,4 +90,18 @@ public interface KeyValueStore {
      * @throws RevisionConflictException if the key exists but is not at {@code expectedRevision}
      */
     boolean delete(String key, long expectedRevision);
+
+    /**
+     * Releases whatever the implementation holds.
+     *
+     * <p>Defaulted to nothing so the JDK-only implementations need not care, and declared at all because
+     * a remote backend does: an etcd or ZooKeeper store owns a client with connection threads, and a
+     * control plane that shut down without closing it would hang. {@code Main} closes the store in its
+     * shutdown hook.
+     *
+     * <p>Narrowed from {@link AutoCloseable} to throw nothing, because there is nothing a caller could
+     * usefully do about a failure to close and every call site would otherwise need a try/catch.
+     */
+    @Override
+    default void close() {}
 }

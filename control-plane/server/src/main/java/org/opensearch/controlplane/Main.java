@@ -124,7 +124,14 @@ public final class Main {
             System.out.print(server.dumpRoutes());
         }
 
-        Runtime.getRuntime().addShutdownHook(new Thread(server::close, "control-plane-shutdown"));
+        // The store is closed too, and after the server: a remote backend owns client threads that
+        // would keep the JVM alive, and closing it while requests are still in flight would fail them
+        // rather than let them finish.
+        KeyValueStore openStore = store;
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            server.close();
+            openStore.close();
+        }, "control-plane-shutdown"));
 
         try {
             server.start();
