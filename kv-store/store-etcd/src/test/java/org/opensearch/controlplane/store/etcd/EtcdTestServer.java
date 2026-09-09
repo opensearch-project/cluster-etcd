@@ -34,6 +34,7 @@ final class EtcdTestServer {
         imageOr("controlplane.etcd.image", "gcr.io/etcd-development/etcd:v3.5.17");
 
     private static final String ENDPOINT_PROPERTY = "controlplane.etcd";
+    private static final String MODULE = "store-etcd";
     private static final int CLIENT_PORT = 2379;
 
     private static GenericContainer<?> container;
@@ -89,21 +90,50 @@ final class EtcdTestServer {
     }
 
     /**
-     * Whether Docker can be used, answering false rather than propagating anything.
+     * Whether Docker can be used, answering false rather than propagating anything — and <b>saying why</b>.
      *
      * <p>{@link Throwable} on purpose, which is worth justifying because catching {@link Error} is normally
      * wrong. This method backs an {@code @EnabledIf} condition, and a condition that throws does not disable
      * the tests — it <b>fails the whole class</b>, which is the opposite of what "cannot run here" should
-     * mean. Anything at all going wrong while asking the question is a good enough answer of "no".
+     * mean. Anything going wrong while asking the question is a good enough answer of "no". Not
+     * hypothetical: an incomplete classpath produced {@code NoClassDefFoundError} here, an {@link Error}
+     * rather than an exception, and turned a skip into a failure.
      *
-     * <p>Not hypothetical: an incomplete classpath produced {@code NoClassDefFoundError} here, an
-     * {@link Error} rather than an exception, and turned a skip into a failure.
+     * <p>The reason is printed because swallowing it made a worse bug than the one it fixed. A developer who
+     * is running Docker and sees the tests skip anyway has nothing to go on, and {@code @EnabledIf} cannot
+     * carry a computed message into its {@code disabledReason}. So the explanation goes to stderr, once.
      */
     private static boolean dockerAvailable() {
+        Throwable failure = null;
+        boolean usable = false;
         try {
-            return DockerClientFactory.instance().isDockerAvailable();
+            usable = DockerClientFactory.instance().isDockerAvailable();
         } catch (Throwable noDocker) {
-            return false;
+            failure = noDocker;
         }
+        if (usable == false && REPORTED.compareAndSet(false, true)) {
+            System.err.println("[" + MODULE + "] integration tests are being SKIPPED: Testcontainers cannot"
+                + " use Docker.");
+            System.err.println("  reason:      " + (failure == null
+                ? "DockerClientFactory.isDockerAvailable() returned false"
+                : failure));
+            System.err.println("  DOCKER_HOST: " + describe(System.getenv("DOCKER_HOST")));
+            System.err.println("  socket:      " + describe(System.getenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE")));
+            System.err.println("  Docker Desktop and colima put the socket in different places; if `docker"
+                + " info` works but this does not,");
+            System.err.println("  set DOCKER_HOST, or bypass containers entirely with -D" + ENDPOINT_PROPERTY
+                + "=host:port.");
+            if (failure != null) {
+                failure.printStackTrace(System.err);
+            }
+        }
+        return usable;
     }
+
+    private static String describe(String value) {
+        return value == null || value.isBlank() ? "(unset)" : value;
+    }
+
+    private static final java.util.concurrent.atomic.AtomicBoolean REPORTED =
+        new java.util.concurrent.atomic.AtomicBoolean();
 }
