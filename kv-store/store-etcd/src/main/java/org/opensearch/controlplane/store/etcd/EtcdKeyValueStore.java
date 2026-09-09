@@ -17,8 +17,10 @@ import io.etcd.jetcd.op.Op;
 import io.etcd.jetcd.options.DeleteOption;
 import io.etcd.jetcd.options.GetOption;
 import io.etcd.jetcd.options.PutOption;
+import io.etcd.jetcd.options.WatchOption;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.RevisionConflictException;
+import org.opensearch.controlplane.store.Watch;
 
 import java.nio.charset.StandardCharsets;
 import java.util.NavigableMap;
@@ -28,6 +30,7 @@ import java.util.TreeMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A {@link KeyValueStore} backed by etcd.
@@ -220,6 +223,57 @@ public final class EtcdKeyValueStore implements KeyValueStore {
                 "etcd " + operation + " of [" + key + "] failed: " + cause, cause);
         }
     }
+
+    /**
+     * A native range watch over the prefix.
+     *
+     * <p>The simplest of the three implementations, because etcd's watch is a superset of what {@link Watch}
+     * asks for: a reliable ordered stream of events from a revision, delivered over the existing connection
+     * and resumed by the client across reconnects. All of that is discarded here — the response is read only
+     * for the fact that it arrived.
+     *
+     * <p>Throwing away a reliable stream to honour a lossy contract looks wasteful and is the right call.
+     * The alternative is an SPI whose guarantees depend on which backend is configured, and consumers that
+     * quietly stop working when someone switches from etcd to ZooKeeper. If a consumer ever genuinely needs
+     * the event detail, that is a new method on the interface with an explicit capability check, not a
+     * silent difference in what {@code watch} means.
+     *
+     * <p>Unlike ZooKeeper this never declines: etcd watches a range, and a range that is currently empty is
+     * an ordinary range.
+     *
+     * @param onChange invoked for every batch of events; errors are counted rather than delivered, since a
+     *                 caller cannot act on them and the contract already permits missed notifications
+     */
+    @Override
+    public Optional<Watch> watch(String keyPrefix, Runnable onChange) {
+        io.etcd.jetcd.Watch.Watcher watcher;
+        try {
+            watcher = client.getWatchClient().watch(
+                keyOf(keyPrefix),
+                WatchOption.builder().isPrefix(true).build(),
+                response -> onChange.run(),
+                error -> WATCH_FAILURES.incrementAndGet()
+            );
+        } catch (RuntimeException e) {
+            // Empty rather than thrown, so watchOrPoll degrades to polling. A watch is an optimisation.
+            WATCH_FAILURES.incrementAndGet();
+            return Optional.empty();
+        }
+        return Optional.of(watcher::close);
+    }
+
+    /**
+     * Watch stream errors since the process started.
+     *
+     * <p>Same reasoning as {@code Watches.pollFailures}: a watch that has silently stopped delivering is
+     * indistinguishable from a quiet keyspace, so the count needs to be observable. jetcd re-establishes a
+     * broken stream itself, so a non-zero value here is a hint rather than an outage.
+     */
+    public static long watchFailures() {
+        return WATCH_FAILURES.get();
+    }
+
+    private static final AtomicLong WATCH_FAILURES = new AtomicLong();
 
     @Override
     public void close() {

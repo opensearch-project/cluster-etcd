@@ -243,6 +243,91 @@ class EtcdKeyValueStoreTests extends KeyValueStoreContractTests {
         }
     }
 
+    // ------------------------------------------------------------------
+    // watches
+    // ------------------------------------------------------------------
+
+    @Test
+    void aNativeWatchFiresForAWriteUnderThePrefix() throws Exception {
+        KeyValueStore store = newStore();
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+
+        java.util.Optional<org.opensearch.controlplane.store.Watch> watch =
+            store.watch("indices/", notified::countDown);
+        assertTrue(watch.isPresent(), "etcd watches a range natively");
+
+        try (var ignored = watch.get()) {
+            store.put("indices/a", bytes("one"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS), "the watch must fire");
+        }
+    }
+
+    /** A range that is currently empty is an ordinary range, so etcd never declines as ZooKeeper can. */
+    @Test
+    void aNativeWatchOnAnUnwrittenPrefixIsGranted() throws Exception {
+        KeyValueStore store = newStore();
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+
+        java.util.Optional<org.opensearch.controlplane.store.Watch> watch =
+            store.watch("never/written/", notified::countDown);
+        assertTrue(watch.isPresent());
+
+        try (var ignored = watch.get()) {
+            store.put("never/written/first", bytes("1"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void aWriteOutsideThePrefixDoesNotFire() throws Exception {
+        KeyValueStore store = newStore();
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+
+        try (var ignored = store.watch("indices/", calls::incrementAndGet).orElseThrow()) {
+            store.put("aliases/a", bytes("one"));
+            // A write the watch should see, used as a fence: once it has arrived, anything earlier would
+            // have too, so asserting on the counter afterwards is not a race against the network.
+            java.util.concurrent.CountDownLatch fence = new java.util.concurrent.CountDownLatch(1);
+            try (var fenced = store.watch("indices/", fence::countDown).orElseThrow()) {
+                store.put("indices/seen", bytes("two"));
+                assertTrue(fence.await(10, TimeUnit.SECONDS));
+            }
+            assertEquals(1, calls.get(), "only the write under the watched prefix may notify");
+        }
+    }
+
+    @Test
+    void closingAWatchStopsNotifications() throws Exception {
+        KeyValueStore store = newStore();
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+
+        var watch = store.watch("indices/", calls::incrementAndGet).orElseThrow();
+        watch.close();
+
+        java.util.concurrent.CountDownLatch fence = new java.util.concurrent.CountDownLatch(1);
+        try (var fenced = store.watch("other/", fence::countDown).orElseThrow()) {
+            store.put("indices/a", bytes("one"));
+            store.put("other/fence", bytes("two"));
+            assertTrue(fence.await(10, TimeUnit.SECONDS));
+        }
+        assertEquals(0, calls.get(), "a closed watch must not notify");
+    }
+
+    /** watchOrPoll must take the native path here, not silently start a polling thread. */
+    @Test
+    void watchOrPollUsesTheNativeWatch() throws Exception {
+        KeyValueStore store = newStore();
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+
+        try (var watch = org.opensearch.controlplane.store.Watches.watchOrPoll(
+            store, "indices/", java.time.Duration.ofHours(1), notified::countDown)) {
+            // A one-hour poll interval would never fire in time, so arriving proves the native path.
+            store.put("indices/a", bytes("one"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS),
+                "with an hour-long poll interval, only a native watch could have delivered this");
+        }
+    }
+
     @Test
     void theSchemeIsDiscoveredFromTheClasspath() throws Exception {
         assertTrue(KeyValueStores.discover().containsKey("etcd"),

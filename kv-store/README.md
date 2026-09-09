@@ -50,7 +50,7 @@ notification.
 | backend | how |
 |---|---|
 | `store-zookeeper` | native, `AddWatchMode.PERSISTENT_RECURSIVE` — one registration covers a subtree, needs no re-arming, and does not require the prefix to exist yet |
-| `store-etcd` | polling for now; a native range watch is a straightforward follow-up |
+| `store-etcd` | native range watch, from now rather than a past revision |
 | `store-api` filesystem | polling |
 
 ## Writing a backend
