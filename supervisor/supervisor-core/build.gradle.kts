@@ -19,4 +19,8 @@ dependencies {
     // InMemoryKeyValueStore and KeyValueStoreContractTests, so this service's tests run against the same
     // in-memory store the control plane's do rather than a second guess at the same semantics.
     testImplementation(testFixtures("org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT"))
+
+    // A real data plane implementation to observe, so the end-to-end test drives the actual contract
+    // rather than hand-written documents that agree with the observer by construction.
+    testImplementation(project(":fake-node"))
 }

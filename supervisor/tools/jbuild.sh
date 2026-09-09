@@ -170,7 +170,7 @@ echo "==> test sources"
 compile "supervisor-model tests" supervisor-model/src/test/java "$OUT/supervisor-model/test" \
     "$OUT/supervisor-model/main:$JACKSON_CP:$JUNIT_CP"
 compile "supervisor-core tests" supervisor-core/src/test/java "$OUT/supervisor-core/test" \
-    "$OUT/supervisor-core/main:$OUT/supervisor-model/main:$STORE_FIXTURES_CP:$JACKSON_CP:$JUNIT_CP"
+    "$OUT/supervisor-core/main:$OUT/supervisor-model/main:$OUT/fake-node/main:$STORE_FIXTURES_CP:$JACKSON_CP:$JUNIT_CP"
 compile "supervisor-app tests" supervisor-app/src/test/java "$OUT/supervisor-app/test" \
     "$OUT/supervisor-app/main:$OUT/supervisor-core/main:$OUT/supervisor-model/main:$STORE_CP:$JACKSON_CP:$JUNIT_CP"
 compile "fake-node tests" fake-node/src/test/java "$OUT/fake-node/test" \

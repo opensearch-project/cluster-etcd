@@ -469,9 +469,11 @@ false and zero fields, so a failed transaction has no `succeeded` key.
    Implementing the contract from the document alone found five silences in it, all now decided and
    recorded there — the most consequential being that `generated_at` has to mean "last changed" rather than
    "last computed", and that an absent assignment is not an empty one.
-3. **Observe and diff, read-only, one pool.** Pool definitions, bindings, tenant discovery, the revision
-   cache, liveness, `diff`, and the full R7 projection. **Acts on nothing.** Worth shipping alone: a service
-   that answers "what is wrong" and cannot break anything.
+3. **Observe and diff, read-only, one pool.** ✅ *Done.* Pool documents and resolution, tenant discovery,
+   the revision cache, liveness from observed revision changes, the differ, and the R7 projection, tied
+   together by `SupervisorLoop.pass()`. **Acts on nothing** — a test asserts it never writes an assignment.
+   The end-to-end test drives a real `fake-node` rather than hand-written documents. Still single-pool and
+   single-supervisor: leases and the balancer are milestone 4.
 4. **Horizontal scale, still read-only.** Member records, per-pool leases, the balancer, failover. Running
    several supervisors while none of them writes an assignment is the safest possible way to shake this out,
    and it is why this comes before acting rather than after.
