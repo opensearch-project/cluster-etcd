@@ -46,7 +46,55 @@ allprojects {
         testLogging {
             events("passed", "skipped", "failed")
         }
+
+        // Tell Testcontainers where Docker actually is.
+        //
+        // It finds the daemon on its own only when the socket is at the conventional path. Colima, Rancher
+        // Desktop, Apple's `container` tool and a Docker Desktop with the default socket disabled all put it
+        // somewhere else, and the symptom is the integration tests skipping on a machine where `docker` works
+        // perfectly -- which is exactly what happened here.
+        //
+        // The Docker CLI already knows the answer, so this asks it rather than asking the developer. Set
+        // DOCKER_HOST yourself and this defers to it.
+        doFirst {
+            if (System.getenv("DOCKER_HOST").isNullOrBlank()) {
+                val host = dockerHostFromContext()
+                if (host != null) {
+                    environment("DOCKER_HOST", host)
+                    if (host.startsWith("unix://")) {
+                        // Ryuk, the sidecar that reaps containers afterwards, talks to the daemon through a
+                        // socket bind-mounted into it, and needs telling which path to mount. Without this it
+                        // starts and cannot connect, which fails every container rather than skipping.
+                        environment("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
+                    }
+                    logger.info("Testcontainers will use DOCKER_HOST={}", host)
+                }
+            }
+        }
     }
 }
 
 extra["junitVersion"] = junitVersion
+
+/**
+ * The current Docker context's endpoint, or null if it cannot be determined.
+ *
+ * Reads local configuration only -- no daemon connection -- so it answers even when the daemon is down, and
+ * returns null rather than failing when the CLI is absent. A null here means the integration tests skip and
+ * say why, which is the right outcome on a machine without Docker.
+ */
+fun dockerHostFromContext(): String? =
+    try {
+        val process = ProcessBuilder(
+            "docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"
+        ).redirectErrorStream(true).start()
+        val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+        val finished = process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
+        if (finished && process.exitValue() == 0 && output.isNotBlank() && output.contains("://")) {
+            output
+        } else {
+            null
+        }
+    } catch (unavailable: Exception) {
+        null
+    }

@@ -84,3 +84,25 @@ Each backend's contract tests need a real server, and find one in this order:
 
 One container per JVM, started lazily and left for Ryuk to reap. Every test isolates itself in a fresh
 root znode or key prefix, so sharing one is safe and starting thirty is not worth the minutes.
+
+### If they skip on a machine where Docker works
+
+Testcontainers finds the daemon by itself only when the socket sits at the conventional path. Colima,
+Rancher Desktop, Apple's `container` tool and a Docker Desktop with the default socket turned off all put
+it elsewhere, and the symptom is these tests skipping while `docker` works perfectly.
+
+The build handles that: each `test` task asks the Docker CLI where its current context points
+(`docker context inspect`) and passes the answer to the test JVM as `DOCKER_HOST`, along with
+`TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` so Ryuk can reach the daemon from inside its container. Setting
+`DOCKER_HOST` yourself takes precedence.
+
+If a run still skips, it prints the reason — the message Testcontainers gave, the environment it saw, and a
+stack trace. Two escapes worth knowing:
+
+```bash
+# Ryuk cannot always talk to a non-Docker-Desktop daemon. Containers then need reaping by hand.
+TESTCONTAINERS_RYUK_DISABLED=true ./gradlew test
+
+# Or skip containers entirely and use a server you are already running.
+./gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379
+```
