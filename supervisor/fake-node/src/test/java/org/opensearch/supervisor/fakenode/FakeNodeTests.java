@@ -15,6 +15,7 @@ import org.opensearch.supervisor.model.node.NodeJson;
 import org.opensearch.supervisor.model.node.NodeRole;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
+import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
 
 import java.nio.charset.StandardCharsets;
@@ -87,7 +88,7 @@ class FakeNodeTests {
         );
     }
 
-    private void assign(Map<Integer, ShardState> shards, long version) {
+    private void assign(Map<Integer, ShardRole> shards, long version) {
         Assignment assignment = new Assignment(version, PoolId.of("shared-a"), 7, NODE, clock.millis(), Map.of(
             ACME, new Assignment.TenantAssignment(NodeRole.DATA, Map.of(
                 INDEX_UUID, new Assignment.IndexAssignment("my-index", 3041, shards)
@@ -159,7 +160,7 @@ class FakeNodeTests {
         // The handshake the whole three-document split rests on: the supervisor re-reads an inventory only
         // when this digest differs from the one it computed over the bytes it last read.
         node.start();
-        assign(Map.of(0, ShardState.PRIMARY), 1);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
         node.tick();
 
         byte[] storedBytes = store.get(Keys.nodeShards(NODE)).orElseThrow().value();
@@ -172,7 +173,7 @@ class FakeNodeTests {
         // The reason the digest exists. Rewriting an unchanged inventory every few seconds would put the
         // document that scales with shard count back onto the hot write path.
         node.start();
-        assign(Map.of(0, ShardState.PRIMARY), 1);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
         node.tick();
         node.tick();
 
@@ -209,7 +210,7 @@ class FakeNodeTests {
         // Ordering from the contract. A mismatch must always mean "the heartbeat is behind the inventory",
         // which is safe; the reverse would have the supervisor chase an inventory that does not exist.
         node.start();
-        assign(Map.of(0, ShardState.PRIMARY), 1);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
 
         RecordingStore recording = new RecordingStore(store);
         FakeNode watched = new FakeNode(recording, template(), clock, "eph");
@@ -226,15 +227,20 @@ class FakeNodeTests {
     @Test
     void aNewCopyAppearsAsInitializingBeforeItServes() {
         node.start();
-        assign(Map.of(0, ShardState.PRIMARY), 1);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
 
         node.tick();
-        assertEquals(ShardState.INITIALIZING, stateOf(0));
+        // The copy already knows it is going to be a primary; only the state has to catch up. Before role
+        // and state were split this was inexpressible, and an initializing primary was indistinguishable
+        // from a serving one.
+        assertCopy(0, ShardRole.PRIMARY, ShardState.INITIALIZING);
+        assertFalse(copyOf(0).isActivePrimary());
         assertEquals(AppliedOutcome.APPLYING, heartbeat().applied().outcome());
         assertEquals(1, heartbeat().applied().assignmentVersion());
 
         node.tick();
-        assertEquals(ShardState.PRIMARY, stateOf(0));
+        assertCopy(0, ShardRole.PRIMARY, ShardState.STARTED);
+        assertTrue(copyOf(0).isActivePrimary());
         assertEquals(AppliedOutcome.APPLIED, heartbeat().applied().outcome());
     }
 
@@ -243,23 +249,23 @@ class FakeNodeTests {
         // The assignment is the complete desired set, never a delta. A data plane applying deltas would
         // have the same edge-triggered bug as an event-driven supervisor, one layer lower.
         node.start();
-        assign(Map.of(0, ShardState.PRIMARY, 1, ShardState.REPLICA), 1);
+        assign(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA), 1);
         node.tick();
         node.tick();
         assertEquals(2, storedInventory().copyCount());
 
-        assign(Map.of(0, ShardState.PRIMARY), 2);
+        assign(Map.of(0, ShardRole.PRIMARY), 2);
         node.tick();
 
         assertEquals(1, storedInventory().copyCount());
-        assertEquals(ShardState.PRIMARY, stateOf(0));
+        assertCopy(0, ShardRole.PRIMARY, ShardState.STARTED);
         assertEquals(2, heartbeat().applied().assignmentVersion());
     }
 
     @Test
     void anEmptyAssignmentDropsEverything() {
         node.start();
-        assign(Map.of(0, ShardState.PRIMARY), 1);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
         node.tick();
         node.tick();
 
@@ -274,15 +280,15 @@ class FakeNodeTests {
     @Test
     void aReplicaCanBePromotedToPrimary() {
         node.start();
-        assign(Map.of(0, ShardState.REPLICA), 1);
+        assign(Map.of(0, ShardRole.REPLICA), 1);
         node.tick();
         node.tick();
-        assertEquals(ShardState.REPLICA, stateOf(0));
+        assertCopy(0, ShardRole.REPLICA, ShardState.STARTED);
 
-        assign(Map.of(0, ShardState.PRIMARY), 2);
+        assign(Map.of(0, ShardRole.PRIMARY), 2);
         node.tick();
 
-        assertEquals(ShardState.PRIMARY, stateOf(0));
+        assertCopy(0, ShardRole.PRIMARY, ShardState.STARTED);
     }
 
     // ---------------------------------------------------------------- the two gaps in the contract
@@ -296,7 +302,7 @@ class FakeNodeTests {
         //
         // Decided here as: absent means no instruction. The node keeps what it has.
         node.start();
-        assign(Map.of(0, ShardState.PRIMARY), 1);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
         node.tick();
         node.tick();
         assertEquals(1, storedInventory().copyCount());
@@ -312,7 +318,7 @@ class FakeNodeTests {
     void anUnreadableAssignmentIsReportedAndChangesNothing() {
         // The same hazard from the other direction: a corrupt write must not be read as "hold nothing".
         node.start();
-        assign(Map.of(0, ShardState.PRIMARY), 1);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
         node.tick();
         node.tick();
 
@@ -331,7 +337,7 @@ class FakeNodeTests {
         RecordingStore recording = new RecordingStore(store);
         FakeNode watched = new FakeNode(recording, template(), clock, "eph");
         watched.start();
-        assign(Map.of(0, ShardState.PRIMARY), 1);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
         watched.tick();
         watched.tick();
 
@@ -346,8 +352,13 @@ class FakeNodeTests {
             "the node must never write its own assignment");
     }
 
-    private ShardState stateOf(int shard) {
-        return storedInventory().tenants().get(ACME).indices().get(INDEX_UUID).shards().get(shard).state();
+    private ShardInventory.ShardCopy copyOf(int shard) {
+        return storedInventory().tenants().get(ACME).indices().get(INDEX_UUID).shards().get(shard);
+    }
+
+    private void assertCopy(int shard, ShardRole role, ShardState state) {
+        assertEquals(role, copyOf(shard).role(), "role of shard " + shard);
+        assertEquals(state, copyOf(shard).state(), "state of shard " + shard);
     }
 
     /** Records the order of writes, which is the only way to assert the contract's ordering requirement. */

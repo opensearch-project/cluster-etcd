@@ -215,8 +215,8 @@ class NodeJsonTests {
         return new ShardInventory(NODE, "OYidGJ1ITdC2mMrZEW0BNQ", 1788969977660L, Map.of(
             ACME, new ShardInventory.TenantShards(Map.of(
                 "uzKxLWZu4nPSrTknEcDpoA", new ShardInventory.IndexShards("my-index", 3041, Map.of(
-                    0, ShardInventory.ShardCopy.of(ShardState.PRIMARY, 4823012L),
-                    1, ShardInventory.ShardCopy.of(ShardState.INITIALIZING)
+                    0, ShardInventory.ShardCopy.of(ShardRole.PRIMARY, ShardState.STARTED, 4823012L),
+                    1, ShardInventory.ShardCopy.of(ShardRole.REPLICA, ShardState.INITIALIZING)
                 ))
             ))
         ));
@@ -232,11 +232,13 @@ class NodeJsonTests {
         JsonNode index = json.get("tenants").get("acme").get("indices").get("uzKxLWZu4nPSrTknEcDpoA");
         assertEquals("my-index", index.get("name").asText());
         assertEquals(3041, index.get("config_revision").asLong());
-        assertEquals("PRIMARY", index.get("shards").get("0").get("state").asText());
+        assertEquals("PRIMARY", index.get("shards").get("0").get("role").asText());
+        assertEquals("STARTED", index.get("shards").get("0").get("state").asText());
         assertEquals(4823012L, index.get("shards").get("0").get("size_bytes").asLong());
 
         // A copy still initializing has no size yet, and the field is omitted rather than zero: zero is a
         // real size and would tell a disk-aware decider the copy costs nothing.
+        assertEquals("REPLICA", index.get("shards").get("1").get("role").asText());
         assertEquals("INITIALIZING", index.get("shards").get("1").get("state").asText());
         assertFalse(index.get("shards").get("1").has("size_bytes"));
     }
@@ -263,8 +265,8 @@ class NodeJsonTests {
         return new Assignment(42, PoolId.of("shared-a"), 7, NODE, 1788969977500L, Map.of(
             ACME, new Assignment.TenantAssignment(NodeRole.DATA, Map.of(
                 "uzKxLWZu4nPSrTknEcDpoA", new Assignment.IndexAssignment("my-index", 3041, Map.of(
-                    0, ShardState.PRIMARY,
-                    1, ShardState.REPLICA
+                    0, ShardRole.PRIMARY,
+                    1, ShardRole.REPLICA
                 ))
             )),
             TenantId.of("globex"), Assignment.TenantAssignment.coordinator()
@@ -299,17 +301,35 @@ class NodeJsonTests {
     }
 
     @Test
-    void onlyServingStatesCanBeAssigned() {
-        // INITIALIZING and FAILED are things a node reports, not things it can be told to be. Allowing them
-        // would let a supervisor ask for a state the node can never converge to, and the diff would then
-        // never empty.
-        for (ShardState state : new ShardState[] { ShardState.INITIALIZING, ShardState.FAILED, ShardState.UNKNOWN }) {
-            assertThrows(
-                IllegalArgumentException.class,
-                () -> new Assignment.IndexAssignment("my-index", 1, Map.of(0, state)),
-                state + " should not be assignable"
-            );
+    void anAssignmentNamesARoleAndNeverAState() {
+        // The two are separate dimensions. An assignment says what a copy should *be*; INITIALIZING,
+        // STARTED and FAILED are things a node reports about how it is getting on, and asking for one
+        // would be asking for something the node cannot converge to.
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> new Assignment.IndexAssignment("my-index", 1, Map.of(0, ShardRole.UNKNOWN))
+        );
+
+        // All three real roles are assignable, including the search replica the first version omitted.
+        for (ShardRole role : new ShardRole[] { ShardRole.PRIMARY, ShardRole.REPLICA, ShardRole.SEARCH_REPLICA }) {
+            assertEquals(role, new Assignment.IndexAssignment("i", 1, Map.of(0, role)).shards().get(0));
         }
+    }
+
+    @Test
+    void aPrimaryThatIsStillInitializingCanBeExpressed() {
+        // The case the first version of this contract could not represent, and the reason role and state
+        // were split. active_primary_shards counts copies that are both PRIMARY and STARTED, so an index
+        // whose primary exists but is initializing is red -- indistinguishable, before the split, from an
+        // index whose primary is serving.
+        ShardInventory.ShardCopy initializingPrimary =
+            ShardInventory.ShardCopy.of(ShardRole.PRIMARY, ShardState.INITIALIZING);
+        ShardInventory.ShardCopy servingPrimary =
+            ShardInventory.ShardCopy.of(ShardRole.PRIMARY, ShardState.STARTED, 1L);
+
+        assertFalse(initializingPrimary.isActivePrimary());
+        assertTrue(servingPrimary.isActivePrimary());
+        assertEquals(ShardRole.PRIMARY, initializingPrimary.role());
     }
 
     @Test
@@ -357,8 +377,8 @@ class NodeJsonTests {
         ShardInventory after = new ShardInventory(NODE, "OYidGJ1ITdC2mMrZEW0BNQ", 1788969977660L, Map.of(
             ACME, new ShardInventory.TenantShards(Map.of(
                 "uzKxLWZu4nPSrTknEcDpoA", new ShardInventory.IndexShards("my-index", 3041, Map.of(
-                    0, ShardInventory.ShardCopy.of(ShardState.PRIMARY, 4823012L),
-                    1, ShardInventory.ShardCopy.of(ShardState.REPLICA, 51L)
+                    0, ShardInventory.ShardCopy.of(ShardRole.PRIMARY, ShardState.STARTED, 4823012L),
+                    1, ShardInventory.ShardCopy.of(ShardRole.REPLICA, ShardState.STARTED, 51L)
                 ))
             ))
         ));
@@ -387,7 +407,7 @@ class NodeJsonTests {
         String json = """
             {"node_id":"pv1sDMfZRxSTMiW5VrbN9w","ephemeral_id":"eph","generated_at":1,"tenants":
              {"acme":{"indices":{"uu":{"name":"i","config_revision":1,
-              "shards":{"0":{"state":"SOMETHING_NEW"}}}}}}}
+              "shards":{"0":{"role":"PRIMARY","state":"SOMETHING_NEW"}}}}}}}
             """;
         ShardInventory parsed = NodeJson.readInventory(json.getBytes(StandardCharsets.UTF_8));
 
@@ -416,7 +436,7 @@ class NodeJsonTests {
         String json = """
             {"node_id":"pv1sDMfZRxSTMiW5VrbN9w","ephemeral_id":"eph","generated_at":1,"tenants":
              {"acme":{"indices":{"uu":{"name":"i","config_revision":1,
-              "shards":{"0":{"state":"SOMETHING_NEW"}}}}}}}
+              "shards":{"0":{"role":"PRIMARY","state":"SOMETHING_NEW"}}}}}}}
             """;
         ShardInventory parsed = NodeJson.readInventory(json.getBytes(StandardCharsets.UTF_8));
 

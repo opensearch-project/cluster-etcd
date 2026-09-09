@@ -75,15 +75,14 @@ public record Assignment(
      *     index document and finds a different revision, this assignment is stale by one pass and it should
      *     apply what it read — the supervisor will re-issue.
      */
-    public record IndexAssignment(String name, long configRevision, Map<Integer, ShardState> shards) {
+    public record IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards) {
         public IndexAssignment {
             shards = shards == null ? Map.of() : Map.copyOf(shards);
-            shards.forEach((shard, state) -> {
-                if (state != ShardState.PRIMARY && state != ShardState.REPLICA) {
+            shards.forEach((shard, role) -> {
+                if (role == null || role == ShardRole.UNKNOWN) {
                     throw new IllegalArgumentException(
-                        "assignment for index [" + name + "] shard " + shard + " asks for " + state
-                            + "; only PRIMARY and REPLICA can be assigned. INITIALIZING and FAILED are things"
-                            + " a node reports, not things it can be told to be"
+                        "assignment for index [" + name + "] shard " + shard + " asks for role " + role
+                            + "; a role this build cannot name is a role it cannot ask a node to take"
                     );
                 }
             });

@@ -61,26 +61,45 @@ public record ShardInventory(
     }
 
     /**
+     * One shard copy on this node.
+     *
+     * @param role what the copy is; @param state how it is getting on. Two dimensions, not one — a primary
+     *     that is still initializing is a thing that exists, and health cannot be computed without being
+     *     able to say so.
      * @param sizeBytes what a disk-aware decider needs; {@code null} while initializing
      * @param reason why a {@code FAILED} copy failed, bounded like the heartbeat's detail
+     *
+     * <p><b>Deliberately absent: OpenSearch's allocation id.</b> It is a real per-copy identity and it was
+     *     tried here, because it distinguishes a copy from its own predecessor after a rebuild on the same
+     *     node, which nothing else in this document can do. Measured cost: 135 bytes per copy instead of
+     *     72, which is 37% of the inventory's size budget spent on a field the supervisor has no use for —
+     *     it places copies, it does not track in-sync sets. The node needs allocation ids internally and
+     *     has them on local disk; it does not need to publish them for the supervisor's benefit. Add it
+     *     when something actually reads it, and raise the ceiling on copies-per-node at the same time.
      */
-    public record ShardCopy(ShardState state, Long sizeBytes, String reason) {
+    public record ShardCopy(ShardRole role, ShardState state, Long sizeBytes, String reason) {
 
         public static final int MAX_REASON_LENGTH = 512;
 
         public ShardCopy {
+            Objects.requireNonNull(role, "role");
             Objects.requireNonNull(state, "state");
             if (reason != null && reason.length() > MAX_REASON_LENGTH) {
                 reason = reason.substring(0, MAX_REASON_LENGTH);
             }
         }
 
-        public static ShardCopy of(ShardState state) {
-            return new ShardCopy(state, null, null);
+        /** Whether this copy is a started primary, which is what {@code active_primary_shards} counts. */
+        public boolean isActivePrimary() {
+            return role == ShardRole.PRIMARY && state == ShardState.STARTED;
         }
 
-        public static ShardCopy of(ShardState state, long sizeBytes) {
-            return new ShardCopy(state, sizeBytes, null);
+        public static ShardCopy of(ShardRole role, ShardState state) {
+            return new ShardCopy(role, state, null, null);
+        }
+
+        public static ShardCopy of(ShardRole role, ShardState state, long sizeBytes) {
+            return new ShardCopy(role, state, sizeBytes, null);
         }
     }
 }

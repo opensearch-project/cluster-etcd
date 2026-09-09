@@ -10,6 +10,7 @@ import org.opensearch.supervisor.model.node.Heartbeat;
 import org.opensearch.supervisor.model.node.NodeJson;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
+import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
 
 import java.time.Clock;
@@ -89,7 +90,7 @@ public final class FakeNode {
      */
     public void tick() {
         Optional<Assignment> assignment = readAssignment();
-        Map<Desired, ShardState> desired = assignment.map(FakeNode::desiredOf).orElse(null);
+        Map<Desired, ShardRole> desired = assignment.map(FakeNode::desiredOf).orElse(null);
 
         if (desired != null) {
             converge(desired, assignment.get());
@@ -148,12 +149,12 @@ public final class FakeNode {
         }
     }
 
-    private static Map<Desired, ShardState> desiredOf(Assignment assignment) {
-        Map<Desired, ShardState> desired = new TreeMap<>();
+    private static Map<Desired, ShardRole> desiredOf(Assignment assignment) {
+        Map<Desired, ShardRole> desired = new TreeMap<>();
         assignment.tenants().forEach((tenant, tenantAssignment) ->
             tenantAssignment.indices().forEach((uuid, index) ->
-                index.shards().forEach((shard, state) ->
-                    desired.put(new Desired(tenant, uuid, index.name(), index.configRevision(), shard), state)
+                index.shards().forEach((shard, role) ->
+                    desired.put(new Desired(tenant, uuid, index.name(), index.configRevision(), shard), role)
                 )
             )
         );
@@ -168,20 +169,23 @@ public final class FakeNode {
      * than a hand-written fixture. Copies the assignment does not name are removed: the assignment is the
      * complete desired set, never a delta.
      */
-    private void converge(Map<Desired, ShardState> desired, Assignment assignment) {
+    private void converge(Map<Desired, ShardRole> desired, Assignment assignment) {
         Map<Desired, ShardInventory.ShardCopy> held = flatten(inventory);
         Map<Desired, ShardInventory.ShardCopy> next = new TreeMap<>();
 
-        for (Map.Entry<Desired, ShardState> entry : desired.entrySet()) {
+        for (Map.Entry<Desired, ShardRole> entry : desired.entrySet()) {
             Desired want = entry.getKey();
             ShardInventory.ShardCopy have = held.get(want);
 
             if (have == null) {
-                next.put(want, ShardInventory.ShardCopy.of(ShardState.INITIALIZING));
-            } else if (have.state() != entry.getValue()) {
-                // Covers both the INITIALIZING copy becoming serving and a promotion between PRIMARY and
-                // REPLICA. A real node would have considerably more to do for either.
-                next.put(want, ShardInventory.ShardCopy.of(entry.getValue(), simulatedSize(want)));
+                // A brand-new copy exists on disk before it can serve, and it already knows what it is
+                // going to be. The role is set immediately; only the state has to catch up.
+                next.put(want, ShardInventory.ShardCopy.of(entry.getValue(), ShardState.INITIALIZING));
+            } else if (have.role() != entry.getValue() || have.state() != ShardState.STARTED) {
+                // Covers the INITIALIZING copy becoming STARTED and a promotion between roles. A real node
+                // would have considerably more to do for either, and a docrep promotion in particular is
+                // not instantaneous.
+                next.put(want, ShardInventory.ShardCopy.of(entry.getValue(), ShardState.STARTED, simulatedSize(want)));
             } else {
                 next.put(want, have);
             }
@@ -202,11 +206,11 @@ public final class FakeNode {
         }
     }
 
-    /** Whether the inventory now says exactly what the assignment asked for. */
-    private static boolean matches(Map<Desired, ShardInventory.ShardCopy> next, Map<Desired, ShardState> desired) {
-        for (Map.Entry<Desired, ShardState> entry : desired.entrySet()) {
+    /** Whether the inventory now says exactly what the assignment asked for: right role, and serving. */
+    private static boolean matches(Map<Desired, ShardInventory.ShardCopy> next, Map<Desired, ShardRole> desired) {
+        for (Map.Entry<Desired, ShardRole> entry : desired.entrySet()) {
             ShardInventory.ShardCopy copy = next.get(entry.getKey());
-            if (copy == null || copy.state() != entry.getValue()) {
+            if (copy == null || copy.role() != entry.getValue() || copy.state() != ShardState.STARTED) {
                 return false;
             }
         }

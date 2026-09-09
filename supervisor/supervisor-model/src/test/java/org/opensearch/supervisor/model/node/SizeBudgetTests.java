@@ -33,7 +33,8 @@ class SizeBudgetTests {
                 Map<Integer, ShardInventory.ShardCopy> shards = new LinkedHashMap<>();
                 for (int s = 0; s < shardsPerIndex; s++) {
                     shards.put(s, ShardInventory.ShardCopy.of(
-                        s % 2 == 0 ? ShardState.PRIMARY : ShardState.REPLICA,
+                        s % 2 == 0 ? ShardRole.PRIMARY : ShardRole.REPLICA,
+                        ShardState.STARTED,
                         4_823_012L + s
                     ));
                 }
@@ -128,9 +129,9 @@ class SizeBudgetTests {
         for (int t = 0; t < 10; t++) {
             Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>();
             for (int i = 0; i < 50; i++) {
-                Map<Integer, ShardState> shards = new LinkedHashMap<>();
+                Map<Integer, ShardRole> shards = new LinkedHashMap<>();
                 for (int s = 0; s < 10; s++) {
-                    shards.put(s, s % 2 == 0 ? ShardState.PRIMARY : ShardState.REPLICA);
+                    shards.put(s, s % 2 == 0 ? ShardRole.PRIMARY : ShardRole.REPLICA);
                 }
                 indices.put("uzKxLWZu4nPSrTknEcD" + String.format("%03d", i),
                     new Assignment.IndexAssignment("logs-application-" + i, 3041 + i, shards));

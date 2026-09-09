@@ -59,6 +59,7 @@ public final class NodeJson {
         });
 
         registerWireEnum(module, NodeRole.class, NodeRole::from);
+        registerWireEnum(module, ShardRole.class, ShardRole::from);
         registerWireEnum(module, ShardState.class, ShardState::from);
         registerWireEnum(module, AppliedOutcome.class, AppliedOutcome::from);
 
