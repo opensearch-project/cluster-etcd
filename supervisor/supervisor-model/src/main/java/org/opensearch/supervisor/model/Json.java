@@ -19,6 +19,7 @@ import org.opensearch.supervisor.model.node.AppliedOutcome;
 import org.opensearch.supervisor.model.node.NodeRole;
 import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
+import org.opensearch.supervisor.model.pool.PoolKind;
 import org.opensearch.supervisor.model.status.HealthStatus;
 import org.opensearch.supervisor.model.status.Liveness;
 import org.opensearch.supervisor.model.status.Replication;
@@ -65,6 +66,7 @@ public final class Json {
         registerWireEnum(module, Replication.class, Replication::from);
         registerWireEnum(module, HealthStatus.class, HealthStatus::from);
         registerWireEnum(module, Liveness.class, Liveness::from);
+        registerWireEnum(module, PoolKind.class, PoolKind::from);
 
         return JsonMapper.builder()
             .addModule(module)
