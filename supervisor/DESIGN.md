@@ -336,6 +336,7 @@ independently disableable, which matters when one of them turns out to oscillate
 | `TASK_STUCK` | a task claimed past its lease, or at max attempts | warning |
 | `PROJECTION_STALE` | a `status/` document older than N passes | warning |
 | `UNPLACEABLE` | desired copies no live node in the pool can satisfy | critical |
+| `PRIMARY_BEFORE_REPLICA` | a docrep replica was placed for a shard with no primary yet | warning |
 
 Two of these are the ones to get right.
 
@@ -343,6 +344,13 @@ Two of these are the ones to get right.
 Alarming the first time is how a correct system earns a reputation for crying wolf. So it is raised at
 `info` and escalates on **age** — `passes ≥ 10`. That rule generalises: for every finding, the alarm is that
 it is *old*, never that it exists.
+
+**Document replication constrains the order of the plan, not just its contents.** A docrep replica resolves
+its primary from `tenant/<t>/status/indices/<uuid>` and cannot make progress until one is serving, so a plan
+that places replicas before primaries converges only by accident — and in the worst case not at all, if the
+work ceiling keeps cutting the pass before the primary is reached. The planner must place a shard's primary
+first and only then its replicas. Segment replication has no such constraint, which is why the rule is
+per-index rather than global: it follows `index.replication.type`.
 
 **`ORPHANED_COPY` is where data gets destroyed.** A deleted index and an index document that has not landed
 yet are indistinguishable from the store. Never act until the finding has held for K consecutive passes

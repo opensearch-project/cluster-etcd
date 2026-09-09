@@ -72,9 +72,10 @@ independently shippable.
 ### `tenant/<t>/status/indices/<index-uuid>` — the load-bearing one
 
 One document per index, carrying health **and** routing, because they are computed from the same
-observation and consumed together. It serves three readers at once: `cluster.health` per index,
-`cluster.state`, and coordinator routing (`NODE_CONTRACT.md` sends coordinators here rather than duplicating
-a routing table into every assignment).
+observation and consumed together. It serves **four** readers at once: `cluster.health` per index,
+`cluster.state`, coordinator routing, and — under document replication — a data node resolving the peers it
+must replicate to or from. `NODE_CONTRACT.md` sends all of them here rather than duplicating a routing table
+into every assignment, which would store it once per reader and rewrite every copy whenever one shard moved.
 
 ```json
 {
@@ -88,10 +89,11 @@ a routing table into every assignment).
   "active_primary_shards": 2,
   "unassigned_shards": 1,
   "initializing_shards": 0,
+  "replication": "DOCUMENT",
   "shards": {
-    "0": [ { "node_id": "pv1sDM…", "state": "PRIMARY" },
-           { "node_id": "72ZSKe…", "state": "REPLICA" } ],
-    "1": [ { "node_id": "zF5QLA…", "state": "PRIMARY" } ]
+    "0": [ { "node_id": "pv1sDM…", "role": "PRIMARY", "state": "STARTED" },
+           { "node_id": "72ZSKe…", "role": "REPLICA", "state": "INITIALIZING" } ],
+    "1": [ { "node_id": "zF5QLA…", "role": "PRIMARY", "state": "STARTED" } ]
   },
   "observed_at": 1788969977933,
   "observed_pass": 10432
@@ -107,6 +109,14 @@ a routing table into every assignment).
   whether the projection has caught up with a settings change.
 - **`observed_at` and `observed_pass`** make staleness visible. A projection that stops updating is the
   failure mode this whole file has to make detectable — see §4.
+- **Every observed copy is listed, including copies that are not yet serving**, with `role` and `state`
+  separately. Not an accident of the encoding: a docrep replica reads this document to find the primary it
+  must replicate from, and a projection filtered to `STARTED` copies would deadlock — the replica could
+  never see the primary it is waiting for, because the primary is not serving until the replica catches up.
+  `role` and `state` are separate for the reason `NODE_CONTRACT.md` gives: a primary that is still
+  initializing is a thing that exists, and `active_primary_shards` cannot be computed without saying so.
+- **`replication`** is `DOCUMENT` or `SEGMENT`, copied from the index's `index.replication.type`. It tells a
+  reader whether peer resolution applies at all before it goes looking.
 - **Size** is bounded by shard count × copies, at roughly 60 bytes each. An index of 1000 shards with two
   copies is ~120 KiB, under the 512 KiB budget. An index that would exceed it is a finding, not a truncated
   write.

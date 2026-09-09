@@ -88,7 +88,10 @@ public final class Keys {
         return statusPrefix(tenant) + "indices/";
     }
 
-    /** Per-index health and shard routing. Read by the control plane <em>and</em> by coordinators. */
+    /**
+     * Per-index health and shard placement. Four readers: the control plane for {@code cluster.health}
+     * and {@code cluster.state}, coordinators for routing, and docrep data nodes for peer resolution.
+     */
     public static String indexStatus(TenantId tenant, String indexUuid) {
         return indexStatusPrefix(tenant) + require(indexUuid, "indexUuid");
     }

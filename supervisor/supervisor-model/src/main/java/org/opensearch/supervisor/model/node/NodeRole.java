@@ -1,5 +1,7 @@
 package org.opensearch.supervisor.model.node;
 
+import org.opensearch.supervisor.model.WireEnum;
+
 import java.util.Locale;
 
 /**

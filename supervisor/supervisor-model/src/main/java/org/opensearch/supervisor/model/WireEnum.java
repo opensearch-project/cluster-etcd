@@ -1,4 +1,4 @@
-package org.opensearch.supervisor.model.node;
+package org.opensearch.supervisor.model;
 
 /**
  * An enum with a defined representation in {@code NODE_CONTRACT.md}, and an {@code UNKNOWN} constant for
@@ -10,7 +10,7 @@ package org.opensearch.supervisor.model.node;
  * which is the one thing it exists to protect. Registering a serializer instead means the guard fires only
  * when something genuinely tries to write the sentinel.
  */
-interface WireEnum {
+public interface WireEnum {
 
     /**
      * @throws IllegalStateException if this is the {@code UNKNOWN} sentinel. Writing it would fabricate a

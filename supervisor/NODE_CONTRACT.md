@@ -291,19 +291,53 @@ The node's full desired state. Written only when it changes.
   practice, is to split per tenant — `nodes/assignment/<node-id>/<tenant>` — which the layout permits
   without moving anything else.
 
-### Routing is not here
+### Routing is not here, and neither is peer wiring
 
-A coordinator needs to know where every shard of its tenants lives. That table is identical for every
-coordinator of a tenant, so putting it in each node's assignment would store it N times and rewrite all N
-copies whenever one shard moved.
+A coordinator needs to know where every shard of its tenants lives. So, under document replication, does a
+data node: a replica must know which node holds its primary, and a primary must know its replicas in order
+to fan writes out to them.
+
+None of that goes in the assignment. The table is identical for every reader, so putting it in each node's
+assignment would store it N times and rewrite all N copies whenever one shard moved — and with peer
+endpoints inlined it would also roughly triple the per-copy cost of a document that is already at 89% of
+its budget.
 
 It lives instead at `tenant/<t>/status/indices/<index-uuid>`, one document per index, written by the
-supervisor and read by coordinators — the same document that carries per-index health, because it is the
-same information. That one projection serves coordinator routing, `cluster.health` and `cluster.state`
-together. See [`SUPERVISOR_KEYS.md`](SUPERVISOR_KEYS.md).
+supervisor. That single projection serves four readers: `cluster.health`, `cluster.state`, coordinator
+routing, and docrep peer resolution. Node addresses come from `tenant/<t>/status/nodes/<node-id>`, which
+exists for `cluster.state` and already carries `address` and `port`. See
+[`SUPERVISOR_KEYS.md`](SUPERVISOR_KEYS.md).
 
-Coordinators therefore read their own `nodes/assignment/<id>` to learn *which* tenants they serve, then
-`scanPrefix("tenant/<t>/status/indices/")` for each.
+So a node reads its own `nodes/assignment/<id>` to learn what it should hold and which tenants it serves,
+and then — only if it needs peers — the two status projections for those tenants.
+
+### Peer resolution, and why it is not what `cluster-etcd` does
+
+`cluster-etcd` puts peer node *names* in the goal state (`primary_node` on a replica, `replica_nodes` on a
+primary) and then resolves each name to an address by **reading that node's heartbeat**. Two reasons not to
+copy it:
+
+- **It makes every data node a reader of every other data node's document.** That couples the data plane to
+  the heartbeat schema, adds a read fan-out on every goal-state change, and gives a document whose single
+  writer is one node a second class of reader that its author never has to think about. Reading a
+  supervisor-owned projection instead keeps one writer and one documented schema.
+- **Names are reused; ids are not.** `KEY_LAYOUT.md` is explicit about this, and peer identity resolved by
+  name will eventually point at a node's successor.
+
+**Whether an index needs peers at all is a property of the index, not of the assignment.** It comes from
+`index.replication.type` in `tenant/<t>/indices/<name>` — `DOCUMENT` or `SEGMENT`, already present in the
+control plane's index document. A segment-replication copy pulls from the remote store and resolves no
+peers, which is why the bare role string is sufficient for it.
+
+**Convergence is level-triggered here too, and this is the part worth getting right.** When the supervisor
+places a primary and a replica in the same pass, the replica will read the projection before the primary is
+serving. It must then stay `INITIALIZING` and try again, not fail. Which means the projection has to list
+copies that are not yet started — a projection filtered to `STARTED` only would deadlock: the replica could
+never see the primary it is waiting for. `tenant/<t>/status/indices/<uuid>` therefore lists every observed
+copy with its role and state, and the replica waits for a primary whose state is `STARTED`.
+
+The corresponding obligation on the supervisor is to place a shard's primary before its replicas, since a
+replica placed first cannot converge until one exists. That is a planning rule, and it is open question 2.
 
 ## Forward compatibility
 
@@ -392,10 +426,20 @@ inlined into its assignment — which is open question 1's "the node reads", imp
 **What it corrected.** Its shard reporting carries `role` and `state` as separate fields, plus a third role,
 `search_replica`. This document had them collapsed into one enum and was wrong; see above.
 
-**What it warns about.** Its heartbeat is a single document written every five seconds carrying the node's
-capacity, the *entire cluster's* shard routing table, and shard-level index statistics. That is exactly the
-document R3.5 is afraid of: unbounded, and rewritten at the rate of its fastest-changing field. It is the
-natural thing to build and it is the reason this contract is split into three.
+**What it warns about.** Its heartbeat is a single document, written every five seconds, carrying the
+node's capacity *and* its whole routing view *and* shard-level index statistics. Note what that routing view
+is and is not: in a clusterless model a node's synthesized cluster state holds only what it was told about,
+so a data node reports its own shards plus, under document replication, the immediate peers of those
+shards — not a global picture. It is still the shape R3.5 warns against, because the document is rewritten
+every five seconds and grows with the number of shards on the node, which is precisely what the split here
+takes off the hot path. But it is bounded by the node's own footprint rather than by the cluster's, and
+saying otherwise would overstate the case.
+
+The sharper edge is on coordinators. A coordinator's local view *is* its tenant's placement set, so its
+heartbeat carries a table that grows with the tenant rather than with the coordinator — and every
+coordinator of that tenant carries its own copy, rewritten on the same five-second timer. That is the same
+duplication this contract avoids by sending coordinators to a single `tenant/<t>/status/indices/<uuid>`
+projection instead of pushing a routing table into each of them.
 
 **Where it does the opposite, deliberately.** Deleting a node's goal state resets that node to an empty
 cluster state — it drops everything. But a goal state that is simply *absent at startup* causes no action
@@ -425,21 +469,10 @@ local disk; a store round-trip makes them lossable in a way they otherwise would
    dependency and makes the assignment document large and hot. Current answer: the node reads.
    **`fake-node` does neither** — it echoes the `config_revision` the assignment gave it, which is enough
    to exercise the seam and is exactly the shortcut a real node cannot take.
-2. **Peer wiring for document replication — the one real gap, and a fork rather than an oversight.**
-   The assignment says a node should hold `REPLICA` of shard 1, but not which node holds the primary. For
-   **segment replication** that is fine: a search replica pulls from the remote store and needs no peer, and
-   `cluster-etcd` accordingly encodes exactly this case as a bare role string, the same shape used here.
-   For **document replication** it is not: a replica must be told its primary's node so it can be
-   replicated to, and a primary must be told its replica nodes so it can fan out. `cluster-etcd` carries
-   both — `primary_node` on a replica, `replica_nodes` on a primary — and then resolves those node names to
-   addresses by reading *other nodes' heartbeats*, which is a cross-node read this contract currently has no
-   node performing.
-
-   So the question is not "how do we name the recovery source" but **does this system support document
-   replication at all, or is it segment-replication-only?** If the latter, this contract is already
-   sufficient and the gap closes by declaring it. If the former, the assignment grows peer fields, nodes
-   start reading each other's heartbeats, and the supervisor has to order primary placement before replica
-   placement — none of which is hard, but all of which is design that has not been done.
+2. **Ordering primary before replica** is now a planning rule the supervisor owes the data plane, and it is
+   not yet written. See *Peer resolution* above for why: a docrep replica cannot make progress until a
+   primary exists to replicate from, so a plan that places replicas first converges only by accident.
+   `DESIGN.md` §6 has the finding; the rule itself belongs in the planner, at milestone 5.
 3. **Whether `FAILED` copies count as present** for allocation. They occupy disk and cannot serve. Leaning:
    present for capacity, absent for health and routing.
 4. **Cross-pool recovery.** If a shard is ever to be copied from a node in one pool to a node in another —

@@ -446,7 +446,7 @@ class NodeJsonTests {
     @Test
     void malformedJsonIsReportedRatherThanReturningAnEmptyDocument() {
         assertThrows(
-            NodeJson.MalformedDocumentException.class,
+            org.opensearch.supervisor.model.Json.MalformedDocumentException.class,
             () -> NodeJson.readInventory("this is not json".getBytes(StandardCharsets.UTF_8))
         );
     }
