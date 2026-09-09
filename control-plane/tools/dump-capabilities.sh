@@ -159,27 +159,31 @@ if contexts:
     print("# get_script_context from this and validates nothing with it, so without this section the")
     print("# operation keeps its 501 rather than claiming a cluster has no scripting contexts.")
     print("#")
-    print("# Sorted by context name, then by method name, so a re-dump of an unchanged cluster is a")
-    print("# no-op diff -- the order this endpoint returns is not guaranteed stable.")
+    print("# Order is preserved exactly as the endpoint returned it, and is NOT sorted here. It only")
+    print("# looks alphabetical: contexts are sorted by name upstream, but within a context")
+    print("# ScriptContextInfo.toXContent emits execute FIRST and then the getters sorted by name. A")
+    print("# getter sorting before the word execute -- anything starting a-d -- would come out in the")
+    print("# wrong place if this file re-sorted, and the response would stop being byte-exact. Both")
+    print("# orders are deterministic for a given cluster, so a re-dump is still a no-op diff.")
     if not entries:
         print("script_contexts: []")
     else:
         print("script_contexts:")
-        for context in sorted(entries, key=lambda c: c.get("name", "")):
+        for context in entries:
             print("  - name: " + scalar(context.get("name")))
             methods = context.get("methods") or []
             if not methods:
                 print("    methods: []")
                 continue
             print("    methods:")
-            for method in sorted(methods, key=lambda m: m.get("name", "")):
+            for method in methods:
                 print("      - name: " + scalar(method.get("name")))
                 print("        return_type: " + scalar(method.get("return_type")))
                 params = method.get("params") or []
                 if not params:
                     print("        params: []")
                     continue
-                # Parameter order is the signature, so this one is NOT sorted.
+                # Parameter order is the signature.
                 print("        params:")
                 for param in params:
                     print("          - name: " + scalar(param.get("name")))
@@ -192,6 +196,12 @@ if grok:
     print("# large. Which patterns exist is a property of the ingest-common module, so it is a data")
     print("# plane fact like any other rather than something to hardcode here.")
     print("#")
+    print("# Order is the pattern-file load order and is NOT sorted here, because the endpoint has two")
+    print("# modes: the default answers Grok.BUILTIN_PATTERNS, a LinkedHashMap in load order, and ?s=true")
+    print("# answers a TreeMap of the same thing. Keeping load order lets the control plane reproduce")
+    print("# both -- it can sort on demand but could not unsort. Load order is deterministic for a")
+    print("# given version, so a re-dump is still a no-op diff.")
+    print("#")
     print("# Values are YAML double-quoted scalars because grok patterns are regexes: backslashes,")
     print("# quotes and colons all appear, and several patterns start with a character that would")
     print("# change meaning unquoted.")
@@ -199,6 +209,6 @@ if grok:
         print("grok_patterns: {}")
     else:
         print("grok_patterns:")
-        for name in sorted(patterns):
-            print(f"  {scalar(name)}: {scalar(patterns[name])}")
+        for name, pattern in patterns.items():
+            print(f"  {scalar(name)}: {scalar(pattern)}")
 '
