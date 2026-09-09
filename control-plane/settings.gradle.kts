@@ -1,10 +1,16 @@
 rootProject.name = "opensearch-control-plane"
 
 include("codegen")
-include("store-api")
-include("store-zookeeper")
-include("store-etcd")
 include("server")
+
+// The persistence seam lives in its own build, because the supervisor (management plane) shares it and two
+// implementations of the same revision semantics against the same keys is how two planes would silently
+// disagree about state. Included as a composite build rather than consumed as a published artifact, so
+// that editing both services together needs no publish step.
+//
+// This does mean the build depends on a path outside this repository; CI has to check out both. A
+// submodule or a real published artifact removes that later without changing the module layout.
+includeBuild("../opensearch-kv-store")
 
 dependencyResolutionManagement {
     repositories {

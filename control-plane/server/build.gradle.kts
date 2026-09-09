@@ -52,9 +52,13 @@ sourceSets["main"].java.srcDir(generateRoutes.map { generatedSourcesDir.get() })
 dependencies {
     codegenClasspath(project(":codegen"))
 
-    // The persistence SPI. Backends are NOT dependencies: they are jars an operator adds to the
-    // runtime classpath, found through ServiceLoader. Naming one here would defeat the point.
-    implementation(project(":store-api"))
+    // The persistence SPI, from the shared ../opensearch-kv-store build. A coordinate rather than a
+    // project(...) reference because it is a separate build; Gradle substitutes the local project via the
+    // includeBuild in settings.gradle.kts, so there is no publish step.
+    //
+    // Backends are NOT dependencies: they are jars an operator adds to the runtime classpath, found
+    // through ServiceLoader. Naming one here would defeat the point.
+    implementation("org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT")
 
     implementation("io.netty:netty-codec-http:$nettyVersion")
     implementation("io.netty:netty-handler:$nettyVersion")
@@ -69,7 +73,7 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     // InMemoryKeyValueStore, which most handler tests run against.
-    testImplementation(testFixtures(project(":store-api")))
+    testImplementation(testFixtures("org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT"))
 }
 
 application {

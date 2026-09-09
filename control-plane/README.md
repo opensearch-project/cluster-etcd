@@ -186,29 +186,38 @@ payloads. Keys are namespaced by resource, e.g. `ingest/pipeline/<id>`.
 
 ### Backends are pluggable jars
 
-The interface, the two JDK-only implementations, and the shared contract test suite live in their own
-module, **`:store-api`**, which has no dependencies at all. A backend is a separate jar depending on
-`:store-api` and its own client library, and `server` names none of them:
+The interface, the two JDK-only implementations, and the shared contract test suite live in **a separate
+build**, [`../opensearch-kv-store`](../opensearch-kv-store), which has no dependencies at all. It is its own
+repository because the supervisor (management plane) shares it: two implementations of the same revision
+semantics against the same keys is how two planes would silently disagree about state.
 
 ```
-:store-api          KeyValueStore, the provider SPI, FileSystemKeyValueStore,
-                    InMemoryKeyValueStore + KeyValueStoreContractTests (test fixtures)
-:server             depends on :store-api only
-<backend jars>      dropped on the runtime classpath, found via ServiceLoader
+../opensearch-kv-store
+  store-api          KeyValueStore, the provider SPI, FileSystemKeyValueStore,
+                     InMemoryKeyValueStore + KeyValueStoreContractTests (test fixtures)
+  store-zookeeper    \ separate jars, each bringing its own client library
+  store-etcd         /
+this repo
+  :server            depends on store-api only; names no backend
 ```
+
+It is consumed as a Gradle **composite build** — `includeBuild("../opensearch-kv-store")` in
+`settings.gradle.kts` — so editing both services together needs no publish step. The cost is that this
+build depends on a path outside the repository, which CI has to satisfy by checking out both; a submodule
+or a published artifact removes that later without changing the layout.
 
 An operator selects one by URI scheme:
 
 | scheme | module | status |
 |---|---|---|
-| `file:///path` | `:store-api` | bundled. Real CAS *within one process* only — one process per directory |
-| `zk://host:2181/root` | `:store-zookeeper` | verified against ZooKeeper 3.9 |
-| `etcd://host:2379/prefix` | `:store-etcd` | verified against etcd 3.7 |
+| `file:///path` | `store-api` | bundled. Real CAS *within one process* only — one process per directory |
+| `zk://host:2181/root` | `store-zookeeper` | verified against ZooKeeper 3.9 |
+| `etcd://host:2379/prefix` | `store-etcd` | verified against etcd 3.7 |
 
 ```bash
 --store file:///var/lib/control-plane        # bundled
---store zk://a:2181,b:2181/controlplane      # needs :store-zookeeper on the classpath
---store etcd://a:2379,b:2379/controlplane    # needs :store-etcd on the classpath
+--store zk://a:2181,b:2181/controlplane      # needs store-zookeeper on the classpath
+--store etcd://a:2379,b:2379/controlplane    # needs store-etcd on the classpath
 ```
 
 Backend jars are not dependencies of `:server`; they go on the runtime classpath and are found by
@@ -232,7 +241,7 @@ is a configuration fact rather than whichever jar was found first.
 
 Implement `KeyValueStore` and `KeyValueStoreProvider`, declare the provider in
 `META-INF/services/org.opensearch.controlplane.store.KeyValueStoreProvider`, and extend
-`KeyValueStoreContractTests` — `testImplementation(testFixtures(project(":store-api")))`. Two of its
+`KeyValueStoreContractTests`. See that repository's README; the suite is published as test fixtures. Two of its
 assertions constrain the design more than they look:
 
 - **`emptyValuesRoundTrip`** — an empty value must be distinguishable from an absent key, because marker
