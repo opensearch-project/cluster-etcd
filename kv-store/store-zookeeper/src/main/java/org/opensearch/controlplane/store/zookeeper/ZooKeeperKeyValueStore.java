@@ -5,10 +5,13 @@
 package org.opensearch.controlplane.store.zookeeper;
 
 import org.apache.curator.framework.CuratorFramework;
+import org.apache.zookeeper.AddWatchMode;
 import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.data.Stat;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.RevisionConflictException;
+import org.opensearch.controlplane.store.Watch;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -370,6 +373,61 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
         }
         return new IllegalStateException(
             "ZooKeeper " + operation + " of [" + key + "] failed: " + cause, cause);
+    }
+
+    /**
+     * A persistent recursive watch, which is exactly the shape {@link Watch} describes.
+     *
+     * <p>ZooKeeper 3.6 added {@code addWatch} with {@link AddWatchMode#PERSISTENT_RECURSIVE}: one
+     * registration covers a znode and every descendant, and it does not need re-arming after firing. Before
+     * that, watching a subtree meant a watch per node plus re-registration on every event, which is the
+     * reason ZooKeeper watches have a reputation for being unusable — that reputation is out of date.
+     *
+     * <p>Two details make this fit the contract rather than fight it:
+     *
+     * <ul>
+     *   <li><b>Prefixes need not be segment-aligned</b>, but a watch can only be placed on a path. So the
+     *       prefix is rounded <em>down</em> to its last complete segment and the watch is placed there.
+     *       {@code tenant/acme/x} therefore also fires for {@code tenant/acme/xyz} and its siblings —
+     *       which is legal, because {@link Watch} explicitly permits spurious notifications. Over-notifying
+     *       is a performance question; under-notifying would be a correctness one.</li>
+     *   <li><b>The path may not exist yet.</b> {@code addWatch} needs it to, and creating one purely to
+     *       watch it would leave junk behind that ZooKeeper may then reap. So this returns empty instead and
+     *       lets {@code Watches.watchOrPoll} poll — correct, side-effect free, and self-healing, since a
+     *       watch registered after the first write under that prefix gets the native path.</li>
+     * </ul>
+     */
+    @Override
+    public Optional<Watch> watch(String keyPrefix, Runnable onChange) {
+        int lastSlash = keyPrefix.lastIndexOf('/');
+        String alignedPrefix = lastSlash < 0 ? "" : keyPrefix.substring(0, lastSlash);
+        String path = alignedPrefix.isEmpty() ? root : ZooKeeperKeys.pathOf(root, alignedPrefix);
+
+        // Any event under the path is the same signal: re-read. The event carries a type and a path and
+        // both are deliberately ignored -- see Watch on why the payload is withheld.
+        Watcher watcher = event -> onChange.run();
+        try {
+            client.watchers().add()
+                .withMode(AddWatchMode.PERSISTENT_RECURSIVE)
+                .usingWatcher(watcher)
+                .forPath(path);
+        } catch (KeeperException.NoNodeException notYet) {
+            return Optional.empty();
+        } catch (Exception e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            return Optional.empty();
+        }
+
+        return Optional.of(() -> {
+            try {
+                client.watchers().remove(watcher).ofType(Watcher.WatcherType.Any).forPath(path);
+            } catch (Exception ignored) {
+                // Closing a watch is best effort: the session may already be gone, in which case
+                // ZooKeeper has forgotten the watch anyway. Nothing a caller could do about it.
+            }
+        });
     }
 
     @Override

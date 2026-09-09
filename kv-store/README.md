@@ -34,6 +34,25 @@ testImplementation(testFixtures("org.opensearch.controlplane:store-api:0.1.0-SNA
 The cost is that a consumer's build depends on a path outside itself, which CI satisfies by checking out
 both. A submodule or a published artifact removes that later without undoing this layout.
 
+## Watches
+
+`KeyValueStore.watch(prefix, onChange)` is optional per backend. Consumers should not branch on that — call
+`Watches.watchOrPoll(...)`, which uses a native watch where one exists and polls where it does not, so the
+same consumer code works against every backend including the filesystem one.
+
+**A notification carries no payload and no guarantees.** It means "something under your prefix may have
+changed; re-read it", and may be coalesced, spurious, or missed. This is the deliberate lowest common
+denominator: etcd could support far more, ZooKeeper less, and polling least of all, so promising the union
+would mean lying about two of the three. It also makes the safe consumer design the only one available —
+an API handing over changed keys invites applying just those, which breaks silently at the first missed
+notification.
+
+| backend | how |
+|---|---|
+| `store-zookeeper` | native, `AddWatchMode.PERSISTENT_RECURSIVE`; declines when the prefix path does not exist yet, so the caller polls |
+| `store-etcd` | polling for now; a native range watch is a straightforward follow-up |
+| `store-api` filesystem | polling |
+
 ## Writing a backend
 
 Implement `KeyValueStore` and `KeyValueStoreProvider`, declare the provider in

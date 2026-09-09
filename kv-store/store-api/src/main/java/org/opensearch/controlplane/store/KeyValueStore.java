@@ -92,6 +92,23 @@ public interface KeyValueStore extends AutoCloseable {
     boolean delete(String key, long expectedRevision);
 
     /**
+     * Asks to be notified when anything under {@code keyPrefix} changes.
+     *
+     * <p>Optional. A backend that cannot watch returns {@link Optional#empty()} rather than throwing, and
+     * <b>callers should not branch on that</b> — use {@link Watches#watchOrPoll} instead, which falls back
+     * to polling so that a consumer works on every backend including the filesystem one.
+     *
+     * <p>Read {@link Watch} before using this. A notification is a hint that something may have changed and
+     * carries no payload; it may be coalesced, spurious, or missed. Correctness must come from re-reading.
+     *
+     * @param onChange invoked on a backend-owned thread; must not block or call back into the store
+     * @return the registered watch, or empty if this backend does not support watching
+     */
+    default Optional<Watch> watch(String keyPrefix, Runnable onChange) {
+        return Optional.empty();
+    }
+
+    /**
      * Releases whatever the implementation holds.
      *
      * <p>Defaulted to nothing so the JDK-only implementations need not care, and declared at all because

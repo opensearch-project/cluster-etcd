@@ -191,6 +191,71 @@ class ZooKeeperKeyValueStoreTests extends KeyValueStoreContractTests {
         assertTrue(e.getMessage().contains("needs a root znode path"), e.getMessage());
     }
 
+    // ------------------------------------------------------------------
+    // watches
+    // ------------------------------------------------------------------
+
+    /** A persistent recursive watch fires for a write anywhere beneath the prefix. */
+    @Test
+    void aNativeWatchFiresForAWriteUnderThePrefix() throws Exception {
+        KeyValueStore store = newStore();
+        // The watched path must exist for addWatch to take, which a first write guarantees.
+        store.put("indices/seed", bytes("0"));
+
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+        java.util.Optional<org.opensearch.controlplane.store.Watch> watch =
+            store.watch("indices/", notified::countDown);
+
+        assertTrue(watch.isPresent(), "ZooKeeper 3.6+ supports persistent recursive watches");
+        try (var ignored = watch.get()) {
+            store.put("indices/later", bytes("1"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS), "the watch must fire");
+        }
+    }
+
+    /** Recursive means recursive: a write several segments deep still notifies. */
+    @Test
+    void aNativeWatchFiresForADeeplyNestedWrite() throws Exception {
+        KeyValueStore store = newStore();
+        store.put("tenant/seed", bytes("0"));
+
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+        java.util.Optional<org.opensearch.controlplane.store.Watch> watch =
+            store.watch("tenant/", notified::countDown);
+
+        assertTrue(watch.isPresent());
+        try (var ignored = watch.get()) {
+            store.put("tenant/acme/indices/deep", bytes("1"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS));
+        }
+    }
+
+    /**
+     * A prefix whose path does not exist yet cannot carry a watch, so the store declines rather than
+     * creating a znode as a side effect. {@code Watches.watchOrPoll} polls in that case.
+     */
+    @Test
+    void aNativeWatchIsDeclinedWhenThePrefixPathIsAbsent() {
+        KeyValueStore store = newStore();
+
+        assertEquals(java.util.Optional.empty(), store.watch("never/written/", () -> {}),
+            "declining is correct: creating a znode merely to watch it would leave junk behind");
+    }
+
+    /** And watchOrPoll hides the difference, which is the whole point of the fallback. */
+    @Test
+    void watchOrPollWorksWhicheverPathItTakes() throws Exception {
+        KeyValueStore store = newStore();
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+
+        try (var ignored = org.opensearch.controlplane.store.Watches.watchOrPoll(
+            store, "absent/", java.time.Duration.ofMillis(50), notified::countDown)) {
+            store.put("absent/a", bytes("1"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS),
+                "a consumer must be notified whether the backend watched natively or was polled");
+        }
+    }
+
     @Test
     void theSchemeIsDiscoveredFromTheClasspath() throws Exception {
         assertTrue(KeyValueStores.discover().containsKey("zk"),
