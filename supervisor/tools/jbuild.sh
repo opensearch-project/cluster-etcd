@@ -6,8 +6,8 @@
 # socket is denied. Every dependency this build needs is already in ~/.gradle/caches or ~/.m2, so javac and
 # a hand-rolled JUnit launcher get the same work done. See WORKING_NOTES.md.
 #
-# THIS IS NOT THE BUILD. ./gradlew build is, and it is unverified until a human runs it. Anything this
-# script has to special-case is a difference between the two, and the difference is the bug.
+# THIS IS NOT THE BUILD. ./gradlew build is. Anything this script has to special-case is a difference
+# between the two, and the difference is the bug.
 #
 # Usage:
 #   tools/jbuild.sh                 compile everything and run every test
@@ -21,9 +21,26 @@ ROOT="$PWD"
 KV_STORE="${KV_STORE:-$ROOT/../opensearch-kv-store}"
 OUT="$ROOT/build/jbuild"
 
-# Matches the Gradle toolchain. The installed JDK is newer, so --release keeps the two honest: code that
-# compiles here but not under a real 21 toolchain is a difference we want to find now.
+# Matches the Gradle toolchain.
 RELEASE=21
+
+# Prefer a real Java 21 toolchain over --release on a newer javac. --release gets the language level and
+# the API surface right but still runs a newer compiler and a newer JVM, and the point of this script is to
+# behave like the Gradle build rather than approximately like it. Falls back with a warning, because
+# --release 21 on a newer JDK is still much better than nothing.
+JAVA21_HOME="${JAVA21_HOME:-}"
+if [[ -z "$JAVA21_HOME" && -x /usr/libexec/java_home ]]; then
+    JAVA21_HOME=$(/usr/libexec/java_home -v "$RELEASE" 2>/dev/null || true)
+fi
+if [[ -n "$JAVA21_HOME" && -x "$JAVA21_HOME/bin/javac" ]]; then
+    JAVAC="$JAVA21_HOME/bin/javac"
+    JAVA="$JAVA21_HOME/bin/java"
+else
+    JAVAC=javac
+    JAVA=java
+    echo "WARNING: no Java $RELEASE toolchain found; falling back to $(javac -version 2>&1) with --release $RELEASE." >&2
+    echo "         Set JAVA21_HOME to match what ./gradlew uses." >&2
+fi
 
 JACKSON_VERSION=2.22.1
 # jackson-annotations tracks the minor, not the patch: databind 2.22.1 depends on annotations 2.22.
@@ -72,6 +89,7 @@ jar() {
 
 join_cp() { local IFS=:; echo "$*"; }
 
+echo "==> toolchain: $("$JAVAC" -version 2>&1)"
 echo "==> resolving dependencies"
 JACKSON_DATABIND=$(jar com.fasterxml.jackson.core jackson-databind "$JACKSON_VERSION")
 JACKSON_CORE=$(jar com.fasterxml.jackson.core jackson-core "$JACKSON_VERSION")
@@ -102,7 +120,7 @@ compile() {
     mkdir -p "$dest"
     # -Xlint:all matches the Gradle build, minus the two suppressions it also applies.
     # shellcheck disable=SC2086
-    javac --release "$RELEASE" -encoding UTF-8 -Xlint:all -Xlint:-serial -Xlint:-this-escape \
+    "$JAVAC" --release "$RELEASE" -encoding UTF-8 -Xlint:all -Xlint:-serial -Xlint:-this-escape \
         ${cp:+-cp "$cp"} -d "$dest" $sources
     echo "    $name: $(echo "$sources" | wc -l | tr -d ' ') sources -> $dest"
 }
@@ -176,7 +194,7 @@ for candidate in "$OUT"/*/test; do
 done
 
 if [[ ${#TEST_PATTERNS[@]} -gt 0 ]]; then
-    java -cp "$TEST_CP" tools.JUnitRunner "${ROOTS[@]}" -- "${TEST_PATTERNS[@]}"
+    "$JAVA" -cp "$TEST_CP" tools.JUnitRunner "${ROOTS[@]}" -- "${TEST_PATTERNS[@]}"
 else
-    java -cp "$TEST_CP" tools.JUnitRunner "${ROOTS[@]}"
+    "$JAVA" -cp "$TEST_CP" tools.JUnitRunner "${ROOTS[@]}"
 fi

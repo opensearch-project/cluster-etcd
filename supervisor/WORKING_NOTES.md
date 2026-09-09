@@ -25,6 +25,13 @@ hours to discover while building the control plane next door, written down so th
   and it compiles `store-api` from `../opensearch-kv-store/store-api/src` rather than using that build's
   jars, so a change over there cannot go stale here.
 
+- **The Java 21 toolchain is `temurin-21.0.12.1`.** With several JDKs installed and a newer default
+  `java` on the path, both builds have to be
+  explicit about which one they want. Gradle's auto-detection finds an installed 21 without configuration;
+  `jbuild.sh` asks `/usr/libexec/java_home -v 21`, or honours `JAVA21_HOME`. Prefer a real 21 toolchain to
+  `--release 21` on a newer `javac` — `--release` gets the language level and the API surface right but
+  still runs a newer compiler and a newer JVM, which is approximately the build rather than the build.
+
 - **No listening sockets.** `bind()` is `EPERM`, so the service cannot be started locally and no embedded
   test server (ZooKeeper's `TestingServer`, an etcd test container) can run either.
 - **No raw TCP, even to localhost.** `connect()` to `127.0.0.1` on any port is `EPERM`. Outbound traffic is

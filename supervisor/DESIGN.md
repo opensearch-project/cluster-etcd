@@ -449,7 +449,7 @@ false and zero fields, so a failed transaction has no `succeeded` key.
 1. **Skeleton.** ✅ *Done.* Gradle + composite build, module graph, and `tools/jbuild.sh` — the javac/JUnit
    fallback for this sandbox. Carries the identifier types, `Keys` (the three contract documents as
    executable code), and `TenantDiscovery`, which is the thin vertical slice that proves the composite
-   build, the store API and the test fixtures all resolve. The Gradle build itself is **unverified**.
+   build, the store API and the test fixtures all resolve. `./gradlew build` verified green on Java 21.
 2. **The node contract.** Codecs for all four documents, size-budget tests, and `fake-node` writing
    registration, heartbeat and inventory. First real test of `NODE_CONTRACT.md`.
 3. **Observe and diff, read-only, one pool.** Pool definitions, bindings, tenant discovery, the revision

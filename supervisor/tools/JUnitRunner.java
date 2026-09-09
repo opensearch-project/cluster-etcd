@@ -22,8 +22,8 @@ import java.util.Set;
  * file-lock service, since binding a socket is denied. See {@code WORKING_NOTES.md}.
  *
  * <p>This is not a replacement for {@code ./gradlew test} and must not become one. It runs the same tests
- * against the same classpath so that work can proceed here; the Gradle build remains the authority and is
- * unverified until a human runs it.
+ * against the same classpath, on the same JDK 21 toolchain, so that work can proceed here; the Gradle
+ * build remains the authority.
  *
  * <p>Usage: {@code JUnitRunner <classpath-root> [<classpath-root> ...] [-- <class-name-pattern> ...]}
  */

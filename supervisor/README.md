@@ -47,6 +47,10 @@ observe. The module graph is what makes that claim checkable at build time rathe
 ./gradlew build
 ```
 
+Verified green on a Java 21 toolchain — Temurin 21.0.12.1. Gradle's auto-detection usually finds it without
+configuration; if yours cannot, point it at one with
+`-Dorg.gradle.java.installations.paths=...`.
+
 The persistence seam is shared with the control plane and lives in its own build,
 [`../opensearch-kv-store`](../opensearch-kv-store), consumed here as a Gradle **composite build**. So this
 build depends on a path outside itself, and **CI has to check out both repositories.** A submodule or a
@@ -75,9 +79,14 @@ tools/jbuild.sh --no-tests      # compile only
 tools/jbuild.sh KeysTests       # run tests whose class name matches
 ```
 
-**`./gradlew build` is the build; `tools/jbuild.sh` is a way to keep working when it cannot run.** The
-Gradle build is currently **unverified** — it has never been executed. Anything the fallback has to
-special-case is a difference between the two, and the difference is the bug.
+It uses the same Java 21 toolchain Gradle does, found via `/usr/libexec/java_home -v 21` or `JAVA21_HOME`,
+rather than `--release 21` on whatever `javac` is first on the path. `--release` gets the language level
+and the API surface right but still runs a newer compiler and a newer JVM, and the point of the script is
+to behave like the Gradle build rather than approximately like it. It falls back to `--release` with a
+warning if no 21 toolchain is found.
+
+**`./gradlew build` is the build; `tools/jbuild.sh` is a way to keep working when it cannot run.** Anything
+the fallback has to special-case is a difference between the two, and the difference is the bug.
 
 The fallback compiles `store-api` from source rather than using
 `../opensearch-kv-store/store-api/build/libs`, so a change over there is picked up immediately. Set
