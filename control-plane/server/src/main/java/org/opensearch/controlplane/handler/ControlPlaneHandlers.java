@@ -16,6 +16,7 @@ import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.InfoHandler;
 import org.opensearch.controlplane.handler.core.PingHandler;
 import org.opensearch.controlplane.handler.core.GetScriptLanguagesHandler;
+import org.opensearch.controlplane.handler.core.GetScriptContextHandler;
 import org.opensearch.controlplane.handler.core.StoredScriptHandlers;
 import org.opensearch.controlplane.handler.indices.ChangeIndexStateHandler;
 import org.opensearch.controlplane.handler.indices.CreateIndexHandler;
@@ -36,6 +37,7 @@ import org.opensearch.controlplane.handler.indices.DeleteIndexHandler;
 import org.opensearch.controlplane.handler.indices.ExistsIndexHandler;
 import org.opensearch.controlplane.handler.pipeline.DeletePipelineHandler;
 import org.opensearch.controlplane.handler.pipeline.GetPipelineHandler;
+import org.opensearch.controlplane.handler.pipeline.GrokPatternsHandler;
 import org.opensearch.controlplane.handler.pipeline.PipelineKind;
 import org.opensearch.controlplane.handler.pipeline.PutPipelineHandler;
 import org.opensearch.controlplane.handler.snapshot.RepositoryHandlers;
@@ -158,6 +160,12 @@ public final class ControlPlaneHandlers {
         // empty language list would tell a client it may use nothing. See GetScriptLanguagesHandler.
         capabilities.scriptLanguages()
             .ifPresent(languages -> registry.register(new GetScriptLanguagesHandler(languages)));
+
+        // The other two passthroughs, on the same terms: declared or 501, never a confident empty answer.
+        capabilities.scriptContexts()
+            .ifPresent(contexts -> registry.register(new GetScriptContextHandler(contexts)));
+        capabilities.grokPatterns()
+            .ifPresent(patterns -> registry.register(new GrokPatternsHandler(patterns)));
 
         // Snapshot repository configuration -- the only snapshot operations that need no repository access.
         RepositoryHandlers.handlers().forEach(registry::register);

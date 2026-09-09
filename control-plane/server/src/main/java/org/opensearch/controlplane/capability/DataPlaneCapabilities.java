@@ -67,4 +67,20 @@ public interface DataPlaneCapabilities {
      * would tell a client it may use no language at all, which is worse than admitting we cannot say.
      */
     Optional<ScriptLanguages> scriptLanguages();
+
+    /**
+     * The scripting contexts the data plane has, if they were declared.
+     *
+     * <p>Optional for the same reason {@link #scriptLanguages} is: {@code get_script_context} is a pure
+     * passthrough, so with nothing declared there is no honest response and the operation keeps its 501.
+     */
+    Optional<ScriptContexts> scriptContexts();
+
+    /**
+     * The built-in grok pattern library, if it was declared.
+     *
+     * <p>The one declared capability nothing validates against — a grok processor's pattern is checked by
+     * the node that runs it. It exists so {@code ingest.processor_grok} can answer at all.
+     */
+    Optional<GrokPatterns> grokPatterns();
 }

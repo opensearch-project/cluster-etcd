@@ -41,6 +41,18 @@ public final class PermissiveCapabilities implements DataPlaneCapabilities {
         return Optional.empty();
     }
 
+    /** Likewise: with no contexts declared, {@code get_script_context} keeps its 501. */
+    @Override
+    public Optional<ScriptContexts> scriptContexts() {
+        return Optional.empty();
+    }
+
+    /** Likewise: with no patterns declared, {@code ingest.processor_grok} keeps its 501. */
+    @Override
+    public Optional<GrokPatterns> grokPatterns() {
+        return Optional.empty();
+    }
+
     @Override
     public String toString() {
         return "permissive (no capabilities declared; unsupported processors are accepted)";

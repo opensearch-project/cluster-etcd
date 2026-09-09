@@ -11,7 +11,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 
 ```
 123 routes, 76 operation groups, 53 implemented, 23 stubbed
-(54 / 22 when the capabilities file declares script languages)
+(56 / 20 when the capabilities file declares script languages, contexts and grok patterns)
 ```
 
 | namespace | routes | implemented |
@@ -19,18 +19,24 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations; `create_data_stream`, `delete_data_stream` |
 | `cluster` | 21 | component template CRUD, `get_settings`, `put_settings`, `pending_tasks`, weighted routing (`get`/`put`/`delete_weighted_routing`) |
 | `snapshot` | 16 | repository registration: `create_repository`, `get_repository`, `delete_repository` |
-| `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`† |
-| `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline` |
+| `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`†, `get_script_context`† |
+| `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline`, `processor_grok`† |
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
 
-**† `get_script_languages` is registered only when the capabilities file declares script
-languages.** It is a pure passthrough of that data, so with none declared there is no operation to
-perform and it keeps its stub — answering `{"types_allowed":[],"language_contexts":[]}` would tell a
-client it may use no language at all, which is a confident wrong answer where a 501 is an honest one.
-Every other capability-dependent behaviour degrades to *not validating*; this one has nothing to
-degrade to, because the capability data **is** the response.
+**† Three operations are registered only when the capabilities file declares their data**:
+`get_script_languages`, `get_script_context` and `ingest.processor_grok`. Each is a pure passthrough, so
+with nothing declared there is no operation to perform and it keeps its stub — answering
+`{"types_allowed":[],"language_contexts":[]}`, `{"contexts":[]}` or `{"patterns":{}}` would tell a client
+the cluster has no scripting languages, no scripting contexts or no grok patterns at all, which is a
+confident wrong answer where a 501 is an honest one. Every other capability-dependent behaviour degrades
+to *not validating*; these three have nothing to degrade to, because the capability data **is** the
+response. Only the first also validates something (a stored script's `lang`); the other two are
+report-only.
 
-**The remaining 23 operation groups return `501 Not Implemented`** with a structured
+So the implemented count depends on configuration. Generate the file rather than writing it:
+`tools/dump-capabilities.sh http://localhost:9200 > capabilities.yaml`.
+
+**The remaining groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
 clients get an honest answer rather than a 404.
 
@@ -736,6 +742,19 @@ declares none of them. Several near-misses argue for keeping that habit:
 Confirmed against OpenSearch 3.9.0-SNAPSHOT. Bodies marked *byte-exact* were diffed
 character for character against the server's response.
 
+- **`GET /_ingest/processor/grok` has two orderings and the unsorted one is the default.** The parameter
+  is `s`, one letter, and the spec documents it nowhere: the default answers `Grok.BUILTIN_PATTERNS`, a
+  `LinkedHashMap` in pattern-file load order starting at `S3_REQUEST_LINE`, while `?s=true` answers a
+  `TreeMap` starting at `BACULA_CAPACITY`. So the capabilities file stores **load order** — sorting is
+  recoverable from it and it is not recoverable from sorted. A client passing `sort=true` gets the
+  unsorted list, here and on a real cluster.
+- **`GET /_script_context` has three orderings and none of them is a sort.** Contexts are sorted by name
+  upstream, so the outer level looks alphabetical and is not being sorted by us. Within a context,
+  `ScriptContextInfo.toXContent` emits `execute` **first** and then the getters sorted among themselves,
+  so a getter whose name precedes the word "execute" follows it on the wire. Parameters are the signature
+  — `moving-function` takes `(params, values)` and `similarity` takes `(weight, query, field, term, doc)`.
+- **A parameter's fields are `type` then `name`**, the reverse of how the rest of this API reads and of
+  how the capabilities file spells it. `ScriptContextInfo.ParameterInfo.toXContent` emits `type` first.
 - **A data stream cannot exist without a composable template that has a `data_stream` block.** Two
   separate errors, both `illegal_argument_exception`: no matching template at all, and a matching
   template that is not a data stream template. The template supplies the timestamp field name, so its
@@ -1049,7 +1068,12 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- Everything about the 23 operation groups that are still stubbed.
+- Everything about the operation groups that are still stubbed. With a full capabilities file that is
+  **20**, and there is no easy CRUD left among them: seven are snapshot data or administration
+  operations that belong to another plane, four are the deferred resize family, three are decommission
+  awareness, and the rest — `cluster.health`, `cluster.state`, `indices.get_data_stream`,
+  `indices.add_block`, `cluster.remote_info` — each have their reason recorded here or in
+  [`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md).
 - **`indices.get_data_stream` is stubbed for a specific reason, not just because it is next.** Its
   `status` field is a `HealthStatus` over the backing indices and the spec marks it **required**, so
   unlike `pending_tasks`' prose durations it cannot simply be omitted and leave a valid response. Health
