@@ -44,7 +44,14 @@ public final class PeerResolver {
 
     /** Why no peers could be resolved. All of these are ordinary states during convergence. */
     public enum Unresolved {
-        /** Segment replication: copies pull from the remote store and have no peers by design. */
+        /**
+         * Segment replication: copies sync from the remote store and never contact the primary, so there
+         * is no peer to resolve. Confirmed against the data plane rather than assumed.
+         *
+         * <p><b>No peers is not the same as no shared resource.</b> Segrep copies of a shard share a remote
+         * store path, and two primaries writing it concurrently corrupt it — which nothing in this
+         * resolver, or anywhere else in this design, currently prevents. See {@code DESIGN.md} §12.
+         */
         NOT_REQUIRED,
         /** The supervisor has not projected this index yet. */
         NO_PROJECTION,

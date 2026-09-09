@@ -547,17 +547,77 @@ paused node A never sees its demotion at all: it holds an assignment saying `PRI
 contract's own level-triggered rules, is behaving correctly by continuing to serve as one. The supervisor
 cannot revoke something by writing a key the other party is not reading.
 
-This is what OpenSearch's **primary term** exists for: a monotonic number per shard, incremented on every
-promotion, carried on every replication request, and rejected by a replica that has seen a higher one. It
-converts "two nodes believe they are primary" from a divergence into a rejected write. `cluster-etcd`'s
-per-copy `allocationId` plays part of the same role.
+**The hazard follows the ingestion path, not the replication mechanism.** That correction matters enough to
+state plainly, because the obvious framing — "docrep is unsafe, segrep is fine" — is wrong in both
+directions:
 
-Nothing in this design has one. It costs a number per shard in the assignment and the same number in
-`status/indices`, and the enforcement is in the data plane. **It is a prerequisite for document replication
-being safe, not an optimisation**, and it is the one finding from this audit that is not already fixed.
+| ingestion | two primaries means |
+|---|---|
+| **pull-based** (primaries read an ordered external source) | duplicated work, but no divergence *of the data*: both consume the same source at the same offsets and produce equivalent documents. |
+| **push-based** (clients write to the primary) | divergence. Two primaries accept different writes and neither copy is authoritative — regardless of whether documents or segments are replicated afterwards. |
 
-Segment replication is unaffected: copies pull from a remote store rather than accepting replicated writes,
-so two nodes believing they are primary produces a wasted upload rather than divergent data.
+So the fencing requirement is partly a property of how data arrives, and pull-based ingestion removes the
+*divergence* half of it.
+
+**It does not remove the other half, and this is the part that is easy to miss.** Under segment replication
+against a remote store, two primaries for the same shard write segments to **the same remote path**. The
+documents they produce may be identical and it does not help: two writers on one path is corruption, at the
+storage layer, below anything the ingestion source can make consistent. Pull-based ingestion makes
+concurrent primaries *safe to serve from* and does not make them *safe to store from*.
+
+Which means neither replication mode is exempt:
+
+| mode | two primaries costs |
+|---|---|
+| docrep, push | divergent data — no later pass repairs it |
+| segrep, push | divergent data **and** a corrupted remote path |
+| segrep, pull | a corrupted remote path |
+
+**The intended direction is segment replication with pull-based ingestion**, which removes the divergence
+problem by construction — a much stronger position than fencing writers apart — and leaves the storage one.
+Push-based document replication is expected anyway, for adoption, and there the resolution is decided
+rather than open:
+
+- **Demote before promoting** — accept a window with no primary. §12 called that "availability, not
+  correctness, and recoverable", and it is the branch to take: a shard that rejects writes for a moment is
+  a far better failure than two copies that disagree for ever.
+- **Increment a primary term on each promotion**, so a partitioned old primary — which never sees its
+  demotion and is behaving correctly by this design's own rules — has its writes rejected rather than
+  accepted. This is OpenSearch's mechanism, and `cluster-etcd`'s per-copy `allocationId` plays part of the
+  same role.
+
+### What the remote path needs is a generation, not a term
+
+A primary term fences *writers against each other*. The remote store problem wants something slightly
+different and more useful: **a unique identifier for a generation of a primary**, with each generation
+writing to its own path and able to bootstrap from a previous one.
+
+That turns two live primaries from a corruption into an ordinary state, and it buys a capability the term
+alone does not:
+
+- **Split brain becomes survivable.** A primary that stops heartbeating gets replaced; the new one writes a
+  new path rather than the old one, so the partitioned original corrupts nothing when it comes back.
+- **Upgrade with rollback, without downtime.** Bring up a new primary on the new version, restore from the
+  old generation's path, write to a new one, and migrate search replicas across gradually. Keep the old
+  primary alive and rollback is free, because its path was never touched.
+
+That second one is why this is worth more than a safety fix: two concurrent primaries stop being a hazard
+to tolerate and become a deployment mechanism. It also explains the gradual search-replica migration — the
+replicas are being moved between generations, not merely re-pointed.
+
+**Carried as a known gap.** Nothing in this design has either a term or a generation. Part of it is not
+even ours: writing to a per-generation path and bootstrapping from a previous one is a property of
+OpenSearch's remote-store segment replication, so the supervisor side — assigning the generation, naming
+the one to restore from — cannot be built ahead of it. The supervisor's eventual share is small: a
+generation identifier per shard in the assignment and in `status/indices`, and a rule that a new primary is
+given a fresh one.
+
+**A primary handover is not instantaneous under segment replication either.** Search replicas replicate
+with respect to a particular primary, so promoting a new one means moving them across gradually rather than
+switching them in one write. That makes a search replica still following the old primary an expected
+transient during handover rather than a fault, which the diff has to know — otherwise it reports a fleet of
+findings every time a primary moves. It is also a second reason the planner cannot treat promotion as a
+single step.
 
 ### Why the projection is safe to resolve peers from
 
@@ -572,10 +632,12 @@ wants the same fix.
 
 ## 13. Open questions
 
-1. **No primary term.** §12: promoting a primary is two writes with no fencing token, so under document
-   replication two nodes can both believe they are primary and their copies diverge — which no later pass
-   repairs. Needs a monotonic per-shard number in the assignment and the status projection, enforced in the
-   data plane. A prerequisite for docrep being safe rather than an optimisation.
+1. **No fencing identity for a primary — carried as a known gap**, and partly not ours to close. §12:
+   promoting a primary is two writes with no token, so two nodes can hold the role at once. Pull-based
+   ingestion removes the data divergence but not the remote-store path collision, so no replication mode is
+   exempt. The shape of the answer is a per-shard **primary generation** rather than only a term, since
+   per-generation paths also buy upgrade-with-rollback; it depends on OpenSearch's remote-store segrep
+   supporting a new primary writing a new path and bootstrapping from the previous one.
 2. **Cross-pool data migration** — §4. The supported path only covers the case where nodes can move with
    their data. Everything else is a sketch.
 3. **The dedicated-pool ceiling** — a single tenant too large for one supervisor has no answer short of
