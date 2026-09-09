@@ -140,9 +140,70 @@ class TenantIsolationTests {
 
         assertTrue(root.get("tenant/acme/ingest/pipeline/p").isPresent());
         assertEquals(
-            List.of("tenant/acme/ingest/metadata-initialized", "tenant/acme/ingest/pipeline/p"),
+            List.of(
+                "tenant/acme/ingest/metadata-initialized",
+                "tenant/acme/ingest/pipeline/p",
+                // The one key outside a tenant prefix, and this assertion is what keeps it the only one:
+                // adding a second would fail here rather than quietly eroding the layout. It sorts last
+                // because '/' (0x2F) precedes 's', so every tenant/ key comes before tenants/.
+                "tenants/acme"
+            ),
             List.copyOf(root.scanPrefix("").keySet())
         );
+    }
+
+    /**
+     * {@code tenants/} and {@code tenant/} differ by one character and must not overlap, or the registry
+     * would leak into every tenant scan and every tenant scan into the registry.
+     */
+    @Test
+    void theTenantRegistryIsNotInsideAnyTenantPrefix() {
+        as("acme", "PUT", "/_ingest/pipeline/p", "{\"processors\":[]}");
+
+        assertTrue(root.get("tenants/acme").isPresent(), "the tenant was registered");
+        assertEquals(
+            List.of("tenant/acme/ingest/metadata-initialized", "tenant/acme/ingest/pipeline/p"),
+            List.copyOf(root.scanPrefix("tenant/").keySet()),
+            "a scan of the tenant prefix must not pick up the registry"
+        );
+        assertEquals(
+            List.of("tenants/acme"),
+            List.copyOf(root.scanPrefix("tenants/").keySet()),
+            "and the registry scan must not pick up tenant data"
+        );
+    }
+
+    /** Every tenant that writes gets registered; the registry is how the supervisor enumerates them. */
+    @Test
+    void everyWritingTenantIsRegistered() {
+        as("acme", "PUT", "/_ingest/pipeline/p", "{\"processors\":[]}");
+        as("globex", "PUT", "/_ingest/pipeline/p", "{\"processors\":[]}");
+
+        assertEquals(
+            List.of("tenants/acme", "tenants/globex"),
+            List.copyOf(root.scanPrefix("tenants/").keySet())
+        );
+    }
+
+    /**
+     * A read must not register. An unrestricted resolver accepts any well-formed id, so anything driven by
+     * requests rather than writes could be grown without limit by inventing tenant names.
+     */
+    @Test
+    void aTenantThatOnlyReadsIsNotRegistered() {
+        assertEquals(RestStatus.NOT_FOUND, as("curious", "GET", "/_ingest/pipeline/p", null).status());
+
+        assertTrue(root.scanPrefix("tenants/").isEmpty(),
+            "reading is not enough to bring a tenant into existence");
+    }
+
+    /** And a rejected request writes nothing at all, registry included. */
+    @Test
+    void anUnresolvedTenantRegistersNothing() {
+        assertEquals(RestStatus.UNAUTHORIZED,
+            as(null, "PUT", "/_ingest/pipeline/p", "{\"processors\":[]}").status());
+
+        assertTrue(root.scanPrefix("").isEmpty());
     }
 
     // ------------------------------------------------------------------
