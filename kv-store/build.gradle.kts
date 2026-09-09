@@ -1,3 +1,8 @@
+// Imported rather than fully qualified: inside a build script `java` resolves to the java extension,
+// not the java package, so `java.util.concurrent.TimeUnit` fails to compile with
+// "Unresolved reference 'util'".
+import java.util.concurrent.TimeUnit
+
 // The control plane's persistence seam, extracted so that more than one service can share it.
 //
 // This exists as its own build rather than as modules inside the control plane because the supervisor
@@ -89,7 +94,7 @@ fun dockerHostFromContext(): String? =
             "docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"
         ).redirectErrorStream(true).start()
         val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-        val finished = process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)
+        val finished = process.waitFor(10, TimeUnit.SECONDS)
         if (finished && process.exitValue() == 0 && output.isNotBlank() && output.contains("://")) {
             output
         } else {
