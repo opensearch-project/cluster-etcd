@@ -3,6 +3,7 @@ rootProject.name = "opensearch-control-plane"
 include("codegen")
 include("store-api")
 include("store-zookeeper")
+include("store-etcd")
 include("server")
 
 dependencyResolutionManagement {

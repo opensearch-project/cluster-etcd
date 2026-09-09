@@ -199,10 +199,21 @@ module, **`:store-api`**, which has no dependencies at all. A backend is a separ
 
 An operator selects one by URI scheme:
 
+| scheme | module | status |
+|---|---|---|
+| `file:///path` | `:store-api` | bundled. Real CAS *within one process* only — one process per directory |
+| `zk://host:2181/root` | `:store-zookeeper` | verified against ZooKeeper 3.9 |
+| `etcd://host:2379/root` | `:store-etcd` | in progress |
+
 ```bash
 --store file:///var/lib/control-plane      # bundled
---store etcd://a:2379,b:2379/controlplane  # needs the etcd backend jar
+--store zk://a:2181,b:2181/controlplane    # needs :store-zookeeper on the classpath
 ```
+
+Backend jars are not dependencies of `:server`; they go on the runtime classpath and are found by
+`ServiceLoader`. Each brings its own client library, so adding one adds its transitive dependencies —
+Curator for ZooKeeper, gRPC for etcd — which is the reason they are separate modules rather than
+optional code in `:server`.
 
 `--data-path <dir>` still works and is exactly `--store file://<dir>`, resolved through the same seam
 rather than bypassing it. `--help` lists the schemes the running classpath actually provides, and an
