@@ -49,7 +49,7 @@ notification.
 
 | backend | how |
 |---|---|
-| `store-zookeeper` | native, `AddWatchMode.PERSISTENT_RECURSIVE`; declines when the prefix path does not exist yet, so the caller polls |
+| `store-zookeeper` | native, `AddWatchMode.PERSISTENT_RECURSIVE` — one registration covers a subtree, needs no re-arming, and does not require the prefix to exist yet |
 | `store-etcd` | polling for now; a native range watch is a straightforward follow-up |
 | `store-api` filesystem | polling |
 

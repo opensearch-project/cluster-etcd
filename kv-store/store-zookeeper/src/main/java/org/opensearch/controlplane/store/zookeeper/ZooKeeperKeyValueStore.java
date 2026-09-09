@@ -391,10 +391,11 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
      *       {@code tenant/acme/x} therefore also fires for {@code tenant/acme/xyz} and its siblings —
      *       which is legal, because {@link Watch} explicitly permits spurious notifications. Over-notifying
      *       is a performance question; under-notifying would be a correctness one.</li>
-     *   <li><b>The path may not exist yet.</b> {@code addWatch} needs it to, and creating one purely to
-     *       watch it would leave junk behind that ZooKeeper may then reap. So this returns empty instead and
-     *       lets {@code Watches.watchOrPoll} poll — correct, side-effect free, and self-healing, since a
-     *       watch registered after the first write under that prefix gets the native path.</li>
+     *   <li><b>The path need not exist.</b> Unlike a one-shot watch, {@code addWatch} accepts a znode that
+     *       has never been created and fires when it is — so a watch on a prefix nothing has written yet is
+     *       granted, and no znode is created as a side effect to make it possible. This was expected to be
+     *       the other way round and a test asserting a decline is what proved otherwise; it is now asserted
+     *       in the direction ZooKeeper actually behaves.</li>
      * </ul>
      */
     @Override
@@ -411,9 +412,10 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
                 .withMode(AddWatchMode.PERSISTENT_RECURSIVE)
                 .usingWatcher(watcher)
                 .forPath(path);
-        } catch (KeeperException.NoNodeException notYet) {
-            return Optional.empty();
         } catch (Exception e) {
+            // Empty rather than thrown, so watchOrPoll degrades to polling instead of failing a consumer
+            // that would have been happy either way. A watch is an optimisation; not getting one is not an
+            // error the caller can act on.
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }

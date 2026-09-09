@@ -231,15 +231,27 @@ class ZooKeeperKeyValueStoreTests extends KeyValueStoreContractTests {
     }
 
     /**
-     * A prefix whose path does not exist yet cannot carry a watch, so the store declines rather than
-     * creating a znode as a side effect. {@code Watches.watchOrPoll} polls in that case.
+     * A watch on a prefix nothing has written yet is granted, and fires when the first write arrives.
+     *
+     * <p>This originally asserted the opposite — that the store would decline, because a one-shot watch
+     * needs its znode to exist — and failing is how the assumption got corrected. {@code addWatch} accepts
+     * a path that has never been created, so no znode has to be created as a side effect and there is no
+     * window in which a consumer silently gets polling instead.
      */
     @Test
-    void aNativeWatchIsDeclinedWhenThePrefixPathIsAbsent() {
+    void aNativeWatchOnAnUnwrittenPrefixIsGrantedAndFiresOnCreation() throws Exception {
         KeyValueStore store = newStore();
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
 
-        assertEquals(java.util.Optional.empty(), store.watch("never/written/", () -> {}),
-            "declining is correct: creating a znode merely to watch it would leave junk behind");
+        java.util.Optional<org.opensearch.controlplane.store.Watch> watch =
+            store.watch("never/written/", notified::countDown);
+        assertTrue(watch.isPresent(), "addWatch does not require the znode to exist");
+
+        try (var ignored = watch.get()) {
+            store.put("never/written/first", bytes("1"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS),
+                "a watch registered before the prefix existed must fire when it comes into being");
+        }
     }
 
     /** And watchOrPoll hides the difference, which is the whole point of the fallback. */
