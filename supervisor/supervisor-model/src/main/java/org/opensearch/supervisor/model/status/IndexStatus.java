@@ -1,5 +1,6 @@
 package org.opensearch.supervisor.model.status;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import org.opensearch.supervisor.model.Json;
 import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.node.ShardRole;
@@ -38,6 +39,49 @@ public record IndexStatus(
     public IndexStatus {
         Objects.requireNonNull(indexUuid, "indexUuid");
         shards = shards == null ? Map.of() : Map.copyOf(shards);
+    }
+
+    /**
+     * The counts {@code cluster.health} renders, <b>derived rather than stored</b>.
+     *
+     * <p>{@code SUPERVISOR_KEYS.md} shows them on the wire and the control plane reads them directly, but a
+     * stored count is a count that can disagree with the placements it summarises — and a health document that
+     * contradicts itself is worse than one that makes a reader do arithmetic. Annotated so they are written,
+     * computed so they cannot drift, and ignored on the way back in.
+     */
+    @JsonProperty("active_shards")
+    public int activeShards() {
+        return (int) shards.values()
+            .stream()
+            .flatMap(List::stream)
+            .filter(placement -> placement.state() == ShardState.STARTED)
+            .count();
+    }
+
+    @JsonProperty("active_primary_shards")
+    public int activePrimaryShards() {
+        return (int) shards.values()
+            .stream()
+            .filter(placements -> placements.stream().anyMatch(
+                placement -> placement.role() == ShardRole.PRIMARY && placement.state() == ShardState.STARTED))
+            .count();
+    }
+
+    @JsonProperty("initializing_shards")
+    public int initializingShards() {
+        return (int) shards.values()
+            .stream()
+            .flatMap(List::stream)
+            .filter(placement -> placement.state() == ShardState.INITIALIZING)
+            .count();
+    }
+
+    /** Desired copies that exist nowhere. Zero for a closed index, which wants none. */
+    @JsonProperty("unassigned_shards")
+    public int unassignedShards() {
+        int desired = shards.isEmpty() ? 0 : numberOfShards * (1 + numberOfReplicas);
+        int present = shards.values().stream().mapToInt(List::size).sum();
+        return Math.max(0, desired - present);
     }
 
     /** Where one copy of one shard is, and how it is getting on. */

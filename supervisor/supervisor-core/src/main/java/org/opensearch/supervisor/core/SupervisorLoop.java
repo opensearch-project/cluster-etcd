@@ -51,11 +51,13 @@ public final class SupervisorLoop {
     private final BooleanSupplier stillHoldsLease;
     private final long epoch;
     private final TaskQueue tasks;
+    private final StatusProjector status;
 
     private Diff lastDiff;
     private Plan lastPlan;
     private Applier.Outcome lastOutcome;
     private TaskQueue.Outcome lastTaskOutcome;
+    private int lastStatusWrites;
 
     /** Read-only: observes, diffs and projects, and writes nothing a node will act on. */
     public SupervisorLoop(
@@ -98,6 +100,7 @@ public final class SupervisorLoop {
         this.policy = policy == null ? Planner.Policy.defaults() : policy;
         this.epoch = epoch;
         this.tasks = new TaskQueue(store, clock, supervisorId, TaskQueue.Policy.defaults());
+        this.status = new StatusProjector(store);
     }
 
     /**
@@ -136,6 +139,11 @@ public final class SupervisorLoop {
             // a task is judged against the state this pass has just brought about.
             if (stillHoldsLease.getAsBoolean()) {
                 lastTaskOutcome = tasks.drain(observation, epoch);
+
+                // The projections the control plane reads. Computed from the observation this pass began
+                // with, so they describe what was seen rather than what has just been asked for -- which is
+                // the invariant docrep peer resolution depends on.
+                lastStatusWrites = status.project(observation);
             }
         }
         return diff;
@@ -164,6 +172,11 @@ public final class SupervisorLoop {
 
     public TaskQueue.Outcome lastTaskOutcome() {
         return lastTaskOutcome;
+    }
+
+    /** How many projection keys the last pass wrote; zero in steady state. */
+    public int lastStatusWrites() {
+        return lastStatusWrites;
     }
 
     private Projector.Tasks taskFigures() {

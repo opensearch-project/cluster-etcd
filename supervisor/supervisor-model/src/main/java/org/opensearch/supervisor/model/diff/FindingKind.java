@@ -56,7 +56,15 @@ public enum FindingKind {
     /** A task claimed past its lease, or at its attempt limit. */
     TASK_STUCK(WARNING),
 
-    /** A {@code status/} document older than N passes. */
+    /**
+     * A {@code status/} document older than N passes.
+     *
+     * <p><b>Never raised, and that is the honest state of it.</b> Only a pool's owner writes projections, and
+     * it rewrites every one whose content has changed on the pass it takes the pool over — so a stale
+     * projection would mean the owner failed to write, which it would already know about. Kept because a
+     * second writer or a partial write would make it meaningful, and removing it would lose the reason it was
+     * expected to be needed.
+     */
     PROJECTION_STALE(WARNING),
 
     /** Desired copies that no live node in the pool can satisfy. */

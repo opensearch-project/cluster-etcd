@@ -491,7 +491,17 @@ false and zero fields, so a failed transaction has no `succeeded` key.
    duplicated task harmless and a lost one irrelevant; tests assert reconciliation with the queue completely
    empty (R2.1) and with a task duplicated (R4.4). Failed records are never reaped, because a deleted failure
    is an invisible one.
-7. **Projections.** Health, then `cluster.state`, then awareness values. Each unblocks a 501.
+7. **Projections.** ✅ *Done.* Per-index health and placement, the cluster summary, the tenant-scoped node
+   list, and the discovered awareness values — computed purely from an observation and written only when they
+   change. Snapshot metadata (R5.3) is the one piece still outstanding, and is deferred because it needs
+   repository access, which is the only part of this service that talks to something other than the store.
+
+A read-only supervisor projects none of these, which is worth knowing before relying on read-only mode as a
+way to observe a live cluster. It follows from a decision taken in milestone 2: one document serves four
+readers — `cluster.health`, `cluster.state`, coordinator routing and docrep peer resolution — which was right
+for write amplification, and means health cannot be published without publishing routing that coordinators
+will act on. Splitting the routing half out would allow observation without behaviour change; not worth doing
+until somebody wants it.
 
 Steps 3 and 5 are in that order deliberately, and `REQUIREMENTS.md` §10 argues it better than this file can:
 a reconciler that observes correctly and acts on nothing is safe and immediately useful; one that acts

@@ -145,6 +145,13 @@ every pass. Putting a map of every index in the hot document is the same mistake
 
 ### `tenant/<t>/status/nodes/<node-id>` — for `cluster.state`, and R5.4
 
+**Only nodes holding or assigned something of this tenant's appear**, which is a decision rather than an
+accident. Listing every node in the pool would tell a tenant in a shared pool how many machines its
+neighbours are using, and would make its `number_of_nodes` change when somebody else's data moved. The cost
+is that the figure is smaller than an operator looking at the pool would expect — which is the correct answer
+to a tenant-scoped question, and the reason this document lives under the tenant prefix at all. For a
+dedicated pool the two definitions coincide.
+
 A tenant-scoped view of a node in the tenant's pool: only nodes serving this tenant appear, and only the
 slow-changing facts. **No load or capacity figures**, so that a node's disk filling up does not rewrite the
 document — that data is already in `nodes/heartbeat/<id>` for anyone entitled to read the root.
