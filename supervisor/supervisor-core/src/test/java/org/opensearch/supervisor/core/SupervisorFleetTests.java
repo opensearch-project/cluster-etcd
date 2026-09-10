@@ -83,7 +83,7 @@ class SupervisorFleetTests {
 
     private void definePool(PoolId pool) {
         store.put(Keys.poolDefinition(pool),
-            new PoolDefinition(pool, PoolKind.SHARED, false, null, null).toBytes());
+            new PoolDefinition(pool, PoolKind.SHARED, false, null, null, java.util.List.of()).toBytes());
     }
 
     private Supervisor supervisor(String id) {

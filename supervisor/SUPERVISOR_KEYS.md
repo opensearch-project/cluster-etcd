@@ -298,9 +298,16 @@ reading available:
   "kind": "shared",
   "default": true,
   "description": "long tail, us-west-2",
-  "max_shard_copies_per_node": 2000
+  "max_shard_copies_per_node": 2000,
+  "awareness_attributes": ["zone"]
 }
 ```
+
+**`awareness_attributes`** are the node attributes a shard's copies are spread across, and
+`max_shard_copies_per_node` caps copies on one node. Both are operator-owned because both depend on the
+deployment rather than on anything the supervisor can observe: it can see that nodes carry a `zone` attribute,
+but not that a zone is a thing which fails independently. Empty disables the rule — spreading across an
+attribute nobody chose would refuse placements for a reason nobody asked for.
 
 `kind` is `shared` or `dedicated` and is documentation plus a guard: binding a second tenant to a
 `dedicated` pool is refused and raises a finding rather than silently making it shared. **At most one pool

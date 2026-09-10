@@ -670,13 +670,20 @@ wants the same fix.
 5. **Two contradictions in `REQUIREMENTS.md`**, both resolved in `SUPERVISOR_KEYS.md`, both worth
    confirming: R5.5 versus the control plane's tenant-scoped store, and R5.5 versus R4.3's requirement to
    reap tasks the control plane owns.
-6. **Primary before replica** is a planning rule the planner does not yet have — a docrep replica cannot
-   converge until a primary is serving, so a plan that places replicas first converges only by accident.
-   Milestone 5. (Replica recovery source is no longer open: the node resolves peers from the status
-   projection. Cross-pool recovery in §4 still depends on that path existing across a pool boundary.)
-7. **Allocation policy is entirely undesigned.** This document says where the decision is made and how it is
-   bounded, logged and reversible; it says nothing about how to choose a node. Awareness, disk watermarks
-   and rebalancing are their own document.
+6. ~~**Primary before replica.**~~ Closed: it is `ReplicaAfterPrimaryDecider`, which is the better shape for
+   it — the rule is a property of a candidate placement rather than a phase of the planner. The planner also
+   orders primaries first, so a pass converges in one round instead of relying on the decider's wait.
+7. **Rebalancing, which the allocator still does not do.** Placement is now a set of deciders following
+   OpenSearch's own structure — a rule per class, each pure, independently testable and able to explain its
+   own refusals. What is absent is *movement*: nothing relocates a copy that is badly placed, because nothing
+   removes a copy at all. A cluster that fills up unevenly, or gains a zone, stays as it is until something
+   else forces a placement. Rebalancing needs remove-after-add, a cost model for moving data, and oscillation
+   detection sharper than the current one, and is its own piece of work.
+
+   Deciders deliberately not implemented, with the reason: `EnableAllocationDecider` (an operator's emergency
+   brake, and worth having — it needs `tenant/<t>/cluster/settings`, which nothing observes yet),
+   `NodeVersionAllocationDecider` (ordering during a rolling upgrade), and everything about snapshot and
+   restore state, which this service does not model.
 8. **Functional rather than complete task completion.** `SUPERVISOR_KEYS.md` §2: at cloud scale you never
    have 100% of what you asked for, so "complete convergence" is a definition that eventually stops being
    satisfied. The replacement asks whether the thing is *usable* — and is genuinely per task type, "is the

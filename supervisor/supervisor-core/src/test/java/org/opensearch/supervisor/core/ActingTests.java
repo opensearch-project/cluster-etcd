@@ -82,16 +82,25 @@ class ActingTests {
     void setUp() {
         store = new InMemoryKeyValueStore();
         clock = new MutableClock();
-        store.put(Keys.poolDefinition(POOL), new PoolDefinition(POOL, PoolKind.SHARED, false, null, null).toBytes());
+        store.put(Keys.poolDefinition(POOL), new PoolDefinition(POOL, PoolKind.SHARED, false, null, null, java.util.List.of()).toBytes());
         store.put(Keys.poolBinding(ACME), PoolBinding.to(POOL).toBytes());
         store.put(Keys.tenantRegistration(ACME),
             "{\"tenant\":\"acme\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
+    private FakeNode zoned(NodeId id, String zone) {
+        return new FakeNode(store, new Registration(
+            id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.DATA),
+            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", Map.of("zone", zone), 5000, 0L
+        ), clock, "eph-" + id.value());
+    }
+
     private FakeNode node(NodeId id) {
         return new FakeNode(store, new Registration(
             id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.DATA),
-            "10.0.0.1", 9300, "3.7.0", Map.of("zone", "z1"), 5000, 0L
+            // Distinct per node: the same-shard decider treats one address as one failure domain, so a fixture
+            // sharing addresses would make every second copy unplaceable.
+            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", Map.of("zone", "z1"), 5000, 0L
         ), clock, "eph-" + id.value());
     }
 
@@ -345,6 +354,79 @@ class ActingTests {
         Assignment assignment = NodeJson.readAssignment(store.get(Keys.nodeAssignment(NODE)).orElseThrow().value());
         assertEquals(Set.of(ACME, globex), assignment.tenants().keySet());
         assertEquals(2, data.inventory().copyCount());
+    }
+
+    // ---------------------------------------------------------------- replicas and awareness
+
+    @Test
+    void anIndexWithAReplicaConvergesWithItsCopiesOnDifferentNodes() {
+        FakeNode a = node(NODE);
+        FakeNode b = node(NODE_B);
+        a.start();
+        b.start();
+        createIndex(1, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 12; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        assertEquals(1, a.inventory().copyCount());
+        assertEquals(1, b.inventory().copyCount());
+        assertTrue(supervisor.lastDiffOf(POOL).isEmpty(),
+            () -> "expected convergence, got " + supervisor.lastDiffOf(POOL).findings());
+    }
+
+    @Test
+    void aReplicaIsNeverPlacedOnTheNodeHoldingItsPrimary() {
+        // With one node there is nowhere for the second copy to go, and the honest outcome is a yellow index
+        // rather than two copies on one machine pretending to be redundancy.
+        FakeNode only = node(NODE);
+        only.start();
+        createIndex(1, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 12; pass++) {
+            supervisor.tick();
+            only.tick();
+            advance();
+        }
+
+        assertEquals(1, only.inventory().copyCount(), "one node, one copy");
+        assertEquals(1, supervisor.lastDiffOf(POOL).of(FindingKind.UNASSIGNED_REPLICA).size());
+    }
+
+    @Test
+    void copiesAreSpreadAcrossZonesWhenThePoolSaysTo() {
+        // The rule that makes redundancy mean anything: three copies in one availability zone survive a disk,
+        // not a zone, and the zone is usually why the tenant asked for three.
+        store.put(Keys.poolDefinition(POOL), new org.opensearch.supervisor.model.pool.PoolDefinition(
+            POOL, PoolKind.SHARED, false, null, null, java.util.List.of("zone")
+        ).toBytes());
+
+        FakeNode z1a = zoned(NODE, "z1");
+        FakeNode z1b = zoned(NodeId.of("nodeCCCCCCCCCCCCCCCCCC"), "z1");
+        FakeNode z2 = zoned(NODE_B, "z2");
+        z1a.start();
+        z1b.start();
+        z2.start();
+        createIndex(1, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            z1a.tick();
+            z1b.tick();
+            z2.tick();
+            advance();
+        }
+
+        assertEquals(1, z2.inventory().copyCount(), "z2 must hold one of the two copies");
+        assertEquals(1, z1a.inventory().copyCount() + z1b.inventory().copyCount(),
+            "and z1 exactly one, not both");
     }
 
     // ---------------------------------------------------------------- convergence

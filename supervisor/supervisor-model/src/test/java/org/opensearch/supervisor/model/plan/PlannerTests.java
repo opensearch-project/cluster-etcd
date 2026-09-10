@@ -2,6 +2,8 @@ package org.opensearch.supervisor.model.plan;
 
 import org.junit.jupiter.api.Test;
 import org.opensearch.supervisor.model.NodeId;
+import org.opensearch.supervisor.model.allocate.Allocator;
+import org.opensearch.supervisor.model.allocate.SameShardDecider;
 import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.diff.Diff;
@@ -46,16 +48,30 @@ class PlannerTests {
     private static final NodeId FULL_NODE = NodeId.of("nodeFullBBBBBBBBBBBBB");
     private static final Planner.Policy POLICY = Planner.Policy.defaults();
 
+    /**
+     * Distinct addresses per node, which is not incidental.
+     *
+     * <p>The same-shard decider refuses a node sharing an <em>address</em> with one that already holds a copy,
+     * because two nodes on one host are one failure domain. A fixture that gave every node the same address
+     * made every second copy unplaceable — the rule working correctly on an unrealistic cluster.
+     */
     private static Registration registration(NodeId node) {
         return new Registration(
             node, "eph", node.value(), POOL, EnumSet.of(NodeRole.DATA),
-            "10.0.0.1", 9300, "3.7.0", Map.of(), 5000, 1L
+            "10.0.0." + (Math.abs(node.value().hashCode()) % 200 + 1), 9300, "3.7.0", Map.of(), 5000, 1L
         );
     }
 
+    /**
+     * A node with a plausible total beside its free figure.
+     *
+     * <p>Worth a comment because it caught me out: the disk decider reads a <em>fraction</em> used, so a free
+     * figure paired with a fixed large total makes every node in a test look 100% full and refuses them all.
+     * Half full keeps the free bytes usable as an ordering signal without tripping a watermark.
+     */
     private static Heartbeat heartbeat(NodeId node, long freeBytes) {
         return new Heartbeat(node, "eph", 1L, Heartbeat.Applied.NONE, null, 0,
-            new Heartbeat.Capacity(1_000_000_000L, freeBytes, 10, 10, 0.1));
+            new Heartbeat.Capacity(freeBytes * 2, freeBytes, 10, 10, 0.1));
     }
 
     private static Observation.NodeObservation node(NodeId id, long freeBytes) {
@@ -102,18 +118,27 @@ class PlannerTests {
         return new Observation(pass, Instant.EPOCH, POOL, tenants, nodes, List.of());
     }
 
-    /** Runs the differ so the findings carry real ages, then plans. */
-    private static Plan planAfter(int passes, Observation observation) {
+    /**
+     * Runs the differ over increasing pass numbers so the findings carry real ages.
+     *
+     * <p>The pass number has to advance. Diffing one observation twice leaves every finding one pass old, so
+     * nothing reaches the planner's minimum and the plan comes back empty for a reason that has nothing to do
+     * with what is being tested — a mistake worth having exactly one helper for.
+     */
+    private static Diff diffAfter(int passes, Observation observation) {
         FindingAges ages = new FindingAges();
         Diff diff = null;
         for (int pass = 1; pass <= passes; pass++) {
-            Observation aged = new Observation(
+            diff = Differ.diff(new Observation(
                 pass, observation.observedAt(), observation.pool(),
                 observation.tenants(), observation.nodes(), observation.unreadable()
-            );
-            diff = Differ.diff(aged, ages);
+            ), ages);
         }
-        return Planner.plan(observation, diff, 7, POLICY);
+        return diff;
+    }
+
+    private static Plan planAfter(int passes, Observation observation) {
+        return Planner.plan(observation, diffAfter(passes, observation), 7, POLICY);
     }
 
     // ---------------------------------------------------------------- the narrow case
@@ -280,10 +305,13 @@ class PlannerTests {
             Map.of(EMPTY_NODE, node(EMPTY_NODE, 1_000_000))
         );
 
-        FindingAges ages = new FindingAges();
-        Diff diff = Differ.diff(observation, ages);
-        diff = Differ.diff(observation, ages);
-        Plan plan = Planner.plan(observation, diff, 7, small);
+        // Deciders that pace the work would otherwise decide this test's outcome instead of the ceiling. With
+        // the default set only two copies land per pass, which is the throttling decider working correctly and
+        // has nothing to do with what is under test.
+        Plan plan = Planner.plan(
+            observation, diffAfter(3, observation), 7, small,
+            new Allocator(List.of(new SameShardDecider())), List.of(), null
+        );
 
         assertEquals(10, plan.instructions().size());
         assertTrue(plan.ceilingHit(), "hitting the ceiling must be visible, not silent");
@@ -303,10 +331,10 @@ class PlannerTests {
             Map.of(EMPTY_NODE, node(EMPTY_NODE, 1_000_000))
         );
 
-        FindingAges ages = new FindingAges();
-        Diff diff = Differ.diff(observation, ages);
-        diff = Differ.diff(observation, ages);
-        Plan plan = Planner.plan(observation, diff, 7, policy);
+        Plan plan = Planner.plan(
+            observation, diffAfter(3, observation), 7, policy,
+            new Allocator(List.of(new SameShardDecider())), List.of(), null
+        );
 
         boolean globexServed = plan.instructions()
             .stream()
@@ -341,20 +369,94 @@ class PlannerTests {
     }
 
     @Test
-    void replicasAreNotPlacedYet() {
-        // Milestone 5 acts on one finding. A missing replica stays a finding, which is the honest state of
-        // the world rather than a half-built allocator quietly doing something unreviewed.
+    void aMissingReplicaIsNowPlacedToo() {
+        // The allocator's rules only mean anything once there is more than one copy of a shard to arrange, so
+        // replica placement arrived with it rather than after it.
         IndexConfig withReplica = new IndexConfig("my-index", UUID, true, 1, 1, Replication.SEGMENT, false, 3041);
         Observation observation = observe(5,
             Map.of(ACME, Map.of(UUID, withReplica)),
-            Map.of(EMPTY_NODE, nodeHolding(EMPTY_NODE, ShardRole.PRIMARY, ShardState.STARTED))
+            Map.of(
+                EMPTY_NODE, nodeHolding(EMPTY_NODE, ShardRole.PRIMARY, ShardState.STARTED),
+                FULL_NODE, node(FULL_NODE, 900_000_000)
+            )
         );
 
-        FindingAges ages = new FindingAges();
-        Diff diff = Differ.diff(observation, ages);
-        diff = Differ.diff(observation, ages);
-
+        Diff diff = diffAfter(3, observation);
         assertEquals(1, diff.of(FindingKind.UNASSIGNED_REPLICA).size());
-        assertTrue(Planner.plan(observation, diff, 7, POLICY).isEmpty());
+
+        Plan plan = Planner.plan(observation, diff, 7, POLICY);
+        Instruction.PlaceCopy place = (Instruction.PlaceCopy) plan.instructions().get(0);
+
+        assertEquals(FULL_NODE, place.node(), "never on the node already holding the primary");
+        assertEquals(ShardRole.SEARCH_REPLICA, place.role(),
+            "a segment-replication replica is a search replica, and calling it the wrong thing would have the"
+                + " node wait for a primary that will never contact it");
+    }
+
+    @Test
+    void twoNodesOnOneHostCountAsOneFailureDomain() {
+        // A replica on the same machine as its primary survives nothing the primary does not, whatever their
+        // node ids say. Deployments running several nodes per host are common enough that finding this out
+        // during an incident would be a poor way to learn it.
+        Registration sharedHost = new Registration(
+            FULL_NODE, "eph", FULL_NODE.value(), POOL, EnumSet.of(NodeRole.DATA),
+            "10.0.0.1", 9301, "3.7.0", Map.of(), 5000, 1L
+        );
+        Observation.NodeObservation neighbour = new Observation.NodeObservation(
+            FULL_NODE, sharedHost, heartbeat(FULL_NODE, 900_000_000), null, Liveness.LIVE, POOL, null, 0
+        );
+        Registration primaryHost = new Registration(
+            EMPTY_NODE, "eph", EMPTY_NODE.value(), POOL, EnumSet.of(NodeRole.DATA),
+            "10.0.0.1", 9300, "3.7.0", Map.of(), 5000, 1L
+        );
+        Observation.NodeObservation primary = new Observation.NodeObservation(
+            EMPTY_NODE, primaryHost, heartbeat(EMPTY_NODE, 900_000_000),
+            nodeHolding(EMPTY_NODE, ShardRole.PRIMARY, ShardState.STARTED).inventory(),
+            Liveness.LIVE, POOL, null, 0
+        );
+
+        IndexConfig withReplica = new IndexConfig("my-index", UUID, true, 1, 1, Replication.SEGMENT, false, 3041);
+        Observation observation = observe(5,
+            Map.of(ACME, Map.of(UUID, withReplica)),
+            Map.of(EMPTY_NODE, primary, FULL_NODE, neighbour)
+        );
+
+        assertTrue(Planner.plan(observation, diffAfter(3, observation), 7, POLICY).isEmpty(),
+            "the only other node is on the same host, so there is nowhere useful to put the replica");
+    }
+
+    @Test
+    void aDocumentReplicationReplicaIsCalledAReplica() {
+        IndexConfig docrep = new IndexConfig("my-index", UUID, true, 1, 1, Replication.DOCUMENT, false, 3041);
+        Observation observation = observe(5,
+            Map.of(ACME, Map.of(UUID, docrep)),
+            Map.of(
+                EMPTY_NODE, nodeHolding(EMPTY_NODE, ShardRole.PRIMARY, ShardState.STARTED),
+                FULL_NODE, node(FULL_NODE, 900_000_000)
+            )
+        );
+
+        Diff diff = diffAfter(3, observation);
+
+        Plan plan = Planner.plan(observation, diff, 7, POLICY);
+        assertEquals(ShardRole.REPLICA, ((Instruction.PlaceCopy) plan.instructions().get(0)).role());
+    }
+
+    @Test
+    void aPrimaryIsPlacedBeforeItsReplicaInTheSamePass() {
+        // Ordering rather than relying on the decider to make a too-early replica wait: a pass that reaches the
+        // primary first converges in one round instead of two.
+        IndexConfig docrep = new IndexConfig("my-index", UUID, true, 1, 1, Replication.DOCUMENT, false, 3041);
+        Observation observation = observe(5,
+            Map.of(ACME, Map.of(UUID, docrep)),
+            Map.of(EMPTY_NODE, node(EMPTY_NODE, 900_000_000), FULL_NODE, node(FULL_NODE, 900_000_000))
+        );
+
+        Diff diff = diffAfter(3, observation);
+        Plan plan = Planner.plan(observation, diff, 7, POLICY);
+
+        assertEquals(ShardRole.PRIMARY, ((Instruction.PlaceCopy) plan.instructions().get(0)).role());
+        // And the docrep replica is not placed in the same pass, because no primary is serving yet.
+        assertEquals(1, plan.instructions().size());
     }
 }

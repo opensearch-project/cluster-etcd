@@ -88,7 +88,7 @@ class SupervisorLoopTests {
         clock = new MutableClock();
 
         store.put(Keys.poolDefinition(POOL),
-            new PoolDefinition(POOL, PoolKind.SHARED, false, null, null).toBytes());
+            new PoolDefinition(POOL, PoolKind.SHARED, false, null, null, java.util.List.of()).toBytes());
         store.put(Keys.poolBinding(ACME), PoolBinding.to(POOL).toBytes());
         store.put(Keys.tenantRegistration(ACME),
             "{\"tenant\":\"acme\",\"registered_at\":1}".getBytes(java.nio.charset.StandardCharsets.UTF_8));

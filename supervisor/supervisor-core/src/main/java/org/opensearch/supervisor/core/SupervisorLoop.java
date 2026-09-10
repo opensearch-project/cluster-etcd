@@ -47,6 +47,8 @@ public final class SupervisorLoop {
     private final FindingAges ages = new FindingAges();
     private final TenantDiscovery tenants;
     private final Applier applier;
+    private final org.opensearch.supervisor.model.allocate.Allocator allocator =
+        new org.opensearch.supervisor.model.allocate.Allocator();
     private final Planner.Policy policy;
     private final BooleanSupplier stillHoldsLease;
     private final long epoch;
@@ -130,7 +132,17 @@ public final class SupervisorLoop {
         lastOutcome = null;
 
         if (stillHoldsLease != null) {
-            Plan plan = Planner.plan(observation, diff, epoch, policy);
+            // The pool's own rules: which attributes a shard's copies are spread across, and how many copies
+            // one of its nodes may hold. Operator-owned, because both depend on the deployment rather than on
+            // anything the supervisor can observe.
+            var definition = pools.definitionOf(pool);
+            Plan plan = Planner.plan(
+                observation, diff, epoch, policy, allocator,
+                definition.map(org.opensearch.supervisor.model.pool.PoolDefinition::awarenessAttributes)
+                    .orElse(java.util.List.of()),
+                definition.map(org.opensearch.supervisor.model.pool.PoolDefinition::maxShardCopiesPerNode)
+                    .orElse(null)
+            );
             lastPlan = plan;
             lastOutcome = applier.apply(plan, observation, stillHoldsLease);
 
