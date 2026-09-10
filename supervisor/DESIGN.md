@@ -474,9 +474,10 @@ false and zero fields, so a failed transaction has no `succeeded` key.
    together by `SupervisorLoop.pass()`. **Acts on nothing** — a test asserts it never writes an assignment.
    The end-to-end test drives a real `fake-node` rather than hand-written documents. Still single-pool and
    single-supervisor: leases and the balancer are milestone 4.
-4. **Horizontal scale, still read-only.** Member records, per-pool leases, the balancer, failover. Running
-   several supervisors while none of them writes an assignment is the safest possible way to shake this out,
-   and it is why this comes before acting rather than after.
+4. **Horizontal scale, still read-only.** ✅ *Done.* Member records, per-pool leases with compare-and-set,
+   the balancer, housekeeping, and failover — driven by `Supervisor.tick()`. A fleet test runs three members
+   over one in-memory store and asserts no pool is ever held twice, including through a rolling restart.
+   Still writes no assignment, which a test enforces. Placement is milestone 5.
 5. **Act, narrowly.** One finding — `UNASSIGNED_PRIMARY` for an index with no copies anywhere — with the
    lease checks, the ceiling and the stale-writer defences in place. Everything else stays observation.
 6. **The task lifecycle.** Claim, attempt, terminate, reap, so `cluster.pending_tasks` stops growing.

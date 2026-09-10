@@ -43,6 +43,16 @@ public final class Projector {
     /** Passes of history kept for the trend. */
     public static final int TREND_WINDOW = 20;
 
+    /**
+     * Indices per unit of weight, relative to a node.
+     *
+     * <p>Observation cost is roughly {@code O(nodes + indices + copies)} per pass, but a node costs more
+     * per unit than an index does: each node is at least one key read and a liveness decision, while an
+     * index is one cached parse. Ten indices to a node is a guess, documented as one, and cheap to change
+     * because the balancer it feeds is advisory.
+     */
+    public static final double INDICES_PER_NODE_WEIGHT = 10.0;
+
     private final KeyValueStore store;
     private final String supervisorId;
     private final Map<String, String> lastWritten = new LinkedHashMap<>();
@@ -88,6 +98,7 @@ public final class Projector {
         int nodes,
         int placeableNodes,
         int indices,
+        double weight,
         int findingsTotal,
         Map<String, Integer> findingsByKind,
         long lastEmptyDiffAt,
@@ -194,6 +205,7 @@ public final class Projector {
             observation.nodes().size(),
             observation.placeableNodes().size(),
             indices,
+            observation.nodes().size() + indices / INDICES_PER_NODE_WEIGHT,
             total,
             byKind,
             lastEmptyDiffAt,

@@ -6,8 +6,6 @@ import org.opensearch.supervisor.model.status.Liveness;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -47,20 +45,17 @@ public final class LivenessTracker {
     /** Assumed interval for a node with no registration to derive one from. */
     public static final Duration DEFAULT_INTERVAL = Duration.ofSeconds(5);
 
-    private record Seen(long revision, Instant at) {}
-
-    private final Map<NodeId, Seen> lastChange = new HashMap<>();
+    private final RevisionSilence silence;
     private final int staleMultiplier;
     private final int lostMultiplier;
     private final Duration floor;
-    private final Instant startedAt;
 
     public LivenessTracker(Instant startedAt) {
         this(startedAt, DEFAULT_STALE_MULTIPLIER, DEFAULT_LOST_MULTIPLIER, DEFAULT_FLOOR);
     }
 
     public LivenessTracker(Instant startedAt, int staleMultiplier, int lostMultiplier, Duration floor) {
-        this.startedAt = Objects.requireNonNull(startedAt, "startedAt");
+        this.silence = new RevisionSilence(Objects.requireNonNull(startedAt, "startedAt"));
         this.staleMultiplier = staleMultiplier;
         this.lostMultiplier = lostMultiplier;
         this.floor = Objects.requireNonNull(floor, "floor");
@@ -80,17 +75,7 @@ public final class LivenessTracker {
      *     is no advertised interval, so the floor is used
      */
     public Liveness observe(NodeId nodeId, long heartbeatRevision, Registration registration, Instant now) {
-        Seen previous = lastChange.get(nodeId);
-        if (previous == null || previous.revision() != heartbeatRevision) {
-            lastChange.put(nodeId, new Seen(heartbeatRevision, now));
-            return Liveness.LIVE;
-        }
-
-        // The revision has not moved since we first saw it. How long ago that was is the age -- but never
-        // older than this process, because a supervisor that has just started has not had the chance to
-        // observe a change yet and must not read its own youth as the node's silence.
-        Instant since = previous.at().isBefore(startedAt) ? startedAt : previous.at();
-        Duration silent = Duration.between(since, now);
+        Duration silent = silence.observe(nodeId.value(), heartbeatRevision, now);
 
         if (silent.compareTo(lostThreshold(registration)) >= 0) {
             return Liveness.LOST;
@@ -103,8 +88,8 @@ public final class LivenessTracker {
 
     /** A node observed for the first time by a supervisor that has only just started. */
     public Liveness observeAbsent(NodeId nodeId, Registration registration, Instant now) {
-        lastChange.remove(nodeId);
-        return Duration.between(startedAt, now).compareTo(staleThreshold(registration)) >= 0
+        silence.forget(nodeId.value());
+        return silence.sinceStart(now).compareTo(staleThreshold(registration)) >= 0
             ? Liveness.LOST
             : Liveness.UNKNOWN;
     }
@@ -141,10 +126,10 @@ public final class LivenessTracker {
 
     /** Forget nodes that are no longer in the pool, so this cannot grow without bound. */
     public void retain(Set<NodeId> nodes) {
-        lastChange.keySet().retainAll(nodes);
+        silence.retain(nodes.stream().map(NodeId::value).collect(java.util.stream.Collectors.toSet()));
     }
 
     public int tracked() {
-        return lastChange.size();
+        return silence.tracked();
     }
 }
