@@ -37,7 +37,8 @@ public record TaskRecord(
     long epoch,
     long leaseExpiresAt,
     int attempts,
-    String lastError
+    String lastError,
+    int progress
 ) {
 
     public static final int MAX_LAST_ERROR_LENGTH = 512;
@@ -68,24 +69,38 @@ public record TaskRecord(
         return state == TaskState.CLAIMED && supervisorId.equals(holder);
     }
 
-    public TaskRecord claimedBy(String supervisorId, long epoch, long nowMillis, long leaseMillis) {
+    /** A fresh attempt: the attempt count advances. */
+    public TaskRecord claimedBy(String supervisorId, long epoch, long nowMillis, long leaseMillis, int progress) {
         return new TaskRecord(
             taskId, type, index, indexUuid, TaskState.CLAIMED, submittedAt, sequence,
-            supervisorId, epoch, nowMillis + leaseMillis, attempts + 1, lastError
+            supervisorId, epoch, nowMillis + leaseMillis, attempts + 1, lastError, progress
+        );
+    }
+
+    /**
+     * Still going, and getting somewhere: extend the claim without spending an attempt.
+     *
+     * <p>The distinction between this and {@link #claimedBy} is the whole of the difference between a task
+     * that is slow and one that is stuck, and it is why a large index does not fail its own creation.
+     */
+    public TaskRecord renewed(String supervisorId, long epoch, long nowMillis, long leaseMillis, int progress) {
+        return new TaskRecord(
+            taskId, type, index, indexUuid, TaskState.CLAIMED, submittedAt, sequence,
+            supervisorId, epoch, nowMillis + leaseMillis, attempts, lastError, progress
         );
     }
 
     public TaskRecord completed(long nowMillis) {
         return new TaskRecord(
             taskId, type, index, indexUuid, TaskState.COMPLETED, submittedAt, sequence,
-            holder, epoch, nowMillis, attempts, null
+            holder, epoch, nowMillis, attempts, null, progress
         );
     }
 
     public TaskRecord failed(String reason, long nowMillis) {
         return new TaskRecord(
             taskId, type, index, indexUuid, TaskState.FAILED, submittedAt, sequence,
-            holder, epoch, nowMillis, attempts, reason
+            holder, epoch, nowMillis, attempts, reason, progress
         );
     }
 

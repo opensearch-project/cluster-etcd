@@ -240,6 +240,45 @@ A claimed record:
   the `indices/` documents alone (R2.1). This section exists to drain a queue and to make failures visible,
   not to drive reconciliation.
 
+### What "complete" means, and the definition this is not
+
+**Complete convergence for the task in hand.** A `create-index` task is done when every shard of the index
+has a serving primary; a `delete-index` task when the index document is gone *and* no copy of it remains
+anywhere. Simple, unambiguous, consistent with OpenSearch's existing behaviour, and achievable at the scale
+this is built for.
+
+It is worth writing down what it is not, because the alternative is better and harder.
+
+**The alternative is functional completeness**, and the argument for it is a scale argument. At cloud scale
+you essentially never have 100% of what you asked for, and that is fine — with redundancy across data
+centres a service is fully functional at some well under 100%. A definition of "complete" that requires
+everything therefore becomes a definition that is rarely satisfied, and a queue whose entries mostly sit
+open is not much better than one that never drains.
+
+Functional completeness would ask a different question: *is the thing usable?*
+
+| task | complete convergence (implemented) | functionally complete |
+|---|---|---|
+| `create-index` | every shard has a serving primary | at least one copy of each shard on a data node **and** a coordinator routing to them |
+| `delete-index` | document gone and no copies remain anywhere | removed from coordinator routing — nobody can reach it, whether or not the bytes are still on disk |
+
+**Why it is deferred rather than adopted.** The functional definition is genuinely per task type — the two
+rows above have nothing structural in common, and each new task type would need its own judgement about what
+"usable" means for it. That is a real cost against a benefit this deployment does not need yet: complete
+convergence is reachable at the scale this will run at for the foreseeable future. Recorded so that the day
+it stops being reachable, the reason it was chosen is on the record along with what to do instead.
+
+Two smaller notes on the implemented definition, both places where it is deliberately not the strongest
+reading available:
+
+- **Replicas are excluded from `create-index`.** Requiring every desired copy would be more obviously
+  correct, but the planner cannot place replicas yet, so every such task would fail — blaming the task for an
+  unimplemented feature. Missing replicas are reported as `UNASSIGNED_REPLICA` regardless. This is the line
+  to move when replica placement lands.
+- **A task whose subject no longer exists is complete, not failed.** A `create-index` task for an index since
+  deleted describes work nobody wants. Failing it would leave a permanent record of something that never went
+  wrong.
+
 ## 3. Pools, members and leases
 
 `DESIGN.md` §2 and §3 explain why these exist and what they buy. This is their shape.

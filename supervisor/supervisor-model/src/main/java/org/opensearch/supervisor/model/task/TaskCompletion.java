@@ -23,14 +23,25 @@ import java.util.Optional;
  */
 public final class TaskCompletion {
 
-    /** Why a task is or is not finished — carried into the record, or into a finding. */
-    public record Verdict(boolean satisfied, String because) {
+    /**
+     * Why a task is or is not finished — carried into the record, or into a finding.
+     *
+     * @param progress a monotonic measure of how far the work has got, compared against the value stored on
+     *     the record to tell "slow" from "stuck". Without it, a task whose shards take longer to recover than
+     *     the attempt budget allows would be marked failed for making steady progress — blaming the task for
+     *     the size of the index. Meaningless in absolute terms; only its direction is used.
+     */
+    public record Verdict(boolean satisfied, String because, int progress) {
         public static Verdict done(String because) {
-            return new Verdict(true, because);
+            return new Verdict(true, because, Integer.MAX_VALUE);
         }
 
         public static Verdict notYet(String because) {
-            return new Verdict(false, because);
+            return new Verdict(false, because, 0);
+        }
+
+        public static Verdict notYet(String because, int progress) {
+            return new Verdict(false, because, progress);
         }
     }
 
@@ -86,50 +97,67 @@ public final class TaskCompletion {
     }
 
     /**
-     * Every shard has a copy somewhere, or has been told to have one.
+     * Every shard of the index has a primary that is actually serving.
      *
-     * <p>Assignments count, not only inventories. A create-index task should complete once the supervisor has
-     * placed the shards, not once every node has finished recovering them — otherwise a slow recovery holds a
-     * task open for as long as it takes, and the queue stops being a queue.
+     * <p><b>Convergence, not "the supervisor has done its part."</b> An earlier version completed as soon as
+     * every shard was placed or assigned, on the grounds that a slow recovery would otherwise hold a task open
+     * for as long as it takes. That was optimising for the queue draining over the queue telling the truth: an
+     * index whose shards are assigned but not yet recovered is not usable, so a create-index task for it is
+     * not done. A task that stays open while a large index recovers is the queue being accurate.
+     *
+     * <p>The hazard that creates is handled by {@code progress} rather than by weakening the definition:
+     * a task making steady progress renews its claim instead of spending an attempt.
+     *
+     * <p><b>Replicas are deliberately excluded, and this is the line to move.</b> Requiring every desired
+     * copy would be the stronger and more obviously correct reading — but the planner cannot place replicas
+     * yet (milestone 5 acts on primaries only), so every create-index task for an index with replicas would
+     * fail, blaming the task for an unimplemented feature. Missing replicas are already reported as
+     * {@code UNASSIGNED_REPLICA}, so nothing is hidden. When replica placement lands, this predicate should
+     * tighten to the full desired set and this paragraph should go.
      */
     private static Verdict allShardsAccountedFor(IndexConfig index, TenantId tenant, Observation observation) {
+        int serving = 0;
+        int firstMissing = -1;
         for (int shard = 0; shard < index.numberOfShards(); shard++) {
-            if (accountedFor(tenant, index.uuid(), shard, observation) == false) {
-                return Verdict.notYet(
-                    "index [" + index.name() + "] shard " + shard + " has neither a copy nor an assignment"
-                        + " anywhere in this pool yet"
-                );
+            if (hasServingPrimary(tenant, index.uuid(), shard, observation)) {
+                serving++;
+            } else if (firstMissing < 0) {
+                firstMissing = shard;
             }
         }
-        return Verdict.done(
-            "every shard of [" + index.name() + "] is placed or assigned; recovery finishing is the node's"
-                + " business and is already visible in the diff"
+
+        if (serving == index.numberOfShards()) {
+            return Verdict.done(
+                "every shard of [" + index.name() + "] has a serving primary, so the index is usable"
+            );
+        }
+        return Verdict.notYet(
+            "index [" + index.name() + "] has " + serving + " of " + index.numberOfShards()
+                + " shards serving; shard " + firstMissing + " has no started primary yet",
+            serving
         );
     }
 
-    private static boolean accountedFor(
+    private static boolean hasServingPrimary(
         TenantId tenant,
         String indexUuid,
         int shard,
         Observation observation
     ) {
         for (Observation.NodeObservation node : observation.nodes().values()) {
-            if (node.copiesCount() == false) {
+            if (node.copiesCount() == false || node.inventory() == null) {
                 continue;
             }
-            if (node.isAssigned(tenant, indexUuid, shard)) {
-                return true;
-            }
-            ShardInventory inventory = node.inventory();
-            if (inventory == null) {
-                continue;
-            }
-            var tenantShards = inventory.tenants().get(tenant);
+            var tenantShards = node.inventory().tenants().get(tenant);
             if (tenantShards == null) {
                 continue;
             }
             var held = tenantShards.indices().get(indexUuid);
-            if (held != null && held.shards().containsKey(shard)) {
+            if (held == null) {
+                continue;
+            }
+            var copy = held.shards().get(shard);
+            if (copy != null && copy.isActivePrimary()) {
                 return true;
             }
         }

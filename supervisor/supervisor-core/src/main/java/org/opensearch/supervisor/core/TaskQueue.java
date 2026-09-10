@@ -137,15 +137,9 @@ public final class TaskQueue {
 
                 if (mine && task.isClaimExpired(now) == false) {
                     // Our own live claim, not yet done. Nothing to write: re-evaluating next pass costs
-                    // nothing, and renewing would cost a write per claimed task per pass for no benefit.
+                    // nothing, and renewing every pass would cost a write per claimed task for no benefit.
                     continue;
                 }
-
-                // Our own claim, expired. Re-claiming counts as a fresh attempt, and that is deliberate: the
-                // claim lease is the budget for one attempt, so a task nobody else ever contends still
-                // advances toward being given up on. Skipping our own expired claim -- which an earlier
-                // version did -- meant attempts never passed one and a hopeless task looped for ever, which
-                // is exactly what R4.2 forbids.
 
                 if (task.type() == TaskType.UNKNOWN) {
                     // Not claimed, not failed, not completed. Claiming it would take responsibility for work
@@ -153,6 +147,22 @@ public final class TaskQueue {
                     stuck.add(new Stuck(tenant, task.taskId(),
                         "task type is not recognised by this build; leaving it for a newer supervisor rather"
                             + " than reporting success or failure for work it cannot evaluate"));
+                    continue;
+                }
+
+                // The claim has expired -- ours or somebody's. Whether that costs an attempt depends on
+                // whether the work is advancing. A task still making progress is slow, not stuck, and
+                // spending an attempt on it would eventually fail an index for being large. Only a task that
+                // has stopped moving works its way toward being given up on, which is what R4.2 asks for.
+                if (verdict.progress() > task.progress()) {
+                    touched++;
+                    if (write(entry, task.renewed(
+                        supervisorId, epoch, now, policy.claimLease().toMillis(), verdict.progress()
+                    ))) {
+                        claimed++;
+                    } else {
+                        lost++;
+                    }
                     continue;
                 }
 
@@ -170,7 +180,9 @@ public final class TaskQueue {
                 }
 
                 touched++;
-                if (write(entry, task.claimedBy(supervisorId, epoch, now, policy.claimLease().toMillis()))) {
+                if (write(entry, task.claimedBy(
+                    supervisorId, epoch, now, policy.claimLease().toMillis(), verdict.progress()
+                ))) {
                     claimed++;
                 } else {
                     // Another supervisor claimed it first. The ordinary outcome of a race, and not a failure:

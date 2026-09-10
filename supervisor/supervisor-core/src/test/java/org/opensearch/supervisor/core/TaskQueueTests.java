@@ -105,7 +105,7 @@ class TaskQueueTests {
     /** Writes what the control plane writes: state pending, no supervisor fields at all. */
     private void submitTask(String taskId, TaskType type) {
         store.put(Keys.tasksPrefix(ACME) + taskId, new TaskRecord(
-            taskId, type, "my-index", UUID, TaskState.PENDING, clock.millis(), 1, null, 0, 0, 0, null
+            taskId, type, "my-index", UUID, TaskState.PENDING, clock.millis(), 1, null, 0, 0, 0, null, 0
         ).toBytes());
     }
 
@@ -277,6 +277,31 @@ class TaskQueueTests {
         assertEquals(TaskState.COMPLETED, taskOf("task-good").orElseThrow().state());
     }
 
+    @Test
+    void aSlowlyConvergingTaskRenewsItsClaimRatherThanSpendingAttempts() {
+        // The hazard created by defining complete as converged: an index big enough to take longer to recover
+        // than the attempt budget allows would be marked failed for making steady progress -- blaming the task
+        // for the size of the index. Progress is what tells slow from stuck.
+        FakeNode node = dataNode();
+        node.start();
+        createIndex(6);
+        submitTask("task-1", TaskType.CREATE_INDEX);
+        Supervisor supervisor = supervisor("s1");
+
+        // Far more elapsed claim leases than the attempt budget, with the node converging one step at a time.
+        for (int pass = 0; pass < 30; pass++) {
+            supervisor.tick();
+            node.tick();
+            clock.advance(TaskQueue.Policy.defaults().claimLease().plusSeconds(1));
+        }
+
+        TaskRecord task = taskOf("task-1").orElseThrow();
+        assertEquals(TaskState.COMPLETED, task.state(),
+            "a task that kept getting somewhere must not be failed: " + task.lastError());
+        assertTrue(task.attempts() <= TaskQueue.Policy.defaults().maxAttempts(),
+            "attempts should track stalls, not passes: " + task.attempts());
+    }
+
     // ---------------------------------------------------------------- claims
 
     @Test
@@ -287,7 +312,7 @@ class TaskQueueTests {
         // A supervisor that claimed and then died, leaving its claim behind.
         store.put(Keys.tasksPrefix(ACME) + "task-1", new TaskRecord(
             "task-1", TaskType.DELETE_INDEX, "my-index", UUID, TaskState.CLAIMED,
-            1000, 1, "dead-supervisor", 1, clock.millis() - 1, 1, null
+            1000, 1, "dead-supervisor", 1, clock.millis() - 1, 1, null, 0
         ).toBytes());
 
         Supervisor supervisor = supervisor("s1");
@@ -303,7 +328,7 @@ class TaskQueueTests {
         createIndex(1);
         store.put(Keys.tasksPrefix(ACME) + "task-1", new TaskRecord(
             "task-1", TaskType.DELETE_INDEX, "my-index", UUID, TaskState.CLAIMED,
-            1000, 1, "other-supervisor", 1, clock.millis() + 600_000, 1, null
+            1000, 1, "other-supervisor", 1, clock.millis() + 600_000, 1, null, 0
         ).toBytes());
 
         Supervisor supervisor = supervisor("s1");

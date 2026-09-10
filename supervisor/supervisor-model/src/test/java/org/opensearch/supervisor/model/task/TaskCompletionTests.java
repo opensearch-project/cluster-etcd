@@ -40,7 +40,7 @@ class TaskCompletionTests {
 
     private static TaskRecord task(TaskType type) {
         return new TaskRecord("task-1", type, "my-index", UUID, TaskState.PENDING,
-            1000, 1, null, 0, 0, 0, null);
+            1000, 1, null, 0, 0, 0, null, 0);
     }
 
     private static IndexConfig index(boolean open, int shards, long configRevision) {
@@ -94,23 +94,39 @@ class TaskCompletionTests {
     // ---------------------------------------------------------------- create and open
 
     @Test
-    void createIsDoneOnceEveryShardIsPlacedOrAssigned() {
-        assertTrue(evaluate(TaskType.CREATE_INDEX, index(true, 1, 3041), holding(3041, ShardState.STARTED)).satisfied());
-    }
-
-    @Test
-    void createIsDoneAsSoonAsTheShardIsAssignedRatherThanRecovered() {
-        // Otherwise a slow recovery holds a task open for as long as it takes, and the queue stops being a
-        // queue. Recovery finishing is the node's business and is already visible in the diff.
-        var verdict = evaluate(TaskType.CREATE_INDEX, index(true, 1, 3041), assignedOnly());
+    void createIsDoneOnceEveryShardHasAServingPrimary() {
+        var verdict = evaluate(TaskType.CREATE_INDEX, index(true, 1, 3041), holding(3041, ShardState.STARTED));
         assertTrue(verdict.satisfied(), verdict.because());
+        assertTrue(verdict.because().contains("usable"), verdict.because());
     }
 
     @Test
-    void createIsNotDoneWhileAnyShardIsUnaccountedFor() {
-        var verdict = evaluate(TaskType.CREATE_INDEX, index(true, 3, 3041), holding(3041, ShardState.STARTED));
-        assertFalse(verdict.satisfied());
-        assertTrue(verdict.because().contains("shard 1"), verdict.because());
+    void createIsNotDoneWhileAShardIsMerelyAssigned() {
+        // Convergence, not "the supervisor has done its part". An index whose shards are assigned but not yet
+        // recovered is not usable, so the task is not done -- and a task that stays open while a large index
+        // recovers is the queue being accurate rather than the queue being slow.
+        var verdict = evaluate(TaskType.CREATE_INDEX, index(true, 1, 3041), assignedOnly());
+        assertFalse(verdict.satisfied(), verdict.because());
+    }
+
+    @Test
+    void createIsNotDoneWhileAPrimaryIsStillInitializing() {
+        var verdict = evaluate(TaskType.CREATE_INDEX, index(true, 1, 3041), holding(3041, ShardState.INITIALIZING));
+        assertFalse(verdict.satisfied(), verdict.because());
+        assertTrue(verdict.because().contains("no started primary"), verdict.because());
+    }
+
+    @Test
+    void createReportsHowFarItHasGotSoSlowCanBeToldFromStuck() {
+        // Only the direction of this number is used, and it is what stops a large index failing its own
+        // creation: a task still advancing renews its claim rather than spending an attempt.
+        var partial = evaluate(TaskType.CREATE_INDEX, index(true, 3, 3041), holding(3041, ShardState.STARTED));
+        assertFalse(partial.satisfied());
+        assertEquals(1, partial.progress(), "one of three shards serving");
+        assertTrue(partial.because().contains("shard 1"), partial.because());
+
+        var none = evaluate(TaskType.CREATE_INDEX, index(true, 3, 3041), empty());
+        assertEquals(0, none.progress());
     }
 
     @Test
@@ -239,9 +255,9 @@ class TaskCompletionTests {
         // R4.5: sequence restarts per control plane process and submitted_at ties constantly, so neither is a
         // global ordering. This one is arbitrary but stable, which is all fairness needs.
         TaskRecord first = new TaskRecord("aaa", TaskType.CREATE_INDEX, "i", UUID, TaskState.PENDING,
-            1000, 99, null, 0, 0, 0, null);
+            1000, 99, null, 0, 0, 0, null, 0);
         TaskRecord second = new TaskRecord("bbb", TaskType.CREATE_INDEX, "i", UUID, TaskState.PENDING,
-            1000, 1, null, 0, 0, 0, null);
+            1000, 1, null, 0, 0, 0, null, 0);
 
         assertTrue(TaskRecord.STABLE_ORDER.compare(first, second) < 0,
             "same millisecond, so the id decides -- not the sequence");

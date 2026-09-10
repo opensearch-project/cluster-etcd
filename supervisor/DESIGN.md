@@ -667,5 +667,10 @@ wants the same fix.
 7. **Allocation policy is entirely undesigned.** This document says where the decision is made and how it is
    bounded, logged and reversible; it says nothing about how to choose a node. Awareness, disk watermarks
    and rebalancing are their own document.
-8. **Rollover.** `generation` only advances on rollover, which the control plane does not implement. By the
+8. **Functional rather than complete task completion.** `SUPERVISOR_KEYS.md` §2: at cloud scale you never
+   have 100% of what you asked for, so "complete convergence" is a definition that eventually stops being
+   satisfied. The replacement asks whether the thing is *usable* — and is genuinely per task type, "is the
+   index reachable" for a create against "is it unreachable" for a delete, which is why it is not the
+   starting point. Revisit when complete convergence stops being reachable at the scale being run.
+9. **Rollover.** `generation` only advances on rollover, which the control plane does not implement. By the
    lifetime rule it is the supervisor's, but that is not yet agreed with the other side.
