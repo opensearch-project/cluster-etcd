@@ -8,6 +8,7 @@ import org.opensearch.supervisor.model.node.ShardInventory;
 import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
 import org.opensearch.supervisor.model.observe.Observation;
+import org.opensearch.supervisor.model.settings.AllocationEnable;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -92,6 +93,19 @@ public final class AllocationContext {
 
     public Optional<Integer> maxCopiesPerNode() {
         return Optional.ofNullable(maxCopiesPerNode);
+    }
+
+    /**
+     * The allocation brake as it applies to this index: its own setting if it has one, else the tenant's.
+     *
+     * <p>Resolved here rather than in the decider so that there is one place the precedence is written down.
+     */
+    public AllocationEnable allocationEnable() {
+        Observation.DesiredState desired = observation.tenants().get(tenant);
+        AllocationEnable clusterValue = desired == null
+            ? AllocationEnable.ALL
+            : desired.settings().allocationEnable();
+        return index.effectiveAllocationEnable(clusterValue);
     }
 
     /** Total desired copies of this shard: one primary plus its replicas. */

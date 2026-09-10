@@ -2,6 +2,7 @@ package org.opensearch.supervisor.model.index;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.opensearch.supervisor.model.Json;
+import org.opensearch.supervisor.model.settings.AllocationEnable;
 import org.opensearch.supervisor.model.status.Replication;
 
 import java.util.Locale;
@@ -35,6 +36,7 @@ public record IndexConfig(
     int numberOfReplicas,
     Replication replication,
     boolean hidden,
+    AllocationEnable allocationEnable,
     long configRevision
 ) {
 
@@ -43,8 +45,14 @@ public record IndexConfig(
     public static final String SETTING_REPLICATION = "index.replication.type";
     public static final String SETTING_HIDDEN = "index.hidden";
 
+    /** Overrides the cluster-wide value, so one index can be frozen without freezing the rest. */
+    public static final String SETTING_ALLOCATION_ENABLE = "index.routing.allocation.enable";
+
     public IndexConfig {
         Objects.requireNonNull(name, "name");
+        // UNKNOWN here means "the index says nothing", which is different from an unrecognised value and is
+        // resolved by falling back to the cluster setting -- see effectiveAllocationEnable.
+        allocationEnable = allocationEnable == null ? AllocationEnable.UNKNOWN : allocationEnable;
         Objects.requireNonNull(uuid, "uuid");
         if (numberOfShards < 1) {
             throw new IllegalArgumentException("index [" + name + "] declares " + numberOfShards + " shards");
@@ -52,6 +60,17 @@ public record IndexConfig(
         if (numberOfReplicas < 0) {
             throw new IllegalArgumentException("index [" + name + "] declares " + numberOfReplicas + " replicas");
         }
+    }
+
+    /**
+     * What actually applies to this index: its own setting if it has one, otherwise the cluster's.
+     *
+     * <p>Index over cluster, matching OpenSearch, and the reason is asymmetric: an operator freezing one index
+     * should not have to know what the cluster-wide value is, while one freezing the cluster expects it to hold
+     * everywhere they have not said otherwise.
+     */
+    public AllocationEnable effectiveAllocationEnable(AllocationEnable clusterValue) {
+        return allocationEnable == AllocationEnable.UNKNOWN ? clusterValue : allocationEnable;
     }
 
     /** Copies desired per shard: one primary plus its replicas. */
@@ -93,6 +112,7 @@ public record IndexConfig(
             intSetting(settings, SETTING_REPLICAS, 0, name),
             Replication.from(stringSetting(settings, SETTING_REPLICATION, "SEGMENT")),
             Boolean.parseBoolean(stringSetting(settings, SETTING_HIDDEN, "false")),
+            AllocationEnable.from(stringSetting(settings, SETTING_ALLOCATION_ENABLE, null)),
             configRevision
         );
     }

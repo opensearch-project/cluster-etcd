@@ -79,11 +79,17 @@ public final class Projector {
         List<ProjectedFinding> findings
     ) {}
 
+    /**
+     * @param unplaceableBecause why the allocator could not act on this finding, when it tried and failed.
+     *     Kept beside {@code because} rather than folded into it, because the two answer different questions:
+     *     one says what is wrong, the other says what is stopping it being fixed, and an operator needs both.
+     */
     public record ProjectedFinding(
         String kind,
         String severity,
         String subject,
         String because,
+        String unplaceableBecause,
         long firstObservedPass,
         long passes
     ) {}
@@ -131,7 +137,7 @@ public final class Projector {
     public record Trend(int window, int delta) {}
 
     public void project(Diff diff, Observation observation, long passDurationMillis, long watchPollFailures) {
-        project(diff, observation, passDurationMillis, watchPollFailures, Tasks.NONE);
+        project(diff, observation, passDurationMillis, watchPollFailures, Tasks.NONE, Map.of());
     }
 
     public void project(
@@ -139,13 +145,14 @@ public final class Projector {
         Observation observation,
         long passDurationMillis,
         long watchPollFailures,
-        Tasks tasks
+        Tasks tasks,
+        Map<String, String> refusals
     ) {
-        projectTenantDiffs(diff, observation);
+        projectTenantDiffs(diff, observation, refusals);
         projectConvergence(diff, observation, passDurationMillis, watchPollFailures, tasks);
     }
 
-    private void projectTenantDiffs(Diff diff, Observation observation) {
+    private void projectTenantDiffs(Diff diff, Observation observation, Map<String, String> refusals) {
         // A tenant with findings gets a document; a tenant whose findings have all cleared gets an empty
         // one rather than a deleted key, so that "nothing wrong" is distinguishable from "never looked".
         Map<TenantId, List<Finding>> byTenant = new LinkedHashMap<>();
@@ -163,7 +170,7 @@ public final class Projector {
 
             List<ProjectedFinding> shown = findings.stream()
                 .limit(MAX_FINDINGS_SHOWN)
-                .map(Projector::project)
+                .map(finding -> project(finding, refusals.get(finding.subject().key())))
                 .toList();
 
             // The change check deliberately ignores the pass number and the timestamp. Including them
@@ -181,12 +188,13 @@ public final class Projector {
         });
     }
 
-    private static ProjectedFinding project(Finding finding) {
+    private static ProjectedFinding project(Finding finding, String unplaceableBecause) {
         return new ProjectedFinding(
             finding.kind().name(),
             finding.severity().name().toLowerCase(java.util.Locale.ROOT),
             finding.subject().key(),
             finding.because(),
+            unplaceableBecause,
             finding.firstObservedPass(),
             finding.passes()
         );

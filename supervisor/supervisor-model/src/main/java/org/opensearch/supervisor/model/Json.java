@@ -23,6 +23,7 @@ import org.opensearch.supervisor.model.pool.PoolKind;
 import org.opensearch.supervisor.model.status.HealthStatus;
 import org.opensearch.supervisor.model.status.Liveness;
 import org.opensearch.supervisor.model.status.Replication;
+import org.opensearch.supervisor.model.settings.AllocationEnable;
 import org.opensearch.supervisor.model.task.TaskState;
 import org.opensearch.supervisor.model.task.TaskType;
 
@@ -71,6 +72,7 @@ public final class Json {
         registerWireEnum(module, PoolKind.class, PoolKind::from);
         registerWireEnum(module, TaskState.class, TaskState::from);
         registerWireEnum(module, TaskType.class, TaskType::from);
+        registerWireEnum(module, AllocationEnable.class, AllocationEnable::from);
 
         return JsonMapper.builder()
             .addModule(module)

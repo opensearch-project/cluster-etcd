@@ -105,7 +105,7 @@ class PlannerTests {
     }
 
     private static IndexConfig index(String uuid, String name, int shards) {
-        return new IndexConfig(name, uuid, true, shards, 0, Replication.SEGMENT, false, 3041);
+        return new IndexConfig(name, uuid, true, shards, 0, Replication.SEGMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
     }
 
     private static Observation observe(
@@ -210,7 +210,7 @@ class PlannerTests {
 
     @Test
     void doesNothingForAClosedIndex() {
-        IndexConfig closed = new IndexConfig("my-index", UUID, false, 1, 0, Replication.SEGMENT, false, 3041);
+        IndexConfig closed = new IndexConfig("my-index", UUID, false, 1, 0, Replication.SEGMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
         Plan plan = planAfter(5, observe(5,
             Map.of(ACME, Map.of(UUID, closed)),
             Map.of(EMPTY_NODE, node(EMPTY_NODE, 900))
@@ -372,7 +372,7 @@ class PlannerTests {
     void aMissingReplicaIsNowPlacedToo() {
         // The allocator's rules only mean anything once there is more than one copy of a shard to arrange, so
         // replica placement arrived with it rather than after it.
-        IndexConfig withReplica = new IndexConfig("my-index", UUID, true, 1, 1, Replication.SEGMENT, false, 3041);
+        IndexConfig withReplica = new IndexConfig("my-index", UUID, true, 1, 1, Replication.SEGMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
         Observation observation = observe(5,
             Map.of(ACME, Map.of(UUID, withReplica)),
             Map.of(
@@ -415,7 +415,7 @@ class PlannerTests {
             Liveness.LIVE, POOL, null, 0
         );
 
-        IndexConfig withReplica = new IndexConfig("my-index", UUID, true, 1, 1, Replication.SEGMENT, false, 3041);
+        IndexConfig withReplica = new IndexConfig("my-index", UUID, true, 1, 1, Replication.SEGMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
         Observation observation = observe(5,
             Map.of(ACME, Map.of(UUID, withReplica)),
             Map.of(EMPTY_NODE, primary, FULL_NODE, neighbour)
@@ -427,7 +427,7 @@ class PlannerTests {
 
     @Test
     void aDocumentReplicationReplicaIsCalledAReplica() {
-        IndexConfig docrep = new IndexConfig("my-index", UUID, true, 1, 1, Replication.DOCUMENT, false, 3041);
+        IndexConfig docrep = new IndexConfig("my-index", UUID, true, 1, 1, Replication.DOCUMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
         Observation observation = observe(5,
             Map.of(ACME, Map.of(UUID, docrep)),
             Map.of(
@@ -446,7 +446,7 @@ class PlannerTests {
     void aPrimaryIsPlacedBeforeItsReplicaInTheSamePass() {
         // Ordering rather than relying on the decider to make a too-early replica wait: a pass that reaches the
         // primary first converges in one round instead of two.
-        IndexConfig docrep = new IndexConfig("my-index", UUID, true, 1, 1, Replication.DOCUMENT, false, 3041);
+        IndexConfig docrep = new IndexConfig("my-index", UUID, true, 1, 1, Replication.DOCUMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
         Observation observation = observe(5,
             Map.of(ACME, Map.of(UUID, docrep)),
             Map.of(EMPTY_NODE, node(EMPTY_NODE, 900_000_000), FULL_NODE, node(FULL_NODE, 900_000_000))

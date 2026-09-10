@@ -42,7 +42,7 @@ class DifferTests {
     // ---------------------------------------------------------------- builders
 
     private static IndexConfig index(int shards, int replicas) {
-        return new IndexConfig("my-index", UUID, true, shards, replicas, Replication.SEGMENT, false, 3041);
+        return new IndexConfig("my-index", UUID, true, shards, replicas, Replication.SEGMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
     }
 
     private static Registration registration(NodeId node) {
@@ -96,7 +96,7 @@ class DifferTests {
     void aClosedIndexWantsNothingAndIsNotAFinding() {
         // A closed index still has settings and mappings and still exists; it simply should not be serving,
         // and OpenSearch reports it green with no shards.
-        IndexConfig closed = new IndexConfig("my-index", UUID, false, 3, 1, Replication.SEGMENT, false, 3041);
+        IndexConfig closed = new IndexConfig("my-index", UUID, false, 3, 1, Replication.SEGMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
 
         assertTrue(Differ.diff(observe(closed, Map.of())).isEmpty());
         assertEquals(0, closed.desiredCopies());
@@ -224,7 +224,7 @@ class DifferTests {
 
     @Test
     void replicasWithNoServingPrimaryUnderDocrepAreAPlanningMistake() {
-        IndexConfig docrep = new IndexConfig("my-index", UUID, true, 1, 1, Replication.DOCUMENT, false, 3041);
+        IndexConfig docrep = new IndexConfig("my-index", UUID, true, 1, 1, Replication.DOCUMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
         Diff diff = Differ.diff(observe(docrep, Map.of(
             NODE_A, node(NODE_A, Liveness.LIVE, holding(NODE_A, Map.of(0, copy(ShardRole.PRIMARY, ShardState.INITIALIZING)))),
             NODE_B, node(NODE_B, Liveness.LIVE, holding(NODE_B, Map.of(0, copy(ShardRole.REPLICA, ShardState.INITIALIZING))))

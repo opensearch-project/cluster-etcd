@@ -125,7 +125,10 @@ public final class SupervisorLoop {
         // The queue drains after this, so these are the *previous* pass's figures. One pass of lag is the
         // price of tasks being a hint rather than a driver: draining first would let a task decide what gets
         // reconciled, which R2.1 forbids. The alternative -- projecting twice per pass -- costs a write.
-        projector.project(diff, observation, clock.millis() - startedAt, watchPollFailures(), taskFigures());
+        projector.project(
+            diff, observation, clock.millis() - startedAt, watchPollFailures(), taskFigures(),
+            lastPlan == null ? java.util.Map.of() : lastPlan.refusals()
+        );
 
         lastDiff = diff;
         lastPlan = null;

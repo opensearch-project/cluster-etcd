@@ -44,7 +44,7 @@ class TaskCompletionTests {
     }
 
     private static IndexConfig index(boolean open, int shards, long configRevision) {
-        return new IndexConfig("my-index", UUID, open, shards, 0, Replication.SEGMENT, false, configRevision);
+        return new IndexConfig("my-index", UUID, open, shards, 0, Replication.SEGMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, configRevision);
     }
 
     private static Registration registration() {

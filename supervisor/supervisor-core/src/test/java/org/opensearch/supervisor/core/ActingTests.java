@@ -356,6 +356,85 @@ class ActingTests {
         assertEquals(2, data.inventory().copyCount());
     }
 
+    // ---------------------------------------------------------------- the operator's brake
+
+    @Test
+    void anOperatorCanStopAllocationAndTheDiffSaysWhy() {
+        // The whole point of a brake is that pulling it is visible. An operator who disables allocation and
+        // then sees "shard 0 has no primary" with no further explanation has been given a mystery of their own
+        // making, which is the worst kind.
+        FakeNode data = node(NODE);
+        data.start();
+        createIndex(1, 0);
+        store.put(Keys.clusterSettings(ACME),
+            ("{\"persistent\":{\"" + org.opensearch.supervisor.model.settings.ClusterSettings.ALLOCATION_ENABLE
+                + "\":\"none\"},\"transient\":{}}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        assertEquals(0, data.inventory().copyCount(), "nothing should have been placed");
+        assertTrue(store.scanPrefix(Keys.NODE_ASSIGNMENT_PREFIX).isEmpty());
+
+        // And the reason reaches the document an operator reads, not just the log.
+        String diff = new String(store.get(Keys.tenantDiff(ACME)).orElseThrow().value(),
+            java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(diff.contains("enable_allocation"), diff);
+        assertTrue(diff.contains("somebody asked it to stop"), diff);
+    }
+
+    @Test
+    void releasingTheBrakeLetsTheWorkProceed() {
+        FakeNode data = node(NODE);
+        data.start();
+        createIndex(1, 0);
+        store.put(Keys.clusterSettings(ACME),
+            ("{\"persistent\":{\"" + org.opensearch.supervisor.model.settings.ClusterSettings.ALLOCATION_ENABLE
+                + "\":\"none\"},\"transient\":{}}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 6; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+        assertEquals(0, data.inventory().copyCount());
+
+        store.delete(Keys.clusterSettings(ACME));
+        for (int pass = 0; pass < 6; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        assertEquals(1, data.inventory().copyCount());
+        assertTrue(supervisor.lastDiffOf(POOL).isEmpty());
+    }
+
+    @Test
+    void anUnplaceableShardCarriesTheAllocatorsReasonIntoTheProjectedDiff() {
+        // The sentence the deciders exist to produce. An earlier version computed it and threw it away.
+        FakeNode data = node(NODE);
+        data.start();
+        createIndex(1, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        String diff = new String(store.get(Keys.tenantDiff(ACME)).orElseThrow().value(),
+            java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(diff.contains("unplaceable_because"), diff);
+        assertTrue(diff.contains("same_shard"), "the one other node already holds the primary: " + diff);
+    }
+
     // ---------------------------------------------------------------- replicas and awareness
 
     @Test

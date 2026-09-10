@@ -61,10 +61,25 @@ class ObserverTests {
         final AtomicInteger gets = new AtomicInteger();
         final AtomicInteger scans = new AtomicInteger();
 
+        /**
+         * Reads per key, not just a total.
+         *
+         * <p>A total is the wrong assertion for "this document is not re-read": it changes whenever anything
+         * else starts reading anything, which is how these tests broke when the observer began reading cluster
+         * settings for the allocation brake — a read that costs one small get per tenant per pass and is
+         * nothing to do with inventories.
+         */
+        final java.util.Map<String, Integer> getsByKey = new java.util.concurrent.ConcurrentHashMap<>();
+
         @Override
         public Optional<Versioned> get(String key) {
             gets.incrementAndGet();
+            getsByKey.merge(key, 1, Integer::sum);
             return delegate.get(key);
+        }
+
+        int getsOf(String key) {
+            return getsByKey.getOrDefault(key, 0);
         }
 
         @Override
@@ -217,12 +232,14 @@ class ObserverTests {
         heartbeat(NODE_A, digest, 1);
 
         observe();
-        int getsAfterFirstPass = store.gets.get();
+        int inventoryReads = store.getsOf(Keys.nodeShards(NODE_A));
+        assertEquals(1, inventoryReads);
 
         observe();
         observe();
 
-        assertEquals(getsAfterFirstPass, store.gets.get(), "inventory was re-read despite an unchanged digest");
+        assertEquals(inventoryReads, store.getsOf(Keys.nodeShards(NODE_A)),
+            "inventory was re-read despite an unchanged digest");
     }
 
     @Test
@@ -230,12 +247,12 @@ class ObserverTests {
         register(NODE_A, POOL);
         heartbeat(NODE_A, writeInventory(NODE_A, ShardState.INITIALIZING), 1);
         observe();
-        int before = store.gets.get();
+        int before = store.getsOf(Keys.nodeShards(NODE_A));
 
         heartbeat(NODE_A, writeInventory(NODE_A, ShardState.STARTED), 1);
         Observation observation = observe();
 
-        assertEquals(before + 1, store.gets.get());
+        assertEquals(before + 1, store.getsOf(Keys.nodeShards(NODE_A)));
         assertEquals(
             ShardState.STARTED,
             observation.nodes().get(NODE_A).inventory()

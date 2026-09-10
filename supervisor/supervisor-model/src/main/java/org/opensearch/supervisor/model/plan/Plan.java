@@ -21,6 +21,11 @@ import java.util.Set;
  *
  * @param epoch the lease epoch this plan was computed under, stamped into every assignment it writes so a
  *     split brain is diagnosable afterwards from data the system already wrote
+ * @param refusals subject key to the allocator's reason, for copies it wanted to place and could not.
+ *     <b>The most useful thing in this record.</b> "Shard 3 is unassigned" is the most common unanswerable
+ *     question an operator has about a cluster, and the deciders compute the answer as a side effect of
+ *     refusing — throwing it away, which an earlier version did, wasted the entire point of splitting the
+ *     rules up.
  */
 public record Plan(
     long pass,
@@ -28,17 +33,23 @@ public record Plan(
     PoolId pool,
     long epoch,
     List<Instruction> instructions,
-    boolean ceilingHit
+    boolean ceilingHit,
+    Map<String, String> refusals
 ) {
 
     public Plan {
         Objects.requireNonNull(pool, "pool");
         Objects.requireNonNull(observedAt, "observedAt");
         instructions = instructions == null ? List.of() : List.copyOf(instructions);
+        refusals = refusals == null ? Map.of() : Map.copyOf(refusals);
     }
 
     public static Plan empty(long pass, Instant observedAt, PoolId pool, long epoch) {
-        return new Plan(pass, observedAt, pool, epoch, List.of(), false);
+        return new Plan(pass, observedAt, pool, epoch, List.of(), false, Map.of());
+    }
+
+    public static Plan empty(long pass, Instant observedAt, PoolId pool, long epoch, Map<String, String> refusals) {
+        return new Plan(pass, observedAt, pool, epoch, List.of(), false, refusals);
     }
 
     public boolean isEmpty() {

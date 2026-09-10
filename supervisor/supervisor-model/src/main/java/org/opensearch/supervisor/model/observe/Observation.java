@@ -8,6 +8,7 @@ import org.opensearch.supervisor.model.node.Assignment;
 import org.opensearch.supervisor.model.node.Heartbeat;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
+import org.opensearch.supervisor.model.settings.ClusterSettings;
 import org.opensearch.supervisor.model.status.Liveness;
 import org.opensearch.supervisor.model.task.TaskRecord;
 
@@ -63,18 +64,27 @@ public record Observation(
      *     own subtree and because the diff reports on it — but <b>never a source of intent</b>: the indices
      *     are what say what should exist, and R2.1 requires the same answer with this list empty.
      */
-    public record DesiredState(Map<String, IndexConfig> indicesByUuid, List<TaskRecord> tasks) {
+    public record DesiredState(
+        Map<String, IndexConfig> indicesByUuid,
+        List<TaskRecord> tasks,
+        ClusterSettings settings
+    ) {
         public DesiredState {
             indicesByUuid = indicesByUuid == null ? Map.of() : Map.copyOf(indicesByUuid);
             tasks = tasks == null ? List.of() : List.copyOf(tasks);
+            settings = settings == null ? ClusterSettings.EMPTY : settings;
         }
 
         public DesiredState(Map<String, IndexConfig> indicesByUuid) {
-            this(indicesByUuid, List.of());
+            this(indicesByUuid, List.of(), ClusterSettings.EMPTY);
+        }
+
+        public DesiredState(Map<String, IndexConfig> indicesByUuid, List<TaskRecord> tasks) {
+            this(indicesByUuid, tasks, ClusterSettings.EMPTY);
         }
 
         public static DesiredState empty() {
-            return new DesiredState(Map.of(), List.of());
+            return new DesiredState(Map.of(), List.of(), ClusterSettings.EMPTY);
         }
     }
 

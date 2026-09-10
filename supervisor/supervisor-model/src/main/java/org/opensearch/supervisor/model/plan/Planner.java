@@ -98,6 +98,7 @@ public final class Planner {
         List<NodeId> candidates = Allocator.candidatesOf(observation);
 
         Map<TenantId, Integer> perTenant = new LinkedHashMap<>();
+        Map<String, String> refusals = new LinkedHashMap<>();
         List<Instruction> instructions = new ArrayList<>();
         boolean ceilingHit = false;
 
@@ -140,9 +141,10 @@ public final class Planner {
 
             Allocator.Outcome outcome = allocator.choose(context, candidates);
             if (outcome.placed() == false) {
-                // Deliberately not a finding of its own. The diff already reports the shard as unassigned; what
-                // the allocator adds is the reason, and it is carried in that finding rather than duplicated
-                // into a second one saying the same thing less clearly.
+                // Not a finding of its own -- the diff already says the shard is unassigned -- but the reason
+                // is kept and projected alongside that finding. An earlier version computed this sentence and
+                // dropped it, which threw away the entire benefit of having rules that can explain themselves.
+                refusals.put(finding.subject().key(), outcome.refusal().because());
                 continue;
             }
 
@@ -162,7 +164,7 @@ public final class Planner {
         }
 
         return new Plan(observation.pass(), observation.observedAt(), observation.pool(), epoch,
-            instructions, ceilingHit);
+            instructions, ceilingHit, refusals);
     }
 
     /**

@@ -39,7 +39,7 @@ class StatusComputationTests {
     private static final NodeId NODE_B = NodeId.of("nodeBBBBBBBBBBBBBBBBBB");
 
     private static IndexConfig index(boolean open, int shards, int replicas) {
-        return new IndexConfig("my-index", UUID, open, shards, replicas, Replication.SEGMENT, false, 3041);
+        return new IndexConfig("my-index", UUID, open, shards, replicas, Replication.SEGMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
     }
 
     private static Registration registration(NodeId node, Map<String, String> attributes) {
@@ -214,7 +214,7 @@ class StatusComputationTests {
         String other = "otherIndexUuidAAAAAAA";
         Map<TenantId, Observation.DesiredState> tenants = Map.of(ACME, new Observation.DesiredState(Map.of(
             UUID, index(true, 1, 0),
-            other, new IndexConfig("other", other, true, 1, 0, Replication.SEGMENT, false, 1)
+            other, new IndexConfig("other", other, true, 1, 0, Replication.SEGMENT, false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 1)
         ), List.of()));
         Observation observation = new Observation(7, Instant.ofEpochMilli(1_000_000), POOL, tenants, Map.of(
             NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))

@@ -59,6 +59,14 @@ public final class Keys {
     }
 
     /**
+     * Cluster-wide settings, written by {@code cluster.put_settings}. The supervisor reads one of them: the
+     * allocation brake. Control-plane-owned, and never written here.
+     */
+    public static String clusterSettings(TenantId tenant) {
+        return tenantPrefix(tenant) + "cluster/settings";
+    }
+
+    /**
      * The work queue. Jointly owned: the control plane creates records, the supervisor claims, completes
      * and reaps them, and the control plane never revisits one. See {@code SUPERVISOR_KEYS.md} §2 — this
      * is the one place the supervisor writes a key the control plane also writes, and it is deliberate.

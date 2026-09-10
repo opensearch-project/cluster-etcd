@@ -680,10 +680,11 @@ wants the same fix.
    else forces a placement. Rebalancing needs remove-after-add, a cost model for moving data, and oscillation
    detection sharper than the current one, and is its own piece of work.
 
-   Deciders deliberately not implemented, with the reason: `EnableAllocationDecider` (an operator's emergency
-   brake, and worth having — it needs `tenant/<t>/cluster/settings`, which nothing observes yet),
-   `NodeVersionAllocationDecider` (ordering during a rolling upgrade), and everything about snapshot and
-   restore state, which this service does not model.
+   Deciders deliberately not implemented, with the reason: `NodeVersionAllocationDecider` (ordering during a
+   rolling upgrade), and everything about snapshot and restore state, which this service does not model.
+   `EnableAllocationDecider` is now implemented — with the caveat that `new_primaries` is applied as `none`,
+   because telling a never-allocated shard from one whose copies have all gone needs per-shard history nothing
+   here keeps.
 8. **Functional rather than complete task completion.** `SUPERVISOR_KEYS.md` §2: at cloud scale you never
    have 100% of what you asked for, so "complete convergence" is a definition that eventually stops being
    satisfied. The replacement asks whether the thing is *usable* — and is genuinely per task type, "is the

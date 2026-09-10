@@ -55,6 +55,8 @@ public final class Observer {
     private final RevisionCache<Heartbeat> heartbeats = new RevisionCache<>();
     private final RevisionCache<IndexConfig> indices = new RevisionCache<>();
     private final RevisionCache<Assignment> assignments = new RevisionCache<>();
+    private final RevisionCache<org.opensearch.supervisor.model.settings.ClusterSettings> settings =
+        new RevisionCache<>();
 
     /** Inventories are cached by the digest their bytes hashed to, not by revision — see below. */
     private final Map<NodeId, DigestedInventory> inventories = new HashMap<>();
@@ -282,7 +284,7 @@ public final class Observer {
                 continue;
             }
             tenants.put(tenant, new Observation.DesiredState(
-                indicesOf(tenant, unreadable), tasksOf(tenant, unreadable)
+                indicesOf(tenant, unreadable), tasksOf(tenant, unreadable), settingsOf(tenant, unreadable)
             ));
         }
         return tenants;
@@ -323,6 +325,32 @@ public final class Observer {
             }
         }
         return tasks;
+    }
+
+    /**
+     * The tenant's cluster settings, of which the supervisor reads one: the allocation brake.
+     *
+     * <p>Cached by revision, because it changes almost never and is read every pass.
+     */
+    private org.opensearch.supervisor.model.settings.ClusterSettings settingsOf(
+        TenantId tenant,
+        List<String> unreadable
+    ) {
+        String key = Keys.clusterSettings(tenant);
+        var versioned = store.get(key);
+        if (versioned.isEmpty()) {
+            return org.opensearch.supervisor.model.settings.ClusterSettings.EMPTY;
+        }
+        try {
+            return settings.get(key, versioned.get().revision(),
+                ignored -> org.opensearch.supervisor.model.settings.ClusterSettings.parse(versioned.get().value()));
+        } catch (RuntimeException e) {
+            // An unreadable settings document must not be read as "no settings": that would silently release
+            // an operator's brake. Reported, and the previous cached value is dropped so nothing stale applies.
+            settings.forget(key);
+            unreadable.add(key);
+            return org.opensearch.supervisor.model.settings.ClusterSettings.EMPTY;
+        }
     }
 
     // ---------------------------------------------------------------- helpers

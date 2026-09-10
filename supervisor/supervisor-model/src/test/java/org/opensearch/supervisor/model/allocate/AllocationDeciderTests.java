@@ -12,6 +12,8 @@ import org.opensearch.supervisor.model.node.ShardInventory;
 import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
 import org.opensearch.supervisor.model.observe.Observation;
+import org.opensearch.supervisor.model.settings.AllocationEnable;
+import org.opensearch.supervisor.model.settings.ClusterSettings;
 import org.opensearch.supervisor.model.status.Liveness;
 import org.opensearch.supervisor.model.status.Replication;
 
@@ -112,6 +114,27 @@ class AllocationDeciderTests {
         }
     }
 
+    private static AllocationContext braked(
+        String clusterValue,
+        String indexValue,
+        ShardRole role,
+        NodeBuilder... nodes
+    ) {
+        Map<NodeId, Observation.NodeObservation> observed = new LinkedHashMap<>();
+        for (NodeBuilder node : nodes) {
+            observed.put(node.id(), node.build());
+        }
+        IndexConfig index = new IndexConfig("my-index", UUID, true, 1, 1, Replication.SEGMENT, false,
+            AllocationEnable.from(indexValue), 3041);
+        ClusterSettings settings = clusterValue == null
+            ? ClusterSettings.EMPTY
+            : new ClusterSettings(Map.of(ClusterSettings.ALLOCATION_ENABLE, clusterValue), Map.of());
+        Observation observation = new Observation(1, Instant.EPOCH, POOL,
+            Map.of(ACME, new Observation.DesiredState(Map.of(UUID, index), List.of(), settings)),
+            observed, List.of());
+        return new AllocationContext(ACME, index, 0, role, observation, List.of(), null, List.of());
+    }
+
     private static AllocationContext context(
         int replicas,
         Replication replication,
@@ -124,7 +147,8 @@ class AllocationDeciderTests {
         for (NodeBuilder node : nodes) {
             observed.put(node.id(), node.build());
         }
-        IndexConfig index = new IndexConfig("my-index", UUID, true, 1, replicas, replication, false, 3041);
+        IndexConfig index = new IndexConfig("my-index", UUID, true, 1, replicas, replication, false,
+            org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
         Observation observation = new Observation(1, Instant.EPOCH, POOL,
             Map.of(ACME, new Observation.DesiredState(Map.of(UUID, index), List.of())), observed, List.of());
         return new AllocationContext(ACME, index, 0, role, observation, awareness, maxPerNode, List.of());
@@ -355,6 +379,103 @@ class AllocationDeciderTests {
         var context = context(1, Replication.DOCUMENT, ShardRole.PRIMARY, List.of(), null, NodeBuilder.of(A));
 
         assertTrue(new ReplicaAfterPrimaryDecider().canAllocate(context, A).isAllowed());
+    }
+
+    // ---------------------------------------------------------------- the operator's brake
+
+    @Test
+    void allocationIsEnabledByDefault() {
+        assertTrue(new EnableAllocationDecider()
+            .canAllocate(braked(null, null, ShardRole.PRIMARY, NodeBuilder.of(A)), A).isAllowed());
+    }
+
+    @Test
+    void noneStopsEverything() {
+        var decision = new EnableAllocationDecider()
+            .canAllocate(braked("none", null, ShardRole.PRIMARY, NodeBuilder.of(A)), A);
+
+        assertEquals(Decision.Type.NO, decision.type());
+        assertTrue(decision.because().contains("somebody asked it to stop"), decision.because());
+    }
+
+    @Test
+    void primariesAllowsAPrimaryAndRefusesAReplica() {
+        var decider = new EnableAllocationDecider();
+
+        assertTrue(decider.canAllocate(braked("primaries", null, ShardRole.PRIMARY, NodeBuilder.of(A)), A)
+            .isAllowed());
+        assertEquals(Decision.Type.NO,
+            decider.canAllocate(braked("primaries", null, ShardRole.SEARCH_REPLICA, NodeBuilder.of(A)), A).type());
+    }
+
+    @Test
+    void anIndexSettingBeatsTheClusterOne() {
+        // Asymmetric on purpose: an operator freezing one index should not have to know the cluster-wide value,
+        // while one freezing the cluster expects it to hold wherever they have not said otherwise.
+        var decider = new EnableAllocationDecider();
+
+        assertTrue(decider.canAllocate(braked("none", "all", ShardRole.PRIMARY, NodeBuilder.of(A)), A)
+            .isAllowed(), "the index says all");
+        assertEquals(Decision.Type.NO,
+            decider.canAllocate(braked("all", "none", ShardRole.PRIMARY, NodeBuilder.of(A)), A).type(),
+            "the index says none");
+    }
+
+    @Test
+    void newPrimariesIsAppliedAsNoneAndSaysWhy() {
+        // Telling a never-allocated shard from one whose copies have all gone needs per-shard history that
+        // nothing here keeps. Refusing is the safe direction: an operator who set this was protecting the
+        // cluster from data movement, and allowing recovery would give them more of it than they asked for.
+        var decision = new EnableAllocationDecider()
+            .canAllocate(braked("new_primaries", null, ShardRole.PRIMARY, NodeBuilder.of(A)), A);
+
+        assertEquals(Decision.Type.NO, decision.type());
+        assertTrue(decision.because().contains("applied as"), decision.because());
+        assertTrue(decision.because().contains("per-shard history"), decision.because());
+    }
+
+    @Test
+    void anUnrecognisedValueStopsAllocationRatherThanBeingIgnored() {
+        // A value an operator meant something by. Assuming [all] would silently ignore an instruction to stop,
+        // which is the one failure mode a brake must not have.
+        var decision = new EnableAllocationDecider()
+            .canAllocate(braked("primaries_only_maybe", null, ShardRole.PRIMARY, NodeBuilder.of(A)), A);
+
+        assertEquals(Decision.Type.NO, decision.type());
+        assertTrue(decision.because().contains("does not recognise"), decision.because());
+    }
+
+    @Test
+    void transientSettingsBeatPersistentOnes() {
+        // The whole point of the distinction: transient is what an operator sets for the duration of an
+        // incident, and it would be useless if a persistent value could override it.
+        var settings = new ClusterSettings(
+            Map.of(ClusterSettings.ALLOCATION_ENABLE, "all"),
+            Map.of(ClusterSettings.ALLOCATION_ENABLE, "none")
+        );
+        assertEquals(AllocationEnable.NONE, settings.allocationEnable());
+    }
+
+    @Test
+    void clusterSettingsReadValuesThatAreNotStrings() {
+        // cluster/settings carries whatever a client sent, unlike index settings which the control plane
+        // normalises, so a bare token has to survive being read.
+        var settings = ClusterSettings.parse(
+            "{\"persistent\":{\"cluster.routing.allocation.enable\":\"none\"},\"transient\":{}}"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+        assertEquals(AllocationEnable.NONE, settings.allocationEnable());
+    }
+
+    @Test
+    void theBrakeIsTheFirstThingARefusalMentions() {
+        // A refusal an operator caused should read before every refusal the cluster caused.
+        var context = braked("none", null, ShardRole.PRIMARY, NodeBuilder.of(A).roles(NodeRole.COORDINATOR));
+        var outcome = new Allocator().choose(context, List.of(A));
+
+        assertFalse(outcome.placed());
+        String summary = outcome.refusal().verdicts().get(A).summary();
+        assertTrue(summary.indexOf("enable_allocation") < summary.indexOf("node_role"), summary);
     }
 
     // ---------------------------------------------------------------- the allocator over all of them

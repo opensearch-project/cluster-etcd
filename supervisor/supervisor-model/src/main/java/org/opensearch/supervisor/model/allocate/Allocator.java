@@ -53,6 +53,8 @@ public final class Allocator {
     /** The default set, in the order their explanations read best. */
     public static List<AllocationDecider> defaultDeciders() {
         return List.of(
+            // First, so that a refusal an operator caused reads before every refusal the cluster caused.
+            new EnableAllocationDecider(),
             new NodeRoleDecider(),
             new ReplicaAfterPrimaryDecider(),
             new SameShardDecider(),
