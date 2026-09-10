@@ -105,9 +105,20 @@ public final class Projector {
         long passesSinceEmpty,
         Trend trend,
         Map<String, TenantSummary> tenants,
+        Tasks tasks,
         int unreadableDocuments,
         long watchPollFailures
     ) {}
+
+    /**
+     * What the queue did this pass.
+     *
+     * <p>Worth publishing because a queue that has stopped draining is invisible otherwise: the control plane
+     * would keep reporting a growing pile through {@code cluster.pending_tasks} and nothing would say why.
+     */
+    public record Tasks(int claimed, int completed, int failed, int reaped, int lost) {
+        public static final Tasks NONE = new Tasks(0, 0, 0, 0, 0);
+    }
 
     /** Per tenant, capped at the worst {@link #MAX_TENANTS_SHOWN} so this cannot grow with tenant count. */
     public record TenantSummary(int findings, long oldestPasses) {}
@@ -120,8 +131,18 @@ public final class Projector {
     public record Trend(int window, int delta) {}
 
     public void project(Diff diff, Observation observation, long passDurationMillis, long watchPollFailures) {
+        project(diff, observation, passDurationMillis, watchPollFailures, Tasks.NONE);
+    }
+
+    public void project(
+        Diff diff,
+        Observation observation,
+        long passDurationMillis,
+        long watchPollFailures,
+        Tasks tasks
+    ) {
         projectTenantDiffs(diff, observation);
-        projectConvergence(diff, observation, passDurationMillis, watchPollFailures);
+        projectConvergence(diff, observation, passDurationMillis, watchPollFailures, tasks);
     }
 
     private void projectTenantDiffs(Diff diff, Observation observation) {
@@ -175,7 +196,8 @@ public final class Projector {
         Diff diff,
         Observation observation,
         long passDurationMillis,
-        long watchPollFailures
+        long watchPollFailures,
+        Tasks tasks
     ) {
         int total = diff.findings().size();
         recentTotals.addLast(total);
@@ -212,6 +234,7 @@ public final class Projector {
             lastEmptyDiffPass == 0 ? diff.pass() : diff.pass() - lastEmptyDiffPass,
             new Trend(recentTotals.size(), delta),
             worstTenants(diff),
+            tasks,
             observation.unreadable().size(),
             watchPollFailures
         ), "convergence", null);

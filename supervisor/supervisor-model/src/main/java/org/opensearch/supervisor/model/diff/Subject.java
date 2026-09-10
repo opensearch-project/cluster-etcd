@@ -16,30 +16,34 @@ import java.util.Objects;
  * @param indexUuid the uuid, never the name. A name is reused, and a subject keyed on one would carry an
  *     index's age over to its deleted predecessor's successor.
  */
-public record Subject(TenantId tenant, String indexUuid, Integer shard, NodeId node, PoolId pool) {
+public record Subject(TenantId tenant, String indexUuid, Integer shard, NodeId node, PoolId pool, String taskId) {
 
     public static Subject ofShard(TenantId tenant, String indexUuid, int shard) {
-        return new Subject(tenant, indexUuid, shard, null, null);
+        return new Subject(tenant, indexUuid, shard, null, null, null);
     }
 
     public static Subject ofShardCopy(TenantId tenant, String indexUuid, int shard, NodeId node) {
-        return new Subject(tenant, indexUuid, shard, node, null);
+        return new Subject(tenant, indexUuid, shard, node, null, null);
     }
 
     public static Subject ofIndex(TenantId tenant, String indexUuid) {
-        return new Subject(tenant, indexUuid, null, null, null);
+        return new Subject(tenant, indexUuid, null, null, null, null);
     }
 
     public static Subject ofNode(NodeId node) {
-        return new Subject(null, null, null, node, null);
+        return new Subject(null, null, null, node, null, null);
     }
 
     public static Subject ofTenant(TenantId tenant) {
-        return new Subject(tenant, null, null, null, null);
+        return new Subject(tenant, null, null, null, null, null);
     }
 
     public static Subject ofPool(PoolId pool) {
-        return new Subject(null, null, null, null, pool);
+        return new Subject(null, null, null, null, pool, null);
+    }
+
+    public static Subject ofTask(TenantId tenant, String taskId) {
+        return new Subject(tenant, null, null, null, null, taskId);
     }
 
     /** A short stable rendering, used as the key in projected documents and in oscillation history. */
@@ -60,6 +64,9 @@ public record Subject(TenantId tenant, String indexUuid, Integer shard, NodeId n
         if (pool != null) {
             key.append("pool:").append(pool.value());
         }
+        if (taskId != null) {
+            key.append("task:").append(taskId);
+        }
         return key.isEmpty() ? "-" : key.toString();
     }
 
@@ -70,7 +77,7 @@ public record Subject(TenantId tenant, String indexUuid, Integer shard, NodeId n
 
     public Subject {
         // At least one dimension, or the subject cannot be told apart from any other.
-        if (tenant == null && node == null && pool == null) {
+        if (tenant == null && node == null && pool == null && taskId == null) {
             throw new IllegalArgumentException("a subject needs a tenant, a node or a pool");
         }
         Objects.requireNonNull(key());

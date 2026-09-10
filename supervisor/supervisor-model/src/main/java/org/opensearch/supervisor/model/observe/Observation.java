@@ -9,6 +9,7 @@ import org.opensearch.supervisor.model.node.Heartbeat;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
 import org.opensearch.supervisor.model.status.Liveness;
+import org.opensearch.supervisor.model.task.TaskRecord;
 
 import java.time.Instant;
 import java.util.List;
@@ -55,14 +56,25 @@ public record Observation(
             .collect(java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
-    /** What the control plane says should exist for one tenant. */
-    public record DesiredState(Map<String, IndexConfig> indicesByUuid) {
+    /**
+     * What the control plane says should exist for one tenant.
+     *
+     * @param tasks the tenant's work queue. Part of the observation because the queue lives in the tenant's
+     *     own subtree and because the diff reports on it — but <b>never a source of intent</b>: the indices
+     *     are what say what should exist, and R2.1 requires the same answer with this list empty.
+     */
+    public record DesiredState(Map<String, IndexConfig> indicesByUuid, List<TaskRecord> tasks) {
         public DesiredState {
             indicesByUuid = indicesByUuid == null ? Map.of() : Map.copyOf(indicesByUuid);
+            tasks = tasks == null ? List.of() : List.copyOf(tasks);
+        }
+
+        public DesiredState(Map<String, IndexConfig> indicesByUuid) {
+            this(indicesByUuid, List.of());
         }
 
         public static DesiredState empty() {
-            return new DesiredState(Map.of());
+            return new DesiredState(Map.of(), List.of());
         }
     }
 

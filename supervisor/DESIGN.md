@@ -485,7 +485,12 @@ false and zero fields, so a failed transaction has no `succeeded` key.
    Node selection is deliberately the simplest defensible thing (most free disk, deterministic tiebreak) and
    is not the allocator this will need — see open question 7. Everything else in the diff stays observation,
    and a read-only mode is retained because it is the safest way to introduce this to a live cluster.
-6. **The task lifecycle.** Claim, attempt, terminate, reap, so `cluster.pending_tasks` stops growing.
+6. **The task lifecycle.** ✅ *Done.* Claim by compare-and-set, bounded attempts, complete, fail, reap — so
+   `cluster.pending_tasks` starts telling the truth as soon as claiming works, since it reports only
+   `pending`. Completion is decided from the observation rather than from having acted, which is what makes a
+   duplicated task harmless and a lost one irrelevant; tests assert reconciliation with the queue completely
+   empty (R2.1) and with a task duplicated (R4.4). Failed records are never reaped, because a deleted failure
+   is an invisible one.
 7. **Projections.** Health, then `cluster.state`, then awareness values. Each unblocks a 501.
 
 Steps 3 and 5 are in that order deliberately, and `REQUIREMENTS.md` §10 argues it better than this file can:

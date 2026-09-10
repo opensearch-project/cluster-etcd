@@ -10,6 +10,7 @@ import org.opensearch.supervisor.model.diff.FindingAges;
 import org.opensearch.supervisor.model.observe.Observation;
 import org.opensearch.supervisor.model.plan.Plan;
 import org.opensearch.supervisor.model.plan.Planner;
+import org.opensearch.supervisor.model.task.TaskRecord;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -49,10 +50,12 @@ public final class SupervisorLoop {
     private final Planner.Policy policy;
     private final BooleanSupplier stillHoldsLease;
     private final long epoch;
+    private final TaskQueue tasks;
 
     private Diff lastDiff;
     private Plan lastPlan;
     private Applier.Outcome lastOutcome;
+    private TaskQueue.Outcome lastTaskOutcome;
 
     /** Read-only: observes, diffs and projects, and writes nothing a node will act on. */
     public SupervisorLoop(
@@ -94,6 +97,7 @@ public final class SupervisorLoop {
         this.stillHoldsLease = stillHoldsLease;
         this.policy = policy == null ? Planner.Policy.defaults() : policy;
         this.epoch = epoch;
+        this.tasks = new TaskQueue(store, clock, supervisorId, TaskQueue.Policy.defaults());
     }
 
     /**
@@ -113,7 +117,10 @@ public final class SupervisorLoop {
         // Projection happens before anything would act, and happens in read-only mode. The observability
         // surface reports what was seen, not what was done, so it has to be right before there is anything
         // to be wrong about.
-        projector.project(diff, observation, clock.millis() - startedAt, watchPollFailures());
+        // The queue drains after this, so these are the *previous* pass's figures. One pass of lag is the
+        // price of tasks being a hint rather than a driver: draining first would let a task decide what gets
+        // reconciled, which R2.1 forbids. The alternative -- projecting twice per pass -- costs a write.
+        projector.project(diff, observation, clock.millis() - startedAt, watchPollFailures(), taskFigures());
 
         lastDiff = diff;
         lastPlan = null;
@@ -123,6 +130,13 @@ public final class SupervisorLoop {
             Plan plan = Planner.plan(observation, diff, epoch, policy);
             lastPlan = plan;
             lastOutcome = applier.apply(plan, observation, stillHoldsLease);
+
+            // After reconciling, never before. A task is a hint about where to look, so draining the queue
+            // must not be what decides what gets done -- R2.1. Running it here rather than first also means
+            // a task is judged against the state this pass has just brought about.
+            if (stillHoldsLease.getAsBoolean()) {
+                lastTaskOutcome = tasks.drain(observation, epoch);
+            }
         }
         return diff;
     }
@@ -146,6 +160,20 @@ public final class SupervisorLoop {
 
     public Applier.Outcome lastOutcome() {
         return lastOutcome;
+    }
+
+    public TaskQueue.Outcome lastTaskOutcome() {
+        return lastTaskOutcome;
+    }
+
+    private Projector.Tasks taskFigures() {
+        if (lastTaskOutcome == null) {
+            return Projector.Tasks.NONE;
+        }
+        return new Projector.Tasks(
+            lastTaskOutcome.claimed(), lastTaskOutcome.completed(), lastTaskOutcome.failed(),
+            lastTaskOutcome.reaped(), lastTaskOutcome.lost()
+        );
     }
 
     public boolean isReadOnly() {

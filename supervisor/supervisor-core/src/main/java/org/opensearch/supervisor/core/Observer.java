@@ -281,7 +281,9 @@ public final class Observer {
             if (pools.poolFor(tenant).filter(pool::equals).isEmpty()) {
                 continue;
             }
-            tenants.put(tenant, new Observation.DesiredState(indicesOf(tenant, unreadable)));
+            tenants.put(tenant, new Observation.DesiredState(
+                indicesOf(tenant, unreadable), tasksOf(tenant, unreadable)
+            ));
         }
         return tenants;
     }
@@ -303,6 +305,24 @@ public final class Observer {
             }
         }
         return byUuid;
+    }
+
+    /**
+     * The tenant's task records.
+     *
+     * <p>Not cached by revision, unlike the index documents: these change on almost every pass while the queue
+     * is draining, and a cache that misses every time costs more than it saves. They are small and few.
+     */
+    private List<org.opensearch.supervisor.model.task.TaskRecord> tasksOf(TenantId tenant, List<String> unreadable) {
+        List<org.opensearch.supervisor.model.task.TaskRecord> tasks = new ArrayList<>();
+        for (var entry : store.scanPrefix(Keys.tasksPrefix(tenant)).entrySet()) {
+            try {
+                tasks.add(org.opensearch.supervisor.model.task.TaskRecord.from(entry.getValue().value()));
+            } catch (RuntimeException e) {
+                unreadable.add(entry.getKey());
+            }
+        }
+        return tasks;
     }
 
     // ---------------------------------------------------------------- helpers

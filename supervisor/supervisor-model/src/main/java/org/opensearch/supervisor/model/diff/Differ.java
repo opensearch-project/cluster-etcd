@@ -8,6 +8,9 @@ import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
 import org.opensearch.supervisor.model.observe.Observation;
 import org.opensearch.supervisor.model.status.Liveness;
+import org.opensearch.supervisor.model.task.TaskRecord;
+import org.opensearch.supervisor.model.task.TaskState;
+import org.opensearch.supervisor.model.task.TaskType;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -36,6 +39,7 @@ public final class Differ {
 
         nodeFindings(observation, findings);
         shardFindings(observation, findings);
+        taskFindings(observation, findings);
         unreadableFindings(observation, findings);
 
         return new Diff(observation.pass(), observation.pool(), ages.age(findings, observation.pass()));
@@ -216,6 +220,46 @@ public final class Differ {
                             .add(new Copy(nodeId, copy.role(), copy.state())))));
         });
         return actual;
+    }
+
+    // ---------------------------------------------------------------- tasks
+
+    /**
+     * Tasks worth telling an operator about, decided from the records themselves.
+     *
+     * <p>Computed here rather than fed back from the queue on purpose. The queue runs <em>after</em> the diff
+     * — a task is a hint, so draining it must not decide what gets reconciled — so anything it reported would
+     * be a pass out of date. Both conditions below are plain facts about a record, needing no policy and no
+     * memory: it has been given up on, or its holder has stopped renewing.
+     */
+    private static void taskFindings(Observation observation, List<Finding> findings) {
+        long now = observation.observedAt().toEpochMilli();
+
+        observation.tenants().forEach((tenant, desired) -> {
+            for (TaskRecord task : desired.tasks()) {
+                if (task.state() == TaskState.FAILED) {
+                    findings.add(Finding.of(
+                        FindingKind.TASK_STUCK, Subject.ofTask(tenant, task.taskId()), observation.pass(),
+                        "task [" + task.type() + "] for index [" + task.index() + "] was given up on after "
+                            + task.attempts() + " attempts: " + task.lastError()
+                            + "; it is kept rather than reaped so the failure stays visible"
+                    ));
+                } else if (task.state() == TaskState.CLAIMED && task.isClaimExpired(now)) {
+                    findings.add(Finding.of(
+                        FindingKind.TASK_STUCK, Subject.ofTask(tenant, task.taskId()), observation.pass(),
+                        "task [" + task.type() + "] for index [" + task.index() + "] is claimed by ["
+                            + task.holder() + "] whose lease has expired; any supervisor may now take it up,"
+                            + " and this will be its attempt " + (task.attempts() + 1)
+                    ));
+                } else if (task.type() == TaskType.UNKNOWN) {
+                    findings.add(Finding.of(
+                        FindingKind.TASK_STUCK, Subject.ofTask(tenant, task.taskId()), observation.pass(),
+                        "task type is not recognised by this build, so it can be neither completed nor failed"
+                            + " here; a newer supervisor is needed to drain it"
+                    ));
+                }
+            }
+        });
     }
 
     // ---------------------------------------------------------------- unreadable documents

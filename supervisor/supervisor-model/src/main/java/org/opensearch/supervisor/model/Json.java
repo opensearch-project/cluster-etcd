@@ -23,6 +23,8 @@ import org.opensearch.supervisor.model.pool.PoolKind;
 import org.opensearch.supervisor.model.status.HealthStatus;
 import org.opensearch.supervisor.model.status.Liveness;
 import org.opensearch.supervisor.model.status.Replication;
+import org.opensearch.supervisor.model.task.TaskState;
+import org.opensearch.supervisor.model.task.TaskType;
 
 import java.io.IOException;
 import java.security.MessageDigest;
@@ -67,6 +69,8 @@ public final class Json {
         registerWireEnum(module, HealthStatus.class, HealthStatus::from);
         registerWireEnum(module, Liveness.class, Liveness::from);
         registerWireEnum(module, PoolKind.class, PoolKind::from);
+        registerWireEnum(module, TaskState.class, TaskState::from);
+        registerWireEnum(module, TaskType.class, TaskType::from);
 
         return JsonMapper.builder()
             .addModule(module)
