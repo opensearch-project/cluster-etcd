@@ -478,8 +478,13 @@ false and zero fields, so a failed transaction has no `succeeded` key.
    the balancer, housekeeping, and failover — driven by `Supervisor.tick()`. A fleet test runs three members
    over one in-memory store and asserts no pool is ever held twice, including through a rolling restart.
    Still writes no assignment, which a test enforces. Placement is milestone 5.
-5. **Act, narrowly.** One finding — `UNASSIGNED_PRIMARY` for an index with no copies anywhere — with the
-   lease checks, the ceiling and the stale-writer defences in place. Everything else stays observation.
+5. **Act, narrowly.** ✅ *Done.* One finding — `UNASSIGNED_PRIMARY`, and only where the shard is neither
+   held nor already assigned anywhere in the pool — behind the age threshold, the work ceiling, the
+   per-tenant floor, and all three stale-writer defences from §12. `Planner` only ever *adds* a copy, so the
+   worst a wrong decision can do is create a surplus copy: a self-clearing finding rather than lost data.
+   Node selection is deliberately the simplest defensible thing (most free disk, deterministic tiebreak) and
+   is not the allocator this will need — see open question 7. Everything else in the diff stays observation,
+   and a read-only mode is retained because it is the safest way to introduce this to a live cluster.
 6. **The task lifecycle.** Claim, attempt, terminate, reap, so `cluster.pending_tasks` stops growing.
 7. **Projections.** Health, then `cluster.state`, then awareness values. Each unblocks a 501.
 

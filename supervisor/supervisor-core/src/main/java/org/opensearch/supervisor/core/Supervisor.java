@@ -5,6 +5,7 @@ import org.opensearch.supervisor.model.Keys;
 import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.diff.Diff;
+import org.opensearch.supervisor.model.plan.Planner;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -40,6 +41,8 @@ public final class Supervisor {
     private final Balancer.Config balancerConfig;
     private final PoolWeights weights;
     private final Housekeeping housekeeping;
+    private final Planner.Policy policy;
+    private final boolean readOnly;
 
     private final Map<PoolId, SupervisorLoop> loops = new LinkedHashMap<>();
     private Set<PoolId> held = Set.of();
@@ -56,6 +59,25 @@ public final class Supervisor {
         Duration leaseTtl,
         Balancer.Config balancerConfig
     ) {
+        this(store, clock, supervisorId, configuredTenants, capacityWeight, leaseTtl, balancerConfig,
+            Planner.Policy.defaults(), false);
+    }
+
+    /**
+     * @param readOnly observe, diff and project but never plan or write. What milestones 3 and 4 ran as, kept
+     *     because it is the safest way to introduce this service to a cluster that already has data in it.
+     */
+    public Supervisor(
+        KeyValueStore store,
+        Clock clock,
+        String supervisorId,
+        Set<TenantId> configuredTenants,
+        double capacityWeight,
+        Duration leaseTtl,
+        Balancer.Config balancerConfig,
+        Planner.Policy policy,
+        boolean readOnly
+    ) {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.supervisorId = Objects.requireNonNull(supervisorId, "supervisorId");
@@ -65,6 +87,8 @@ public final class Supervisor {
         this.balancerConfig = Objects.requireNonNull(balancerConfig, "balancerConfig");
         this.weights = new PoolWeights(store);
         this.housekeeping = new Housekeeping(store, leases, this.configuredTenants, supervisorId);
+        this.policy = Objects.requireNonNull(policy, "policy");
+        this.readOnly = readOnly;
     }
 
     /** One turn of the crank. */
@@ -112,8 +136,13 @@ public final class Supervisor {
 
         // Only now, with ownership settled, does any reconciliation happen.
         for (PoolId pool : held) {
-            loops.computeIfAbsent(pool, id -> new SupervisorLoop(store, clock, id, supervisorId, configuredTenants))
-                .pass();
+            loops.computeIfAbsent(pool, id -> readOnly
+                ? new SupervisorLoop(store, clock, id, supervisorId, configuredTenants)
+                // The lease check is a supplier closing over the manager, so it is evaluated at the moment
+                // of the write rather than at the moment the loop was built.
+                : new SupervisorLoop(store, clock, id, supervisorId, configuredTenants,
+                    () -> leases.holds(id), policy, leases.epochOf(id))
+            ).pass();
         }
     }
 
@@ -170,6 +199,11 @@ public final class Supervisor {
 
     public Set<PoolId> held() {
         return held;
+    }
+
+    /** Whether this process observes and reports but never writes anything a data node will act on. */
+    public boolean isReadOnly() {
+        return readOnly;
     }
 
     public Balancer.Decision lastDecision() {

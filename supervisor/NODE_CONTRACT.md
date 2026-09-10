@@ -386,6 +386,15 @@ Consequences, all of which have to be built:
 - **"Last observed change" is in memory**, and R2.3 forbids depending on in-memory state. Losing it is
   benign if a restarted supervisor grants every node a **full staleness window before declaring anything
   dead**. That startup grace period is not optional; without it, a supervisor restart evicts the cluster.
+- **Detection cannot be short-cut, and this is easy to get wrong.** A supervisor that has just read a
+  heartbeat revision for the first time must watch it sit still for the whole threshold, however long ago
+  the node actually wrote it — inferring age from the node's own timestamp is the thing this scheme exists
+  to avoid. So worst-case detection is the threshold plus one pass interval, and advancing a clock does not
+  accelerate it. Obvious in hindsight; it invalidated a test that jumped the clock and expected an immediate
+  verdict.
+- **The grace period for a node with a registration and no heartbeat runs from when the supervisor first saw
+  that node**, not from when the supervisor started. The latter meant a supervisor running for an hour
+  condemned every newly registered node on sight, before it could write a first heartbeat.
 - **The threshold is per node**, derived as `max(floor, multiplier × heartbeat_interval_millis)` from that
   node's registration. Default multiplier 6, floor 20 s — both configurable, and the **effective** value
   per node is published (R3.3 requires it be observable, and this is exactly the number an operator will

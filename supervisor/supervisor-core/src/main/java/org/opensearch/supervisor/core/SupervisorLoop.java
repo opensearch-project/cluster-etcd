@@ -8,19 +8,25 @@ import org.opensearch.supervisor.model.diff.Diff;
 import org.opensearch.supervisor.model.diff.Differ;
 import org.opensearch.supervisor.model.diff.FindingAges;
 import org.opensearch.supervisor.model.observe.Observation;
+import org.opensearch.supervisor.model.plan.Plan;
+import org.opensearch.supervisor.model.plan.Planner;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 
 /**
- * One pool's reconciliation pass: observe, diff, project. <b>Acts on nothing.</b>
+ * One pool's reconciliation pass: observe, diff, project, and — only if asked — plan and act.
  *
- * <p>That is milestone 3's whole point and {@code REQUIREMENTS.md} §10 argues it better than this class
- * can: a reconciler that observes correctly and acts on nothing is safe and immediately useful, while one
- * that acts before it observes correctly is neither. Placement arrives at milestone 5, behind the lease
- * checks and the work ceiling.
+ * <p><b>Read-only unless a lease check is supplied.</b> Constructed without one it behaves exactly as it did
+ * through milestones 3 and 4, which is what let leases and failover be shaken out by a fleet that could not
+ * touch anything. {@code REQUIREMENTS.md} §10 argues that order better than this class can.
+ *
+ * <p>Acting is deliberately narrow: {@link Planner} issues one kind of instruction, for one finding, and only
+ * ever adds a copy. Nothing removes anything yet, so the worst a wrong decision can do is create a surplus
+ * copy — a self-clearing finding rather than lost data.
  *
  * <p>{@link #pass()} is explicit rather than a thread, for the same reason {@code FakeNode.tick()} is: a
  * pass that only advances when asked is a pass a test can reason about, and the balancer tests at milestone
@@ -39,9 +45,16 @@ public final class SupervisorLoop {
     private final Projector projector;
     private final FindingAges ages = new FindingAges();
     private final TenantDiscovery tenants;
+    private final Applier applier;
+    private final Planner.Policy policy;
+    private final BooleanSupplier stillHoldsLease;
+    private final long epoch;
 
     private Diff lastDiff;
+    private Plan lastPlan;
+    private Applier.Outcome lastOutcome;
 
+    /** Read-only: observes, diffs and projects, and writes nothing a node will act on. */
     public SupervisorLoop(
         KeyValueStore store,
         Clock clock,
@@ -49,12 +62,38 @@ public final class SupervisorLoop {
         String supervisorId,
         Set<TenantId> configuredTenants
     ) {
+        this(store, clock, pool, supervisorId, configuredTenants, null, null, 0);
+    }
+
+    /**
+     * Acting.
+     *
+     * @param stillHoldsLease evaluated as late as possible, immediately before each write and again between
+     *     writes. Passed as a supplier rather than a boolean precisely so that the caller cannot accidentally
+     *     evaluate it once at the top of a pass and hand over a stale answer.
+     * @param epoch the lease epoch, stamped into every assignment written so that a split brain is
+     *     diagnosable afterwards from data the system already wrote
+     */
+    public SupervisorLoop(
+        KeyValueStore store,
+        Clock clock,
+        PoolId pool,
+        String supervisorId,
+        Set<TenantId> configuredTenants,
+        BooleanSupplier stillHoldsLease,
+        Planner.Policy policy,
+        long epoch
+    ) {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.pool = Objects.requireNonNull(pool, "pool");
         this.observer = new Observer(store, clock, new LivenessTracker(clock.instant()));
         this.projector = new Projector(store, supervisorId);
         this.tenants = new TenantDiscovery(store, configuredTenants);
+        this.applier = new Applier(store, clock);
+        this.stillHoldsLease = stillHoldsLease;
+        this.policy = policy == null ? Planner.Policy.defaults() : policy;
+        this.epoch = epoch;
     }
 
     /**
@@ -77,6 +116,14 @@ public final class SupervisorLoop {
         projector.project(diff, observation, clock.millis() - startedAt, watchPollFailures());
 
         lastDiff = diff;
+        lastPlan = null;
+        lastOutcome = null;
+
+        if (stillHoldsLease != null) {
+            Plan plan = Planner.plan(observation, diff, epoch, policy);
+            lastPlan = plan;
+            lastOutcome = applier.apply(plan, observation, stillHoldsLease);
+        }
         return diff;
     }
 
@@ -91,6 +138,18 @@ public final class SupervisorLoop {
 
     public Diff lastDiff() {
         return lastDiff;
+    }
+
+    public Plan lastPlan() {
+        return lastPlan;
+    }
+
+    public Applier.Outcome lastOutcome() {
+        return lastOutcome;
+    }
+
+    public boolean isReadOnly() {
+        return stillHoldsLease == null;
     }
 
     public PoolId pool() {

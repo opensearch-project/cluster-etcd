@@ -53,7 +53,7 @@ class DifferTests {
     }
 
     private static Observation.NodeObservation node(NodeId id, Liveness liveness, ShardInventory inventory) {
-        return new Observation.NodeObservation(id, registration(id), null, inventory, liveness, POOL);
+        return new Observation.NodeObservation(id, registration(id), null, inventory, liveness, POOL, null, 0);
     }
 
     private static ShardInventory holding(NodeId node, Map<Integer, ShardInventory.ShardCopy> shards) {
@@ -210,7 +210,7 @@ class DifferTests {
                 NODE_A, "eph", 1L, null, null, 0,
                 org.opensearch.supervisor.model.node.Heartbeat.Capacity.UNKNOWN
             ),
-            null, Liveness.LIVE, POOL
+            null, Liveness.LIVE, POOL, null, 0
         );
         Observation observation = observe(index(1, 0), Map.of(NODE_A, unregistered));
 

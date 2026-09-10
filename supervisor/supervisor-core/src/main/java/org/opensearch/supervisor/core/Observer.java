@@ -6,6 +6,7 @@ import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.index.IndexConfig;
+import org.opensearch.supervisor.model.node.Assignment;
 import org.opensearch.supervisor.model.node.Heartbeat;
 import org.opensearch.supervisor.model.node.NodeJson;
 import org.opensearch.supervisor.model.node.Registration;
@@ -53,6 +54,7 @@ public final class Observer {
     private final RevisionCache<Registration> registrations = new RevisionCache<>();
     private final RevisionCache<Heartbeat> heartbeats = new RevisionCache<>();
     private final RevisionCache<IndexConfig> indices = new RevisionCache<>();
+    private final RevisionCache<Assignment> assignments = new RevisionCache<>();
 
     /** Inventories are cached by the digest their bytes hashed to, not by revision — see below. */
     private final Map<NodeId, DigestedInventory> inventories = new HashMap<>();
@@ -116,6 +118,12 @@ public final class Observer {
         var heartbeatKeys = store.scanPrefix(Keys.NODE_HEARTBEAT_PREFIX);
         heartbeats.retain(heartbeatKeys.keySet());
 
+        // What each node was last told. Rarely changes, so the revision cache keeps this near-free, and it
+        // is needed for two distinct reasons: an assignment is a complete desired set so a write has to
+        // preserve the rest of it, and its revision is what every write compare-and-sets against.
+        var assignmentKeys = store.scanPrefix(Keys.NODE_ASSIGNMENT_PREFIX);
+        assignments.retain(assignmentKeys.keySet());
+
         Map<NodeId, Observation.NodeObservation> observed = new LinkedHashMap<>();
         Set<NodeId> seen = new java.util.LinkedHashSet<>();
 
@@ -151,7 +159,9 @@ public final class Observer {
             ShardInventory inventory = inventoryOf(nodeId, heartbeat, registration, unreadable);
 
             observed.put(nodeId, new Observation.NodeObservation(
-                nodeId, registration, heartbeat, inventory, verdict, unpooled ? null : nodePool
+                nodeId, registration, heartbeat, inventory, verdict, unpooled ? null : nodePool,
+                assignmentOf(nodeId, assignmentKeys, unreadable),
+                revisionOf(nodeId, assignmentKeys)
             ));
         }
 
@@ -168,13 +178,45 @@ public final class Observer {
             }
             observed.put(nodeId, new Observation.NodeObservation(
                 nodeId, registration, null, null,
-                liveness.observeAbsent(nodeId, registration, now), nodePool
+                liveness.observeAbsent(nodeId, registration, now), nodePool,
+                assignmentOf(nodeId, assignmentKeys, unreadable),
+                revisionOf(nodeId, assignmentKeys)
             ));
         });
 
         liveness.retain(seen);
+        liveness.retainAllKnown(observed.keySet());
         inventories.keySet().retainAll(seen);
         return observed;
+    }
+
+    private Assignment assignmentOf(
+        NodeId nodeId,
+        java.util.NavigableMap<String, org.opensearch.controlplane.store.KeyValueStore.Versioned> keys,
+        List<String> unreadable
+    ) {
+        String key = Keys.nodeAssignment(nodeId);
+        var versioned = keys.get(key);
+        if (versioned == null) {
+            return null;
+        }
+        try {
+            return assignments.get(key, versioned.revision(), ignored -> NodeJson.readAssignment(versioned.value()));
+        } catch (RuntimeException e) {
+            // An unreadable assignment must not be read as an empty one: writing over it with a fresh
+            // desired set computed as if the node held nothing is how a corrupt key becomes lost shards.
+            assignments.forget(key);
+            unreadable.add(key);
+            return null;
+        }
+    }
+
+    private long revisionOf(
+        NodeId nodeId,
+        java.util.NavigableMap<String, org.opensearch.controlplane.store.KeyValueStore.Versioned> keys
+    ) {
+        var versioned = keys.get(Keys.nodeAssignment(nodeId));
+        return versioned == null ? org.opensearch.controlplane.store.KeyValueStore.ABSENT : versioned.revision();
     }
 
     /**

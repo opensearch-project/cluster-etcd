@@ -152,6 +152,28 @@ class LivenessTrackerTests {
     }
 
     @Test
+    void aNewlyRegisteredNodeIsNotCondemnedByALongRunningSupervisor() {
+        // The grace period for a node with a registration and no heartbeat is measured from when this
+        // process first saw *that node*, not from when the process started. Measuring it from process start
+        // meant a supervisor up for an hour declared every new node lost on sight, before it had any chance
+        // to write its first heartbeat.
+        LivenessTracker old = new LivenessTracker(START);
+        Instant muchLater = START.plus(Duration.ofHours(1));
+
+        assertEquals(Liveness.UNKNOWN, old.observeAbsent(NODE, registration(5000), muchLater));
+        assertEquals(
+            Liveness.UNKNOWN,
+            old.observeAbsent(NODE, registration(5000), muchLater.plusSeconds(29)),
+            "still inside its own grace period"
+        );
+        assertEquals(
+            Liveness.LOST,
+            old.observeAbsent(NODE, registration(5000), muchLater.plusSeconds(31)),
+            "and lost once it has been visible for a threshold without speaking"
+        );
+    }
+
+    @Test
     void forgettingNodesKeepsTheMapBounded() {
         at(1, Duration.ZERO, registration(5000));
         assertEquals(1, tracker.tracked());

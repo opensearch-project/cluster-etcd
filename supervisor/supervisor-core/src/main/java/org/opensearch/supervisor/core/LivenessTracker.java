@@ -46,6 +46,18 @@ public final class LivenessTracker {
     public static final Duration DEFAULT_INTERVAL = Duration.ofSeconds(5);
 
     private final RevisionSilence silence;
+
+    /**
+     * When this process first saw each node at all, which is what the grace period for a node that has
+     * registered but not yet heartbeated is measured from.
+     *
+     * <p>Measuring it from process start instead was a bug: a supervisor that had been up for an hour
+     * declared every newly registered node lost on sight, before it had any chance to write a heartbeat.
+     * Harmless for a node holding nothing, and a false alarm in the diff either way — and it would have got
+     * worse the moment anything keyed off that verdict.
+     */
+    private final java.util.Map<NodeId, Instant> firstSeen = new java.util.HashMap<>();
+
     private final int staleMultiplier;
     private final int lostMultiplier;
     private final Duration floor;
@@ -75,6 +87,7 @@ public final class LivenessTracker {
      *     is no advertised interval, so the floor is used
      */
     public Liveness observe(NodeId nodeId, long heartbeatRevision, Registration registration, Instant now) {
+        firstSeen.putIfAbsent(nodeId, now);
         Duration silent = silence.observe(nodeId.value(), heartbeatRevision, now);
 
         if (silent.compareTo(lostThreshold(registration)) >= 0) {
@@ -86,12 +99,18 @@ public final class LivenessTracker {
         return Liveness.LIVE;
     }
 
-    /** A node observed for the first time by a supervisor that has only just started. */
+    /**
+     * A node that has a registration but no heartbeat: starting up, or broken before it ever spoke.
+     *
+     * <p>{@code UNKNOWN} until it has been visible for a whole staleness threshold, then {@code LOST}. The
+     * wait is measured from when <em>this process first saw the node</em>, not from when the process started
+     * — otherwise a long-running supervisor condemns every new node the instant it appears.
+     */
     public Liveness observeAbsent(NodeId nodeId, Registration registration, Instant now) {
         silence.forget(nodeId.value());
-        return silence.sinceStart(now).compareTo(staleThreshold(registration)) >= 0
-            ? Liveness.LOST
-            : Liveness.UNKNOWN;
+        Instant since = firstSeen.computeIfAbsent(nodeId, node -> now);
+        Duration visible = Duration.between(since, now);
+        return visible.compareTo(staleThreshold(registration)) >= 0 ? Liveness.LOST : Liveness.UNKNOWN;
     }
 
     public Duration staleThreshold(Registration registration) {
@@ -127,6 +146,11 @@ public final class LivenessTracker {
     /** Forget nodes that are no longer in the pool, so this cannot grow without bound. */
     public void retain(Set<NodeId> nodes) {
         silence.retain(nodes.stream().map(NodeId::value).collect(java.util.stream.Collectors.toSet()));
+    }
+
+    /** Forget nodes that have gone entirely, including their grace-period start. */
+    public void retainAllKnown(Set<NodeId> nodes) {
+        firstSeen.keySet().retainAll(nodes);
     }
 
     public int tracked() {

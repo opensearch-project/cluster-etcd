@@ -4,6 +4,7 @@ import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.index.IndexConfig;
+import org.opensearch.supervisor.model.node.Assignment;
 import org.opensearch.supervisor.model.node.Heartbeat;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
@@ -71,6 +72,15 @@ public record Observation(
      * @param liveness computed at observation time rather than inside the differ, because it depends on the
      *     supervisor's own memory of when it last saw this node's heartbeat key change revision. Keeping it
      *     out is what keeps the differ pure.
+     * @param assignment what this node has most recently been <em>told</em> to hold, as distinct from the
+     *     inventory, which is what it has. Observed for two reasons: an assignment is a complete desired set,
+     *     so adding one shard means rewriting the rest, and a shard already named here must not be placed
+     *     again while the node is still acting on it.
+     * @param assignmentRevision the revision the assignment was read at, which every write
+     *     compare-and-sets against. <b>Zero when there is no assignment yet</b>, which is the store's
+     *     "must not exist" revision, so create-if-absent falls out of the same code path as an update. Not
+     *     named as a constant here on purpose: this module must not reference the store, and the module graph
+     *     check enforces that textually — see {@code DESIGN.md} §1.
      */
     public record NodeObservation(
         NodeId nodeId,
@@ -78,12 +88,31 @@ public record Observation(
         Heartbeat heartbeat,
         ShardInventory inventory,
         Liveness liveness,
-        PoolId pool
+        PoolId pool,
+        Assignment assignment,
+        long assignmentRevision
     ) {
 
         public NodeObservation {
             Objects.requireNonNull(nodeId, "nodeId");
             liveness = liveness == null ? Liveness.UNKNOWN : liveness;
+        }
+
+        public Optional<Assignment> assignmentIfPresent() {
+            return Optional.ofNullable(assignment);
+        }
+
+        /** Whether this node has already been told to hold a copy of a shard. */
+        public boolean isAssigned(TenantId tenant, String indexUuid, int shard) {
+            if (assignment == null) {
+                return false;
+            }
+            var tenantAssignment = assignment.tenants().get(tenant);
+            if (tenantAssignment == null) {
+                return false;
+            }
+            var index = tenantAssignment.indices().get(indexUuid);
+            return index != null && index.shards().containsKey(shard);
         }
 
         public Optional<Registration> registrationIfPresent() {
