@@ -141,6 +141,37 @@ The fallback compiles `store-api` from source rather than using
 `../opensearch-kv-store/store-api/build/libs`, so a change over there is picked up immediately. Set
 `KV_STORE=/path/to/opensearch-kv-store` if it is not beside this repository.
 
+## Integration tests
+
+`supervisor-integ` runs against a real etcd. It is a separate module so that jetcd, gRPC and a Docker client
+stay off every other module's classpath.
+
+```
+./gradlew :supervisor-integ:test                              # starts etcd in Docker
+./gradlew :supervisor-integ:test -Dsupervisor.etcd=localhost:2379   # use one you already have
+```
+
+Without Docker they skip, with a message on stderr saying why. **They take minutes when they do run**: lease
+TTLs and revision-silence liveness are measured in wall-clock seconds and there is no clock to advance, which
+is precisely what they exist to exercise — every other test in the repository uses a clock it can move by hand.
+
+They are deliberately not a second copy of the unit suite. Three things only a real store and a real clock can
+answer:
+
+- **`EtcdStoreAssumptionsIT`** — the claims `DESIGN.md` makes about store semantics, as executable assertions:
+  that an identical-bytes rewrite still changes the revision (liveness depends on it, and the shared contract
+  suite does not cover it), that a stale compare-and-set is rejected, that prefixes do not overlap, that a
+  full-size inventory survives the backend. One honest caveat, also stated in the file: etcd answers a prefix
+  scan with one atomic range request, so the torn-read assertions from §12 pass here almost by construction.
+  They are written so that a backend which walks the subtree — ZooKeeper — would fail them loudly. Running
+  this suite against ZooKeeper is the natural follow-on.
+- **`EtcdLeaseIT`** — several supervisors on real threads against real compare-and-set, asserting that no pool
+  is ever held by two at once, that a clean shutdown hands over without waiting out a TTL, and that an abrupt
+  death is recovered from observed silence with the epoch advanced. Every previous fleet test took turns from a
+  single thread, which is the one arrangement in which a lease cannot fail.
+- **`EtcdConvergenceIT`** — an index placed across real nodes reporting green, then staying settled; and a node
+  going silent against a clock nobody controls, with its copies rebuilt elsewhere.
+
 ## Testing
 
 Risk goes where no network is needed — `DESIGN.md` §10 has the table. The diff and the plan are pure

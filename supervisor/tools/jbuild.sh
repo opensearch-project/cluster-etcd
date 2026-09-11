@@ -187,6 +187,27 @@ compile "supervisor-app tests" supervisor-app/src/test/java "$OUT/supervisor-app
 compile "fake-node tests" fake-node/src/test/java "$OUT/fake-node/test" \
     "$OUT/fake-node/main:$OUT/supervisor-model/main:$STORE_FIXTURES_CP:$JACKSON_CP:$JUNIT_CP"
 
+# supervisor-integ needs Docker to *run*, which is not available here, but it can still be typechecked -- and a
+# suite handed over without having been compiled is a suite handed over with typos in it. Best effort: if
+# Testcontainers or the etcd backend are not in a local cache, say so and carry on rather than failing the build,
+# since nothing else depends on this module.
+echo "==> supervisor-integ (typecheck only; running it needs Docker)"
+TESTCONTAINERS=$(jar org.testcontainers testcontainers 1.21.4 2>/dev/null || true)
+# Testcontainers' GenericContainer implements JUnit 4's TestRule, so junit4 has to be on the compile classpath
+# even though nothing here uses it. Gradle brings it transitively; this has to name it.
+JUNIT4=$(jar junit junit 4.13.2 2>/dev/null || true)
+STORE_ETCD_CLASSES="$KV_STORE/store-etcd/build/classes/java/main"
+if [[ -n "$TESTCONTAINERS" && -n "$JUNIT4" && -d "$STORE_ETCD_CLASSES" ]]; then
+    compile "supervisor-integ tests" supervisor-integ/src/test/java "$OUT/supervisor-integ/test" \
+        "$OUT/supervisor-core/main:$OUT/supervisor-model/main:$OUT/fake-node/main:$STORE_CP:$STORE_ETCD_CLASSES:$TESTCONTAINERS:$JUNIT4:$JACKSON_CP:$JUNIT_CP"
+    # Not added to TEST_CP below: these would try to start a container and fail, and a suite that cannot run
+    # here must not turn into a red build here.
+    echo "    typechecked, not run"
+else
+    echo "    SKIPPED: needs org.testcontainers:testcontainers:1.21.4 and junit:junit:4.13.2 in a local cache, and"
+    echo "    $STORE_ETCD_CLASSES to exist (build the store repo once: cd $KV_STORE && ./gradlew build)"
+fi
+
 echo "==> test runner"
 compile "JUnitRunner" tools "$OUT/tools" "$JUNIT_CP"
 

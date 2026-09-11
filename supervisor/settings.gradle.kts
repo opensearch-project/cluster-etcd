@@ -5,6 +5,12 @@ include("supervisor-core")
 include("supervisor-app")
 include("fake-node")
 
+// Integration tests, in their own module because of what they have to drag in. store-etcd brings jetcd,
+// which brings gRPC and protobuf, and Testcontainers brings a Docker client; putting any of that on
+// supervisor-core's test classpath would burden the module whose dependency hygiene this build actively
+// asserts. Nothing else depends on this one, and it holds no production code.
+include("supervisor-integ")
+
 // The persistence seam is shared with the control plane and lives in its own build. Two implementations
 // of the same revision semantics against the same keys is how the two planes would silently disagree
 // about state, so there is one implementation and both services depend on it.
