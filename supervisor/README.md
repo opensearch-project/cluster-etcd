@@ -6,12 +6,61 @@ until the two agree.
 
 ## Status
 
-**Milestone 1 of 7: the skeleton.** The module graph, the composite build, and a sandbox build fallback.
-There is no reconciliation loop yet, and nothing here writes an assignment. `DESIGN.md` §11 has the plan;
-the short version is that the service will observe and report for two milestones before it acts on
-anything.
+**All seven milestones done, plus allocation and balancing, and it runs.** `DESIGN.md` §11 has the plan it
+followed.
 
-What exists: identifiers, the key layout as executable code, and tenant discovery.
+What exists: observation of the whole node contract, revision-silence liveness, pool leases and the balancer
+that shares pools between supervisors, the differ, the planner, the applier, a task queue, the observability
+projections, eight allocation deciders, five rebalance deciders with a size-aware load model, and a runnable
+process.
+
+What does not, in rough order of how much it matters:
+
+- **No primary movement or failover.** Moving a primary needs a per-primary generation so a superseded primary
+  can be fenced, and that is work in OpenSearch itself. `PrimaryMoveDecider` refuses, `SurplusReaper` never
+  drops a primary, and `DESIGN.md` §13 open question 1 carries the detail. A pool whose imbalance is all in
+  primaries cannot be relieved.
+- **Never run against a real store.** Every test uses the in-memory store, and the end-to-end tests use the
+  bundled filesystem one. `scanPrefix` is not snapshot-consistent on every backend and `DESIGN.md` §12 reasons
+  about that rather than having observed it.
+- **No snapshot metadata projection** (R5.3), which needs repository access.
+- **No cross-pool migration**, and no per-shard replica autoscaling — though §15 records the seam for the
+  second so that nothing forecloses it.
+
+## Running it
+
+```
+./gradlew :supervisor-app:installDist
+./supervisor-app/build/install/supervisor-app/bin/supervisor-app --help
+```
+
+It is **read-only unless you pass `--write`**. That is deliberate: this service creates and removes shard
+copies, so starting in the wrong mode because of a forgotten flag should cost an afternoon rather than a
+cluster's data. Read-only observes, diffs and projects everything, so you can read what it *would* do out of
+the store before letting it act.
+
+A bounded smoke test against a directory, needing no backend at all:
+
+```
+./supervisor-app/build/install/supervisor-app/bin/supervisor-app \
+    --store=file:///tmp/supervisor-demo --max-passes=5 --interval=200ms
+```
+
+That writes `supervisor/status/pools/<pool>/convergence` and a diff per tenant, which is where the answers
+live. Against a real backend, name its scheme and put that backend's jar on the runtime classpath:
+
+```
+./gradlew :supervisor-app:installDist -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT
+./supervisor-app/build/install/supervisor-app/bin/supervisor-app \
+    --store=etcd://localhost:2379/opensearch --max-passes=5
+```
+
+Nothing in this repository names etcd or ZooKeeper at compile time — `KeyValueStores` finds backends through
+`ServiceLoader` — so `--help` lists whichever ones it can actually find, which is what makes a missing jar
+distinguishable from a typo.
+
+Every option can also come from the environment (`--lease-ttl` is `SUPERVISOR_LEASE_TTL`), with the command
+line winning.
 
 ## Where to read
 

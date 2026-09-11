@@ -124,8 +124,20 @@ public final class LeaseManager {
             return false;
         }
         Observed current = observed.get(key);
-        // Someone else has written since I did, so the lease is theirs and my bookkeeping is stale.
-        return current != null && current.revision() == mine && supervisorId.equals(current.lease().holder());
+        if (current == null || current.revision() != mine) {
+            // Someone else has written since I did, so the lease is theirs and my bookkeeping is stale.
+            return false;
+        }
+        if (current.lease() == null) {
+            // Unreadable at my own revision, which should not happen and must not be fatal when it does.
+            // refresh() promises that an unreadable lease counts as no lease so a corrupt write cannot make a
+            // pool permanently unclaimable, and this was the one of five call sites that dereferenced it anyway
+            // -- turning that promise into a NullPointerException on every pass, for ever, since the bad bytes
+            // are still there next time. Answering "I do not hold it" instead lets the ordinary path take over:
+            // the key goes silent, the TTL expires, and somebody claims it and overwrites the bad document.
+            return false;
+        }
+        return supervisorId.equals(current.lease().holder());
     }
 
     /**

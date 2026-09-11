@@ -362,4 +362,98 @@ class LeaseAndHousekeepingTests {
         assertEquals("acme", document.get("unpooled_tenants").get(0).asText());
         assertEquals(1, document.get("members_live").asInt());
     }
+
+    /**
+     * A store that hands back bytes nobody can parse, at the revisions it really has.
+     *
+     * <p>Fault injection rather than a condition the system produces on its own, and the distinction matters:
+     * an unreadable document <em>at a revision this process wrote itself</em> means the process cannot read its
+     * own writing, which in practice means a classpath skew or a store returning something other than what it
+     * stored. Overwriting the key cannot simulate it, because that changes the revision and the staleness check
+     * catches it first — which is why this needs a decorator.
+     */
+    private static final class CorruptingStore implements org.opensearch.controlplane.store.KeyValueStore {
+        private final org.opensearch.controlplane.store.KeyValueStore delegate;
+        private final java.util.Set<String> corrupt = new java.util.HashSet<>();
+
+        CorruptingStore(org.opensearch.controlplane.store.KeyValueStore delegate) {
+            this.delegate = delegate;
+        }
+
+        void corrupt(String key) {
+            corrupt.add(key);
+        }
+
+        private Versioned mangle(String key, Versioned versioned) {
+            if (corrupt.contains(key) == false) {
+                return versioned;
+            }
+            // Same revision, unparseable bytes.
+            return new Versioned("{\"not\":\"a lease\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                versioned.revision());
+        }
+
+        @Override
+        public java.util.Optional<Versioned> get(String key) {
+            return delegate.get(key).map(versioned -> mangle(key, versioned));
+        }
+
+        @Override
+        public java.util.NavigableMap<String, Versioned> scanPrefix(String keyPrefix) {
+            java.util.NavigableMap<String, Versioned> scanned = new java.util.TreeMap<>();
+            delegate.scanPrefix(keyPrefix).forEach((key, versioned) -> scanned.put(key, mangle(key, versioned)));
+            return scanned;
+        }
+
+        @Override
+        public long put(String key, byte[] value) {
+            return delegate.put(key, value);
+        }
+
+        @Override
+        public long put(String key, byte[] value, long expectedRevision) {
+            return delegate.put(key, value, expectedRevision);
+        }
+
+        @Override
+        public boolean delete(String key) {
+            return delegate.delete(key);
+        }
+
+        @Override
+        public boolean delete(String key, long expectedRevision) {
+            return delegate.delete(key, expectedRevision);
+        }
+
+        @Override
+        public void close() {
+            // InMemoryKeyValueStore has nothing to close, and narrowing the throws clause is what the
+            // interface allows.
+        }
+    }
+
+    @Test
+    void aLeaseThatCannotBeReadAtMyOwnRevisionIsNotHeldRatherThanFatal() {
+        // Found by accident, running the real process against a real store with a mismatched Jackson on the
+        // classpath: every lease came back unreadable. The classpath was mine to fix, but the response was not
+        // proportionate. refresh() deliberately treats an unreadable lease as no lease, so that a corrupt write
+        // cannot make a pool permanently unclaimable -- and holdsKey was the one of five call sites that
+        // dereferenced it anyway, which turned that into a NullPointerException on every pass for ever, since
+        // the bad bytes are still there on the next one.
+        CorruptingStore corrupting = new CorruptingStore(store);
+        LeaseManager manager = new LeaseManager(corrupting, clock, "s1", TTL);
+        manager.refresh();
+        assertTrue(manager.tryAcquire(A), "acquired normally");
+
+        corrupting.corrupt(Keys.poolLease(A));
+        manager.refresh();
+
+        assertFalse(manager.holds(A), "unreadable means not held, not an exception");
+
+        // And the ordinary recovery path still works: the key looks silent, the TTL expires, and it becomes
+        // claimable, at which point whoever claims it overwrites the bad document.
+        clock.advance(TTL.plusSeconds(1));
+        manager.refresh();
+        assertTrue(manager.claimable(java.util.Set.of(A)).contains(A));
+    }
 }

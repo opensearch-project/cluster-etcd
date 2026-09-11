@@ -136,6 +136,17 @@ if [[ ! -d "$KV_STORE/store-api/src/main/java" ]]; then
     exit 1
 fi
 compile "store-api main" "$KV_STORE/store-api/src/main/java" "$OUT/store-api/main"
+
+# Resources matter here, unusually: store-api registers its bundled backend through
+# META-INF/services/...KeyValueStoreProvider, and ServiceLoader finds providers on the classpath rather than by
+# compilation. Gradle copies resources into the output as a matter of course; this script did not, so
+# KeyValueStores.open("file:///...") found no provider and the difference showed up only as a test that passed
+# under Gradle and failed here. Anything relying on service discovery needs this.
+if [[ -d "$KV_STORE/store-api/src/main/resources" ]]; then
+    cp -R "$KV_STORE/store-api/src/main/resources/." "$OUT/store-api/main/"
+    echo "    store-api resources -> $OUT/store-api/main"
+fi
+
 compile "store-api testFixtures" "$KV_STORE/store-api/src/testFixtures/java" "$OUT/store-api/testFixtures" \
     "$OUT/store-api/main:$JUNIT_CP"
 
