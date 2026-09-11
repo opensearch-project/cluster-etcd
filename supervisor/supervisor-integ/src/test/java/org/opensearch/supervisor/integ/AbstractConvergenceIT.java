@@ -111,10 +111,10 @@ abstract class AbstractConvergenceIT extends StoreIntegBase {
         FakeNode c = node(nodeC, POOL_A);
         c.start();
 
-        // B's declared heartbeat interval is 1s and the supervisor floors the effective interval at ceil(20s/6),
-        // so LOST is 20x that: a little over a minute of real waiting. Worth it -- this is the timing that has
-        // never been exercised.
-        eventually("the silent node's copy to be rebuilt on the survivor", Duration.ofMinutes(3), () -> {
+        // With StoreIntegBase.LIVENESS this node's declared 1s interval beats the floor's implied 667ms, so lost
+        // is 6x1s = 6s rather than the 67s the production defaults impose. The mechanism is identical -- revision
+        // silence accumulating past a threshold -- and only the threshold is smaller.
+        eventually("the silent node's copy to be rebuilt on the survivor", Duration.ofSeconds(90), () -> {
             supervisor.tick();
             a.tick();
             c.tick();

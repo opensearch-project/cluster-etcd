@@ -152,4 +152,76 @@ class OptionsTests {
         assertTrue(described.contains("write"));
         assertTrue(described.contains("store"));
     }
+
+    // ---------------------------------------------------------------- liveness
+
+    @Test
+    void livenessDefaultsAreTheOnesTheCodeAlreadyUsed() {
+        // The point of making this configurable was to expose it, not to change it. A drifted default here would
+        // silently alter when a real deployment starts rebuilding shards.
+        assertEquals(
+            org.opensearch.supervisor.core.LivenessTracker.Config.defaults(),
+            parse("--store=file:///tmp/x").liveness()
+        );
+    }
+
+    @Test
+    void livenessCanBeShortenedForDeploymentsThatWantFasterDetection() {
+        Options options = parse("--store=file:///tmp/x", "--liveness-floor=2s",
+            "--stale-multiplier=3", "--lost-multiplier=6");
+
+        assertEquals(java.time.Duration.ofSeconds(2), options.liveness().floor());
+        assertEquals(3, options.liveness().staleMultiplier());
+        assertEquals(6, options.liveness().lostMultiplier());
+    }
+
+    @Test
+    void aStaleThresholdAtOrAboveTheLostOneIsRefused() {
+        // Because it removes the stale phase entirely, and with it the tolerance that stops an ordinary GC pause
+        // being read as a dead node. A collapsed pair does not fail loudly at runtime -- it quietly starts moving
+        // data -- so it has to fail at startup.
+        Options.UsageException equal = assertThrows(Options.UsageException.class,
+            () -> parse("--store=file:///tmp/x", "--stale-multiplier=6", "--lost-multiplier=6"));
+        assertTrue(equal.getMessage().contains("must be below"), equal.getMessage());
+        assertTrue(equal.getMessage().contains("GC pause"), equal.getMessage());
+
+        assertThrows(Options.UsageException.class,
+            () -> parse("--store=file:///tmp/x", "--stale-multiplier=9", "--lost-multiplier=6"));
+    }
+
+    @Test
+    void aStaleMultiplierThatFiresOnOneMissedHeartbeatIsRefused() {
+        // Every healthy node misses one occasionally; a threshold that treats that as staleness would take nodes
+        // out of rotation constantly.
+        Options.UsageException thrown = assertThrows(Options.UsageException.class,
+            () -> parse("--store=file:///tmp/x", "--stale-multiplier=1", "--lost-multiplier=6"));
+
+        assertTrue(thrown.getMessage().contains("single heartbeat"), thrown.getMessage());
+    }
+
+    @Test
+    void aZeroOrNegativeFloorIsRefused() {
+        assertThrows(Options.UsageException.class,
+            () -> parse("--store=file:///tmp/x", "--liveness-floor=0s"));
+    }
+
+    @Test
+    void aBadLivenessCombinationIsAUsageErrorRatherThanACrash() {
+        // Exit 2 with the explanation on stderr, not a stack trace: this is somebody's deployment template being
+        // wrong, and the message is the whole product at that moment.
+        Options.UsageException thrown = assertThrows(Options.UsageException.class,
+            () -> parse("--store=file:///tmp/x", "--stale-multiplier=6", "--lost-multiplier=2"));
+
+        assertFalse(thrown.requested());
+    }
+
+    @Test
+    void theLivenessNumbersReachTheStartupLine() {
+        // The most surprising thing this process can do is start moving data, and these decide when. Somebody
+        // who did not set them should still be able to read what they are.
+        java.util.List<String> described = parse("--store=file:///tmp/x").describe();
+
+        assertTrue(described.contains("liveness_floor"), described.toString());
+        assertTrue(described.contains("lost_after"), described.toString());
+    }
 }

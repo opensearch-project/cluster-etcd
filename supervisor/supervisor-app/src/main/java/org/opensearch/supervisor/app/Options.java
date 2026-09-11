@@ -2,6 +2,7 @@ package org.opensearch.supervisor.app;
 
 import org.opensearch.controlplane.store.KeyValueStores;
 import org.opensearch.supervisor.core.Balancer;
+import org.opensearch.supervisor.core.LivenessTracker;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.plan.Planner;
 
@@ -45,7 +46,8 @@ public record Options(
     Balancer.Config balancer,
     Log.Level logLevel,
     long maxPasses,
-    Duration shutdownBudget
+    Duration shutdownBudget,
+    LivenessTracker.Config liveness
 ) {
 
     /** Sentinel for {@code --max-passes}: run until told to stop. */
@@ -128,15 +130,42 @@ public record Options(
             ),
             Log.Level.parse(resolve(given, env, "log-level", "info")),
             integer(resolve(given, env, "max-passes", "-1"), "max-passes"),
-            duration(resolve(given, env, "shutdown-budget", "10s"), "shutdown-budget")
+            duration(resolve(given, env, "shutdown-budget", "10s"), "shutdown-budget"),
+            liveness(given, env)
         );
     }
 
     private static final Set<String> KNOWN = Set.of(
         "store", "id", "interval", "lease-ttl", "capacity-weight", "tenants", "write", "work-ceiling",
         "per-tenant-floor", "minimum-passes", "rebalance", "hysteresis", "release-after-passes",
-        "default-pool-weight", "log-level", "max-passes", "shutdown-budget"
+        "default-pool-weight", "log-level", "max-passes", "shutdown-budget", "liveness-floor",
+        "stale-multiplier", "lost-multiplier"
     );
+
+    /**
+     * How patient this supervisor is about a node's silence.
+     *
+     * <p>Built here rather than inline so the validation lives in one place — {@link LivenessTracker.Config}
+     * rejects a stale threshold at or above the lost one, which would remove the stale phase and with it the
+     * tolerance for an ordinary GC pause.
+     */
+    private static LivenessTracker.Config liveness(Map<String, String> given, Map<String, String> env) {
+        LivenessTracker.Config defaults = LivenessTracker.Config.defaults();
+        try {
+            return new LivenessTracker.Config(
+                integer(resolve(given, env, "stale-multiplier",
+                    Integer.toString(defaults.staleMultiplier())), "stale-multiplier"),
+                integer(resolve(given, env, "lost-multiplier",
+                    Integer.toString(defaults.lostMultiplier())), "lost-multiplier"),
+                duration(resolve(given, env, "liveness-floor",
+                    defaults.floor().toMillis() + "ms"), "liveness-floor")
+            );
+        } catch (IllegalArgumentException rejected) {
+            // Config's own message explains what is wrong with the combination; wrapping it as a usage error is
+            // what makes it exit 2 with the text on stderr rather than a stack trace.
+            throw new UsageException(rejected.getMessage(), false);
+        }
+    }
 
     private static String resolve(Map<String, String> given, Map<String, String> env, String key, String fallback) {
         String fromArgs = given.get(key);
@@ -251,6 +280,14 @@ public record Options(
         pairs.add(Boolean.toString(policy.rebalance()));
         pairs.add("work_ceiling");
         pairs.add(Integer.toString(policy.workCeiling()));
+        // The liveness numbers belong in the startup line because they decide when this process starts moving
+        // data, which is the single most surprising thing it can do to somebody who did not set them.
+        pairs.add("liveness_floor");
+        pairs.add(liveness.floor().toMillis() + "ms");
+        pairs.add("stale_after");
+        pairs.add(liveness.staleMultiplier() + "x");
+        pairs.add("lost_after");
+        pairs.add(liveness.lostMultiplier() + "x");
         return pairs;
     }
 

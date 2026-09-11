@@ -69,7 +69,26 @@ public final class SupervisorLoop {
         String supervisorId,
         Set<TenantId> configuredTenants
     ) {
-        this(store, clock, pool, supervisorId, configuredTenants, null, null, 0);
+        this(store, clock, pool, supervisorId, configuredTenants, LivenessTracker.Config.defaults());
+    }
+
+    /**
+     * Read-only, with a liveness policy.
+     *
+     * <p>Worth honouring here rather than defaulting: read-only mode exists to be pointed at a live cluster to
+     * see what this service <em>would</em> say about it, and it would say something different about a stale node
+     * under a different policy. A read-only run that reported liveness the acting run would not agree with would
+     * be worse than useless.
+     */
+    public SupervisorLoop(
+        KeyValueStore store,
+        Clock clock,
+        PoolId pool,
+        String supervisorId,
+        Set<TenantId> configuredTenants,
+        LivenessTracker.Config liveness
+    ) {
+        this(store, clock, pool, supervisorId, configuredTenants, null, null, 0, liveness);
     }
 
     /**
@@ -91,10 +110,25 @@ public final class SupervisorLoop {
         Planner.Policy policy,
         long epoch
     ) {
+        this(store, clock, pool, supervisorId, configuredTenants, stillHoldsLease, policy, epoch,
+            LivenessTracker.Config.defaults());
+    }
+
+    public SupervisorLoop(
+        KeyValueStore store,
+        Clock clock,
+        PoolId pool,
+        String supervisorId,
+        Set<TenantId> configuredTenants,
+        BooleanSupplier stillHoldsLease,
+        Planner.Policy policy,
+        long epoch,
+        LivenessTracker.Config liveness
+    ) {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.pool = Objects.requireNonNull(pool, "pool");
-        this.observer = new Observer(store, clock, new LivenessTracker(clock.instant()));
+        this.observer = new Observer(store, clock, new LivenessTracker(clock.instant(), liveness));
         this.projector = new Projector(store, supervisorId);
         this.tenants = new TenantDiscovery(store, configuredTenants);
         this.applier = new Applier(store, clock);

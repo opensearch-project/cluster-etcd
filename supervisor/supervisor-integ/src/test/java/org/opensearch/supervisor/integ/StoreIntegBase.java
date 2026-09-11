@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.KeyValueStores;
 import org.opensearch.supervisor.core.Balancer;
+import org.opensearch.supervisor.core.LivenessTracker;
 import org.opensearch.supervisor.core.Supervisor;
 import org.opensearch.supervisor.fakenode.FakeNode;
 import org.opensearch.supervisor.model.Keys;
@@ -67,6 +68,25 @@ abstract class StoreIntegBase {
 
     /** How long an assertion may keep retrying before it is a failure rather than slowness. */
     static final Duration PATIENCE = Duration.ofSeconds(60);
+
+    /**
+     * Liveness compressed to something a test can wait out.
+     *
+     * <p>The default floor of 20 seconds means a node is not declared lost for about 67 seconds however fast it
+     * heartbeats, and that one wait was over half the suite's runtime once it ran on two backends.
+     *
+     * <p>The floor is the shortest <em>stale threshold</em>, not the shortest interval — the tracker reaches it by
+     * crediting a node with at least {@code floor / staleMultiplier}. So with a 2-second floor, 3x and 6x, and a
+     * fixture that declares a 1-second heartbeat, the node's own interval wins over the floor's implied 667ms and
+     * the thresholds land at <b>stale 3s, lost 6s</b>.
+     *
+     * <p><b>The ratios are what matter and they are preserved in spirit</b>, which is why this is a legitimate
+     * compression rather than testing a different system. The mechanism under test is revision silence
+     * accumulating past a threshold; nothing about it is sensitive to the threshold's absolute size, only to
+     * stale arriving before lost with room between them. What a shorter floor <em>would</em> break in production
+     * is tolerance for a GC pause, and a fake node does not pause.
+     */
+    static final LivenessTracker.Config LIVENESS = new LivenessTracker.Config(3, 6, Duration.ofSeconds(2));
 
     private static final AtomicLong NAMESPACES = new AtomicLong();
 
@@ -147,7 +167,7 @@ abstract class StoreIntegBase {
 
     Supervisor supervisor(String id, KeyValueStore against) {
         return new Supervisor(against, Clock.systemUTC(), id, Set.of(), 1.0, LEASE_TTL,
-            Balancer.Config.defaults(), new Planner.Policy(200, 5, 2), false);
+            Balancer.Config.defaults(), new Planner.Policy(200, 5, 2), false, LIVENESS);
     }
 
     Supervisor supervisor(String id) {

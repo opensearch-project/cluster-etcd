@@ -34,6 +34,13 @@ What does not, in rough order of how much it matters:
 ./supervisor-app/build/install/supervisor-app/bin/supervisor-app --help
 ```
 
+Liveness thresholds are tunable — `--liveness-floor`, `--stale-multiplier`, `--lost-multiplier`, defaults
+unchanged at 20s/6x/20x. They decide how long a silent node is tolerated before its shards are rebuilt
+elsewhere, which at the default 5s heartbeat is about 100 seconds. Lowering them is the direction that deserves
+care: too short declares healthy nodes lost during an ordinary GC pause and moves data that did not need moving,
+burning recovery bandwidth exactly when the cluster is already struggling. A combination that would collapse the
+stale phase is refused at startup rather than discovered later.
+
 It is **read-only unless you pass `--write`**. That is deliberate: this service creates and removes shard
 copies, so starting in the wrong mode because of a forgotten flag should cost an afternoon rather than a
 cluster's data. Read-only observes, diffs and projects everything, so you can read what it *would* do out of
@@ -172,9 +179,11 @@ which is a green build that tested nothing. Running them outside Gradle needs th
 export DOCKER_HOST=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
 ```
 
-**They take minutes when they run**, and roughly twice as long now that everything runs on both backends: lease
-TTLs and revision-silence liveness are measured in wall-clock seconds and there is no clock to advance, which is
-precisely what they exist to exercise.
+**They take a couple of minutes when they run.** Lease TTLs and revision-silence liveness are measured in
+wall-clock seconds and there is no clock to advance, which is precisely what they exist to exercise. The suite
+compresses the liveness thresholds (`StoreIntegBase.LIVENESS`) rather than waiting out the production defaults,
+which would spend 67 seconds per backend on a single test: the mechanism under test is silence accumulating past
+a threshold, and nothing about it is sensitive to the threshold's absolute size.
 
 Three suites, for the things only a real store and a real clock can answer:
 

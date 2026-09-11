@@ -54,7 +54,8 @@ public final class Main {
                 options.leaseTtl(),
                 options.balancer(),
                 options.policy(),
-                options.readOnly()
+                options.readOnly(),
+                options.liveness()
             );
 
             warnIfIdentityLooksTaken(store, options);

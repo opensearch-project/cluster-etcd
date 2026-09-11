@@ -45,6 +45,52 @@ public final class LivenessTracker {
     /** Assumed interval for a node with no registration to derive one from. */
     public static final Duration DEFAULT_INTERVAL = Duration.ofSeconds(5);
 
+    /**
+     * How patient this supervisor is about silence.
+     *
+     * <p>Configurable, with the defaults unchanged, because this is the most consequential timing in the service
+     * and it was the only one an operator could not reach. A lease TTL, the planner's policy and the balancer's
+     * hysteresis are all tunable; declaring a node lost is what starts rebuilding its shards elsewhere, and at a
+     * five-second heartbeat that takes about a hundred seconds. Whether that is too long or too short is a
+     * property of the deployment — how expensive a rebuild is, how often a node pauses, how much redundancy
+     * there is to spare — and not something this code can know.
+     *
+     * <p>It is also a knob to be careful with in one direction only. Too <em>long</em> costs availability while a
+     * dead node's shards go unrebuilt. Too <em>short</em> declares healthy nodes lost during an ordinary GC pause
+     * and moves data that did not need moving, which is worse: it burns recovery bandwidth precisely when the
+     * cluster is already struggling. The floor exists to make the second failure hard to reach by accident, so
+     * lowering it is the change that deserves thought.
+     *
+     * @param staleMultiplier multiplied by a node's own heartbeat interval to get its stale threshold. Stale
+     *     means "do not place new copies here", and a stale node's existing copies still count.
+     * @param lostMultiplier the same, further out. Lost means its copies are presumed gone.
+     * @param floor applied to the <b>interval</b> rather than to each threshold — see {@link #thresholdFor}
+     */
+    public record Config(int staleMultiplier, int lostMultiplier, Duration floor) {
+
+        public Config {
+            Objects.requireNonNull(floor, "floor");
+            if (staleMultiplier >= lostMultiplier) {
+                throw new IllegalArgumentException(
+                    "stale multiplier " + staleMultiplier + " must be below lost multiplier " + lostMultiplier
+                        + "; equal thresholds would remove the stale phase, and with it the tolerance for a"
+                        + " GC pause that stops a healthy node being treated as dead"
+                );
+            }
+            if (staleMultiplier < 2) {
+                throw new IllegalArgumentException("a stale multiplier of " + staleMultiplier + " would declare a"
+                    + " node stale after missing a single heartbeat, which every healthy node does sometimes");
+            }
+            if (floor.isNegative() || floor.isZero()) {
+                throw new IllegalArgumentException("the liveness floor must be positive, not " + floor);
+            }
+        }
+
+        public static Config defaults() {
+            return new Config(DEFAULT_STALE_MULTIPLIER, DEFAULT_LOST_MULTIPLIER, DEFAULT_FLOOR);
+        }
+    }
+
     private final RevisionSilence silence;
 
     /**
@@ -63,7 +109,11 @@ public final class LivenessTracker {
     private final Duration floor;
 
     public LivenessTracker(Instant startedAt) {
-        this(startedAt, DEFAULT_STALE_MULTIPLIER, DEFAULT_LOST_MULTIPLIER, DEFAULT_FLOOR);
+        this(startedAt, Config.defaults());
+    }
+
+    public LivenessTracker(Instant startedAt, Config config) {
+        this(startedAt, config.staleMultiplier(), config.lostMultiplier(), config.floor());
     }
 
     public LivenessTracker(Instant startedAt, int staleMultiplier, int lostMultiplier, Duration floor) {

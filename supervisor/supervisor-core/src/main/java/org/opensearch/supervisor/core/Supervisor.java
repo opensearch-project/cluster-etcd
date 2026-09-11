@@ -42,6 +42,7 @@ public final class Supervisor {
     private final PoolWeights weights;
     private final Housekeeping housekeeping;
     private final Planner.Policy policy;
+    private final LivenessTracker.Config liveness;
     private final boolean readOnly;
 
     private final Map<PoolId, SupervisorLoop> loops = new LinkedHashMap<>();
@@ -78,6 +79,26 @@ public final class Supervisor {
         Planner.Policy policy,
         boolean readOnly
     ) {
+        this(store, clock, supervisorId, configuredTenants, capacityWeight, leaseTtl, balancerConfig, policy,
+            readOnly, LivenessTracker.Config.defaults());
+    }
+
+    /**
+     * @param liveness how patient this supervisor is about a node's silence. See
+     *     {@link LivenessTracker.Config} — the direction that deserves care is making it shorter.
+     */
+    public Supervisor(
+        KeyValueStore store,
+        Clock clock,
+        String supervisorId,
+        Set<TenantId> configuredTenants,
+        double capacityWeight,
+        Duration leaseTtl,
+        Balancer.Config balancerConfig,
+        Planner.Policy policy,
+        boolean readOnly,
+        LivenessTracker.Config liveness
+    ) {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.supervisorId = Objects.requireNonNull(supervisorId, "supervisorId");
@@ -88,6 +109,7 @@ public final class Supervisor {
         this.weights = new PoolWeights(store);
         this.housekeeping = new Housekeeping(store, leases, this.configuredTenants, supervisorId);
         this.policy = Objects.requireNonNull(policy, "policy");
+        this.liveness = Objects.requireNonNull(liveness, "liveness");
         this.readOnly = readOnly;
     }
 
@@ -137,11 +159,11 @@ public final class Supervisor {
         // Only now, with ownership settled, does any reconciliation happen.
         for (PoolId pool : held) {
             loops.computeIfAbsent(pool, id -> readOnly
-                ? new SupervisorLoop(store, clock, id, supervisorId, configuredTenants)
+                ? new SupervisorLoop(store, clock, id, supervisorId, configuredTenants, liveness)
                 // The lease check is a supplier closing over the manager, so it is evaluated at the moment
                 // of the write rather than at the moment the loop was built.
                 : new SupervisorLoop(store, clock, id, supervisorId, configuredTenants,
-                    () -> leases.holds(id), policy, leases.epochOf(id))
+                    () -> leases.holds(id), policy, leases.epochOf(id), liveness)
             ).pass();
         }
     }

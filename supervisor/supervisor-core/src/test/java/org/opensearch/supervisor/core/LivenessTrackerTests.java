@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -180,5 +181,57 @@ class LivenessTrackerTests {
 
         tracker.retain(Set.of());
         assertEquals(0, tracker.tracked());
+    }
+
+    @Test
+    void aShorterPolicyMovesBothThresholdsAndKeepsTheirRatio() {
+        // Making this configurable was the point; checking that it takes effect is the other half. Written after
+        // getting the floor's meaning wrong: it is the shortest *stale threshold*, not the shortest interval, and
+        // the tracker reaches it by raising the interval to floor/staleMultiplier. So a 2s floor with a 3x stale
+        // multiplier means stale at 2s, not at 6s.
+        Duration floor = Duration.ofSeconds(2);
+        LivenessTracker tracker = new LivenessTracker(Instant.EPOCH, new LivenessTracker.Config(3, 6, floor));
+        Registration fast = registration(500);
+
+        Duration stale = tracker.staleThreshold(fast);
+        Duration lost = tracker.lostThreshold(fast);
+
+        // At least the floor, and only just: the ceiling division in thresholdFor exists so that this can never
+        // land a hair *under* the floor it is meant to enforce, at the cost of a nanosecond over.
+        assertTrue(stale.compareTo(floor) >= 0, "stale " + stale + " must not undercut the floor " + floor);
+        assertTrue(stale.minus(floor).compareTo(Duration.ofMillis(1)) < 0, "stale was " + stale);
+        // And the ratio between the two thresholds survives, which is what preserves the stale phase.
+        assertEquals(stale.multipliedBy(2), lost);
+    }
+
+    @Test
+    void theDefaultPolicyIsUnchangedByHavingBecomeConfigurable() {
+        // A default that drifted here would alter when a real deployment starts rebuilding shards, which is not
+        // the kind of change that should arrive as a side effect of adding a knob.
+        LivenessTracker.Config defaults = LivenessTracker.Config.defaults();
+
+        assertEquals(LivenessTracker.DEFAULT_STALE_MULTIPLIER, defaults.staleMultiplier());
+        assertEquals(LivenessTracker.DEFAULT_LOST_MULTIPLIER, defaults.lostMultiplier());
+        assertEquals(LivenessTracker.DEFAULT_FLOOR, defaults.floor());
+
+        // A node heartbeating every 5s beats the floor, so its own interval is used: stale at 30s, lost at 100s.
+        Registration node = registration(5000);
+        LivenessTracker tracker = new LivenessTracker(Instant.EPOCH, defaults);
+        assertEquals(Duration.ofSeconds(30), tracker.staleThreshold(node));
+        assertEquals(Duration.ofSeconds(100), tracker.lostThreshold(node));
+    }
+
+    @Test
+    void aPolicyThatWouldCollapseTheStalePhaseIsRefusedAtConstruction() {
+        // Equal thresholds mean live-to-lost with no stale phase, so no tolerance for a GC pause: a healthy node
+        // that paused would have its shards rebuilt. Refused where it is cheapest to refuse.
+        assertThrows(IllegalArgumentException.class,
+            () -> new LivenessTracker.Config(6, 6, Duration.ofSeconds(20)));
+        assertThrows(IllegalArgumentException.class,
+            () -> new LivenessTracker.Config(20, 6, Duration.ofSeconds(20)));
+        assertThrows(IllegalArgumentException.class,
+            () -> new LivenessTracker.Config(1, 6, Duration.ofSeconds(20)));
+        assertThrows(IllegalArgumentException.class,
+            () -> new LivenessTracker.Config(6, 20, Duration.ZERO));
     }
 }
