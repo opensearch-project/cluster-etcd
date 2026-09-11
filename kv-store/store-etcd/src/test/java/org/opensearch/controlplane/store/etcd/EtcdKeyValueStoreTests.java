@@ -25,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -281,39 +282,68 @@ class EtcdKeyValueStoreTests extends KeyValueStoreContractTests {
         }
     }
 
+    /**
+     * A write outside the prefix must not notify.
+     *
+     * <p>Proving that nothing happened needs care, and an earlier version of this test got it wrong: it
+     * used a <em>second</em> watch as a fence, on the reasoning that once the fence had fired anything
+     * earlier must have been delivered too. That is false. etcd guarantees ordered delivery <b>within</b> a
+     * watcher, not <b>across</b> watchers — two watches are two independent streams — so the fence could
+     * fire while the counting watch had received nothing yet, and the assertion failed intermittently
+     * against a perfectly correct store.
+     *
+     * <p>This version uses the guarantee that does hold. Both writes go to one watcher, and the
+     * out-of-prefix write happens <em>first</em>, so a broken prefix filter would deliver it <em>before</em>
+     * the in-prefix one. Waiting for a second event is therefore a positive test for the bug rather than a
+     * bounded guess: if the filter leaks, the extra event is already queued behind the one we waited for and
+     * arrives immediately. The short timeout is only ever paid when the test passes.
+     */
     @Test
     void aWriteOutsideThePrefixDoesNotFire() throws Exception {
         KeyValueStore store = newStore();
         java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.CountDownLatch first = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch second = new java.util.concurrent.CountDownLatch(2);
 
-        try (var ignored = store.watch("indices/", calls::incrementAndGet).orElseThrow()) {
-            store.put("aliases/a", bytes("one"));
-            // A write the watch should see, used as a fence: once it has arrived, anything earlier would
-            // have too, so asserting on the counter afterwards is not a race against the network.
-            java.util.concurrent.CountDownLatch fence = new java.util.concurrent.CountDownLatch(1);
-            try (var fenced = store.watch("indices/", fence::countDown).orElseThrow()) {
-                store.put("indices/seen", bytes("two"));
-                assertTrue(fence.await(10, TimeUnit.SECONDS));
-            }
-            assertEquals(1, calls.get(), "only the write under the watched prefix may notify");
+        try (var ignored = store.watch("indices/", () -> {
+            calls.incrementAndGet();
+            first.countDown();
+            second.countDown();
+        }).orElseThrow()) {
+            store.put("aliases/a", bytes("one"));       // must not notify
+            store.put("indices/seen", bytes("two"));    // must notify
+
+            assertTrue(first.await(10, TimeUnit.SECONDS), "the in-prefix write must notify");
+            assertFalse(second.await(2, TimeUnit.SECONDS),
+                "only the in-prefix write may notify, and a leaked event would already be queued");
+            assertEquals(1, calls.get());
         }
     }
 
+    /**
+     * A closed watch must not notify.
+     *
+     * <p>Unavoidably a bounded wait: a closed watch should receive nothing ever, and there is no event to
+     * wait for that would prove the absence. The live watch on another prefix is still worth keeping — it
+     * establishes that etcd processed both writes and delivered to <em>somebody</em>, so a failure here
+     * means the closed watch fired rather than that nothing happened at all. Same cross-stream caveat as
+     * above applies, which is why the bounded wait follows it rather than replacing it.
+     */
     @Test
     void closingAWatchStopsNotifications() throws Exception {
         KeyValueStore store = newStore();
-        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.CountDownLatch closedFired = new java.util.concurrent.CountDownLatch(1);
 
-        var watch = store.watch("indices/", calls::incrementAndGet).orElseThrow();
+        var watch = store.watch("indices/", closedFired::countDown).orElseThrow();
         watch.close();
 
-        java.util.concurrent.CountDownLatch fence = new java.util.concurrent.CountDownLatch(1);
-        try (var fenced = store.watch("other/", fence::countDown).orElseThrow()) {
+        java.util.concurrent.CountDownLatch live = new java.util.concurrent.CountDownLatch(1);
+        try (var stillOpen = store.watch("other/", live::countDown).orElseThrow()) {
             store.put("indices/a", bytes("one"));
             store.put("other/fence", bytes("two"));
-            assertTrue(fence.await(10, TimeUnit.SECONDS));
+            assertTrue(live.await(10, TimeUnit.SECONDS), "etcd delivered to the open watch, so it is live");
         }
-        assertEquals(0, calls.get(), "a closed watch must not notify");
+        assertFalse(closedFired.await(2, TimeUnit.SECONDS), "a closed watch must not notify");
     }
 
     /** watchOrPoll must take the native path here, not silently start a polling thread. */
