@@ -23,8 +23,14 @@ dependencies {
     testImplementation(project(":fake-node"))
 
     // The one place in this repository that names a backend. Everywhere else resolves one through
-    // ServiceLoader, which is the point of the SPI; here the test has to guarantee a specific one is present.
+    // ServiceLoader, which is the point of the SPI; here the tests have to guarantee specific ones are present.
+    //
+    // Both, deliberately. The suites are backend-agnostic and each runs against every backend on the classpath,
+    // which is the only way to answer "are we relying on a guarantee only one of these makes?" -- and the two
+    // differ on exactly the guarantee the design worries about most: etcd answers a prefix scan atomically and
+    // ZooKeeper walks the subtree with a read per key.
     testImplementation("org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT")
+    testImplementation("org.opensearch.controlplane:store-zookeeper:0.1.0-SNAPSHOT")
 
     testImplementation(platform("org.junit:junit-bom:$junitVersion"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -38,11 +44,15 @@ dependencies {
 tasks.test {
     // With Docker available these start their own etcd and need no configuration. Point them at a cluster you
     // are already running instead -- much faster, and sometimes the point:
-    //   ./gradlew :supervisor-integ:test -Dsupervisor.etcd=localhost:2379
-    // The image is overridable for a different version or an unreachable registry:
-    //   -Dsupervisor.etcd.image=...
+    //   ./gradlew :supervisor-integ:test -Dsupervisor.etcd=localhost:2379 -Dsupervisor.zookeeper=localhost:2181
+    // Each backend is independent: point one at a running server and the other still uses a container. The
+    // images are overridable for a different version or an unreachable registry:
+    //   -Dsupervisor.etcd.image=... -Dsupervisor.zookeeper.image=...
     systemProperty("supervisor.etcd", providers.systemProperty("supervisor.etcd").getOrElse(""))
     systemProperty("supervisor.etcd.image", providers.systemProperty("supervisor.etcd.image").getOrElse(""))
+    systemProperty("supervisor.zookeeper", providers.systemProperty("supervisor.zookeeper").getOrElse(""))
+    systemProperty("supervisor.zookeeper.image",
+        providers.systemProperty("supervisor.zookeeper.image").getOrElse(""))
 
     // These are minutes-long when they run, because leases and liveness are measured in wall-clock seconds and
     // there is no clock to advance. Not part of a quick edit-test loop.

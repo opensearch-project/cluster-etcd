@@ -35,6 +35,11 @@ import static org.junit.jupiter.api.Assertions.fail;
 /**
  * Shared setup: a real etcd, a fresh key space per test, and a real clock.
  *
+ * <p><b>Backend-agnostic on purpose.</b> Every suite below this class is abstract, with one thin subclass per
+ * backend supplying nothing but a store URI. That arrangement is the answer to "are we relying on an
+ * etcd-specific guarantee?" — the assertions are literally the same objects, so the question cannot be answered
+ * differently by accident. Adding a third backend is a fifteen-line class.
+ *
  * <p><b>There is no {@code MutableClock} here, and that is the point.</b> Every other test in this repository
  * advances time by calling a method, which is what makes them fast and deterministic — and it means a lease TTL,
  * a staleness threshold and a revision-silence window have never once been measured against a clock that moves
@@ -42,12 +47,12 @@ import static org.junit.jupiter.api.Assertions.fail;
  * enough not to fire spuriously. That tension is itself worth exercising.
  */
 /*
- * Note: the @EnabledIf that gates these on Docker lives on each concrete subclass, not here. EnabledIf is not
- * declared @Inherited, and while JUnit's own annotation lookup does walk the class hierarchy, "probably
- * inherited" is a poor thing to rest a skip on: if it were not found, these would *fail* without Docker instead
- * of skipping, which is the difference between a red build and an honest one on any machine without it.
+ * Note: the @EnabledIf that gates these on a reachable backend lives on each concrete subclass, not here.
+ * EnabledIf is not declared @Inherited, and while JUnit's own annotation lookup does walk the class hierarchy,
+ * "probably inherited" is a poor thing to rest a skip on: if it were not found, these would *fail* without a
+ * backend instead of skipping, which is the difference between a red build and an honest one.
  */
-abstract class EtcdIntegBase {
+abstract class StoreIntegBase {
 
     static final PoolId POOL_A = PoolId.of("pool-a");
     static final TenantId ACME = TenantId.of("acme");
@@ -69,13 +74,29 @@ abstract class EtcdIntegBase {
     String storeUri;
     private final List<AutoCloseable> toClose = new ArrayList<>();
 
+    /**
+     * A store URI in a key space nothing else is using.
+     *
+     * <p>The only thing a backend subclass has to supply.
+     */
+    abstract String newStoreUri();
+
+    /**
+     * A namespace name safe for every backend.
+     *
+     * <p>Lower-case letters, digits and hyphens only: a ZooKeeper root is a znode path and is validated as one,
+     * so a name that etcd would accept as an arbitrary byte string can still be rejected there.
+     */
+    static String freshNamespace() {
+        return "supervisor-integ-" + System.nanoTime() + "-" + NAMESPACES.incrementAndGet();
+    }
+
     @BeforeEach
     void openStore() throws Exception {
-        // A key space per test. etcd keeps everything written by every test in one cluster otherwise, and a
-        // leftover pool lease from a previous test is exactly the kind of state that makes an integration suite
-        // pass or fail depending on order.
-        storeUri = EtcdTestServer.storeUri(
-            "supervisor-integ-" + System.nanoTime() + "-" + NAMESPACES.incrementAndGet());
+        // A key space per test. A backend keeps everything written by every test otherwise, and a leftover pool
+        // lease from a previous test is exactly the kind of state that makes an integration suite pass or fail
+        // depending on order.
+        storeUri = newStoreUri();
         store = open();
     }
 

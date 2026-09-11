@@ -143,13 +143,21 @@ The fallback compiles `store-api` from source rather than using
 
 ## Integration tests
 
-`supervisor-integ` runs against a real etcd. It is a separate module so that jetcd, gRPC and a Docker client
-stay off every other module's classpath.
+`supervisor-integ` runs against real stores — **etcd and ZooKeeper**. It is a separate module so that jetcd,
+Curator, gRPC and a Docker client stay off every other module's classpath.
 
 ```
-./gradlew :supervisor-integ:test                              # starts etcd in Docker
-./gradlew :supervisor-integ:test -Dsupervisor.etcd=localhost:2379   # use one you already have
+./gradlew :supervisor-integ:test                      # starts both in Docker
+./gradlew :supervisor-integ:test \
+    -Dsupervisor.etcd=localhost:2379 \
+    -Dsupervisor.zookeeper=localhost:2181             # use servers you already have
 ```
+
+Each backend is independent: point one at a running server and the other still uses a container.
+
+**Every suite is abstract, with one thin subclass per backend supplying nothing but a store URI.** That is the
+whole design: both backends run the same assertion objects, so "are we relying on a guarantee only one of these
+makes?" cannot be answered differently by accident. Adding a third backend is a fifteen-line class.
 
 Without Docker they skip, with a message on stderr saying why — and distinguishing the two failures that look
 identical but need opposite responses: DOCKER_HOST not discovered, versus discovered but nothing listening on
@@ -162,26 +170,32 @@ which is a green build that tested nothing. Running them outside Gradle needs th
 
 ```
 export DOCKER_HOST=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
-``` **They take minutes when they do run**: lease
-TTLs and revision-silence liveness are measured in wall-clock seconds and there is no clock to advance, which
-is precisely what they exist to exercise — every other test in the repository uses a clock it can move by hand.
+```
 
-They are deliberately not a second copy of the unit suite. Three things only a real store and a real clock can
-answer:
+**They take minutes when they run**, and roughly twice as long now that everything runs on both backends: lease
+TTLs and revision-silence liveness are measured in wall-clock seconds and there is no clock to advance, which is
+precisely what they exist to exercise.
 
-- **`EtcdStoreAssumptionsIT`** — the claims `DESIGN.md` makes about store semantics, as executable assertions:
-  that an identical-bytes rewrite still changes the revision (liveness depends on it, and the shared contract
-  suite does not cover it), that a stale compare-and-set is rejected, that prefixes do not overlap, that a
-  full-size inventory survives the backend. One honest caveat, also stated in the file: etcd answers a prefix
-  scan with one atomic range request, so the torn-read assertions from §12 pass here almost by construction.
-  They are written so that a backend which walks the subtree — ZooKeeper — would fail them loudly. Running
-  this suite against ZooKeeper is the natural follow-on.
-- **`EtcdLeaseIT`** — several supervisors on real threads against real compare-and-set, asserting that no pool
-  is ever held by two at once, that a clean shutdown hands over without waiting out a TTL, and that an abrupt
-  death is recovered from observed silence with the epoch advanced. Every previous fleet test took turns from a
-  single thread, which is the one arrangement in which a lease cannot fail.
-- **`EtcdConvergenceIT`** — an index placed across real nodes reporting green, then staying settled; and a node
-  going silent against a clock nobody controls, with its copies rebuilt elsewhere.
+Three suites, for the things only a real store and a real clock can answer:
+
+- **`{Etcd,ZooKeeper}StoreAssumptionsIT`** — the claims `DESIGN.md` makes about store semantics, as executable
+  assertions: that an identical-bytes rewrite still changes the revision (liveness depends on it, and the shared
+  contract suite does not cover it, since its revision test writes two *different* values), that a stale
+  compare-and-set is rejected under real concurrency, that twelve threads racing create-if-absent produce exactly
+  one winner, that prefixes do not overlap, that a full-size inventory survives the backend.
+
+  One test is a **characterisation rather than an assertion**, and deliberately: `aPrefixScanIsCharacterisedFor
+  ThisBackend` measures whether a prefix scan is a snapshot and prints the verdict. etcd answers atomically;
+  ZooKeeper lists children then reads each separately, so its scans straddle concurrent writes. R2.5 makes that
+  normal, so asserting atomicity would report a correct backend as broken. What *is* asserted on both is what the
+  supervisor actually relies on: no key is ever lost from a scan of a prefix whose membership is not changing,
+  and every value returned is one a writer really wrote — stale is fine, missing or half-written is not.
+- **`{Etcd,ZooKeeper}LeaseIT`** — several supervisors on real threads against real compare-and-set, asserting
+  that no pool is ever held by two at once, that a clean shutdown hands over without waiting out a TTL, and that
+  an abrupt death is recovered from observed silence with the epoch advanced. Every previous fleet test took
+  turns from a single thread, which is the one arrangement in which a lease cannot fail.
+- **`{Etcd,ZooKeeper}ConvergenceIT`** — an index placed across real nodes reporting green, then staying settled;
+  and a node going silent against a clock nobody controls, with its copies rebuilt elsewhere.
 
 ## Testing
 

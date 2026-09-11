@@ -193,19 +193,20 @@ compile "fake-node tests" fake-node/src/test/java "$OUT/fake-node/test" \
 # since nothing else depends on this module.
 echo "==> supervisor-integ (typecheck only; running it needs Docker)"
 TESTCONTAINERS=$(jar org.testcontainers testcontainers 1.21.4 2>/dev/null || true)
+STORE_ZK_CLASSES="$KV_STORE/store-zookeeper/build/classes/java/main"
 # Testcontainers' GenericContainer implements JUnit 4's TestRule, so junit4 has to be on the compile classpath
 # even though nothing here uses it. Gradle brings it transitively; this has to name it.
 JUNIT4=$(jar junit junit 4.13.2 2>/dev/null || true)
 STORE_ETCD_CLASSES="$KV_STORE/store-etcd/build/classes/java/main"
-if [[ -n "$TESTCONTAINERS" && -n "$JUNIT4" && -d "$STORE_ETCD_CLASSES" ]]; then
+if [[ -n "$TESTCONTAINERS" && -n "$JUNIT4" && -d "$STORE_ETCD_CLASSES" && -d "$STORE_ZK_CLASSES" ]]; then
     compile "supervisor-integ tests" supervisor-integ/src/test/java "$OUT/supervisor-integ/test" \
-        "$OUT/supervisor-core/main:$OUT/supervisor-model/main:$OUT/fake-node/main:$STORE_CP:$STORE_ETCD_CLASSES:$TESTCONTAINERS:$JUNIT4:$JACKSON_CP:$JUNIT_CP"
+        "$OUT/supervisor-core/main:$OUT/supervisor-model/main:$OUT/fake-node/main:$STORE_CP:$STORE_ETCD_CLASSES:$STORE_ZK_CLASSES:$TESTCONTAINERS:$JUNIT4:$JACKSON_CP:$JUNIT_CP"
     # Not added to TEST_CP below: these would try to start a container and fail, and a suite that cannot run
     # here must not turn into a red build here.
     echo "    typechecked, not run"
 else
-    echo "    SKIPPED: needs org.testcontainers:testcontainers:1.21.4 and junit:junit:4.13.2 in a local cache, and"
-    echo "    $STORE_ETCD_CLASSES to exist (build the store repo once: cd $KV_STORE && ./gradlew build)"
+    echo "    SKIPPED: needs org.testcontainers:testcontainers:1.21.4 and junit:junit:4.13.2 in a local cache,"
+    echo "    and both backends built (do it once: cd $KV_STORE && ./gradlew build)"
 fi
 
 echo "==> test runner"
