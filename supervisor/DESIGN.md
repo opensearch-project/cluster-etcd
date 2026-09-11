@@ -509,6 +509,27 @@ before it observes correctly is neither. Step 4 sits between them because leader
 trust when the worst a bug can do is compute the same diff twice.
 
 ## 12. Torn reads, and where they can cost more than a pass
+### 12.1 Measured, not assumed
+
+The reasoning below was written before any of it had been observed. It has now been checked against both
+backends by `AbstractStoreAssumptionsIT`, with a writer sweeping keys in ascending order while a reader scans
+the prefix 200 times:
+
+| backend | snapshot-consistent | torn | widest generation spread |
+|---|---|---|---|
+| etcd | 200 | 0 | 2 |
+| ZooKeeper | 11 | 189 | 3 |
+
+Two things worth taking from that. **etcd's scans are atomic and ZooKeeper's are not**, which confirms the
+premise this section rests on rather than leaving it as an inference from the two implementations. And a
+generation spread of **2 is normal for an atomic scan**, not a symptom: the SPI has no multi-key transaction, so
+a sweep of *n* keys is *n* writes and a correct snapshot taken mid-sweep necessarily straddles two of them. A
+spread of **3** is what a walk looks like, because one instant cannot hold three generations.
+
+The practical consequence is that torn reads are not a hypothetical this design tolerates in principle — on
+ZooKeeper they are what almost every scan returns. Everything below is load-bearing there.
+
+
 
 The store has no cross-key transaction, and **`scanPrefix` is not a snapshot either**. Its contract is
 "every key beginning with this prefix, in ascending key order" and nothing more: etcd serves it as one

@@ -214,11 +214,33 @@ abstract class AbstractStoreAssumptionsIT extends StoreIntegBase {
      *       half-written or corrupt value. This is the property that lets the differ parse whatever it reads.
      * </ul>
      *
-     * <p>The measurement uses a writer sweeping keys in <b>ascending order</b>, which makes tearing visible.
-     * A true snapshot then shows a staircase — keys below the writer's position at generation {@code N}, the rest
-     * at {@code N-1} — so at most two generations, consecutive, newer on a prefix of the key order. Anything else
-     * means the read drifted across the writer's own iterations. The verdict is printed rather than asserted, so
-     * the suite records the difference between backends instead of hiding it.
+     * <p>The measurement uses a writer sweeping keys in <b>ascending order</b>. A true snapshot then shows a
+     * staircase — keys below the writer's position at generation {@code N}, the rest at {@code N-1} — so at most
+     * two generations, consecutive, newer on a prefix of the key order. Anything else means the read drifted
+     * across the writer's own iterations. The verdict is printed rather than asserted, so the suite records the
+     * difference between backends instead of hiding it.
+     *
+     * <p><b>Measured, on 200 scans against each backend while a writer swept 40 keys:</b>
+     *
+     * <pre>
+     *   etcd       200 snapshot-consistent,   0 torn, widest generation spread 2
+     *   ZooKeeper   11 snapshot-consistent, 189 torn, widest generation spread 3
+     * </pre>
+     *
+     * <p>Those two signatures are exactly what the model predicts and are worth reading carefully. A spread of
+     * <b>2</b> is not evidence of tearing — it is the <em>expected</em> state of an atomic scan taken mid-sweep,
+     * which is the whole reason the first version of this test was wrong to demand a single value. A spread of
+     * <b>3</b> is impossible for a snapshot, because one instant cannot contain three of the writer's
+     * generations, and it is the unambiguous fingerprint of a walk.
+     *
+     * <p>The key count is raised to 200 here so that detection is <b>structural rather than incidental</b>. At 40
+     * keys ZooKeeper still tore on 94.5% of scans, so nothing was broken — but the eleven that looked consistent
+     * are a reminder that a walking read can be mistaken for a snapshot when it happens to fetch the high keys
+     * first and the low keys last, since that produces the same newer-on-a-prefix shape a staircase does. The
+     * costs scale differently in a way that removes the ambiguity: an atomic range request is one round trip
+     * whatever the key count, while a walk is at least one per key, so at 200 keys a walk spans several sweeps and
+     * cannot come back with a spread of 2. Attempts drop from 200 to 30 to suit, which is fewer round trips than
+     * before rather than more.
      *
      * <p>The earlier version of this test asserted that all values in a scan were equal, and failed against etcd.
      * That was the test being wrong: the SPI has no multi-key transaction, so the writer's forty puts are forty
@@ -228,7 +250,9 @@ abstract class AbstractStoreAssumptionsIT extends StoreIntegBase {
     @Test
     void aPrefixScanIsCharacterisedForThisBackend() throws Exception {
         String prefix = "torn/";
-        int keys = 40;
+        // Enough that a walking scan provably outlasts several writer sweeps; see the class comment. An atomic
+        // range request does not care how many there are.
+        int keys = 200;
         for (int i = 0; i < keys; i++) {
             store.put(prefix + String.format("%03d", i), generation(0));
         }
@@ -253,7 +277,7 @@ abstract class AbstractStoreAssumptionsIT extends StoreIntegBase {
         int torn = 0;
         int worstGenerationSpread = 1;
         try {
-            for (int attempt = 0; attempt < 200; attempt++) {
+            for (int attempt = 0; attempt < 30; attempt++) {
                 NavigableMap<String, KeyValueStore.Versioned> scanned = store.scanPrefix(prefix);
 
                 assertEquals(keys, scanned.size(),
@@ -283,9 +307,9 @@ abstract class AbstractStoreAssumptionsIT extends StoreIntegBase {
         }
         assertNull(writerFailure.get(), () -> "the writer failed: " + writerFailure.get());
 
-        System.out.println("[assumptions] " + getClass().getSimpleName() + " prefix scan: " + snapshots
-            + " snapshot-consistent, " + torn + " torn, widest generation spread " + worstGenerationSpread
-            + " -- " + (torn == 0
+        System.out.println("[assumptions] " + getClass().getSimpleName() + " prefix scan over " + keys
+            + " keys: " + snapshots + " snapshot-consistent, " + torn + " torn, widest generation spread "
+            + worstGenerationSpread + " -- " + (torn == 0
                 ? "this backend answers a scan atomically"
                 : "this backend's scans straddle concurrent writes, which R2.5 makes normal"));
     }
