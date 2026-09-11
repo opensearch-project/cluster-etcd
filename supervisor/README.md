@@ -151,7 +151,19 @@ stay off every other module's classpath.
 ./gradlew :supervisor-integ:test -Dsupervisor.etcd=localhost:2379   # use one you already have
 ```
 
-Without Docker they skip, with a message on stderr saying why. **They take minutes when they do run**: lease
+Without Docker they skip, with a message on stderr saying why — and distinguishing the two failures that look
+identical but need opposite responses: DOCKER_HOST not discovered, versus discovered but nothing listening on
+the socket.
+
+The root build sets `DOCKER_HOST` from `docker context inspect` when it is not already set. Testcontainers only
+finds the daemon unaided when the socket is at `/var/run/docker.sock`, and colima, Rancher Desktop and Apple's
+`container` tool all put it somewhere else — so the symptom is the integration tests skipping on a machine where
+`docker` works perfectly, which is a green build that tested nothing. Running them outside Gradle needs the same
+thing by hand:
+
+```
+export DOCKER_HOST=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
+``` **They take minutes when they do run**: lease
 TTLs and revision-silence liveness are measured in wall-clock seconds and there is no clock to advance, which
 is precisely what they exist to exercise — every other test in the repository uses a clock it can move by hand.
 

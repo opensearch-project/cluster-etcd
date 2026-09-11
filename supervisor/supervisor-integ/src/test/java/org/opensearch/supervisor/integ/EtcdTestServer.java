@@ -94,15 +94,34 @@ final class EtcdTestServer {
             failure = noDocker;
         }
         if (usable == false && REPORTED.compareAndSet(false, true)) {
+            String dockerHost = System.getenv("DOCKER_HOST");
             System.err.println("[supervisor-integ] integration tests are being SKIPPED: Testcontainers cannot"
                 + " use Docker.");
             System.err.println("  reason:      " + (failure == null
                 ? "DockerClientFactory.isDockerAvailable() returned false"
                 : failure));
-            System.err.println("  DOCKER_HOST: " + describe(System.getenv("DOCKER_HOST")));
+            System.err.println("  DOCKER_HOST: " + describe(dockerHost));
             System.err.println("  socket:      " + describe(System.getenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE")));
-            System.err.println("  If `docker info` works but this does not, set DOCKER_HOST, or bypass"
-                + " containers entirely with -D" + ENDPOINT_PROPERTY + "=host:port.");
+            // Two failures look identical from here and need opposite responses, so both are named. Which one
+            // applies is visible one line up, in Testcontainers' own output: "no valid configuration was found"
+            // is the first, "DOCKER_HOST ... is not listening" is the second.
+            if (dockerHost == null || dockerHost.isBlank()) {
+                System.err.println("  DOCKER_HOST is unset, so Testcontainers looked for a socket at the");
+                System.err.println("  conventional /var/run/docker.sock and did not find one. The root build");
+                System.err.println("  normally sets DOCKER_HOST from `docker context inspect`, which is how");
+                System.err.println("  colima, Rancher Desktop and Apple's `container` are found -- none of them");
+                System.err.println("  put the socket where Testcontainers looks by default. If you are running");
+                System.err.println("  the tests outside Gradle, export it yourself:");
+                System.err.println("    export DOCKER_HOST=$(docker context inspect --format"
+                    + " '{{.Endpoints.docker.Host}}')");
+            } else {
+                System.err.println("  DOCKER_HOST is set, so discovery worked and the daemon is the problem:");
+                System.err.println("  the socket is either absent or nothing is listening on it. Check that the");
+                System.err.println("  runtime is actually started -- `docker ps` should answer, and for Apple's");
+                System.err.println("  container tool that means `container system start` first.");
+            }
+            System.err.println("  Or bypass containers entirely by pointing at an etcd you already have:");
+            System.err.println("    ./gradlew :supervisor-integ:test -D" + ENDPOINT_PROPERTY + "=localhost:2379");
         }
         return usable;
     }
