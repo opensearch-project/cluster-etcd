@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -197,29 +198,46 @@ class EtcdStoreAssumptionsIT extends EtcdIntegBase {
     }
 
     /**
-     * A prefix scan taken while a writer is busy returns one coherent view rather than a mixture.
+     * A prefix scan reflects one point in time, checked by an invariant a torn read cannot satisfy.
      *
-     * <p>Honest framing, repeated from the class javadoc because it matters: etcd answers a prefix scan with a
-     * single atomic range request, so this test is close to a tautology on this backend. It is here so that the
-     * assumption is written as an executable claim, and so that running this suite against a backend that walks
-     * the subtree — ZooKeeper — would fail it loudly instead of leaving §12 as prose.
+     * <p>The first version of this test was simply wrong, and the mistake is worth keeping because it is an easy
+     * one to make again. It asserted that every key returned by a scan carried the same value while a writer
+     * rewrote all of them — and failed against etcd, which looks like a finding and is not. The {@code
+     * KeyValueStore} SPI has no multi-key transaction, so the writer updates forty keys with forty separate
+     * puts; mid-sweep the store genuinely <em>contains</em> a mixture, and a perfectly atomic snapshot must
+     * therefore return one. "Consistent snapshot" and "all values equal" only coincide if the writes were
+     * atomic, which these cannot be.
+     *
+     * <p>What a snapshot does guarantee, given a writer that sweeps the keys in <b>ascending order</b>, is a
+     * staircase: keys below the writer's position hold generation {@code N}, keys above it hold {@code N-1}, and
+     * nothing holds anything else. So a correct scan shows <b>at most two distinct generations, differing by
+     * exactly one, with the newer occupying a prefix of the key order</b>.
+     *
+     * <p>A reader that walked the subtree with separate calls, as ZooKeeper must, would drift across the
+     * writer's own iterations and produce three or more generations, or two that are not adjacent, or a newer
+     * value sitting <em>above</em> an older one. Each of those fails an assertion below. That is the shape of the
+     * torn read {@code DESIGN.md} §12 reasons about, and this is what it would actually look like.
+     *
+     * <p>etcd serves a prefix scan as one atomic range request, so it satisfies this by construction — the test
+     * earns its place by being the executable form of the assumption, ready for the backend that does not.
      */
     @Test
-    void aPrefixScanIsNotAMixtureOfTwoWritersStates() throws Exception {
+    void aPrefixScanReflectsOnePointInTime() throws Exception {
         String prefix = "torn/";
         int keys = 40;
         for (int i = 0; i < keys; i++) {
-            store.put(prefix + String.format("%03d", i), "generation-0".getBytes(StandardCharsets.UTF_8));
+            store.put(prefix + String.format("%03d", i), generation(0));
         }
 
         AtomicBoolean stop = new AtomicBoolean();
         AtomicReference<Throwable> writerFailure = new AtomicReference<>();
         Thread writer = new Thread(() -> {
             try {
+                // Ascending, always. The invariant below is a statement about the order these are written in;
+                // a writer that shuffled would make a consistent snapshot indistinguishable from a torn one.
                 for (int generation = 1; stop.get() == false; generation++) {
-                    byte[] value = ("generation-" + generation).getBytes(StandardCharsets.UTF_8);
                     for (int i = 0; i < keys; i++) {
-                        store.put(prefix + String.format("%03d", i), value);
+                        store.put(prefix + String.format("%03d", i), generation(generation));
                     }
                 }
             } catch (Throwable thrown) {
@@ -232,20 +250,44 @@ class EtcdStoreAssumptionsIT extends EtcdIntegBase {
             for (int attempt = 0; attempt < 200; attempt++) {
                 NavigableMap<String, KeyValueStore.Versioned> scanned = store.scanPrefix(prefix);
                 assertEquals(keys, scanned.size(), "the scan lost or gained keys mid-flight");
-                long distinct = scanned.values().stream()
-                    .map(versioned -> new String(versioned.value(), StandardCharsets.UTF_8))
-                    .distinct()
-                    .count();
-                assertEquals(1, distinct,
-                    "a prefix scan returned two writers' generations at once, which is the torn read"
-                        + " DESIGN.md §12 reasons about: " + scanned.values().stream()
-                        .map(v -> new String(v.value(), StandardCharsets.UTF_8)).distinct().toList());
+
+                List<Integer> generations = scanned.values().stream()
+                    .map(versioned -> Integer.parseInt(
+                        new String(versioned.value(), StandardCharsets.UTF_8).substring("generation-".length())))
+                    .toList();
+
+                Set<Integer> distinct = new java.util.TreeSet<>(generations);
+                assertTrue(distinct.size() <= 2,
+                    () -> "a snapshot can straddle at most one writer sweep, so at most two generations may"
+                        + " appear at once; saw " + distinct + ", which means the scan drifted across several"
+                        + " iterations of the writer (DESIGN.md §12)");
+
+                if (distinct.size() == 2) {
+                    int older = distinct.iterator().next();
+                    int newer = new java.util.ArrayList<>(distinct).get(1);
+                    assertEquals(older + 1, newer,
+                        () -> "two generations at once must be consecutive; " + distinct + " means the scan"
+                            + " spanned at least one whole sweep");
+
+                    // The newer generation must occupy a prefix, because that is where the ascending writer has
+                    // already been. A newer value above an older one is a reader that went backwards in time.
+                    int firstOlder = generations.indexOf(older);
+                    int lastNewer = generations.lastIndexOf(newer);
+                    assertTrue(lastNewer < firstOlder,
+                        () -> "generation " + newer + " appears at index " + lastNewer + ", after generation "
+                            + older + " at index " + firstOlder + "; an ascending writer cannot produce that,"
+                            + " so the scan is not one point in time: " + generations);
+                }
             }
         } finally {
             stop.set(true);
             writer.join(TimeUnit.SECONDS.toMillis(30));
         }
         assertNull(writerFailure.get(), () -> "the writer failed: " + writerFailure.get());
+    }
+
+    private static byte[] generation(int generation) {
+        return ("generation-" + generation).getBytes(StandardCharsets.UTF_8);
     }
 
     /**

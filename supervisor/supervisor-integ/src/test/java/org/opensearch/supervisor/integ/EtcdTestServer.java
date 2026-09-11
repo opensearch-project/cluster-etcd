@@ -109,16 +109,16 @@ final class EtcdTestServer {
                 System.err.println("  DOCKER_HOST is unset, so Testcontainers looked for a socket at the");
                 System.err.println("  conventional /var/run/docker.sock and did not find one. The root build");
                 System.err.println("  normally sets DOCKER_HOST from `docker context inspect`, which is how");
-                System.err.println("  colima, Rancher Desktop and Apple's `container` are found -- none of them");
-                System.err.println("  put the socket where Testcontainers looks by default. If you are running");
-                System.err.println("  the tests outside Gradle, export it yourself:");
+                System.err.println("  Docker-compatible runtimes are found -- several do not put the socket");
+                System.err.println("  where Testcontainers looks by default. If you are running the tests");
+                System.err.println("  outside Gradle, export it yourself:");
                 System.err.println("    export DOCKER_HOST=$(docker context inspect --format"
                     + " '{{.Endpoints.docker.Host}}')");
             } else {
                 System.err.println("  DOCKER_HOST is set, so discovery worked and the daemon is the problem:");
-                System.err.println("  the socket is either absent or nothing is listening on it. Check that the");
-                System.err.println("  runtime is actually started -- `docker ps` should answer, and for Apple's");
-                System.err.println("  container tool that means `container system start` first.");
+                System.err.println("  the socket is either absent, or nothing is listening on it, or the daemon");
+                System.err.println("  is reachable but a container could not be started. `docker ps` should");
+                System.err.println("  answer; some runtimes need starting with their own command first.");
             }
             System.err.println("  Or bypass containers entirely by pointing at an etcd you already have:");
             System.err.println("    ./gradlew :supervisor-integ:test -D" + ENDPOINT_PROPERTY + "=localhost:2379");

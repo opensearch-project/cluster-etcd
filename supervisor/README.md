@@ -156,10 +156,9 @@ identical but need opposite responses: DOCKER_HOST not discovered, versus discov
 the socket.
 
 The root build sets `DOCKER_HOST` from `docker context inspect` when it is not already set. Testcontainers only
-finds the daemon unaided when the socket is at `/var/run/docker.sock`, and colima, Rancher Desktop and Apple's
-`container` tool all put it somewhere else — so the symptom is the integration tests skipping on a machine where
-`docker` works perfectly, which is a green build that tested nothing. Running them outside Gradle needs the same
-thing by hand:
+finds the daemon unaided when the socket is at `/var/run/docker.sock`, and several Docker-compatible runtimes put
+it somewhere else — so the symptom is the integration tests skipping on a machine where `docker` works perfectly,
+which is a green build that tested nothing. Running them outside Gradle needs the same thing by hand:
 
 ```
 export DOCKER_HOST=$(docker context inspect --format '{{.Endpoints.docker.Host}}')

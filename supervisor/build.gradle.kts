@@ -37,10 +37,10 @@ allprojects {
 
         // Tell Testcontainers where Docker actually is.
         //
-        // It finds the daemon on its own only when the socket sits at the conventional path. Colima, Rancher
-        // Desktop, Apple's `container` tool and a Docker Desktop with the default socket disabled all put it
-        // somewhere else, and the symptom is the integration tests *skipping* on a machine where `docker` works
-        // perfectly. That is a bad failure mode: a green build that tested nothing.
+        // It finds the daemon on its own only when the socket sits at the conventional path. Several
+        // Docker-compatible runtimes -- colima, Rancher Desktop, and a Docker Desktop with the default socket
+        // disabled among them -- put it somewhere else, and the symptom is the integration tests *skipping* on a
+        // machine where `docker` works perfectly. That is a bad failure mode: a green build that tested nothing.
         //
         // The Docker CLI already knows the answer, so ask it rather than asking the developer. An explicit
         // DOCKER_HOST wins, since somebody who set it meant it.
@@ -51,14 +51,18 @@ allprojects {
                     environment("DOCKER_HOST", host)
                     if (host.startsWith("unix://")) {
                         // Ryuk, the sidecar that reaps containers afterwards, reaches the daemon through a
-                        // socket bind-mounted into it and has to be told which host path to mount. Without
-                        // this it starts and cannot connect, which fails every container rather than skipping.
+                        // socket bind-mounted into it and has to be told which path to mount. Without this it
+                        // starts and cannot connect, which fails every container rather than skipping.
                         //
-                        // Derived from the context rather than hardcoded to /var/run/docker.sock, which is the
-                        // one path that is definitely wrong on the setups this whole block exists for: with
-                        // Apple's `container` tool the socket is under ~/.config/container and /var/run/docker.sock
-                        // does not exist at all, so naming it would point Ryuk at nothing.
-                        environment("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", host.removePrefix("unix://"))
+                        // The conventional path, NOT the one from the context, even when the two differ -- and
+                        // this looks wrong until you know why. The bind-mount source is resolved by the
+                        // container runtime, inside whatever VM it runs containers in, not on the host running
+                        // Gradle. A runtime whose client socket lives at some host-specific path still presents
+                        // the daemon at the conventional path inside that VM, and the host-specific path does
+                        // not exist there at all. Deriving this from DOCKER_HOST therefore breaks Ryuk on
+                        // exactly the setups the surrounding block exists to support: tried, and it fails with
+                        // "Container startup failed for image testcontainers/ryuk".
+                        environment("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
                     }
                     logger.lifecycle("Testcontainers will use DOCKER_HOST={}", host)
                 }

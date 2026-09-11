@@ -88,11 +88,20 @@ Two hard-won details in that implementation, both worth stealing rather than red
   its `disabledReason`, so the explanation has to go to stderr.
 
 And the reason Docker was not found: **Testcontainers only locates the daemon when the socket is at the
-conventional path.** Colima, Rancher Desktop, Apple's `container` tool and a Docker Desktop with the
+conventional path.** Colima, Rancher Desktop, other Docker-compatible runtimes, and a Docker Desktop with the
 default socket disabled all put it elsewhere. The kv-store build asks the CLI
 (`docker context inspect --format '{{.Endpoints.docker.Host}}'`) and passes the answer to the test JVM as
 `DOCKER_HOST`, plus `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` so Ryuk can reach the daemon from inside its
 container. **In the build, not a dotfile** — CI and the next clone do not read anyone's shell profile.
+
+**And `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` must stay `/var/run/docker.sock`, even when `DOCKER_HOST` says
+the socket is somewhere else.** Learned by "fixing" it: the discovered path looked obviously more correct, and
+it broke Ryuk with `Container startup failed for image testcontainers/ryuk` on exactly the runtimes the
+discovery exists for. The two values answer different questions. `DOCKER_HOST` is where *this process* reaches
+the daemon, on the host. The override is a bind-mount source, resolved by the **container runtime inside
+whatever VM it runs containers in** — and a runtime whose client socket lives at a host-specific path still
+presents the daemon at the conventional path in there, while the host-specific path does not exist in that
+namespace at all. Two paths to one socket, and only one of them means anything to a container.
 
 ## Verify against something real, and diff afterwards
 
