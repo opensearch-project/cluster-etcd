@@ -673,12 +673,10 @@ wants the same fix.
 6. ~~**Primary before replica.**~~ Closed: it is `ReplicaAfterPrimaryDecider`, which is the better shape for
    it — the rule is a property of a candidate placement rather than a phase of the planner. The planner also
    orders primaries first, so a pass converges in one round instead of relying on the decider's wait.
-7. **Rebalancing, which the allocator still does not do.** Placement is now a set of deciders following
-   OpenSearch's own structure — a rule per class, each pure, independently testable and able to explain its
-   own refusals. What is absent is *movement*: nothing relocates a copy that is badly placed, because nothing
-   removes a copy at all. A cluster that fills up unevenly, or gains a zone, stays as it is until something
-   else forces a placement. Rebalancing needs remove-after-add, a cost model for moving data, and oscillation
-   detection sharper than the current one, and is its own piece of work.
+7. ~~**Rebalancing, which the allocator still does not do.**~~ Closed; see §14. What remains is that a
+   rebalance can only move a **replica**, so a pool whose imbalance is all in primaries cannot be relieved —
+   which is open question 1 wearing a different hat, and is asserted as a failing-when-fixed test rather than
+   only described.
 
    Deciders deliberately not implemented, with the reason: `NodeVersionAllocationDecider` (ordering during a
    rolling upgrade), and everything about snapshot and restore state, which this service does not model.
@@ -692,3 +690,157 @@ wants the same fix.
    starting point. Revisit when complete convergence stops being reachable at the scale being run.
 9. **Rollover.** `generation` only advances on rollover, which the control plane does not implement. By the
    lifetime rule it is the supervisor's, but that is not yet agreed with the other side.
+
+---
+
+## 14. Balancing
+
+Placement decides where a *new* copy goes; balancing decides whether an *existing* one is in the wrong place.
+They share the deciders that define a legal placement and share nothing else, because they answer different
+questions and the second one is the one that can make a cluster worse.
+
+### 14.1 Why a rule interface, and why OpenSearch's balancer is hard to improve
+
+The allocation side of OpenSearch is a set of `AllocationDecider` classes: one rule each, individually
+testable, each able to explain its own refusal. The balancing side is not. The decision to move a shard is
+spread across `AllocationDecider#canRebalance`, the weight function inside `BalancedShardsAllocator`, and a
+threshold — so adding a consideration means working out which of those three it belongs in, and usually
+editing a weight function that every other consideration also shares. The rules cannot be listed, cannot be
+tested one at a time, and cannot be explained individually to the operator asking why their cluster is
+lopsided.
+
+The consequence that matters in practice: **OpenSearch balances on shard count**. A node holding a hundred
+one-megabyte shards and a node holding one hundred-gigabyte shard look identically loaded, so a cluster can be
+perfectly balanced by the only measure the balancer has and still have one machine holding most of the data.
+
+So there are two interfaces here rather than one, split along the line that was blurred:
+
+- **`RebalanceDecider`** — a veto. `RebalanceEnabledDecider`, `RecoveryPriorityDecider`, `PrimaryMoveDecider`,
+  `MoveThresholdDecider`, `ConcurrentRebalanceDecider`. Same three verdicts as allocation, and `THROTTLE`
+  earns its keep: almost every reason to refuse a move is a reason to refuse it *now*.
+- **`BalanceSignal`** — a measure. `ShardCountSignal`, `ShardSizeSignal`. A rule that can only say no cannot
+  express "this shard is four times the problem that one is", which is the thing a balancer needs to know.
+
+A move's *destination* is judged by the ordinary `AllocationDecider` set, reused rather than restated. A
+balancer with a private notion of a legal placement is one that will eventually put a copy somewhere
+allocation would have refused, and the two will disagree quietly.
+
+### 14.2 Making signals comparable
+
+Shard count is measured in shards and shard size in bytes, so they cannot be added: a naive weighted sum is
+dominated entirely by whichever signal uses the larger unit, and the weights an operator sets would do almost
+nothing. Each signal is divided by its own mean across the pool before being combined, so every signal
+contributes about its `importance` to an average node.
+
+A consequence worth knowing: **when every shard is the same size, size and count are the same signal**, and
+their relative weight cannot matter. The weights only bite once sizes are skewed, which is the case they exist
+for. Defaults are size 1.0 and count 0.5 — size leads because bytes are the cost an operator feels, and count
+survives because it proxies the per-shard costs that do not scale with size (heap for segment metadata, file
+handles, a slice of every refresh and merge), the same ground `ShardsLimitDecider` guards as a hard ceiling.
+
+Two things the load model must get right beyond arithmetic. A copy that has been **assigned but not yet
+reported** counts against its target from the moment the assignment is written, or a node handed ten replicas
+one second ago still looks empty and gets ten more. And because such a copy has no size yet, and a shard of
+unknown size weighs nothing, the size is filled in from **the largest copy of the same shard elsewhere in the
+pool** — not a guess, an observation of that shard, since a replica ends up about the size of the primary it
+was built from.
+
+Heat is the obvious next signal: the share of a node's search CPU one shard is responsible for. It needs the
+data plane to publish it, and it is a new class rather than a new branch in an existing one.
+
+### 14.3 Cost is per node, because it is not symmetric
+
+`MoveCost` reports two figures rather than one, and this is the part a scalar cost model gets wrong.
+
+Under **segment replication to a remote store**, the source does nothing: the segments are already in the
+object store and the target restores from there. The bill is the target's download, and a node being drained
+can be drained as fast as the targets can pull.
+
+Under **document replication** — and node-to-node segment replication, which is the same shape and which as
+far as anyone knows nobody runs — the segments come off the source's disk and out of its network interface.
+The move costs both ends, and moving twenty shards off one overloaded node at once makes it worse at the job
+it is already behind on.
+
+`ConcurrentRebalanceDecider` therefore meters the target always and the source **only when the source pays**.
+A single-scalar cost has to pick a side: meter the source always and it refuses to drain a remote-store node
+at the speed it could be drained; meter it never and it hammers a document-replication node that is already
+the bottleneck. Neither is fixable with a setting, because the right answer differs per index.
+
+### 14.4 Why it terminates
+
+Moving a copy of normalised weight `w` from a node at load `A` to one at load `B` leaves them at `A - w` and
+`B + w`. Spread is the gap between the busiest and idlest node, so the move reduces it only if the target does
+not end up worse than the source began:
+
+```
+B + w < A     i.e.     A - B > w
+```
+
+At `A - B == w` the move swaps the two nodes' positions and achieves nothing. Below it the move *overshoots*,
+the pool is more lopsided than before, and the same rule applied to the new state proposes moving it straight
+back — the exact shape of an oscillating balancer, where every individual move looks locally sensible and the
+cluster moves data forever. Requiring strict improvement makes the loop terminate, because spread is
+non-negative and every accepted move strictly decreases it. The threshold adds a margin on top (10% of the
+copy's weight) for hysteresis, since loads come from an observation that is always slightly out of date.
+
+**One move per pass**, deliberately. Proposing several means predicting the pool's load after each accepted
+move, and a prediction is what a level-triggered reconciler exists to avoid: two moves that each improve the
+same starting state can jointly overshoot. Re-observing costs one pass.
+
+### 14.5 A move is an addition, and then, separately, a removal
+
+`Instruction.RemoveCopy` is the only destructive instruction, and what makes it safe is that **it is never
+paired with an addition**. A move is not "add there, remove here". It is an addition now, and then — one or
+more passes later, from observed state alone — an independent decision that some shard has more *started*
+copies than it wants and that this is the one to drop. Nothing records that a move was in progress.
+
+A supervisor that held "I am moving shard 3 from A to B" in memory would have to decide what to do when it
+crashed between the halves, when its lease moved mid-move, or when the target never built the copy — and every
+one of those is a way to drop the source copy with nothing to replace it. Deriving the removal from observed
+state means there is no in-between to recover: at every instant either the pool has a surplus copy, which is
+untidy and safe, or it does not.
+
+Three properties follow, rather than three precautions:
+
+- Redundancy never dips, not even momentarily, because a removal is only proposed when the copies that would
+  remain are **already started**.
+- A crashed supervisor leaves a surplus copy, which the next lease holder clears by the same rule.
+- A failed move costs bandwidth, not availability: if the target never builds its copy, the surplus never
+  appears and the original is never dropped.
+
+And the move still lands where it was aimed — not by luck, but because `MoveThresholdDecider` only accepts a
+move when the source exceeds the target by more than the copy weighs, so after the target gains `w` the source
+is *still* the heavier of the two, and "drop the copy on the busiest node holding it" therefore picks the
+source. The rule that stops oscillation is the rule that makes the move complete in the intended direction.
+
+`SurplusReaper` deliberately does **not** reap a copy whose index is absent from desired state. That is
+`ORPHANED_COPY`, which the differ already ages over several passes because an absent index may be a torn read
+of the control plane's keys rather than a deletion; reaping it as a surplus would bypass that patience.
+
+### 14.6 Priority, and the feedback loop it breaks
+
+Three kinds of shard work compete for the same recovery bandwidth and are worth wildly different amounts:
+missing copies, then surplus copies, then rebalancing — and rebalancing only when a pass has found nothing
+else to do at all.
+
+`RecoveryPriorityDecider` counts **started** copies, not assigned ones, and that distinction is the rule. A
+lost node leaves its shards short *and* the pool lopsided; the planner places replacements; those copies are
+now initializing. A balancer that counted them as redundancy would start shuffling shards between the
+survivors at exactly the moment they are busiest rebuilding what was lost — slowing the rebuild and extending
+the window in which a second failure loses data. Counting only started copies keeps the rule honest in the one
+scenario it was written for. The cost, stated plainly: a pool with enough churn that something is always
+recovering will rarely rebalance. That is the right trade, and the operator is told which rule is holding it
+up.
+
+### 14.7 What an operator can read
+
+`cluster.routing.rebalance.enable` is separate from `cluster.routing.allocation.enable`, and the separation
+matters: turning off tidying during a rolling restart is normal and healthy, and must not also stop a lost
+shard being rebuilt. The implication runs one way — no allocation means no rebalancing, since a move begins
+with an allocation; no rebalancing does not mean no allocation.
+
+The pool's load spread and one sentence about it go in the **pool convergence document**, not a tenant diff.
+A pool whose diff is legitimately empty and whose nodes are visibly uneven is otherwise a question with no
+answer written down anywhere. "No single move would reduce it" is a real answer, and it deliberately
+suppresses every other refusal when it holds: an evenly loaded pool full of primaries would otherwise be
+reported as blocked on the primary-move gap, sending an operator to chase a limitation costing them nothing.

@@ -21,6 +21,7 @@ import java.util.Optional;
 public record ClusterSettings(Map<String, String> persistent, Map<String, String> transientSettings) {
 
     public static final String ALLOCATION_ENABLE = "cluster.routing.allocation.enable";
+    public static final String REBALANCE_ENABLE = "cluster.routing.rebalance.enable";
 
     public static final ClusterSettings EMPTY = new ClusterSettings(Map.of(), Map.of());
 
@@ -40,6 +41,23 @@ public record ClusterSettings(Map<String, String> persistent, Map<String, String
     }
 
     /** Whether the value present is one this build understands, so an operator's typo becomes visible. */
+    /**
+     * The rebalance brake, defaulting to {@link RebalanceEnable#ALL} when unset.
+     *
+     * <p>Unset defaults to on, while an unrecognised value refuses — the asymmetry is the point. Silence means
+     * an operator never expressed an opinion and should get the sensible default; a value they typed means they
+     * did, and guessing at it would be ignoring them.
+     */
+    public RebalanceEnable rebalanceEnable() {
+        return get(REBALANCE_ENABLE).map(RebalanceEnable::from).orElse(RebalanceEnable.ALL);
+    }
+
+    /** Whether the rebalance setting, if present at all, was a value this understands. */
+    public boolean rebalanceEnableIsRecognised() {
+        return get(REBALANCE_ENABLE).map(value -> RebalanceEnable.from(value) != RebalanceEnable.UNKNOWN)
+            .orElse(true);
+    }
+
     public boolean allocationEnableIsRecognised() {
         return get(ALLOCATION_ENABLE).map(value -> AllocationEnable.from(value) != AllocationEnable.UNKNOWN)
             .orElse(true);

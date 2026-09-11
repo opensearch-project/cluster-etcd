@@ -37,7 +37,7 @@ decidable from the key alone.
 | key | writer | reader | requirement |
 |---|---|---|---|
 | `tenant/<t>/indices/<name>` etc. | control plane | supervisor | `KEY_LAYOUT.md` |
-| `tenant/<t>/cluster/settings` | control plane | supervisor — reads `cluster.routing.allocation.enable` only | `DESIGN.md` §6 |
+| `tenant/<t>/cluster/settings` | control plane | supervisor — reads `cluster.routing.allocation.enable` and `cluster.routing.rebalance.enable` | `DESIGN.md` §6, §14.7 |
 | `tenant/<t>/tasks/index-management/<uuid>` | **both** — see below | both | R4 |
 | `tenant/<t>/status/cluster` | supervisor | control plane | R5.1, R5.2 |
 | `tenant/<t>/status/indices/<index-uuid>` | supervisor | control plane, **coordinators** | R5.1, R5.2 |

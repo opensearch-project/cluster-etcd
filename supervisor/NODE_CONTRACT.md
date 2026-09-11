@@ -206,10 +206,21 @@ Ground truth for actual state: what this node **has**, not what it was told (R3.
     filtered out again.
 
   Both mappings discard information the data plane has. They are decisions, not omissions.
-- **`size_bytes`** is what a disk-aware decider needs. Doc counts and per-shard statistics are not here;
-  they are an observability concern and would put an unbounded, fast-changing field into a document that is
-  supposed to change only when placement does. It is **omitted rather than zero** while a copy is
-  initializing, because zero is a real size and would tell a decider the copy costs nothing.
+- **`size_bytes`** is the most load-bearing field in this document, and more so than it first looked. It is
+  what a disk-aware decider needs, and it is also the whole of the balancer's size signal — the thing
+  OpenSearch's count-only balancer cannot see (`DESIGN.md` §14.2). Publishing it accurately is therefore worth
+  real effort on the node's part: a pool where every shard reports roughly the same size is a pool that can only
+  be balanced by count.
+
+  Doc counts and per-shard statistics are still not here; they are an observability concern and would put an
+  unbounded, fast-changing field into a document that is supposed to change only when placement does. **Heat**
+  — the share of a node's search CPU one shard accounts for — is the field that would most improve balancing
+  next, and it does not belong here for exactly that reason: it changes every few seconds. It wants a home on
+  the heartbeat or a document of its own, capped to the busiest few shards.
+
+  `size_bytes` is **omitted rather than zero** while a copy is initializing, because zero is a real size and
+  would tell a decider the copy costs nothing. The supervisor fills the gap from the largest copy of the same
+  shard elsewhere in the pool rather than guessing, so a node need not invent a figure it does not have.
 - **`generated_at` means "when this inventory last changed", not "when it was last computed".** Found by
   implementing it: a node that stamps the current time every time it recomputes produces different bytes,
   and therefore a different digest, on every heartbeat — so the supervisor re-reads the inventory every

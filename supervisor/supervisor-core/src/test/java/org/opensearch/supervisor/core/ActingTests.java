@@ -356,6 +356,222 @@ class ActingTests {
         assertEquals(2, data.inventory().copyCount());
     }
 
+    // ---------------------------------------------------------------- rebalancing, end to end
+
+    private static final NodeId NODE_C = NodeId.of("nodeCCCCCCCCCCCCCCCCCC");
+
+    /** One big shard and one small one, pinned identically everywhere, since a shard is one size. */
+    private FakeNode skewed(NodeId id) {
+        return node(id).withShardSize(0, 20L * 1024 * 1024 * 1024).withShardSize(1, 50L * 1024 * 1024);
+    }
+
+    @Test
+    void anEmptyNodeJoiningALoadedPoolIsGivenTheBiggestShardAndTheOldCopyIsDropped() {
+        // The whole feature, end to end. Two assertions carry it: the new node ends up holding one of the big
+        // shards rather than one of the small ones, which is the size signal doing its job; and the pool ends up
+        // with exactly the copies it wanted, not one more, which means both halves ran -- the rebalancer built a
+        // copy on the new node and the reaper independently decided the original was now surplus.
+        FakeNode a = skewed(NODE);
+        FakeNode b = skewed(NODE_B);
+        a.start();
+        b.start();
+        createIndex(4, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 12; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(8, a.inventory().copyCount() + b.inventory().copyCount(), "all eight copies placed first");
+
+        // A third node arrives holding nothing at all.
+        FakeNode c = skewed(NODE_C);
+        c.start();
+        for (int pass = 0; pass < 40; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            c.tick();
+            advance();
+        }
+
+        assertTrue(c.inventory().copyCount() > 0, "the new node should have been given work");
+        assertEquals(8, a.inventory().copyCount() + b.inventory().copyCount() + c.inventory().copyCount(),
+            "and every surplus copy a move created must have been dropped again");
+
+        var landed = c.inventory().tenants().get(ACME).indices().get(UUID).shards();
+        assertTrue(landed.keySet().stream().anyMatch(shard -> shard <= 1),
+            "a 20 GiB shard is worth moving and a 50 MiB one is not, so the new node should hold at least one"
+                + " of shards 0 or 1: " + landed);
+    }
+
+    @Test
+    void aPoolWhoseImbalanceIsAllInPrimariesCannotBeRelievedAndTheDocumentSaysWhy() {
+        // The known gap, asserted rather than described, so that the day primary movement lands this test fails
+        // and says so. With no replicas every copy is a primary, so the new node can be given nothing at all.
+        FakeNode a = skewed(NODE);
+        a.start();
+        createIndex(4, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 12; pass++) {
+            supervisor.tick();
+            a.tick();
+            advance();
+        }
+        assertEquals(4, a.inventory().copyCount());
+
+        FakeNode c = skewed(NODE_C);
+        c.start();
+        for (int pass = 0; pass < 20; pass++) {
+            supervisor.tick();
+            a.tick();
+            c.tick();
+            advance();
+        }
+
+        assertEquals(0, c.inventory().copyCount(), "nothing can move, because every copy is a primary");
+        String convergence = new String(store.get(Keys.poolConvergence(POOL)).orElseThrow().value(),
+            java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(convergence.contains("moving a primary is not implemented"), convergence);
+        assertTrue(convergence.contains("spread"), convergence);
+    }
+
+    @Test
+    void redundancyNeverDipsWhileAShardIsBeingMoved() {
+        // The property the whole add-then-drop shape exists for. Checked every single tick rather than at the
+        // end, because "it converged" would hide a pass in which the shard briefly had one copy.
+        FakeNode a = skewed(NODE);
+        FakeNode b = skewed(NODE_B);
+        a.start();
+        b.start();
+        createIndex(2, 1);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        FakeNode c = skewed(NODE_C);
+        c.start();
+        for (int pass = 0; pass < 20; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            c.tick();
+            advance();
+            for (int shard = 0; shard < 2; shard++) {
+                assertTrue(startedCopiesOf(shard, a, b, c) >= 2,
+                    "shard " + shard + " dropped below two started copies on pass " + pass);
+            }
+        }
+    }
+
+    @Test
+    void aBalancedPoolStopsMovingThingsAndSaysTheSpreadOutLoud() {
+        // Termination, from the outside. If the threshold rule were wrong, this loop would move a shard back and
+        // forth for ever and the assignment versions would climb without end.
+        FakeNode a = skewed(NODE);
+        FakeNode b = skewed(NODE_B);
+        FakeNode c = skewed(NODE_C);
+        a.start();
+        b.start();
+        c.start();
+        createIndex(3, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 30; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            c.tick();
+            advance();
+        }
+        long settledVersion = assignmentVersionOf(NODE) + assignmentVersionOf(NODE_B) + assignmentVersionOf(NODE_C);
+
+        for (int pass = 0; pass < 15; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            c.tick();
+            advance();
+        }
+
+        assertEquals(settledVersion,
+            assignmentVersionOf(NODE) + assignmentVersionOf(NODE_B) + assignmentVersionOf(NODE_C),
+            "a settled pool must stop rewriting assignments");
+        assertEquals(6, a.inventory().copyCount() + b.inventory().copyCount() + c.inventory().copyCount());
+    }
+
+    @Test
+    void anOperatorCanStopRebalancingWithoutStoppingRecovery() {
+        // The reason the two settings are separate. Rebalancing off, and yet a brand new index is still placed.
+        FakeNode a = skewed(NODE);
+        FakeNode b = skewed(NODE_B);
+        a.start();
+        b.start();
+        createIndex(2, 1);
+        store.put(Keys.clusterSettings(ACME),
+            ("{\"persistent\":{\"" + org.opensearch.supervisor.model.settings.ClusterSettings.REBALANCE_ENABLE
+                + "\":\"none\"},\"transient\":{}}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(4, a.inventory().copyCount() + b.inventory().copyCount(),
+            "recovery is untouched by the rebalance brake");
+
+        FakeNode c = skewed(NODE_C);
+        c.start();
+        for (int pass = 0; pass < 20; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            c.tick();
+            advance();
+        }
+
+        assertEquals(0, c.inventory().copyCount(), "but nothing may be moved onto the new node");
+        // And the reason is readable. It belongs in the pool's convergence document rather than a tenant's diff:
+        // the diff here is legitimately empty -- nothing is wrong -- and an earlier version of this had nowhere
+        // to put a pool-level sentence, so the explanation was computed every pass and never written down.
+        String convergence = new String(store.get(Keys.poolConvergence(POOL)).orElseThrow().value(),
+            java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(convergence.contains("rebalancing is set to [none]"), convergence);
+    }
+
+    private long assignmentVersionOf(NodeId node) {
+        return store.get(Keys.nodeAssignment(node))
+            .map(entry -> NodeJson.readAssignment(entry.value()).version())
+            .orElse(0L);
+    }
+
+    private int startedCopiesOf(int shard, FakeNode... nodes) {
+        int started = 0;
+        for (FakeNode node : nodes) {
+            var tenant = node.inventory().tenants().get(ACME);
+            if (tenant == null) {
+                continue;
+            }
+            var index = tenant.indices().get(UUID);
+            if (index == null) {
+                continue;
+            }
+            var copy = index.shards().get(shard);
+            if (copy != null && copy.state() == org.opensearch.supervisor.model.node.ShardState.STARTED) {
+                started++;
+            }
+        }
+        return started;
+    }
+
     // ---------------------------------------------------------------- the operator's brake
 
     @Test

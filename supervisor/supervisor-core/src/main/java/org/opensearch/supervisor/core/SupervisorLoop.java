@@ -127,7 +127,8 @@ public final class SupervisorLoop {
         // reconciled, which R2.1 forbids. The alternative -- projecting twice per pass -- costs a write.
         projector.project(
             diff, observation, clock.millis() - startedAt, watchPollFailures(), taskFigures(),
-            lastPlan == null ? java.util.Map.of() : lastPlan.refusals()
+            lastPlan == null ? java.util.Map.of() : lastPlan.refusals(),
+            lastPlan == null ? null : lastPlan.balance()
         );
 
         lastDiff = diff;

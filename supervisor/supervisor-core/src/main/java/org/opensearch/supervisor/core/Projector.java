@@ -10,6 +10,7 @@ import org.opensearch.supervisor.model.diff.Finding;
 import org.opensearch.supervisor.model.diff.FindingKind;
 import org.opensearch.supervisor.model.diff.Severity;
 import org.opensearch.supervisor.model.observe.Observation;
+import org.opensearch.supervisor.model.plan.Plan;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -113,7 +114,8 @@ public final class Projector {
         Map<String, TenantSummary> tenants,
         Tasks tasks,
         int unreadableDocuments,
-        long watchPollFailures
+        long watchPollFailures,
+        Plan.Balance balance
     ) {}
 
     /**
@@ -137,7 +139,7 @@ public final class Projector {
     public record Trend(int window, int delta) {}
 
     public void project(Diff diff, Observation observation, long passDurationMillis, long watchPollFailures) {
-        project(diff, observation, passDurationMillis, watchPollFailures, Tasks.NONE, Map.of());
+        project(diff, observation, passDurationMillis, watchPollFailures, Tasks.NONE, Map.of(), null);
     }
 
     public void project(
@@ -146,10 +148,11 @@ public final class Projector {
         long passDurationMillis,
         long watchPollFailures,
         Tasks tasks,
-        Map<String, String> refusals
+        Map<String, String> refusals,
+        Plan.Balance balance
     ) {
         projectTenantDiffs(diff, observation, refusals);
-        projectConvergence(diff, observation, passDurationMillis, watchPollFailures, tasks);
+        projectConvergence(diff, observation, passDurationMillis, watchPollFailures, tasks, balance);
     }
 
     private void projectTenantDiffs(Diff diff, Observation observation, Map<String, String> refusals) {
@@ -205,7 +208,8 @@ public final class Projector {
         Observation observation,
         long passDurationMillis,
         long watchPollFailures,
-        Tasks tasks
+        Tasks tasks,
+        Plan.Balance balance
     ) {
         int total = diff.findings().size();
         recentTotals.addLast(total);
@@ -244,7 +248,11 @@ public final class Projector {
             worstTenants(diff),
             tasks,
             observation.unreadable().size(),
-            watchPollFailures
+            watchPollFailures,
+            // Published even when nothing is wrong, which is exactly when an operator asks it. A pool whose
+            // diff is empty and whose nodes are visibly uneven is otherwise a question with no answer written
+            // down anywhere -- and "no single move would reduce it" is a real answer worth being able to read.
+            balance
         ), "convergence", null);
     }
 

@@ -138,15 +138,21 @@ public final class Applier {
      * created, and one the node holds that is absent gets removed. So a write that dropped the existing
      * contents would not merely fail to add a shard, it would tell the node to discard everything else it
      * has. Merging rather than replacing is the whole of this method's reason to exist.
+     *
+     * <p>That same property is what makes a removal expressible at all: dropping a shard from this map <em>is</em>
+     * the instruction to stop serving it, and no new verb is needed on the node contract. It is also why a
+     * removal that finds nothing to remove is a silent no-op rather than an error — the desired state it was
+     * asking for is already the case, which is success under a level-triggered reconciler, and the usual cause
+     * is simply that a previous pass got there first.
      */
-    private Assignment merge(Observation.NodeObservation observed, List<Instruction> additions, Plan plan) {
+    private Assignment merge(Observation.NodeObservation observed, List<Instruction> changes, Plan plan) {
         Assignment existing = observed.assignment();
         Map<TenantId, Assignment.TenantAssignment> tenants = new LinkedHashMap<>(
             existing == null ? Map.of() : existing.tenants()
         );
 
-        for (Instruction instruction : additions) {
-            // Positive pattern rather than this codebase's usual `== false` guard: flow scoping extends a
+        for (Instruction instruction : changes) {
+            // Positive patterns rather than this codebase's usual `== false` guard: flow scoping extends a
             // pattern variable through `!` but not through `== false`, so the binding would not be in scope.
             if (instruction instanceof Instruction.PlaceCopy place) {
                 Assignment.TenantAssignment tenant = tenants.get(place.tenant());
@@ -164,6 +170,41 @@ public final class Applier {
                 tenants.put(place.tenant(), new Assignment.TenantAssignment(
                     tenant == null ? NodeRole.DATA : tenant.role(), indices
                 ));
+            } else if (instruction instanceof Instruction.RemoveCopy remove) {
+                Assignment.TenantAssignment tenant = tenants.get(remove.tenant());
+                if (tenant == null) {
+                    continue;
+                }
+                Assignment.IndexAssignment index = tenant.indices().get(remove.indexUuid());
+                if (index == null) {
+                    continue;
+                }
+                Map<Integer, ShardRole> shards = new LinkedHashMap<>(index.shards());
+                if (shards.remove(remove.shard()) == null) {
+                    continue;
+                }
+
+                Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>(tenant.indices());
+                if (shards.isEmpty()) {
+                    // Prune the index rather than leaving an entry with no shards in it. Not cosmetic: an
+                    // assignment is a complete statement of desired state, and an empty index entry says
+                    // "this node is responsible for this index, holding nothing", which is a different claim
+                    // from silence. It would also accumulate one dead entry per index a node ever held,
+                    // against a document with a size budget.
+                    indices.remove(remove.indexUuid());
+                } else {
+                    indices.put(remove.indexUuid(), new Assignment.IndexAssignment(
+                        index.name(), index.configRevision(), shards
+                    ));
+                }
+
+                if (indices.isEmpty() && tenant.role() == NodeRole.DATA) {
+                    // Same reasoning one level up, with one exception: a coordinator's tenant entry is what
+                    // makes it a coordinator for that tenant and holds no shards by design, so it must survive.
+                    tenants.remove(remove.tenant());
+                } else {
+                    tenants.put(remove.tenant(), new Assignment.TenantAssignment(tenant.role(), indices));
+                }
             }
         }
 

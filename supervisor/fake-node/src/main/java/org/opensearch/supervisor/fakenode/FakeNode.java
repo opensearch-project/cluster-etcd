@@ -40,6 +40,7 @@ public final class FakeNode {
     private final Registration template;
     private final String ephemeralId;
 
+    private final Map<Integer, Long> shardSizes = new TreeMap<>();
     private ShardInventory inventory;
     private String inventoryDigest;
     private long appliedVersion = Heartbeat.NO_ASSIGNMENT;
@@ -57,6 +58,20 @@ public final class FakeNode {
         this.ephemeralId = Objects.requireNonNull(ephemeralId, "ephemeralId");
         this.nodeId = template.nodeId();
         this.inventory = ShardInventory.empty(nodeId, ephemeralId, clock.millis());
+    }
+
+    /**
+     * Pins how big a shard reports itself to be, in bytes.
+     *
+     * <p>The default sizes vary by only a few percent, which was fine while nothing read them and is not fine
+     * now that shard size is a balancing signal: a pool of near-identical shards cannot express the case the
+     * size signal exists for, so a test written against the default would pass whether or not the supervisor
+     * looked at bytes at all. A real shard is the same size wherever it lives, so a test setting this must set
+     * it identically on every node holding the shard.
+     */
+    public FakeNode withShardSize(int shard, long bytes) {
+        shardSizes.put(shard, bytes);
+        return this;
     }
 
     /**
@@ -260,8 +275,11 @@ public final class FakeNode {
     }
 
     /** Deterministic, so a test can assert a digest without pinning a random number. */
-    private static long simulatedSize(Desired where) {
-        return 1_000_000L + Math.abs((where.indexUuid() + where.shard()).hashCode() % 100_000);
+    private long simulatedSize(Desired where) {
+        Long pinned = shardSizes.get(where.shard());
+        return pinned != null
+            ? pinned
+            : 1_000_000L + Math.abs((where.indexUuid() + where.shard()).hashCode() % 100_000);
     }
 
     private void heartbeat(ShardInventory current) {

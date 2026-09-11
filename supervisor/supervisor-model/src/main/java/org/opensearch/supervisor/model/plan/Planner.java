@@ -4,6 +4,10 @@ import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.allocate.AllocationContext;
 import org.opensearch.supervisor.model.allocate.Allocator;
+import org.opensearch.supervisor.model.balance.LoadModel;
+import org.opensearch.supervisor.model.balance.RecoveryPriorityDecider;
+import org.opensearch.supervisor.model.balance.Rebalancer;
+import org.opensearch.supervisor.model.balance.SurplusReaper;
 import org.opensearch.supervisor.model.diff.Diff;
 import org.opensearch.supervisor.model.diff.Finding;
 import org.opensearch.supervisor.model.diff.FindingKind;
@@ -25,15 +29,27 @@ import java.util.Set;
  * mistake first becomes capable of changing the cluster, so it had better be the part that is easiest to
  * test.
  *
- * <p><b>It still only ever adds.</b> Nothing removes a copy, so the worst outcome of a wrong decision remains
- * a surplus copy — a self-clearing finding rather than lost data. What has changed is that it now places
- * replicas as well as primaries, and that <em>where</em> a copy goes is decided by {@link Allocator} rather
- * than by this class.
+ * <p><em>Where</em> a copy goes is decided by {@link Allocator}, not here; which copies are surplus is decided
+ * by {@link SurplusReaper}; and whether a settled pool is worth stirring is decided by {@link Rebalancer}. This
+ * class decides only what work a pass is allowed to do and in what order.
  *
- * <p>Those two went together rather than in sequence: the rules that matter most — never two copies of a shard
- * on one node, spread copies across zones — are <b>meaningless with one copy per shard</b>. An allocator
- * without replicas to place would have been rules nothing exercised, and replicas without an allocator would
- * have stacked every copy on the emptiest machine.
+ * <p><b>The order is the interesting part, and it is a priority order rather than a pipeline.</b> Three kinds of
+ * shard work compete for the same recovery bandwidth, and they are worth wildly different amounts:
+ *
+ * <ol>
+ *   <li><b>Missing copies.</b> A shard short of the copies it wants is one failure from being unavailable.
+ *       Everything else waits.
+ *   <li><b>Surplus copies.</b> Cheap to fix, frees capacity, and is how a move finishes — so it comes before
+ *       starting new ones.
+ *   <li><b>Rebalancing.</b> Only when a pass has found nothing else to do at all.
+ * </ol>
+ *
+ * <p>That last gate is stricter than it needs to be, and deliberately. {@link RecoveryPriorityDecider} already
+ * refuses to rebalance while anything is under-replicated, so the rule is nearly redundant — but only nearly,
+ * because the load model is built from the observation and cannot see the placements <em>this</em> pass has just
+ * decided on. A pass that adds five copies and then asks "how loaded is everything?" gets an answer that is
+ * already wrong by five copies, and a move chosen from it would be a move chosen from fiction. Waiting a pass
+ * costs seconds and makes the figures real.
  */
 public final class Planner {
 
@@ -46,9 +62,19 @@ public final class Planner {
      *     sake: it is what stops the supervisor reacting to a torn read, and one pass of patience costs a
      *     couple of seconds where a wrong placement costs a recovery.
      */
-    public record Policy(int workCeiling, int perTenantFloor, long minimumPasses) {
+    public record Policy(int workCeiling, int perTenantFloor, long minimumPasses, boolean rebalance) {
+
+        public Policy(int workCeiling, int perTenantFloor, long minimumPasses) {
+            this(workCeiling, perTenantFloor, minimumPasses, true);
+        }
+
         public static Policy defaults() {
-            return new Policy(200, 5, 2);
+            return new Policy(200, 5, 2, true);
+        }
+
+        /** For a caller that wants placement only — chiefly tests that assert on an exact instruction list. */
+        public Policy withoutRebalancing() {
+            return new Policy(workCeiling, perTenantFloor, minimumPasses, false);
         }
     }
 
@@ -56,6 +82,19 @@ public final class Planner {
 
     public static Plan plan(Observation observation, Diff diff, long epoch, Policy policy) {
         return plan(observation, diff, epoch, policy, new Allocator(), List.of(), null);
+    }
+
+    public static Plan plan(
+        Observation observation,
+        Diff diff,
+        long epoch,
+        Policy policy,
+        Allocator allocator,
+        List<String> awarenessAttributes,
+        Integer maxCopiesPerNode
+    ) {
+        return plan(observation, diff, epoch, policy, allocator, awarenessAttributes, maxCopiesPerNode,
+            new Rebalancer());
     }
 
     /**
@@ -69,7 +108,8 @@ public final class Planner {
         Policy policy,
         Allocator allocator,
         List<String> awarenessAttributes,
-        Integer maxCopiesPerNode
+        Integer maxCopiesPerNode,
+        Rebalancer rebalancer
     ) {
         // Primaries before replicas, always. The ReplicaAfterPrimaryDecider makes a replica placed too early
         // wait rather than fail, but ordering the work means it does not have to: a pass that gets to the
@@ -81,16 +121,9 @@ public final class Planner {
             .filter(finding -> finding.passes() >= policy.minimumPasses())
             .toList();
 
-        if (actionable.isEmpty()) {
-            return Plan.empty(observation.pass(), observation.observedAt(), observation.pool(), epoch);
-        }
-
-        Map<NodeId, Observation.NodeObservation> placeable = observation.placeableNodes();
-        if (placeable.isEmpty()) {
-            // Nothing to be done, and the diff already says so with a reason. Producing instructions that
-            // cannot be carried out would turn a visible problem into a busy loop.
-            return Plan.empty(observation.pass(), observation.observedAt(), observation.pool(), epoch);
-        }
+        // Not an early return even when there is nothing to place: a pool with every copy where it should be is
+        // exactly the pool that has surplus copies to drop and moves worth making.
+        boolean canPlace = observation.placeableNodes().isEmpty() == false;
 
         // Copies planned this pass, carried into every later decision so that two placements in one plan
         // cannot both land on the same node or both fill the same zone.
@@ -102,7 +135,7 @@ public final class Planner {
         List<Instruction> instructions = new ArrayList<>();
         boolean ceilingHit = false;
 
-        for (Finding finding : actionable) {
+        for (Finding finding : canPlace ? actionable : List.<Finding>of()) {
             if (instructions.size() >= policy.workCeiling()) {
                 ceilingHit = true;
                 break;
@@ -163,8 +196,47 @@ public final class Planner {
             ));
         }
 
+        // Surplus copies next, computed from observed state alone. This is also how every move finishes; see
+        // SurplusReaper for why the two halves are deliberately unaware of each other.
+        LoadModel loads = LoadModel.of(observation);
+        for (SurplusReaper.Removal removal : SurplusReaper.reap(observation, loads)) {
+            if (instructions.size() >= policy.workCeiling()) {
+                ceilingHit = true;
+                break;
+            }
+            instructions.add(new Instruction.RemoveCopy(
+                removal.shard().tenant(), removal.shard().indexUuid(), removal.shard().shard(),
+                removal.node(), removal.because()
+            ));
+        }
+
+        // And a move, only if this pass found nothing else at all to do.
+        Plan.Balance balance = null;
+        if (policy.rebalance() && instructions.isEmpty() && canPlace) {
+            Rebalancer.Outcome outcome = rebalancer.propose(
+                observation, loads, awarenessAttributes, maxCopiesPerNode
+            );
+            if (outcome.moving()) {
+                Rebalancer.Move move = outcome.move();
+                IndexConfig index = indexOf(observation, move.shard().tenant(), move.shard().indexUuid());
+                if (index != null) {
+                    instructions.add(new Instruction.PlaceCopy(
+                        move.shard().tenant(), move.shard().indexUuid(), index.name(), move.shard().shard(),
+                        move.role(), move.target(), index.configRevision(), move.because()
+                    ));
+                    balance = new Plan.Balance(move.spreadBefore(), move.because());
+                }
+            } else {
+                balance = new Plan.Balance(outcome.refusal().spread(), outcome.refusal().because());
+            }
+        } else if (policy.rebalance()) {
+            balance = new Plan.Balance(loads.spread(), "not looking for moves this pass: " + instructions.size()
+                + " shard change(s) are already under way, and load measured before those land would not"
+                + " describe the pool a move would be landing in");
+        }
+
         return new Plan(observation.pass(), observation.observedAt(), observation.pool(), epoch,
-            instructions, ceilingHit, refusals);
+            instructions, ceilingHit, refusals, balance);
     }
 
     /**
