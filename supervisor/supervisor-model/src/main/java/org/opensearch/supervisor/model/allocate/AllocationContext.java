@@ -110,7 +110,7 @@ public final class AllocationContext {
 
     /** Total desired copies of this shard: one primary plus its replicas. */
     public int desiredCopiesOfThisShard() {
-        return index.copiesPerShard();
+        return index.copiesAuthorisedFor(shard);
     }
 
     // ---------------------------------------------------------------- counting copies

@@ -168,7 +168,7 @@ public final class Planner {
             AllocationContext context = new AllocationContext(
                 tenant, index, shard, role, observation, awarenessAttributes, maxCopiesPerNode, planned
             );
-            if (context.nodesWithThisShard().size() >= index.copiesPerShard()) {
+            if (context.nodesWithThisShard().size() >= index.copiesAuthorisedFor(shard)) {
                 continue;
             }
 

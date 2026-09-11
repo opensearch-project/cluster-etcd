@@ -459,4 +459,17 @@ class PlannerTests {
         // And the docrep replica is not placed in the same pass, because no primary is serving yet.
         assertEquals(1, plan.instructions().size());
     }
+
+    @Test
+    void thePlannerPlacesUpToTheAuthorisedCountRatherThanTheConfiguredOne() {
+        // The other half of DESIGN.md §15. The reaper not deleting an extra copy is worth little if nothing will
+        // create one: an autoscaler raising a shard's authorised count should get the copy built by the ordinary
+        // placement path, rather than needing a second writer of assignments.
+        IndexConfig scaled = new IndexConfig("my-index", UUID, true, 1, 1, Replication.SEGMENT, false,
+            org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041)
+            .withCopyOverrides(java.util.Map.of(0, 3));
+
+        assertEquals(2, scaled.copiesPerShard(), "the setting is unchanged");
+        assertEquals(3, scaled.copiesAuthorisedFor(0), "but three copies are authorised for shard 0");
+    }
 }

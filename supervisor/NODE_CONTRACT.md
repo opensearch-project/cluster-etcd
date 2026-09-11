@@ -55,6 +55,9 @@ them. It must match `[A-Za-z0-9_-]{1,64}`, which the OpenSearch node id already 
 
 ## Three documents, split by how often they change
 
+*(Plus a fourth, `nodes/heat/<id>`, which is **proposed rather than implemented** — see
+[Heat, and why it is its own document](#heat-and-why-it-is-its-own-document). Nothing reads or writes it yet.)*
+
 The split exists to satisfy R3.5 — *"a cluster of 200 nodes writing every few seconds is the store's
 dominant write load, and both backends cap value size"*. One document holding everything would have to be
 rewritten at the rate of its fastest-changing field and sized by its largest.
@@ -64,6 +67,7 @@ rewritten at the rate of its fastest-changing field and sized by its largest.
 | `nodes/registration/<id>` | on start, and if attributes change | once per process lifetime |
 | `nodes/heartbeat/<id>` | continuously | every interval, default 5 s |
 | `nodes/shards/<id>` | when a shard copy appears, changes state or goes | on change only |
+| `nodes/heat/<id>` *(proposed)* | slowly, and on its own clock | every minute or slower |
 
 200 nodes at 5 s is 40 writes/s of about a kilobyte. The inventory — the document that grows with shard
 count — is off that path entirely.
@@ -239,6 +243,118 @@ the ceiling is far above practice, but there is no headroom left for another per
 would exceed the budget must write nothing and report `outcome: failed` — a truncated inventory is worse
 than a missing one, because the supervisor would read it as "those copies are gone" and start replacing
 shards that exist.
+
+## Heat, and why it is its own document
+
+**Status: proposed. Nothing implements this.** It is written down now because the balancer's signal interface
+was built to take it (`DESIGN.md` §14.2) and because the shape has a few decisions in it that are much cheaper
+to argue about before there is code.
+
+Heat is the share of a node's search work that one shard is responsible for. It is the signal that turns
+balancing from "spread the bytes evenly" into "spread the *work* evenly", and it is the one thing neither
+`size_bytes` nor shard count can approximate: a 200 GiB archive shard nobody queries and a 200 GiB shard
+serving every request look identical to every signal that exists today.
+
+### The controlling constraint: do not act faster than you can measure
+
+Moving a 20 GiB shard takes minutes. A signal that fluctuates over seconds will therefore reliably provoke
+moves that finish after the condition they were responding to has gone — the balancer spends real bandwidth
+chasing spikes and arrives late every time. So the signal has to be smoothed over a window several times
+longer than a move takes, and only *consistently* hot shards should ever be separated.
+
+Everything else in this section follows from that.
+
+### The smoothing belongs to the node, not the supervisor
+
+This is the decision that matters most, and it is why heat is a separate document rather than a field on the
+heartbeat.
+
+If the node publishes instantaneous values, the supervisor has to smooth them across passes — which means
+keeping a per-shard exponential average in supervisor memory. That breaks two things this design has been
+careful about everywhere else:
+
+- **R2.1.** Reconciliation is a pure function of observed state. The only memory kept anywhere —
+  `RevisionSilence`, `FindingAges` — is documented as having to grant full grace after a restart, precisely
+  because remembered state is a liability.
+- **Lease handoff.** A pool moving to another supervisor would arrive with no heat history at all, and would
+  either balance blind or need a warm-up window during which its decisions are wrong. That is an operational
+  cliff for a feature whose whole justification is being a background nicety.
+
+If the **node** publishes an already-smoothed figure, both problems disappear. The smoothed value is part of
+observed state, so it survives supervisor restarts and lease moves, and the supervisor stays a pure function of
+what it reads. The node can trivially afford it: one exponential average per shard, over data it already has.
+
+And it does double duty, which is the actual answer to the spike problem. **The smoothing window *is* the
+patience.** With a ten-minute half-life, a thirty-second spike moves the average by a few percent and cannot
+clear `MoveThresholdDecider`'s margin. The noise filter and the hysteresis become the same mechanism, and no
+separate spike detection is needed. That only works if the node smooths.
+
+### Absolute work, not a share of the node
+
+The obvious unit is "percentage of this node's CPU spent on searching this shard", and it is the wrong one,
+because a share of the node cannot be compared *between* nodes. A node 90% busy with one shard accounting for
+half of that, and a node 10% busy with one shard accounting for half of that, publish the same number for a
+nine-fold difference in real work — and the load model's entire job is comparing nodes.
+
+The right unit is **CPU-seconds per second attributable to the shard**: the average number of cores busy on it.
+That is comparable across nodes, sums to something meaningful per node, and leaves capacity normalisation as a
+separate step the load model can apply from the heartbeat's `Capacity` if the hardware is heterogeneous. It is
+the same split `DiskThresholdDecider` already makes by reading a fraction rather than free bytes: how much work
+and how much capacity are two facts, and merging them early throws one away.
+
+### Sparse, and honest about being sparse
+
+Heat only carries information when some shards are distinctly hotter than others; a node whose shards are all
+equally warm has nothing to say and should say nothing. So a node publishes only shards above some share of its
+own total, capped at a fixed count, and `shards_omitted` records how many it left out — which is what
+distinguishes *"nothing stood out"* from *"this node does not measure heat"*.
+
+That distinction has a consequence for the supervisor, and it is the one thing about heat that could go badly
+wrong. **A node that does not publish heat looks cold, and a cold node attracts work.** Since heat will be
+optional across node versions for a long time, partial data is worse than none: the rule must be that the heat
+signal is used only if *every* placeable node in the pool publishes it, and otherwise its importance drops to
+zero for that pool. Same reasoning as `size_bytes` being omitted rather than zero — absent must mean *unknown*,
+never *none*.
+
+### Proposed shape
+
+```json
+{
+  "node_id": "sQ3xLWZu4nPSrTknEcDpoA",
+  "ephemeral_id": "eph-91c2",
+  "generated_at": 1757000000000,
+  "half_life_millis": 600000,
+  "node_search_cores": 1.42,
+  "shards": [
+    { "tenant": "acme", "index_uuid": "uzKxLWZu4nPSrTknEcDpoA", "shard": 3, "search_cores": 0.84 },
+    { "tenant": "acme", "index_uuid": "uzKxLWZu4nPSrTknEcDpoA", "shard": 7, "search_cores": 0.31 }
+  ],
+  "shards_omitted": 122
+}
+```
+
+- **`half_life_millis`** is the node declaring its own smoothing window, exactly as
+  `heartbeat_interval_millis` declares its cadence. Self-describing for a reason: the supervisor should
+  **refuse a window too short to act on** rather than assume one. Balancing on a ten-second average is worse
+  than not balancing.
+- **`node_search_cores`** is the node's own total, which lets the supervisor tell "this shard is 60% of a busy
+  node" from "60% of an idle one" without needing every shard listed.
+- **`shards`** is a list rather than the inventory's nested map, because it is a *ranking* — sorted hottest
+  first, truncated — and nesting by tenant and index would make the truncation boundary arbitrary.
+- **`ephemeral_id`** so a document left by a previous process is recognisable, as everywhere else.
+- Written on its own clock, not the heartbeat's. A minute is frequent enough for a ten-minute average; slower
+  is fine. The supervisor reads it lazily, since rebalancing only runs on a pass with nothing else to do
+  (`DESIGN.md` §14.6) — so heat is needed exactly when the supervisor is otherwise idle.
+
+### Why not on the heartbeat
+
+Simpler, and that is a real argument. Against it:
+
+- The heartbeat is read **every pass, by definition** — it is the liveness signal. Heat in it means paying for
+  heat bytes on every node on every pass, forever, on the one document guaranteed to be hot.
+- It is a variable-length list on a document that is deliberately small and fixed-shape, with a 4 KiB budget.
+- The cadences are genuinely different and should be tunable apart: liveness wants seconds, heat wants
+  minutes. Sharing a document would force whichever is wrong for one of them.
 
 ## What the supervisor writes back
 

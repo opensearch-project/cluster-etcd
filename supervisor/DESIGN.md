@@ -745,8 +745,37 @@ unknown size weighs nothing, the size is filled in from **the largest copy of th
 pool** — not a guess, an observation of that shard, since a replica ends up about the size of the primary it
 was built from.
 
-Heat is the obvious next signal: the share of a node's search CPU one shard is responsible for. It needs the
-data plane to publish it, and it is a new class rather than a new branch in an existing one.
+### 14.2.1 Heat, as a signal
+
+Heat is the obvious next signal, and the interface was shaped to take it: a new `BalanceSignal` class, not a
+new branch in an existing one. `NODE_CONTRACT.md` covers the document; what matters on this side is four
+things, three of which are constraints on how the signal may be *used* rather than on how it is measured.
+
+**The node smooths, not the supervisor.** Smoothing here would mean per-shard history in supervisor memory,
+which breaks R2.1 and evaporates on lease handoff. The node publishes an already-smoothed figure and declares
+its own half-life. The supervisor should refuse a window too short to act on — balancing on a ten-second
+average is worse than not balancing at all, because a move takes minutes and would land after the spike had
+passed.
+
+**The window is the hysteresis.** With a ten-minute half-life a thirty-second spike moves the average a few
+percent and cannot clear `MoveThresholdDecider`'s margin. No separate spike detection is needed; the noise
+filter and the patience are one mechanism. This is the whole reason the smoothing has to be somewhere durable.
+
+**Unknown is not zero.** A node that publishes no heat looks cold, and a cold node attracts work — so heat is
+usable only when *every* placeable node in the pool publishes it, and its importance drops to zero for the pool
+otherwise. Partial heat data is actively worse than none. This mirrors `size_bytes` being omitted rather than
+zero, but the failure mode is sharper: an unsized copy merely fails to attract work, whereas an unheated node
+*attracts* it.
+
+**Heat is not conserved the way bytes are, and this is the one piece of arithmetic that changes.** Moving a
+copy transfers its bytes and transfers its traffic, so the load model's `A - w` / `B + w` holds for both. But
+changing a shard's *copy count* splits traffic rather than duplicating it: going from `n` to `n+1` copies drops
+each existing copy to roughly `n/(n+1)` of its former heat, and the new one takes about `1/(n+1)`. That is
+perfectly computable — it is simply a different formula, and `MoveThresholdDecider`'s inequality is specific to
+moves. Scaling *down* has the mirror hazard and it is the dangerous direction: removing a copy concentrates its
+traffic onto the survivors, so "this copy looks cold, drop it" can tip the remainder over. The test there is
+whether the survivors can absorb `heat / (n-1)`, which is the same shape as the move threshold and needs to be
+written as its own rule. See §15.
 
 ### 14.3 Cost is per node, because it is not symmetric
 
@@ -844,3 +873,81 @@ A pool whose diff is legitimately empty and whose nodes are visibly uneven is ot
 answer written down anywhere. "No single move would reduce it" is a real answer, and it deliberately
 suppresses every other refusal when it holds: an evenly loaded pool full of primaries would otherwise be
 reported as blocked on the primary-move gap, sending an operator to chase a limitation costing them nothing.
+
+---
+
+## 15. Replica count as a target, not a constraint
+
+**Status: not implemented, and deliberately not foreclosed.** This section exists to record a goal and to name
+the one place in the code where the distinction has teeth, so that the eventual change is a small one.
+
+OpenSearch assumes every shard of an index has the same replica count, because `index.number_of_replicas` is a
+single number and the routing table is built from it. Nothing here inherits that assumption — the supervisor
+computes placement per shard from observed state, and the number it compares against happens to come from an
+index-wide setting only because that is where the control plane keeps it. The eventual goal is **automatic
+scaling of replica counts per shard, up and down**: a hot shard gains a copy while capacity exists, a cold one
+gives one back.
+
+### 15.1 Configured versus authorised
+
+The change that makes this possible is semantic rather than structural. Today one number answers two different
+questions:
+
+- **How many copies did the operator ask for?** — the floor, and the thing health is judged against.
+- **How many copies should the pool be maintaining right now?** — the *authorised* count, which an autoscaler
+  may raise above the configured floor.
+
+Once those are separate, "more copies than configured" stops meaning "surplus". It means either *surplus* (a
+move completing, a returned node, a reduced setting) or *authorised extra*, and only the first should be
+reaped.
+
+### 15.2 The seam, and the one place that would otherwise fight it
+
+`IndexConfig.copiesAuthorisedFor(int shard)` is the authorised count. It returns
+`max(copiesPerShard(), copyOverrides[shard])` — so the configured count is a floor and an override below it is
+ignored, because an autoscaler able to reduce redundancy below what an operator asked for is a different and
+much less welcome feature. Nothing populates the overrides yet; `withCopyOverrides` exists so that tests can,
+and so the mechanism is exercised rather than merely described.
+
+Of the five sites that read a desired copy count, three now go through the seam and two do not:
+
+| site | reads | behaviour with authorised extra copies |
+|---|---|---|
+| `SurplusReaper` | authorised | leaves them alone — **the site that mattered** |
+| `Planner` | authorised | builds them by the ordinary placement path |
+| `AllocationContext.desiredCopiesOfThisShard` | authorised | consistent with the above |
+| `Differ` | configured | would report `SURPLUS_COPY` — noise in the diff |
+| `StatusComputation` | configured | derived counts read high — cosmetic |
+
+`SurplusReaper` is why this was worth doing now rather than later. It deletes copies above the count, one per
+pass, so an autoscaler adding a copy would have watched the reaper remove it on the next pass, forever, with
+the two burning recovery bandwidth arguing. That is a genuine foreclosure rather than a missing feature, and it
+is closed.
+
+`Planner` reading the authorised count is the other half: a reaper that declines to delete an extra copy is
+worth little if nothing will create one. Routing placement through the same seam means an autoscaler raises a
+number and the existing machinery builds the copy — it does not need to become a second writer of assignments,
+which would break the single-writer property the whole pool partition model rests on.
+
+The two remaining sites are deliberately left. Both are read-only projections, both would merely be *wrong on
+paper* rather than destructive, and changing `Differ`'s signature is a wider refactor than this is worth before
+anything actually populates an override. They are the known cost of stopping here.
+
+### 15.3 What an autoscaler would still need
+
+Recorded so the shape is clear, not as a plan:
+
+- **A durable target.** Same argument as heat smoothing (§14.2.1): a scaling decision held in supervisor memory
+  is lost on lease handoff, so the authorised count has to be written down. Most likely a supervisor-owned
+  document, which also makes it answerable — "why does shard 3 have four copies" should have a written answer.
+- **Conservative fallback.** If that document is missing or unreadable, the reaper must decline to reap above
+  the configured count rather than assume the extras are unauthorised. Leaving extra copies is safe and visible;
+  deleting them is not, and an unreadable document is exactly when the supervisor knows least.
+- **Its own decision rules,** because the move-threshold inequality does not transfer. Scaling up splits
+  traffic; scaling down concentrates it, and the second is the direction that can cause an outage. §14.2.1 has
+  the arithmetic.
+- **Asymmetric patience.** Scale up quickly and down slowly, since the cost of being wrong is a wasted node in
+  one direction and a hot shard with too few copies in the other.
+- **A floor that is never crossed.** Whatever the autoscaler decides, the configured count remains a floor and
+  health is still judged against it. An autoscaler that can reduce redundancy below what an operator asked for
+  is a different and much less welcome feature.

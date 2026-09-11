@@ -91,7 +91,10 @@ public final class SurplusReaper {
         List<LoadModel.Held> failed,
         LoadModel loads
     ) {
-        int desired = index.copiesPerShard();
+        // The authorised count, not the configured one. Identical today; the distinction exists because this
+        // method is the only thing in the service that deletes a copy for being one too many, which makes it
+        // the only thing that would fight an autoscaler raising one shard's copy count. DESIGN.md §15.
+        int desired = index.copiesAuthorisedFor(ref.shard());
         if (started.size() <= desired) {
             return java.util.Optional.empty();
         }

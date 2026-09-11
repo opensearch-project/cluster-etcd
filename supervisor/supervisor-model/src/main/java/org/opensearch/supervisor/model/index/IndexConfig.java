@@ -37,7 +37,8 @@ public record IndexConfig(
     Replication replication,
     boolean hidden,
     AllocationEnable allocationEnable,
-    long configRevision
+    long configRevision,
+    Map<Integer, Integer> copyOverrides
 ) {
 
     public static final String SETTING_SHARDS = "index.number_of_shards";
@@ -48,7 +49,29 @@ public record IndexConfig(
     /** Overrides the cluster-wide value, so one index can be frozen without freezing the rest. */
     public static final String SETTING_ALLOCATION_ENABLE = "index.routing.allocation.enable";
 
+    /**
+     * Everything except the per-shard copy overrides, which almost nothing sets.
+     *
+     * <p>Kept so that the overrides can be added without touching every construction site — and, more to the
+     * point, so that a caller who has no opinion about per-shard scaling does not have to express one.
+     */
+    public IndexConfig(
+        String name,
+        String uuid,
+        boolean open,
+        int numberOfShards,
+        int numberOfReplicas,
+        Replication replication,
+        boolean hidden,
+        AllocationEnable allocationEnable,
+        long configRevision
+    ) {
+        this(name, uuid, open, numberOfShards, numberOfReplicas, replication, hidden, allocationEnable,
+            configRevision, Map.of());
+    }
+
     public IndexConfig {
+        copyOverrides = copyOverrides == null ? Map.of() : Map.copyOf(copyOverrides);
         Objects.requireNonNull(name, "name");
         // UNKNOWN here means "the index says nothing", which is different from an unrecognised value and is
         // resolved by falling back to the cluster setting -- see effectiveAllocationEnable.
@@ -76,6 +99,36 @@ public record IndexConfig(
     /** Copies desired per shard: one primary plus its replicas. */
     public int copiesPerShard() {
         return 1 + numberOfReplicas;
+    }
+
+    /**
+     * How many copies of <em>this shard</em> the pool should be maintaining — the <b>authorised</b> count, as
+     * distinct from the configured one.
+     *
+     * <p>Equal to {@link #copiesPerShard()} unless something has authorised more for this particular shard.
+     * Nothing does yet; {@code DESIGN.md} §15 records per-shard replica autoscaling as a goal, and this is the
+     * seam it will arrive through.
+     *
+     * <p>The distinction is worth having now because there is one place where it has teeth: {@code
+     * SurplusReaper} deletes copies above this number, one per pass. Anything that raised a single shard's copy
+     * count above the index setting would otherwise watch the reaper undo it on the next pass, and the two
+     * would burn recovery bandwidth arguing indefinitely.
+     *
+     * <p>OpenSearch cannot express this at all — {@code index.number_of_replicas} is one number and its routing
+     * table is built from it — so it is worth not acquiring that limitation by accident.
+     *
+     * <p><b>The configured count is a floor.</b> An override below it is ignored rather than honoured: an
+     * autoscaler that could reduce redundancy below what an operator asked for is a different and much less
+     * welcome feature, and health is still judged against the setting.
+     */
+    public int copiesAuthorisedFor(int shard) {
+        return Math.max(copiesPerShard(), copyOverrides.getOrDefault(shard, 0));
+    }
+
+    /** Same index, with extra copies authorised for particular shards. */
+    public IndexConfig withCopyOverrides(Map<Integer, Integer> overrides) {
+        return new IndexConfig(name, uuid, open, numberOfShards, numberOfReplicas, replication, hidden,
+            allocationEnable, configRevision, overrides);
     }
 
     /** Total copies this index wants across the pool. Zero while closed — a closed index serves nothing. */
