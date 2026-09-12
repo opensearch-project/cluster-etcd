@@ -162,6 +162,12 @@ compile "supervisor-app" supervisor-app/src/main/java "$OUT/supervisor-app/main"
 compile "fake-node" fake-node/src/main/java "$OUT/fake-node/main" \
     "$OUT/supervisor-model/main:$STORE_CP:$JACKSON_CP"
 
+# The shared node-contract conformance suite, published as test fixtures for ../opensearch-data-plane to
+# consume. Compiled with the main sources rather than with the tests because it is a published artifact:
+# a fixture that only compiles when this repository's own tests do would break the consumer and not us.
+compile "fake-node testFixtures" fake-node/src/testFixtures/java "$OUT/fake-node/testFixtures" \
+    "$OUT/fake-node/main:$OUT/supervisor-model/main:$STORE_FIXTURES_CP:$JACKSON_CP:$JUNIT_CP"
+
 # supervisor-model must not be able to see the store. DESIGN.md §1 claims the diff is a pure function of an
 # observation, and the module graph is what makes that checkable rather than a matter of review discipline.
 # Gradle enforces it through the dependency declarations; here it has to be asserted.
@@ -185,7 +191,7 @@ compile "supervisor-core tests" supervisor-core/src/test/java "$OUT/supervisor-c
 compile "supervisor-app tests" supervisor-app/src/test/java "$OUT/supervisor-app/test" \
     "$OUT/supervisor-app/main:$OUT/supervisor-core/main:$OUT/supervisor-model/main:$STORE_CP:$JACKSON_CP:$JUNIT_CP"
 compile "fake-node tests" fake-node/src/test/java "$OUT/fake-node/test" \
-    "$OUT/fake-node/main:$OUT/supervisor-model/main:$STORE_FIXTURES_CP:$JACKSON_CP:$JUNIT_CP"
+    "$OUT/fake-node/main:$OUT/fake-node/testFixtures:$OUT/supervisor-model/main:$STORE_FIXTURES_CP:$JACKSON_CP:$JUNIT_CP"
 
 # supervisor-integ needs Docker to *run*, which is not available here, but it can still be typechecked -- and a
 # suite handed over without having been compiled is a suite handed over with typos in it. Best effort: if
@@ -218,7 +224,7 @@ TEST_CP=$(join_cp \
     "$OUT/supervisor-model/main" "$OUT/supervisor-model/test" \
     "$OUT/supervisor-core/main" "$OUT/supervisor-core/test" \
     "$OUT/supervisor-app/main" "$OUT/supervisor-app/test" \
-    "$OUT/fake-node/main" "$OUT/fake-node/test" \
+    "$OUT/fake-node/main" "$OUT/fake-node/testFixtures" "$OUT/fake-node/test" \
     "$STORE_FIXTURES_CP" "$JACKSON_CP" "$JUNIT_CP")
 
 ROOTS=()

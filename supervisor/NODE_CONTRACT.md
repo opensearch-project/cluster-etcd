@@ -599,6 +599,61 @@ a correction, because it is a design fork rather than an oversight — see quest
 heartbeat it previously published, using the store as its own memory. Allocation ids are on the node's
 local disk; a store round-trip makes them lossable in a way they otherwise would not be.
 
+## Checked against the real plugin
+
+`../opensearch-data-plane` is the first implementation of this document inside a running OpenSearch node.
+Its publishing half — registration, heartbeat, inventory — is built and passing, against OpenSearch 3.9.
+The two implementations now share a conformance suite (`fake-node/src/testFixtures`, `NodeContractTests`),
+which is how they stay one format: the plugin re-implements the codec on XContent because the server
+exposes Jackson's streaming API and not databind, so nothing but that suite connects them.
+
+**Five things it found. Four are silences in this document rather than errors.**
+
+1. **`SPLITTING` is a shard state this document does not enumerate, and should.** OpenSearch 3.x has an
+   in-place shard split, so `ShardRoutingState` has five values rather than the four assumed above. The
+   *Two states OpenSearch has are deliberately absent* list is therefore incomplete rather than wrong. The
+   plugin maps it to `STARTED`, which matches the server's own `active()` — that counts started,
+   relocating and splitting alike — and the copy is on disk and serving throughout. **Proposed: add
+   `SPLITTING` to that list with the same reasoning `RELOCATING` has.** Found by the mapping being written
+   as an exhaustive switch, which made a new enum constant a compile error; a chain of `if`s would have
+   silently reported a splitting shard as whatever the last branch said.
+
+2. **`FAILED` is not observable from the routing table, so a node cannot report it the way it reports the
+   other two.** A shard that fails in OpenSearch is *removed* from the routing table rather than marked in
+   it — there is no `FAILED` routing state. So a node's inventory can only carry `FAILED` if the node
+   keeps its own record of the failure alongside the routing table, which is a real obligation this
+   document places on an implementer without saying so. Not yet exercised: it lands with the applier.
+   **Proposed: say that `FAILED` is the node's own bookkeeping, not a projection of server state.**
+
+3. **When the inventory cannot be written, the document does not say what the heartbeat should carry.**
+   D3.6 says "write nothing and report `outcome: failed`", which leaves `shards_digest` and
+   `shard_copies` undecided, and they are the fields the supervisor acts on. The plugin's answer:
+   **the digest keeps describing the bytes last actually written** — that is what the field means, and any
+   other value would send the supervisor chasing a document that does not exist — while **`shard_copies`
+   reports the true current count**. The two then disagree, and that disagreement is precisely the
+   documented signal that a node's inventory is behind. **Proposed: state this, because the alternative
+   (blanking the digest) reads as "this node has never written an inventory" and is very easy to write.**
+
+4. **`registered_at` on a rewritten registration.** The document says the registration is rewritten when an
+   attribute changes and does not say whether the timestamp moves. The plugin keeps the original: a node
+   that has been up for a day should not look as though it had just arrived because somebody relabelled
+   its rack. **Proposed: state it either way; the field is otherwise ambiguous during exactly the incident
+   where an operator is reading it.**
+
+5. **A node has one address here and two in reality.** `registration` carries `address` and `port`, which
+   the plugin fills from the transport address — the right answer for a coordinator resolving a data node,
+   and what `tenant/<t>/status/nodes/<id>` projects onward. But OpenSearch nodes also have an HTTP
+   endpoint, and `cluster.state`'s node list carries both. **So the control plane cannot render
+   `http_address` for a node, and nothing in this layout can currently tell it one.** Not a defect in the
+   data path; a gap in what the projections can serve, and cheaper to decide now than after something
+   depends on the shape.
+
+**One thing it confirms with a caveat.** `heartbeat_interval_millis` is the node's own declaration and the
+plugin honours it, but a node scheduling at a *fixed delay* — which is what it should do, since a fixed
+rate against a slow store queues passes that were stale when they were queued — writes every
+`interval + pass duration`. The declared figure is therefore a lower bound rather than the period. Harmless
+at the default multiplier of six, and worth knowing before anyone tightens it.
+
 ## Open questions
 
 0. **Resolved by implementing it** — recorded here so the list stays honest rather than looking untouched.
