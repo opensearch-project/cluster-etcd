@@ -1,0 +1,49 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+buildscript {
+    ext {
+        // 3.9.0-SNAPSHOT is the version in ../OpenSearch, and it is the first with the clusterless server
+        // path this plugin steers: LocalClusterService, LocalDiscovery and LocalShardStateAction. Build and
+        // install it once before building here:
+        //
+        //     cd ../OpenSearch && ./gradlew publishToMavenLocal
+        //
+        // Overridable, because the plugin itself only needs ClusterPlugin.isClusterless() and
+        // ClusterApplierService, both of which are older than that.
+        opensearch_version = System.getProperty('opensearch.version', '3.9.0-SNAPSHOT')
+        isSnapshot = 'true' == System.getProperty('build.snapshot', 'true')
+        opensearch_build = opensearch_version.tokenize('-')[0] + '.0'
+        if (isSnapshot) {
+            opensearch_build += '-SNAPSHOT'
+        }
+    }
+    repositories {
+        mavenLocal()
+        maven { url 'https://ci.opensearch.org/ci/dbc/snapshots/maven/' }
+        mavenCentral()
+        maven { url 'https://plugins.gradle.org/m2/' }
+    }
+    dependencies {
+        classpath "org.opensearch.gradle:build-tools:${opensearch_version}"
+    }
+}
+
+allprojects {
+    group = 'org.opensearch.plugin'
+
+    repositories {
+        mavenLocal()
+        maven { url 'https://ci.opensearch.org/ci/dbc/snapshots/maven/' }
+        mavenCentral()
+    }
+}
+
+configure(project(':plugin')) {
+    apply plugin: 'opensearch.opensearchplugin'
+    apply plugin: 'opensearch.java-agent'
+
+    version = opensearch_build
+}

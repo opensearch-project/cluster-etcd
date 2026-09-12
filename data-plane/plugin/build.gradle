@@ -1,0 +1,41 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+opensearchplugin {
+    name = 'opensearch-data-plane'
+    description = 'Makes a node act on desired state read from a shared key/value store, with no cluster manager anywhere'
+    classname = 'org.opensearch.clusterless.ClusterlessPlugin'
+    licenseFile rootProject.file('LICENSE.txt')
+    noticeFile rootProject.file('NOTICE.txt')
+}
+
+dependencies {
+    // The store SPI, and nothing else. D6.2: nothing in this repository may name a backend outside test
+    // code and the SPI wiring, so store-etcd and store-zookeeper are deliberately absent — an operator
+    // drops the backend jar for their deployment into the installed plugin's directory, and ServiceLoader
+    // finds it. `./gradlew :plugin:schemes` prints what a build resolves, so a missing jar is
+    // distinguishable from a typo in the URI.
+    implementation 'org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT'
+
+    // The shared conformance suite that also drives fake-node, from the repository that owns
+    // NODE_CONTRACT.md. Test scope: it brings Jackson, which must never reach the plugin zip.
+    testImplementation testFixtures('org.opensearch.supervisor:fake-node:0.1.0-SNAPSHOT')
+    testImplementation testFixtures('org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT')
+}
+
+// Third-party audit and the license check have nothing to inspect: the one bundled dependency is store-api,
+// which has no dependencies at all by design.
+thirdPartyAudit.enabled = false
+loggerUsageCheck.enabled = false
+
+// Which store schemes a build actually resolves. D6.2 asks for a --help-equivalent diagnostic so that a
+// missing backend jar is distinguishable from a typo in the URI; this is the build-time half, and
+// StoreConnection produces the same list at runtime when a URI cannot be opened.
+tasks.register('schemes', JavaExec) {
+    group = 'verification'
+    description = 'Lists the key/value store schemes on this build\'s runtime classpath'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.opensearch.clusterless.store.StoreSchemes'
+}

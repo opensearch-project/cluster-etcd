@@ -10,9 +10,61 @@ than state it received from an elected node.
 
 ## Status
 
-**Nothing here yet.** This directory holds the specification: `REQUIREMENTS.md` for what the thing must do,
-`MILESTONES.md` for the order to build it in, and `BORROWING_FROM_CLUSTER_ETCD.md` for a survey of the existing
+**Milestones 1 and 2 are done: this plugin publishes, and does not yet apply.** A node with it installed
+opens the store, writes `nodes/registration/<id>`, `nodes/heartbeat/<id>` and `nodes/shards/<id>`, and keeps
+them current. It reads nothing and fabricates no `ClusterState`, so there is nothing it can get wrong that
+would move data — which is the whole reason for doing it in this order.
+
+The specification is still the point of this directory: `REQUIREMENTS.md` for what the thing must do,
+`MILESTONES.md` for the order to build it in, and `BORROWING_FROM_CLUSTER_ETCD.md` for a survey of the
 implementation next door saying which parts to lift, which to adapt and which are now useless.
+
+### Building it
+
+```
+./gradlew build                    # the build; needs ../OpenSearch installed to mavenLocal first
+tools/jbuild.sh                    # compile and test with javac, for environments where Gradle cannot run
+tools/supervisor-sees-me.sh        # milestone 2's acceptance check, against a real supervisor
+./gradlew :plugin:schemes          # which store backends this build can see
+```
+
+`tools/supervisor-sees-me.sh` is the one worth running first. It publishes node documents into a scratch
+store with the plugin's own publisher, runs a **real supervisor** against them in read-only mode, and
+prints what it made of them:
+
+```
+  nodes: 2
+  placeable_nodes: 2
+  findings_by_kind: {"UNASSIGNED_PRIMARY": 2}
+  unreadable_documents: 0
+```
+
+Two live, placeable nodes, and an index the supervisor now wants to place on them. No OpenSearch node and
+no container, because the only part of the plugin involved is the part that talks to the store — which is
+exactly what this milestone is.
+
+The plugin targets **OpenSearch 3.9**, the first version carrying the clusterless server path it steers —
+`LocalClusterService`, `LocalDiscovery`, `LocalShardStateAction`. Build the sibling checkout once
+(`cd ../OpenSearch && ./gradlew publishToMavenLocal`) before building here.
+
+`tools/jbuild.sh` exists because Gradle cannot run in the sandbox this was written in: it fails creating
+its file-lock service, since binding a socket is denied. It compiles every module against the OpenSearch
+jars in `../OpenSearch` and runs the tests through a hand-rolled JUnit launcher. **It is not the build** —
+it skips plugin packaging, forbidden-APIs and the license checks — so `./gradlew build` is currently
+unverified and should be run by someone who can.
+
+### Configuration
+
+| setting | |
+|---|---|
+| `clusterless.store` | **required.** A store URI, e.g. `file:///var/lib/clusterless` or `etcd://host:2379/opensearch`. The scheme selects a backend jar on the classpath; nothing in this repository names one. |
+| `clusterless.node.pool` | the pool this node was deployed into. Optional — `pools/nodes/<id>` overrides it, and a node in neither is `NODE_UNPOOLED`, which is a visible finding rather than a default. |
+| `clusterless.node.roles` | `data`, `coordinator`, or both. Defaults to a derivation from OpenSearch's own `node.roles`. |
+| `clusterless.heartbeat.interval` | default 5s. Published in the registration, and the supervisor derives this node's staleness threshold from it, so it must be the interval the node really writes at. |
+| `clusterless.poll.interval` | default: the heartbeat interval. Separate because the costs are different — one is a write by every node in the fleet, the other a read of one small key. |
+
+`GET /_clusterless/status` reports what this node last read, applied and wrote.
+
 
 ## The three planes, and why this one is last
 

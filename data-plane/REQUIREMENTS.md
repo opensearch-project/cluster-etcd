@@ -163,6 +163,36 @@ negotiable**: 200 nodes writing everything at heartbeat rate is the store's domi
 
 ## Open questions — decide these early, they are cheap now
 
+0. **Answered by building milestones 1 and 2** — recorded here rather than deleted, so the reasoning
+   survives the decision.
+
+   - **Setting names (question 1).** `clusterless.store`, `clusterless.node.pool`,
+     `clusterless.node.roles`, `clusterless.heartbeat.interval`, `clusterless.poll.interval` — the proposal
+     below, adopted as written, plus `clusterless.node.roles`. That last one exists because the two role
+     vocabularies do not line up: OpenSearch has no `coordinator` role, and a coordinating-only node is one
+     with *no* roles at all. The derivation is `data` if the node has OpenSearch's data role, `coordinator`
+     if it has no OpenSearch roles, and the setting overrides both. Note what the derivation deliberately
+     does not do: every OpenSearch node *can* coordinate a search, so deriving from capability would make
+     the whole fleet a coordinator for every tenant.
+
+     **`clusterless.node.tenants` is deliberately not implemented.** Which tenants a node serves is in its
+     assignment, which is the supervisor's to decide; a node that also declared its tenants locally would
+     give the question two answers, and the interesting case is precisely the one where they differ.
+   - **Poll interval versus heartbeat (question 2).** Separate settings, sharing a default. Different
+     costs — a heartbeat is a write by every node in the fleet, a poll is a read of one small key — so
+     tying them would force whichever number is wrong for one of them.
+   - **Does a coordinator heartbeat (question 3).** Yes, with an empty inventory. Nothing in the publisher
+     is conditional on holding shards, because liveness and pool membership both key off the heartbeat and
+     an empty inventory is a fact worth publishing.
+   - **Mapping canonicalisation (question 4).** No, current OpenSearch offers no cleaner path: neither
+     `createComponents` overload receives `IndicesService`, and it is not in the plugin component registry
+     either. Checked against 3.9. The `GuiceHolder` hack is copied, with the reasoning recorded on it —
+     shard sizes need it now and mapping canonicalisation will need it at milestone 4.
+   - **Replication story for the first version (question 6).** **Segment replication from the remote
+     store**: primaries and search replicas, no peer resolution, document replication deferred. This is
+     the sharpest possible exposure to D8.2, which is a reason to be explicit about it rather than a reason
+     to choose otherwise.
+
 1. **Setting names.** Proposal: `clusterless.store` for the store URI, `clusterless.node.pool`,
    `clusterless.node.tenants`. `cluster-etcd` used `cluster.etcd.endpoint`, which names a backend and so cannot
    survive D6.2. Worth agreeing with the supervisor and control plane so all three read alike.

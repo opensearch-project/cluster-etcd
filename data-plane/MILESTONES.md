@@ -24,7 +24,7 @@ thing with a real OpenSearch node behind it**, and the places where `FakeNode` c
 
 ---
 
-## M1. A plugin that loads and can reach the store
+## M1. A plugin that loads and can reach the store — **done**
 
 - Plugin skeleton, `isClusterless()`, settings, `KeyValueStores.open(uri)` on start and closed on stop.
 - No documents written, no state applied.
@@ -34,7 +34,7 @@ thing with a real OpenSearch node behind it**, and the places where `FakeNode` c
 The point of stopping here is D6.2: prove nothing in the build names a backend. It is much easier to keep that
 property than to recover it.
 
-## M2. Publish: registration, heartbeat, empty inventory
+## M2. Publish: registration, heartbeat, empty inventory — **done**
 
 The highest-value milestone by a distance, and the reason to do it second.
 
@@ -46,6 +46,12 @@ The highest-value milestone by a distance, and the reason to do it second.
 its default read-only mode, and it should report a live, placeable node in
 `supervisor/status/pools/<pool>/convergence`. Nothing has been applied and nothing can go wrong yet, and you
 have already proved the half of the contract that everything else depends on.
+
+**It does.** `tools/supervisor-sees-me.sh` is that check, made reproducible — it publishes with the real
+publisher, runs a real supervisor, and asserts `placeable_nodes`. It reports two nodes, zero unreadable
+documents, and two `UNASSIGNED_PRIMARY` findings for the index that now has somewhere to go. Worth keeping
+green: it is the only thing in this repository that exercises both sides of the seam at once until the
+plugin can stand in for `fake-node` in `supervisor-integ`.
 
 This is also where a **shared conformance suite** starts paying for itself — see the note at the bottom.
 
@@ -127,7 +133,24 @@ Last, deliberately. The poll loop must already be correct (D2.1), so this is pur
 
 ---
 
-## The shared conformance suite
+## The shared conformance suite — **done, at M2 as recommended**
+
+`NodeContractTests` and its `ContractNode` adapter live in
+`../opensearch-supervisor/fake-node/src/testFixtures`, published as test fixtures and consumed here in test
+scope. Thirteen assertions, both implementations passing. Two notes for whoever extends it:
+
+- **It reads with the supervisor's parser, never with each implementation's own.** A suite that let each
+  side check its own JSON would pass happily on two mutually unreadable documents, which is the failure it
+  exists to prevent.
+- **The adapter is narrow on purpose.** Everything in it is something both implementations can honestly do.
+  `fake-node` can only hold a copy by being assigned it and the plugin is handed one directly, so the suite
+  asks for "hold these copies" and says nothing about how. Anything one side can do and the other cannot
+  belongs in that side's own tests rather than behind a capability flag — a conformance suite half its
+  implementations skip proves nothing about either.
+
+The original note follows.
+
+## The shared conformance suite: why
 
 `NODE_CONTRACT.md` will shortly have two independent implementations: `fake-node` and this plugin. Two
 implementations of one document format tested separately are two formats that will drift.
