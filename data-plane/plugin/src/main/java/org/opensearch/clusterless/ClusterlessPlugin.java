@@ -14,6 +14,7 @@ import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.contract.Registration;
 import org.opensearch.clusterless.apply.AssignmentPoller;
+import org.opensearch.clusterless.apply.ClusterApplierServiceStateApplier;
 import org.opensearch.clusterless.apply.DataNodeState;
 import org.opensearch.clusterless.apply.DesiredStateResolver;
 import org.opensearch.clusterless.apply.MapperServiceMappingSource;
@@ -161,6 +162,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
                 new NodeEnvironmentShardStore(nodeEnvironment)
             ),
             publisher,
+            new ClusterApplierServiceStateApplier(clusterService.getClusterApplierService()),
             apply
         );
 

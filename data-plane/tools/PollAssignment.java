@@ -100,6 +100,9 @@ public final class PollAssignment {
                 () -> ClusterState.EMPTY_STATE,
                 desired -> new DataNodeState(localNode, desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
                 publisher,
+                // Nothing to apply to: there is no node here. Read-only mode is the only mode this tool has,
+                // which is why it needs no applier and can run in a sandbox with no sockets.
+                null,
                 false
             );
 

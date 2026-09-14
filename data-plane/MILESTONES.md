@@ -82,7 +82,7 @@ next pass. Three things this milestone settled that the plan did not name:
 - **A docrep replica is declined with a reason** rather than built as a segrep copy, and the supervisor's own
   planner draws the line in the same place.
 
-## M4. Apply: one primary, one shard, one tenant
+## M4. Apply: one primary, one shard, one tenant — **written, not yet verified**
 
 - `ClusterApplierService.updateClusterState(...)`.
 - Report the copy in the inventory as it moves `INITIALIZING` → `STARTED`, with `size_bytes` appearing only
@@ -92,6 +92,24 @@ next pass. Three things this milestone settled that the plan did not name:
   green.
 
 Resist adding replicas, coordinators or removal here. Every one of them is easier once this loop is closed.
+
+**Written, and the "done when" is not met yet** — deliberately stated that way rather than left ambiguous. The
+applier call, the acknowledgement and the failure handling are in and unit-tested against a stand-in applier
+that really runs the update function; the inventory side needs no new code, because it already reads the routing
+table. What has never happened is a real `ClusterApplierService` accepting one of these states, and no node can
+start in the sandbox most of this was written in.
+
+`./gradlew run` is how it gets checked, and `plugin/build.gradle` now configures a cluster for it —
+`PluginBuildPlugin` registers the `run` task but attaches no cluster, so it previously started nothing. Two
+things to watch for first, both of which would fail loudly:
+
+- **Settings validation.** Every index setting the control plane stored is validated when the index is created,
+  and an unregistered one fails the index. In a deployment where the control plane's registry came from a node
+  with different plugins installed, that is a real possibility rather than a hypothetical.
+- **Recovery source.** An `ExistingStoreRecoverySource` paired with a freshly generated allocation id is the
+  part of the fabrication with no precedent in `cluster-etcd` and no test that can prove it: whether a shard
+  resumes from local data depends on the server accepting that pair. A first run on an empty node takes the
+  `EmptyStoreRecoverySource` path and will not exercise it; restarting the node is what does.
 
 ## M5. Idempotence and the rest of the assignment
 

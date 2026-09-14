@@ -10,11 +10,16 @@ than state it received from an elected node.
 
 ## Status
 
-**Milestones 1 to 3 are done: this plugin publishes, reads, and explains — but does not yet apply.** A node
-with it installed opens the store, writes `nodes/registration/<id>`, `nodes/heartbeat/<id>` and
-`nodes/shards/<id>`, reads `nodes/assignment/<id>` and the `tenant/<t>/indices/<name>` documents it names, and
-logs the `ClusterState` it would hand the server. `clusterless.apply` is what will make it act, and that step
-is milestone 4.
+**Milestones 1 to 3 are done, and milestone 4 is written but not yet verified against a running node.** A node
+with the plugin installed opens the store, writes `nodes/registration/<id>`, `nodes/heartbeat/<id>` and
+`nodes/shards/<id>`, reads `nodes/assignment/<id>` and the `tenant/<t>/indices/<name>` documents it names,
+fabricates the `ClusterState` it would hand the server, and — with `clusterless.apply` — hands it over.
+
+**What "not yet verified" means precisely.** Everything up to and including the fabrication is tested as a pure
+function, and the read-only path is exercised end to end against a real supervisor. The one step that needs a
+running OpenSearch node is `ClusterApplierService.updateClusterState` and what the server does afterwards, and
+no node can start in the sandbox most of this was written in — no sockets. `./gradlew run` is how that gets
+checked; until somebody has, treat applying as unproven.
 
 Read-only is the default, mirroring the supervisor's, and for the same reason: this is the component that can
 move data, so it explains itself for a while first, somewhere somebody can check the explanation. In that mode
@@ -65,6 +70,26 @@ Neither needs an OpenSearch node or a container. Everything from the store to th
 ordinary Java; only the last step — handing that state to `ClusterApplierService` — needs a running node, and
 that is the next milestone.
 
+### Running a real node
+
+```
+./gradlew run                              # a node with the plugin installed, applying what it is assigned
+./gradlew run -Pclusterless.apply=false    # the same, read-only
+./gradlew run -Pclusterless.nodes=2        # two of them, sharing one store
+```
+
+The run cluster points at `plugin/build/clusterless-store`, and a supervisor pointed at the same directory is
+the other half of the loop:
+
+```
+cd ../opensearch-supervisor && ./gradlew :supervisor-app:installDist
+./supervisor-app/build/install/supervisor-app/bin/supervisor-app     --store=file://<repo>/plugin/build/clusterless-store --write --interval=1s
+```
+
+Note that `PluginBuildPlugin` registers `run` but attaches no cluster to it — only `RestIntegTestTask` gets one
+automatically — so `plugin/build.gradle` creates and uses one. It also has to set `clusterless.store`, since
+there is no default and a node without one refuses to start.
+
 The plugin targets **OpenSearch 3.9**, the first version carrying the clusterless server path it steers —
 `LocalClusterService`, `LocalDiscovery`, `LocalShardStateAction`. Build the sibling checkout once
 (`cd ../OpenSearch && ./gradlew publishToMavenLocal`) before building here.
@@ -88,7 +113,7 @@ it also runs plugin packaging, forbidden-APIs, `testingConventions` and the lice
 | `clusterless.node.roles` | `data`, `coordinator`, or both. Defaults to a derivation from OpenSearch's own `node.roles`. |
 | `clusterless.heartbeat.interval` | default 5s. Published in the registration, and the supervisor derives this node's staleness threshold from it, so it must be the interval the node really writes at. |
 | `clusterless.poll.interval` | default: the heartbeat interval. Separate because the costs are different — one is a write by every node in the fleet, the other a read of one small key. |
-| `clusterless.apply` | default **false**. Whether to act on the assignment, or only to log what acting on it would do. |
+| `clusterless.apply` | default **false**. Whether to act on the assignment, or only to log what acting on it would do. `./gradlew run` sets it true. |
 
 `GET /_clusterless/status` reports what this node last read, applied and wrote — including
 `assignment.deferred`, the copies it was told to hold and did not build, with a reason for each. That list is

@@ -9,6 +9,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.KeyValueStoreProvider;
 import org.opensearch.controlplane.store.KeyValueStores;
+import org.opensearch.secure_sm.AccessController;
 
 import java.io.IOException;
 import java.net.URI;
@@ -46,8 +47,13 @@ public final class StoreConnection {
     public static KeyValueStore open(String uri) {
         String scheme = schemeOf(uri);
         try {
-            KeyValueStore store = KeyValueStores.open(uri);
-            logger.info("clusterless: opened store [{}] using the [{}] backend [{}]", uri, scheme, store.getClass().getName());
+            // Opening is privileged for the same reason every later call is: the node's policy checks every
+            // protection domain on the stack, and the frames above this one belong to the server. Even creating
+            // the store's directory fails otherwise, from a jar with nothing to do with this plugin.
+            KeyValueStore store = new PrivilegedKeyValueStore(
+                AccessController.doPrivilegedChecked(() -> KeyValueStores.open(uri))
+            );
+            logger.info("clusterless: opened store [{}] using the [{}] backend", uri, scheme);
             return store;
         } catch (IOException e) {
             throw new IllegalArgumentException(
@@ -68,7 +74,7 @@ public final class StoreConnection {
     public static String describeInstalled() {
         Map<String, KeyValueStoreProvider> providers;
         try {
-            providers = KeyValueStores.discover();
+            providers = AccessController.doPrivilegedChecked(KeyValueStores::discover);
         } catch (IOException e) {
             return "the installed store backends could not be listed: " + e.getMessage();
         }

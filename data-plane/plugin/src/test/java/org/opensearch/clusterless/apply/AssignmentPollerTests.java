@@ -39,12 +39,55 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
     private InMemoryKeyValueStore store;
     private NodePublisher publisher;
     private AtomicLong now;
+    private RecordingApplier recordingApplier;
+
+    /**
+     * The server's half of applying, reduced to what the poller can observe.
+     *
+     * <p>It really runs the update function against the state it holds, because the poller's acknowledgement is
+     * computed from the live state rather than from the fact that an update was submitted — so an applier that
+     * only counted calls would let a wrong ack pass. {@link #finishRecovery} then does what the server does once
+     * a shard has recovered, which is the transition the ack is really about.
+     */
+    private static final class RecordingApplier implements ClusterStateApplier {
+
+        private ClusterState state = ClusterState.EMPTY_STATE;
+        private int applications;
+        private Exception failWith;
+
+        @Override
+        public void apply(String source, java.util.function.Function<ClusterState, ClusterState> update, Outcome onOutcome) {
+            applications++;
+            if (failWith != null) {
+                onOutcome.applied(source, failWith);
+                return;
+            }
+            state = update.apply(state);
+            onOutcome.applied(source, null);
+        }
+
+        void finishRecovery() {
+            org.opensearch.cluster.routing.RoutingTable.Builder routing = org.opensearch.cluster.routing.RoutingTable.builder();
+            for (org.opensearch.cluster.metadata.IndexMetadata index : state.metadata()) {
+                org.opensearch.cluster.routing.IndexRoutingTable.Builder indexRouting =
+                    org.opensearch.cluster.routing.IndexRoutingTable.builder(index.getIndex());
+                for (org.opensearch.cluster.routing.IndexShardRoutingTable shard : state.routingTable().index(index.getIndex())) {
+                    for (org.opensearch.cluster.routing.ShardRouting copy : shard) {
+                        indexRouting.addShard(copy.initializing() ? copy.moveToStarted() : copy);
+                    }
+                }
+                routing.add(indexRouting);
+            }
+            state = ClusterState.builder(state).routingTable(routing.build()).build();
+        }
+    }
 
     @Override
     public void setUp() throws Exception {
         super.setUp();
         store = new InMemoryKeyValueStore();
         now = new AtomicLong(1788969977000L);
+        recordingApplier = new RecordingApplier();
         publisher = new NodePublisher(
             store,
             NODE,
@@ -73,9 +116,10 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
             store,
             NODE,
             new DesiredStateResolver((tenant, name) -> Optional.of(TestFixtures.indexConfig(UUID))),
-            () -> ClusterState.EMPTY_STATE,
+            () -> recordingApplier.state,
             desired -> new DataNodeState(TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
             publisher,
+            recordingApplier,
             apply
         );
     }
@@ -213,6 +257,7 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
             () -> ClusterState.EMPTY_STATE,
             desired -> new DataNodeState(TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
             publisher,
+            recordingApplier,
             false
         );
 
@@ -220,6 +265,137 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
 
         assertTrue(poller.status().lastFailure(), poller.status().lastFailure().contains("unreachable"));
         assertEquals(0, poller.status().assignmentsRead());
+    }
+
+    // ---------------------------------------------------------------- applying
+
+    public void testApplyingHandsTheFabricatedStateToTheServer() {
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(true);
+
+        poller.poll();
+
+        assertEquals(1, recordingApplier.applications);
+        assertEquals(1, poller.status().statesApplied());
+        assertEquals(1, recordingApplier.state.metadata().indices().size());
+        assertEquals(1, poller.status().copies());
+    }
+
+    public void testAppliedIsNotClaimedUntilTheCopyIsActuallyServing() {
+        // The easiest lie available: the state went in without error, so it is tempting to say "applied". Every
+        // new copy is INITIALIZING at that moment, and whether it starts depends on a recovery that happens
+        // afterwards and may not succeed.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(true);
+
+        poller.poll();
+        publisher.publish();
+        assertEquals("applying", publisher.status().appliedOutcome().wireName());
+
+        recordingApplier.finishRecovery();
+        poller.poll();
+        publisher.publish();
+
+        assertEquals("applied", publisher.status().appliedOutcome().wireName());
+        assertEquals(42, publisher.status().appliedAssignmentVersion());
+    }
+
+    public void testTheAcknowledgementSaysWhatItIsWaitingFor() {
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\", \"1\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(true);
+
+        poller.poll();
+
+        // Read from the live state each pass rather than remembered, so this is derived rather than tracked.
+        Convergence convergence = Convergence.assess(
+            new DesiredStateResolver((tenant, name) -> Optional.of(TestFixtures.indexConfig(UUID))).resolve(
+                org.opensearch.clusterless.contract.Assignment.read(
+                    assignmentJson(42, "{\"0\": \"PRIMARY\", \"1\": \"PRIMARY\"}").getBytes(StandardCharsets.UTF_8)
+                )
+            ),
+            recordingApplier.state,
+            NODE.value()
+        );
+        assertEquals(2, convergence.desired());
+        assertEquals(0, convergence.serving());
+        assertTrue(convergence.detail(), convergence.detail().contains("0 of 2 copies serving"));
+        assertTrue(convergence.detail(), convergence.detail().contains("INITIALIZING"));
+    }
+
+    public void testAnApplyFailureIsReportedRatherThanRetriedSilently() {
+        // A state the server refuses is not something the next pass fixes by itself, so it has to be visible.
+        // The pass still runs -- level-triggered means the next one tries again from what it reads.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        recordingApplier.failWith = new IllegalStateException("the applier said no");
+        AssignmentPoller poller = poller(true);
+
+        poller.poll();
+        publisher.publish();
+
+        assertEquals("failed", publisher.status().appliedOutcome().wireName());
+        assertTrue(poller.status().lastApplyFailure(), poller.status().lastApplyFailure().contains("the applier said no"));
+        assertEquals(0, poller.status().statesApplied());
+    }
+
+    public void testARecoveredApplyStopsBeingReportedAsFailed() {
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        recordingApplier.failWith = new IllegalStateException("transient");
+        AssignmentPoller poller = poller(true);
+        poller.poll();
+
+        recordingApplier.failWith = null;
+        poller.poll();
+        recordingApplier.finishRecovery();
+        poller.poll();
+        publisher.publish();
+
+        assertNull(poller.status().lastApplyFailure());
+        assertEquals("applied", publisher.status().appliedOutcome().wireName());
+    }
+
+    public void testACopyThatWasNotBuiltKeepsTheAckHonestEvenWhenTheRestConverges() {
+        // Deferred copies are not something more time fixes, so the supervisor should see that part as stuck
+        // rather than reading "applying" for ever and waiting.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\", \"1\": \"REPLICA\"}"));
+        AssignmentPoller poller = poller(true);
+
+        poller.poll();
+        recordingApplier.finishRecovery();
+        poller.poll();
+        publisher.publish();
+
+        assertEquals("failed", publisher.status().appliedOutcome().wireName());
+        assertEquals(1, poller.status().copies());
+        assertEquals(1, poller.status().deferred().size());
+    }
+
+    public void testApplyingWithoutAnApplierIsRefusedAtConstruction() {
+        // A configuration mistake that would otherwise surface as a NullPointerException on the first pass, from
+        // a scheduled task, with nothing pointing at the setting that caused it.
+        IllegalArgumentException e = expectThrows(
+            IllegalArgumentException.class,
+            () -> new AssignmentPoller(
+                store,
+                NODE,
+                new DesiredStateResolver((tenant, name) -> Optional.empty()),
+                () -> ClusterState.EMPTY_STATE,
+                desired -> new DataNodeState(TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+                publisher,
+                null,
+                true
+            )
+        );
+        assertTrue(e.getMessage(), e.getMessage().contains("no applier"));
+    }
+
+    public void testReadOnlyModeAppliesNothingAtAll() {
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(false);
+
+        poller.poll();
+
+        assertEquals("nothing may reach the applier in read-only mode", 0, recordingApplier.applications);
+        assertEquals(0, poller.status().statesApplied());
     }
 
     public void testTheIntendedStateIsFabricatedFromWhatWasRead() {

@@ -37,6 +37,53 @@ loggerUsageCheck.enabled = false
 // No need to validate pom, as we do not upload to maven/sonatype
 validateNebulaPom.enabled = false
 
+// ---------------------------------------------------------------------------------------------------------
+// ./gradlew run -- a real node with this plugin installed, which is the only way to exercise applying.
+//
+// PluginBuildPlugin registers the `run` task but attaches no cluster to it: only RestIntegTestTask gets one
+// created automatically (RestTestBasePlugin does testClusters.maybeCreate(task.name)), and the root OpenSearch
+// repository wires its own run task by hand in gradle/run.gradle. So a plugin's ./gradlew run starts nothing
+// until the cluster is created and used here.
+//
+// The node needs clusterless.store to start at all -- there is no default, deliberately, because a node
+// pointed at a private store looks exactly like a healthy node no supervisor can see. So the run cluster
+// points at a directory under build/, which is also where a supervisor should be pointed:
+//
+//   ./gradlew run                                   # terminal 1: a node, applying what it is assigned
+//   cd ../opensearch-supervisor && ./gradlew :supervisor-app:installDist && //     ./supervisor-app/build/install/supervisor-app/bin/supervisor-app //       --store=file://<repo>/plugin/build/clusterless-store --write --interval=1s
+//
+// Read-only is the default everywhere else; for `run` it defaults to applying, because watching it apply is
+// what somebody typing `./gradlew run` came for. Override with -Pclusterless.apply=false.
+def clusterlessStore = layout.buildDirectory.dir('clusterless-store').get().asFile
+def clusterlessApply = providers.gradleProperty('clusterless.apply').getOrElse('true')
+def clusterlessNodes = providers.gradleProperty('clusterless.nodes').getOrElse('1') as Integer
+
+def runCluster = testClusters.maybeCreate('runTask')
+if (clusterlessNodes != 1) {
+  runCluster.numberOfNodes = clusterlessNodes
+}
+
+testClusters.all {
+    // This installs our plugin into the testClusters
+    plugin(project.tasks.bundlePlugin.archiveFile)
+
+    setting 'clusterless.store', "file://${clusterlessStore}"
+    setting 'clusterless.node.pool', 'shared-a'
+    setting 'clusterless.apply', clusterlessApply
+    // Shorter than the 5s default so that a person watching the log does not have to wait for it.
+    setting 'clusterless.heartbeat.interval', '2s'
+    setting 'clusterless.poll.interval', '1s'
+}
+
+tasks.named('run') {
+    useCluster runCluster
+    doFirst {
+        clusterlessStore.mkdirs()
+        logger.lifecycle("clusterless: store at ${clusterlessStore}")
+        logger.lifecycle("clusterless: apply=${clusterlessApply}, nodes=${clusterlessNodes}")
+    }
+}
+
 // Which store schemes a build actually resolves. D6.2 asks for a --help-equivalent diagnostic so that a
 // missing backend jar is distinguishable from a typo in the URI; this is the build-time half, and
 // StoreConnection produces the same list at runtime when a URI cannot be opened.

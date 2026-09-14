@@ -101,6 +101,44 @@ which `NODE_CONTRACT.md` predates. Mapped to `STARTED`, matching the server's ow
 the mapping as an exhaustive `switch` rather than a chain of `if`s: that is what turned a new enum constant
 into a compile error instead of a silent mislabelling.
 
+### Every store call has to be privileged, and the plugin's policy alone cannot help
+
+The first attempt to run a node failed before it started:
+
+```
+SecurityException: Denied WRITE access to file: .../plugin/build/clusterless-store,
+domain: ProtectionDomain (file:.../lib/opensearch-cli-3.9.0-SNAPSHOT.jar)
+```
+
+Note which jar is named. It is not this plugin's, and `opensearch-cli` has nothing to do with the store — it is
+simply further up the stack, because `createComponents` runs from the bootstrap path. **That is the whole
+lesson**, and adding grants to `plugin-security.policy` cannot fix it: a plugin's policy applies to the plugin's
+own jars, and the check was failing on somebody else's.
+
+OpenSearch 3.x enforces its policy with a java agent (`libs/agent-sm/agent`) rather than a SecurityManager.
+`FileInterceptor` and `SocketChannelInterceptor` walk the stack and require **every** protection domain on it to
+hold the permission. Since a store call is reached through the thread pool that scheduled the pass, the server's
+own jars are on the stack — and the server has no permission to write to a directory an operator named in a
+plugin setting, nor to open a socket to an etcd cluster it has never heard of.
+
+The escape is `org.opensearch.secure_sm.AccessController.doPrivileged`, and it works because the agent's
+extractor is written as `takeWhile(frame is not doPrivileged)`. Three things worth knowing about it:
+
+- **It is the modern one.** `java.security.AccessController` still works — the extractor recognises both — but
+  there are zero uses of it left in `server/src/main`, and it is deprecated for removal.
+- **It needs no new dependency.** `server` has `api project(':libs:opensearch-secure-sm')`, which in turn has
+  `api project(':libs:agent-sm:agent-policy')`, so any plugin compiling against the server already has it. Do
+  *not* add it as an `implementation` dependency: `opensearch-agent-policy` is already in the distribution's
+  `lib/`, and a bundled second copy is jar hell, which fails every node at startup.
+- **Its implementation is `action.run()`.** It does nothing but put a recognisable frame on the stack. That also
+  means a unit test cannot verify any of this: no agent is installed, so the block is transparent and the policy
+  is never consulted. Only a running node checks it.
+
+So `PrivilegedKeyValueStore` wraps **every** call, not just the ones that obviously touch a disk — reads are
+checked too, and a network backend is checked the same way by the socket interceptor. It lives in this
+repository rather than in `store-api`, because the store is also used by two ordinary JVM services with no
+policy at all and should not learn about OpenSearch's security model to satisfy one of its three consumers.
+
 ### The store cannot tell a returning node that it held a shard
 
 Found while choosing a recovery source, and it is a gap by construction rather than an oversight. Two decisions

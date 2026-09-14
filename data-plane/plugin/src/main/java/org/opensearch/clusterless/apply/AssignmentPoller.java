@@ -23,11 +23,12 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 /**
- * Reads this node's assignment, works out what it would do, and — at this milestone — says so without doing it.
+ * Reads this node's assignment, works out what to do, and does it — or, with {@code clusterless.apply} false,
+ * says what it would have done.
  *
- * <p>Read-only first, mirroring the supervisor's own default and for the same reason: this is the component that
+ * <p>Read-only is the default, mirroring the supervisor's own and for the same reason: this is the component that
  * can move data, and the cheapest way to introduce one of those is to have it explain itself for a while where
- * somebody can check the explanation. {@code clusterless.apply} turns it into action.
+ * somebody can check the explanation.
  *
  * <h2>Level-triggered, and what that costs</h2>
  *
@@ -53,13 +54,20 @@ public final class AssignmentPoller {
     private final Supplier<ClusterState> currentState;
     private final Function<DesiredState, NodeState> nodeStates;
     private final NodePublisher publisher;
+    private final ClusterStateApplier applier;
     private final boolean applyEnabled;
 
     private DesiredState lastResolved = DesiredState.nothing();
     private String lastReport;
     private long assignmentsRead;
+    private long statesApplied;
     private String lastFailure;
+    private String lastApplyFailure;
 
+    /**
+     * @param applier where a fabricated state goes when applying is enabled. May be {@code null} in read-only
+     *     mode, which is what makes the read-only path runnable without a node behind it.
+     */
     public AssignmentPoller(
         KeyValueStore store,
         NodeId nodeId,
@@ -67,6 +75,7 @@ public final class AssignmentPoller {
         Supplier<ClusterState> currentState,
         Function<DesiredState, NodeState> nodeStates,
         NodePublisher publisher,
+        ClusterStateApplier applier,
         boolean applyEnabled
     ) {
         this.store = Objects.requireNonNull(store, "store");
@@ -75,7 +84,11 @@ public final class AssignmentPoller {
         this.currentState = Objects.requireNonNull(currentState, "currentState");
         this.nodeStates = Objects.requireNonNull(nodeStates, "nodeStates");
         this.publisher = Objects.requireNonNull(publisher, "publisher");
+        this.applier = applier;
         this.applyEnabled = applyEnabled;
+        if (applyEnabled && applier == null) {
+            throw new IllegalArgumentException("applying is enabled but no applier was given");
+        }
     }
 
     /**
@@ -113,8 +126,19 @@ public final class AssignmentPoller {
             DesiredState desired = resolver.resolve(assignment);
             lastResolved = desired;
 
+            // Fabricated against the live state for the report, and again inside the applier against whatever
+            // the server hands over. The two can differ -- a shard may have finished recovering in between --
+            // and the applier's copy is the one that counts.
             ClusterState intended = nodeStates.apply(desired).buildClusterState(currentState.get());
             report(intended, desired);
+
+            if (applyEnabled) {
+                applier.apply(
+                    "clusterless assignment version " + desired.assignmentVersion(),
+                    previous -> nodeStates.apply(desired).buildClusterState(previous),
+                    this::applied
+                );
+            }
             publisher.reportApplied(ackFor(desired));
         } catch (Exception e) {
             lastFailure = e.getClass().getSimpleName() + ": " + e.getMessage();
@@ -139,9 +163,49 @@ public final class AssignmentPoller {
                 + (desired.deferred().isEmpty() ? "" : "; " + desired.deferred().size() + " copy(ies) would also have been deferred");
             return new Heartbeat.Applied(desired.assignmentVersion(), AppliedOutcome.FAILED, detail);
         }
-        // Milestone 4 replaces this. Applying is not implemented, so claiming anything else would be a lie
-        // with a different shape.
-        return new Heartbeat.Applied(desired.assignmentVersion(), AppliedOutcome.FAILED, "applying is not implemented yet");
+        if (lastApplyFailure != null) {
+            return new Heartbeat.Applied(desired.assignmentVersion(), AppliedOutcome.FAILED, lastApplyFailure);
+        }
+
+        // Measured from the live state rather than from the fact that an update was submitted. Every new copy
+        // is INITIALIZING at the moment it is applied, so "the state went in" and "the node holds what it was
+        // told to" are different claims and only the second one is worth making.
+        Convergence convergence = Convergence.assess(desired, currentState.get(), nodeId.value());
+        List<String> notBuilt = desired.deferred();
+        if (convergence.isComplete() && notBuilt.isEmpty()) {
+            return new Heartbeat.Applied(desired.assignmentVersion(), AppliedOutcome.APPLIED, null);
+        }
+
+        String detail = convergence.detail();
+        if (notBuilt.isEmpty() == false) {
+            // Copies this node declined are not something more time will fix, so they are reported as a failure
+            // even while the rest is still converging. The supervisor should see that part as stuck.
+            String declined = notBuilt.size() + " copy(ies) not built: " + notBuilt.get(0);
+            return new Heartbeat.Applied(
+                desired.assignmentVersion(),
+                AppliedOutcome.FAILED,
+                detail == null ? declined : detail + "; " + declined
+            );
+        }
+        return new Heartbeat.Applied(desired.assignmentVersion(), AppliedOutcome.APPLYING, detail);
+    }
+
+    /**
+     * The applier's callback, which arrives on the server's thread rather than a pass's.
+     *
+     * <p>Only records. The next pass computes the ack from the live state, so there is nothing to publish from
+     * here — and publishing from here would write a heartbeat from an unexpected thread, out of order with the
+     * pass that owns that document.
+     */
+    private synchronized void applied(String source, Exception failure) {
+        if (failure == null) {
+            statesApplied++;
+            lastApplyFailure = null;
+            logger.info("clusterless: applied {}", source);
+        } else {
+            lastApplyFailure = "could not apply " + source + ": " + failure;
+            logger.error("clusterless: could not apply {}", source, failure);
+        }
     }
 
     /**
@@ -170,12 +234,14 @@ public final class AssignmentPoller {
         return new PollStatus(
             applyEnabled,
             assignmentsRead,
+            statesApplied,
             lastResolved.assignmentVersion(),
             lastResolved.indices().size(),
             lastResolved.copyCount(),
             lastResolved.coordinatorTenants().stream().map(Object::toString).toList(),
             lastResolved.deferred(),
-            lastFailure
+            lastFailure,
+            lastApplyFailure
         );
     }
 
@@ -189,11 +255,13 @@ public final class AssignmentPoller {
     public record PollStatus(
         boolean applyEnabled,
         long assignmentsRead,
+        long statesApplied,
         long assignmentVersion,
         int indices,
         int copies,
         List<String> coordinatorTenants,
         List<String> deferred,
-        String lastFailure
+        String lastFailure,
+        String lastApplyFailure
     ) {}
 }
