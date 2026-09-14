@@ -100,6 +100,12 @@ finding to report back, not something to paper over.
    `../cluster-etcd/plugin` and what is not.
 6. **[`../opensearch-kv-store/README.md`](../opensearch-kv-store/README.md)** — the store SPI.
 
+[`WORKING_NOTES.md`](WORKING_NOTES.md) is not part of that sequence and is worth reading before writing
+code anyway: what OpenSearch 3.9 actually does where this plugin touches it, and what the development
+sandbox does not allow. The first entry — index settings being strictly validated on the apply path rather
+than ignored — is the one that would otherwise be discovered at milestone 4, as a server-side exception on
+every index.
+
 `../opensearch-supervisor/fake-node/` is a working implementation of the node side of the contract in about 300
 lines. It holds no data and serves nothing, so it is not a model for the real thing — but it is an executable
 answer to "what exactly is this document asking me to write", and it is what the supervisor's own tests drive.

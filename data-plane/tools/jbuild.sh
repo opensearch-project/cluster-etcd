@@ -93,25 +93,46 @@ join_cp() { local IFS=:; echo "$*"; }
 #     cd ../OpenSearch && ./gradlew :server:jar :libs:core:jar :libs:common:jar :libs:x-content:jar
 #
 echo "==> resolving OpenSearch from $OPENSEARCH"
+# server plus every built lib, rather than the four the plugin's own imports need. Static initialisers
+# reach much further than compilation does: ClusterSettings' <clinit> touches the telemetry lib, so a
+# classpath trimmed to what javac wanted compiled fine and then failed at runtime with
+# NoClassDefFoundError inside a class this plugin only mentions in a test. The plugin's real classpath is
+# the whole distribution; approximating it more closely is cheaper than discovering the next one.
 OPENSEARCH_JARS=()
-for module in server libs/core libs/common libs/x-content libs/secure-sm; do
-    found=$(find "$OPENSEARCH/$module/build/distributions" -name '*.jar' ! -name '*-sources.jar' 2>/dev/null | head -1)
-    if [[ -z "$found" ]]; then
-        echo "  MISSING: $OPENSEARCH/$module/build/distributions/*.jar" >&2
-        echo "  Build it once:  cd $OPENSEARCH && ./gradlew assemble" >&2
-        echo "  Or set OPENSEARCH=/path/to/OpenSearch." >&2
-        exit 1
-    fi
+SERVER_JAR=$(find "$OPENSEARCH/server/build/distributions" -name '*.jar' ! -name '*-sources.jar' 2>/dev/null | head -1)
+if [[ -z "$SERVER_JAR" ]]; then
+    echo "  MISSING: $OPENSEARCH/server/build/distributions/*.jar" >&2
+    echo "  Build it once:  cd $OPENSEARCH && ./gradlew assemble" >&2
+    echo "  Or set OPENSEARCH=/path/to/OpenSearch." >&2
+    exit 1
+fi
+OPENSEARCH_JARS+=("$SERVER_JAR")
+echo "    $(basename "$SERVER_JAR")"
+while IFS= read -r found; do
     OPENSEARCH_JARS+=("$found")
-    echo "    $(basename "$found")"
-done
+done < <(find "$OPENSEARCH"/libs/*/build/distributions -name '*.jar' ! -name '*-sources.jar' 2>/dev/null | sort)
+echo "    and ${#OPENSEARCH_JARS[@]} jars in total, from server and libs/*"
 
 echo "==> resolving dependencies"
 # Referenced from OpenSearch signatures this plugin touches, so javac needs them even though no code here
 # imports them.
 LOG4J_API=$(jar org.apache.logging.log4j log4j-api 2.25.4)
-LUCENE_CORE=$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core" \
-    -name 'lucene-core-*.jar' ! -name '*-sources.jar' 2>/dev/null | sort | tail -1)
+
+# Lucene, at the version ../OpenSearch pins rather than the newest one cached -- several may be,
+# and picking the wrong one would compile and then fail somewhere specific and confusing. Every artifact,
+# not just the core, because ClusterSettings' static initialiser reaches into the analysis package.
+LUCENE_VERSION=$(sed -n 's/^lucene *= *"\(.*\)"/\1/p' "$OPENSEARCH/gradle/libs.versions.toml" | head -1)
+if [[ -z "$LUCENE_VERSION" ]]; then
+    echo "  could not read the lucene version from $OPENSEARCH/gradle/libs.versions.toml" >&2
+    exit 1
+fi
+LUCENE_JARS=$(find "$HOME/.gradle/caches/modules-2/files-2.1/org.apache.lucene" \
+    -name "*-$LUCENE_VERSION.jar" ! -name '*-sources.jar' 2>/dev/null | sort | tr '\n' ':')
+if [[ -z "$LUCENE_JARS" ]]; then
+    echo "  MISSING: org.apache.lucene:*:$LUCENE_VERSION in a local cache" >&2
+    exit 1
+fi
+echo "    lucene $LUCENE_VERSION"
 # OpenSearch 3.9's XContent is built on Jackson 3 (tools.jackson.*), which is a different artifact from
 # the Jackson 2 the supervisor's codec uses -- so both are on the test classpath at once, under different
 # package names, and neither shadows the other. Runtime only: nothing here compiles against either.
@@ -128,7 +149,7 @@ PLATFORM_LAUNCHER=$(jar org.junit.platform junit-platform-launcher "$JUNIT_PLATF
 OPENTEST4J=$(jar org.opentest4j opentest4j 1.3.0)
 APIGUARDIAN=$(jar org.apiguardian apiguardian-api 1.1.2)
 
-OPENSEARCH_CP=$(join_cp "${OPENSEARCH_JARS[@]}" "$LOG4J_API" ${LUCENE_CORE:+"$LUCENE_CORE"})
+OPENSEARCH_CP=$(join_cp "${OPENSEARCH_JARS[@]}" "$LOG4J_API" "${LUCENE_JARS%:}")
 OPENSEARCH_RUNTIME_CP=$(join_cp "$OPENSEARCH_CP" "$JACKSON3_CORE")
 JACKSON_CP=$(join_cp "$JACKSON_DATABIND" "$JACKSON_CORE" "$JACKSON_ANNOTATIONS")
 JUNIT_CP=$(join_cp "$JUPITER_API" "$JUPITER_ENGINE" "$JUPITER_PARAMS" \

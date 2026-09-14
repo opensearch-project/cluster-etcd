@@ -29,16 +29,43 @@ import java.util.List;
  * throughout the server — is already identity in the contract's sense. The other two settings carry what
  * the uuid alone cannot say, and the index name the server sees is then free to be whatever reads best.
  *
- * <p>None of these are registered with the settings module: they are index metadata written into a
- * fabricated cluster state by this plugin and read back by it, never set by an operator. Registering them
- * would invite exactly that.
+ * <h2>They have to be registered, and this was nearly a bug</h2>
+ *
+ * <p>The first version of this class said these settings were deliberately <em>not</em> registered with the
+ * settings module, on the reasoning that registering them would invite an operator to set them. That
+ * reasoning was wrong about how the server treats an index setting it does not know, and nothing caught it
+ * because no cluster state is fabricated yet.
+ *
+ * <p><b>Index settings are strictly validated on the apply path.</b>
+ * {@code IndicesService.createIndexService} calls
+ * {@code indexScopedSettings.validate(indexMetadata.getSettings(), true, true, true)} before building the
+ * {@code IndexModule}, and an unregistered key resolves to a null {@code Setting} and throws
+ * {@code SettingsException: unknown setting [index.clusterless.tenant] please check that any required
+ * plugins are installed}. So an unregistered identity setting does not mean "ignored", it means every index
+ * on the node fails to be created — at milestone 4, in a stack trace pointing at the server rather than
+ * here.
+ *
+ * <p>The tolerant behaviour that makes unknown settings survive a migration is real but lives elsewhere:
+ * {@code MetadataIndexUpgradeService} and {@code ClusterStateUpdaters} call
+ * {@code archiveUnknownOrInvalidSettings}, which runs on metadata read from disk during gateway recovery or
+ * an upgrade, not on a state being applied. And archiving <em>renames</em> the key to {@code archived.*},
+ * so even where it applies it would lose the value rather than preserve it.
+ *
+ * <p>{@code InternalIndex} is what recovers the intent the original reasoning was reaching for. It is
+ * ignored by the apply path — which passes {@code validateInternalOrPrivateIndex: false} — and rejected by
+ * the update-settings API with "this setting is managed via a dedicated API". Registered so the server will
+ * accept them; internal so nothing but this plugin may set them.
  */
 public final class ClusterlessIndexSettings {
 
     private ClusterlessIndexSettings() {}
 
     /** Which tenant this index belongs to. Index names are only unique within one. */
-    public static final Setting<String> TENANT = Setting.simpleString("index.clusterless.tenant", Setting.Property.IndexScope);
+    public static final Setting<String> TENANT = Setting.simpleString(
+        "index.clusterless.tenant",
+        Setting.Property.IndexScope,
+        Setting.Property.InternalIndex
+    );
 
     /**
      * The index's name <em>in its tenant</em>, which is what the control plane and the supervisor call it
@@ -47,7 +74,8 @@ public final class ClusterlessIndexSettings {
      */
     public static final Setting<String> TENANT_INDEX_NAME = Setting.simpleString(
         "index.clusterless.name",
-        Setting.Property.IndexScope
+        Setting.Property.IndexScope,
+        Setting.Property.InternalIndex
     );
 
     /**
@@ -67,8 +95,12 @@ public final class ClusterlessIndexSettings {
         "index.clusterless.config_revision",
         0L,
         Long.MIN_VALUE,
-        Setting.Property.IndexScope
+        Setting.Property.IndexScope,
+        Setting.Property.InternalIndex
     );
+
+    /** The prefix this plugin reserves. Nothing outside it should carry clusterless identity. */
+    public static final String PREFIX = "index.clusterless.";
 
     public static List<Setting<?>> all() {
         return List.of(TENANT, TENANT_INDEX_NAME, CONFIG_REVISION);

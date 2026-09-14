@@ -47,6 +47,7 @@ import org.opensearch.transport.client.Client;
 import org.opensearch.watcher.ResourceWatcherService;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -177,9 +178,19 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         );
     }
 
+    /**
+     * Node settings and index settings together, because the server collects both from here.
+     *
+     * <p>The index settings are not optional and not decoration. {@code IndicesService.createIndexService}
+     * validates every index setting against the registry this list feeds, and an unregistered key throws
+     * rather than being ignored — so leaving them out would mean every index this plugin fabricates failed
+     * to be created. See {@link ClusterlessIndexSettings}.
+     */
     @Override
     public List<Setting<?>> getSettings() {
-        return ClusterlessSettings.all();
+        List<Setting<?>> settings = new ArrayList<>(ClusterlessSettings.all());
+        settings.addAll(ClusterlessIndexSettings.all());
+        return List.copyOf(settings);
     }
 
     /**
