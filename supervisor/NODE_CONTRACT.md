@@ -602,12 +602,14 @@ local disk; a store round-trip makes them lossable in a way they otherwise would
 ## Checked against the real plugin
 
 `../opensearch-data-plane` is the first implementation of this document inside a running OpenSearch node.
-Its publishing half — registration, heartbeat, inventory — is built and passing, against OpenSearch 3.9.
+Its publishing half — registration, heartbeat, inventory — is built and passing, against OpenSearch 3.9, and
+it now also reads an assignment, resolves it against the control plane's index documents and fabricates the
+cluster state it would apply. Applying is the next step; everything up to it is exercised.
 The two implementations now share a conformance suite (`fake-node/src/testFixtures`, `NodeContractTests`),
 which is how they stay one format: the plugin re-implements the codec on XContent because the server
 exposes Jackson's streaming API and not databind, so nothing but that suite connects them.
 
-**Five things it found. Four are silences in this document rather than errors.**
+**Six things it found. Five are silences in this document rather than errors.**
 
 1. **`SPLITTING` is a shard state this document does not enumerate.** OpenSearch 3.x has an in-place shard
    split, so `ShardRoutingState` has five values rather than the four assumed above. The plugin maps it to
@@ -651,6 +653,22 @@ exposes Jackson's streaming API and not databind, so nothing but that suite conn
    `http_address` for a node, and nothing in this layout can currently tell it one.** Not a defect in the
    data path; a gap in what the projections can serve, and cheaper to decide now than after something
    depends on the shape.
+
+6. **Nothing in the store can tell a returning node that it used to hold a shard**, and the two decisions that
+   produce that are both right. Allocation ids are deliberately absent from the inventory — 37% of the size
+   budget for a field the supervisor has no use for — and *One thing worth not copying* above rules out
+   recovering them from the store, because they live on local disk and a round trip makes them lossable.
+
+   Together those mean an assignment cannot distinguish **"create this copy"** from **"you already have this
+   copy, resume it"**, which is precisely the difference between an empty-store recovery and an existing-store
+   one — between rebuilding a shard and resuming it. The plugin answers by asking the disk
+   (`NodeEnvironment.availableShardPaths`, keyed by index uuid), which is what D2.5's "without special-casing
+   either" turns out to require: not an absence of special cases, but a lookup.
+
+   **No change proposed.** The contract is right not to carry this and the node is the only party that can
+   answer it. Recorded because it is a real obligation the document places on an implementer without saying so,
+   and because the failure is asymmetric in a way worth stating once: guessing "no data" discards a shard, while
+   guessing "there is data" fails a recovery visibly. An implementation in doubt should claim data.
 
 **One thing it confirms with a caveat.** `heartbeat_interval_millis` is the node's own declaration and the
 plugin honours it, but a node scheduling at a *fixed delay* — which is what it should do, since a fixed
