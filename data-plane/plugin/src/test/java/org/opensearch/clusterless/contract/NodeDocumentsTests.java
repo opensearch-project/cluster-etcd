@@ -4,8 +4,8 @@
  */
 package org.opensearch.clusterless.contract;
 
-import org.junit.jupiter.api.Test;
 
+import org.opensearch.test.OpenSearchTestCase;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -13,12 +13,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The bytes, examined directly.
@@ -28,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * difference between an omitted field and a zero, the budget — and those are exactly the properties that
  * fail silently. A digest that changed with map iteration order would still parse perfectly.
  */
-class NodeDocumentsTests {
+public class NodeDocumentsTests extends OpenSearchTestCase {
 
     private static final NodeId NODE = NodeId.of("pv1sDMfZRxSTMiW5VrbN9w");
     private static final TenantId ACME = TenantId.of("acme");
@@ -40,8 +34,7 @@ class NodeDocumentsTests {
 
     // ---------------------------------------------------------------- registration
 
-    @Test
-    void theRegistrationHasTheFieldNamesTheContractSpecifies() {
+    public void testTheRegistrationHasTheFieldNamesTheContractSpecifies() {
         Registration registration = new Registration(
             NODE,
             "OYidGJ1ITdC2mMrZEW0BNQ",
@@ -65,16 +58,14 @@ class NodeDocumentsTests {
         );
     }
 
-    @Test
-    void aNodeThatDeclaredNoPoolOmitsTheFieldRatherThanSendingNull() {
+    public void testANodeThatDeclaredNoPoolOmitsTheFieldRatherThanSendingNull() {
         // Absent means "this node declared no pool", which pools/nodes/<id> may still answer. A null would
         // be a third state that means the same thing and that the supervisor would have to handle twice.
         Registration registration = registration(null);
         assertFalse(json(NodeDocuments.write(registration)).contains("pool"));
     }
 
-    @Test
-    void attributesAreSortedSoTheDocumentDoesNotChangeWhenNothingDid() {
+    public void testAttributesAreSortedSoTheDocumentDoesNotChangeWhenNothingDid() {
         Map<String, String> oneOrder = new LinkedHashMap<>();
         oneOrder.put("zone", "z1");
         oneOrder.put("rack", "r7");
@@ -88,20 +79,18 @@ class NodeDocumentsTests {
         );
     }
 
-    @Test
-    void tooManyAttributesIsRejectedRatherThanTruncated() {
+    public void testTooManyAttributesIsRejectedRatherThanTruncated() {
         Map<String, String> tooMany = new LinkedHashMap<>();
         for (int i = 0; i <= Registration.MAX_ATTRIBUTES; i++) {
             tooMany.put("attribute-" + i, "value");
         }
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> registration(null, tooMany));
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> registration(null, tooMany));
         assertTrue(e.getMessage().contains("over the contract's limit"));
     }
 
     // ---------------------------------------------------------------- heartbeat
 
-    @Test
-    void theHeartbeatHasTheFieldNamesTheContractSpecifies() {
+    public void testTheHeartbeatHasTheFieldNamesTheContractSpecifies() {
         Heartbeat heartbeat = new Heartbeat(
             NODE,
             "OYidGJ1ITdC2mMrZEW0BNQ",
@@ -122,14 +111,12 @@ class NodeDocumentsTests {
         );
     }
 
-    @Test
-    void aNodeThatHasNeverWrittenAnInventoryOmitsTheDigest() {
+    public void testANodeThatHasNeverWrittenAnInventoryOmitsTheDigest() {
         Heartbeat heartbeat = new Heartbeat(NODE, "eph", 1L, Heartbeat.Applied.NONE, null, 0, Heartbeat.Capacity.UNKNOWN);
         assertFalse(json(NodeDocuments.write(heartbeat)).contains("shards_digest"));
     }
 
-    @Test
-    void failureDetailIsTruncatedRatherThanBlowingTheBudget() {
+    public void testFailureDetailIsTruncatedRatherThanBlowingTheBudget() {
         // The incident that produces failure detail is exactly the incident that produces a lot of it, and
         // this document has a hard 4 KiB budget.
         String enormous = "x".repeat(10_000);
@@ -144,8 +131,7 @@ class NodeDocumentsTests {
 
     // ---------------------------------------------------------------- inventory
 
-    @Test
-    void theInventoryNestsCopiesByTenantAndIndexUuid() {
+    public void testTheInventoryNestsCopiesByTenantAndIndexUuid() {
         ShardInventory inventory = new ShardInventory(
             NODE,
             "OYidGJ1ITdC2mMrZEW0BNQ",
@@ -166,11 +152,10 @@ class NodeDocumentsTests {
         );
     }
 
-    @Test
-    void anInitializingCopyOmitsItsSizeRatherThanReportingZero() {
+    public void testAnInitializingCopyOmitsItsSizeRatherThanReportingZero() {
         // Zero is a real size, and it would tell a disk-aware decider the copy costs nothing. Enforced at
         // construction rather than at serialisation, so the mistake cannot be made anywhere else either.
-        assertThrows(
+        expectThrows(
             IllegalArgumentException.class,
             () -> new ShardInventory.HeldCopy(
                 ACME,
@@ -190,13 +175,11 @@ class NodeDocumentsTests {
         );
     }
 
-    @Test
-    void anEmptyInventoryIsAnEmptyTenantsMapRatherThanAnAbsentOne() {
+    public void testAnEmptyInventoryIsAnEmptyTenantsMapRatherThanAnAbsentOne() {
         assertTrue(json(NodeDocuments.write(ShardInventory.empty(NODE, "eph", 1L))).contains("\"tenants\":{}"));
     }
 
-    @Test
-    void theSameCopiesAlwaysProduceTheSameBytes() {
+    public void testTheSameCopiesAlwaysProduceTheSameBytes() {
         // The heartbeat announces a digest of these bytes, so serialisation that varied with insertion
         // order would announce a change every pass and put the document that scales with shard count back
         // onto the hot path.
@@ -214,11 +197,10 @@ class NodeDocumentsTests {
         assertEquals(NodeDocuments.digest(one), NodeDocuments.digest(other));
     }
 
-    @Test
-    void twoCopiesOfOneShardOnOneNodeIsRejected() {
+    public void testTwoCopiesOfOneShardOnOneNodeIsRejected() {
         // Impossible in the routing table, and worth rejecting rather than emitting: the document nests
         // shards in a map, so the second would silently overwrite the first.
-        assertThrows(
+        expectThrows(
             IllegalArgumentException.class,
             () -> new ShardInventory(
                 NODE,
@@ -232,8 +214,7 @@ class NodeDocumentsTests {
         );
     }
 
-    @Test
-    void anInventoryOverTheBudgetIsRefusedRatherThanTruncated() {
+    public void testAnInventoryOverTheBudgetIsRefusedRatherThanTruncated() {
         // D3.6, and the reason is worth restating: a truncated inventory is worse than a missing one,
         // because the supervisor reads copies absent from it as gone and starts rebuilding shards that
         // exist. The publisher turns this into outcome: failed.
@@ -242,7 +223,7 @@ class NodeDocumentsTests {
             tooMany.add(ShardInventory.HeldCopy.started(ACME, INDEX_UUID, "my-index", 3041, shard, ShardRole.PRIMARY, 4823012L));
         }
 
-        DocumentTooLargeException e = assertThrows(
+        DocumentTooLargeException e = expectThrows(
             DocumentTooLargeException.class,
             () -> NodeDocuments.write(new ShardInventory(NODE, "eph", 1L, tooMany))
         );
@@ -250,8 +231,7 @@ class NodeDocumentsTests {
         assertTrue(e.actualBytes() > e.budgetBytes());
     }
 
-    @Test
-    void theMeasuredCostPerCopyIsStillWhatTheContractBudgetedFor() {
+    public void testTheMeasuredCostPerCopyIsStillWhatTheContractBudgetedFor() {
         // NODE_CONTRACT.md measured 93 bytes per copy and derived a ceiling of about 5,600 copies per node
         // from it, and says there is no headroom left for another per-copy field. This is that measurement,
         // run against the second implementation: a codec that quietly costs more would move the ceiling
@@ -263,17 +243,16 @@ class NodeDocumentsTests {
         }
         byte[] bytes = NodeDocuments.write(new ShardInventory(NODE, "eph", 1L, many));
 
-        assertTrue(bytes.length < NodeDocuments.INVENTORY_BUDGET_BYTES, bytes.length + " bytes for " + copies + " copies");
+        assertTrue(bytes.length + " bytes for " + copies + " copies", bytes.length < NodeDocuments.INVENTORY_BUDGET_BYTES);
         assertTrue(
-            bytes.length / copies <= 93,
-            "the contract budgeted 93 bytes per copy; this codec uses " + (bytes.length / copies)
+            "the contract budgeted 93 bytes per copy; this codec uses " + (bytes.length / copies),
+            bytes.length / copies <= 93
         );
     }
 
     // ---------------------------------------------------------------- the digest
 
-    @Test
-    void theDigestIsOverBytesAndIsPrefixedWithItsAlgorithm() {
+    public void testTheDigestIsOverBytesAndIsPrefixedWithItsAlgorithm() {
         // Over stored bytes rather than a canonical form, which is what lets two implementations with
         // different serialisers agree without agreeing on a serialisation.
         byte[] bytes = NodeDocuments.write(ShardInventory.empty(NODE, "eph", 1L));

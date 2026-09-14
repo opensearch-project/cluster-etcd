@@ -101,6 +101,58 @@ which `NODE_CONTRACT.md` predates. Mapped to `STARTED`, matching the server's ow
 the mapping as an exhaustive `switch` rather than a chain of `if`s: that is what turned a new enum constant
 into a compile error instead of a silent mislabelling.
 
+## Tests are JUnit 4, and this is not a preference
+
+The first real `./gradlew build` found a forbidden-APIs failure, and pulling on it found something worse:
+**the Gradle build was not running any of these tests.** They were written for JUnit 5, and:
+
+- Nothing in the OpenSearch build calls `useJUnitPlatform()`. The only occurrence in the whole repository is
+  in `buildSrc/build.gradle`, for buildSrc's own tests. A Gradle `Test` task defaults to JUnit 4, which
+  cannot see a Jupiter annotation — so discovery found zero tests.
+- The tests still *compiled*, which is why this was invisible: `jupiter-api` arrived transitively through the
+  shared node-contract fixtures. Compiling against an assertion library and having a runner are different
+  things.
+- `PluginBuildPlugin` adds `test:framework` to `testImplementation`, which brings `junit:junit:4.13.2`,
+  `randomizedtesting-runner` and `lucene-test-framework` — and configures `testingConventions` to expect a
+  unit test named `*Tests` to extend `LuceneTestCase`.
+
+Gradle 9 fails a `Test` task that discovers nothing, so this would have surfaced eventually as
+`No tests found` — after the precommit failures were cleared, and with no hint that the cause was a test
+framework rather than a filter. Everything is now `public class FooTests extends OpenSearchTestCase` with
+`public void testSomething()` methods.
+
+Five things learned converting it, all of which cost time:
+
+- **`org.junit.Test` is itself a forbidden API** here: *"Just name your test method testFooBar"*
+  (`opensearch-test-signatures.txt`). So the annotation is not the migration target — the JUnit 3 naming
+  convention is. That file is worth reading before writing tests: it also bans hardcoded `@Seed` and
+  `@Repeat`, `@Ignore` in favour of `AwaitsFix`, and `Math.random()`.
+- **JUnit 4 puts the assertion message first.** Mechanical conversion turns `assertTrue(cond, "why")` into a
+  compile error, which is the good case. The dangerous case is three strings:
+  `assertEquals(expected, actual, "why")` compiles perfectly as
+  `assertEquals(message, expected, actual)` — silently comparing the actual value against the message. One of
+  those got through and failed with a baffling diff. Grep for `assertEquals(.*(), ".*")` after any such
+  conversion.
+- **Assertions are on** (`-ea`), because `LuceneTestCase` refuses to run without them. That immediately
+  failed two hand-built `ClusterState` fixtures with *"Primary shard routing can't be null for
+  non-search-only indices"* — a `RoutingNodes` invariant. They were invalid states that had been quietly
+  passing. This is the single best thing the conversion bought, and it has a consequence for milestone 7:
+  a node holding only a search replica cannot build a valid cluster state without either naming the
+  primary's node or setting `index.blocks.search_only`, which is what `cluster-etcd` chose.
+- **`OpenSearchTestCase`'s static initialiser does a great deal**, and every piece of it needs a jar:
+  log4j-core, joda-time, JNA, reactor-core, zstd-jni. It also runs `JarHell.checkJarHell` over the entire
+  classpath and **refuses to start if two jars share a class** — which `libs/agent-sm/agent` and
+  `libs/agent-sm/bootstrap` do, since the agent bundles the bootstrap library. `tools/jbuild.sh` therefore
+  deduplicates by jar name and skips the agent bundle.
+- **`tests.system_call_filter=false`** is needed in this sandbox: `sandbox_init()` is denied, and the filter
+  logs a warning on every run otherwise.
+
+The shared conformance checks had to change shape for this. They were an abstract JUnit 5 class; an
+annotation one side's runner ignores produces no error, just silence. They are now a list of named checks
+(`NodeContractChecks`) that each side runs with its own runner — `fake-node` as a JUnit 5 `@TestFactory` with
+per-check reporting, this plugin as one JUnit 4 test calling `runAll`. A check added in the supervisor still
+runs here with nothing edited, which was the only property that mattered.
+
 ## The sandbox
 
 Same environment the supervisor's `WORKING_NOTES.md` describes, and its notes hold here. In short:

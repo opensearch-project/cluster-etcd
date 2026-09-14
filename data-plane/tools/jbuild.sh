@@ -98,6 +98,9 @@ echo "==> resolving OpenSearch from $OPENSEARCH"
 # classpath trimmed to what javac wanted compiled fine and then failed at runtime with
 # NoClassDefFoundError inside a class this plugin only mentions in a test. The plugin's real classpath is
 # the whole distribution; approximating it more closely is cheaper than discovering the next one.
+#
+# Searched recursively, not with libs/*/: some modules are nested a level deeper -- agent-policy, which
+# BootstrapForTesting needs, lives at libs/agent-sm/agent-policy.
 OPENSEARCH_JARS=()
 SERVER_JAR=$(find "$OPENSEARCH/server/build/distributions" -name '*.jar' ! -name '*-sources.jar' 2>/dev/null | head -1)
 if [[ -z "$SERVER_JAR" ]]; then
@@ -108,10 +111,28 @@ if [[ -z "$SERVER_JAR" ]]; then
 fi
 OPENSEARCH_JARS+=("$SERVER_JAR")
 echo "    $(basename "$SERVER_JAR")"
+# Deduplicated by file name, and this is not paranoia: libs/agent-sm/agent and libs/agent-sm/bootstrap both
+# produce opensearch-agent-bootstrap-<version>.jar carrying the same classes, because the agent bundles the
+# bootstrap library. OpenSearchTestCase's static initialiser runs JarHell.checkJarHell over the whole
+# classpath and refuses to start when two jars share a class -- so a duplicate here is not a warning, it is
+# every test in the suite failing to initialise. The library is what belongs on a classpath; the agent is
+# what belongs on -javaagent.
+# A newline-delimited string rather than an associative array: macOS ships bash 3.2, where `declare -A` does
+# not exist, and this script has to run on the machine it is written on.
+SEEN_JARS=""
 while IFS= read -r found; do
+    name=$(basename "$found")
+    case "$SEEN_JARS" in
+        *"|$name|"*) continue ;;
+    esac
+    if [[ "$found" == */libs/agent-sm/agent/* ]]; then
+        continue
+    fi
+    SEEN_JARS="$SEEN_JARS|$name|"
     OPENSEARCH_JARS+=("$found")
-done < <(find "$OPENSEARCH"/libs/*/build/distributions -name '*.jar' ! -name '*-sources.jar' 2>/dev/null | sort)
-echo "    and ${#OPENSEARCH_JARS[@]} jars in total, from server and libs/*"
+done < <(find "$OPENSEARCH/libs" -path '*/build/distributions/*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' \
+    2>/dev/null | sort)
+echo "    and ${#OPENSEARCH_JARS[@]} jars in total, from server and libs/**"
 
 echo "==> resolving dependencies"
 # Referenced from OpenSearch signatures this plugin touches, so javac needs them even though no code here
@@ -140,6 +161,36 @@ JACKSON3_CORE=$(jar tools.jackson.core jackson-core 3.2.2)
 JACKSON_DATABIND=$(jar com.fasterxml.jackson.core jackson-databind "$JACKSON_VERSION")
 JACKSON_CORE=$(jar com.fasterxml.jackson.core jackson-core "$JACKSON_VERSION")
 JACKSON_ANNOTATIONS=$(jar com.fasterxml.jackson.core jackson-annotations "$JACKSON_ANNOTATIONS_VERSION")
+# The JUnit 4 stack the OpenSearch plugin build runs, and that OpenSearchTestCase needs. The plugin's own
+# tests are JUnit 4 because the real build is: nothing in the OpenSearch build calls useJUnitPlatform(), and
+# testingConventions expects a unit test to extend LuceneTestCase.
+JUNIT4=$(jar junit junit 4.13.2)
+# OpenSearchTestCase captures log output, so it references log4j-core and not only the api the plugin uses.
+LOG4J_CORE=$(jar org.apache.logging.log4j log4j-core 2.25.4)
+# Reached from OpenSearchTestCase's inherited signatures once RandomizedRunner starts instantiating things.
+JODA_TIME=$(jar joda-time joda-time 2.12.7)
+# BootstrapForTesting calls Bootstrap.initializeNatives, which reaches JNA even on a platform where the
+# Windows entry points it mentions are never called.
+JNA=$(jar net.java.dev.jna jna 5.16.0)
+# OpenSearchTestCase.tearDown drains reactor's schedulers, so it needs reactor even for a test that never
+# touches one. Also reactive-streams, which reactor's own API mentions.
+REACTOR_CORE=$(jar io.projectreactor reactor-core 3.8.7)
+REACTIVE_STREAMS=$(jar org.reactivestreams reactive-streams 1.0.4)
+# ClusterSettings' static initialiser registers the compression codecs, which reach zstd-jni.
+ZSTD=$(jar com.github.luben zstd-jni 1.5.6-1)
+HAMCREST=$(jar org.hamcrest hamcrest 2.2)
+RANDOMIZED_RUNNER=$(jar com.carrotsearch.randomizedtesting randomizedtesting-runner 2.7.1)
+OPENSEARCH_TEST_FRAMEWORK=$(find "$OPENSEARCH/test/framework/build/distributions" -name 'framework-*.jar' \
+    ! -name '*-sources.jar' ! -name '*-javadoc.jar' 2>/dev/null | head -1)
+if [[ -z "$OPENSEARCH_TEST_FRAMEWORK" ]]; then
+    echo "  MISSING: $OPENSEARCH/test/framework/build/distributions/framework-*.jar" >&2
+    echo "  Build it once:  cd $OPENSEARCH && ./gradlew :test:framework:jar" >&2
+    exit 1
+fi
+
+# jupiter-api stays, as a library rather than a framework: the shared node-contract checks in the supervisor
+# repository assert with org.junit.jupiter.api.Assertions, which throws opentest4j errors that JUnit 4
+# reports perfectly well. No jupiter engine is on this classpath and none is wanted.
 JUPITER_API=$(jar org.junit.jupiter junit-jupiter-api "$JUNIT_JUPITER_VERSION")
 JUPITER_ENGINE=$(jar org.junit.jupiter junit-jupiter-engine "$JUNIT_JUPITER_VERSION")
 JUPITER_PARAMS=$(jar org.junit.jupiter junit-jupiter-params "$JUNIT_JUPITER_VERSION")
@@ -152,7 +203,9 @@ APIGUARDIAN=$(jar org.apiguardian apiguardian-api 1.1.2)
 OPENSEARCH_CP=$(join_cp "${OPENSEARCH_JARS[@]}" "$LOG4J_API" "${LUCENE_JARS%:}")
 OPENSEARCH_RUNTIME_CP=$(join_cp "$OPENSEARCH_CP" "$JACKSON3_CORE")
 JACKSON_CP=$(join_cp "$JACKSON_DATABIND" "$JACKSON_CORE" "$JACKSON_ANNOTATIONS")
-JUNIT_CP=$(join_cp "$JUPITER_API" "$JUPITER_ENGINE" "$JUPITER_PARAMS" \
+# What the supervisor's fixtures compile against, and what runs them here.
+JUNIT_CP=$(join_cp "$JUNIT4" "$HAMCREST" "$RANDOMIZED_RUNNER" "$OPENSEARCH_TEST_FRAMEWORK" "$LOG4J_CORE" "$JODA_TIME" "$JNA" "$REACTOR_CORE" "$REACTIVE_STREAMS" "$ZSTD" \
+    "$JUPITER_API" "$JUPITER_ENGINE" "$JUPITER_PARAMS" \
     "$PLATFORM_COMMONS" "$PLATFORM_ENGINE" "$PLATFORM_LAUNCHER" "$OPENTEST4J" "$APIGUARDIAN")
 
 # ---------------------------------------------------------------- compilation
@@ -250,8 +303,24 @@ echo "==> running tests"
 TEST_CP=$(join_cp "$OUT/tools" "$OUT/plugin/main" "$OUT/plugin/test" \
     "$OPENSEARCH_RUNTIME_CP" "$STORE_FIXTURES_CP" ${CONTRACT_CP:+"$CONTRACT_CP"} "$JUNIT_CP")
 
+# OpenSearchTestCase runs under RandomizedRunner, which wants to know where it may write and expects the
+# same properties Gradle's test task sets. tests.security.manager is off because OpenSearch 3.x no longer
+# installs one; the temp directory is where LuceneTestCase's createTempDir() puts things and then reaps them.
+RUNNER_FLAGS=(
+    # LuceneTestCase refuses to run with assertions off, and it is right to: half of what the OpenSearch
+    # codebase checks at runtime is an assert. Gradle's test task passes -ea for the same reason.
+    "-ea"
+    "-Dtests.security.manager=false"
+    # sandbox_init() is denied in here, so the filter logs a warning and carries on. Off explicitly, because a
+    # warning that appears on every run trains people to ignore warnings.
+    "-Dtests.system_call_filter=false"
+    "-Djava.io.tmpdir=$OUT/tmp"
+    "-Dtests.seed=DEADBEEF"
+)
+mkdir -p "$OUT/tmp"
+
 if [[ ${#TEST_PATTERNS[@]} -gt 0 ]]; then
-    "$JAVA" -cp "$TEST_CP" tools.JUnitRunner "$OUT/plugin/test" -- "${TEST_PATTERNS[@]}"
+    "$JAVA" "${RUNNER_FLAGS[@]}" -cp "$TEST_CP" tools.JUnit4Runner "$OUT/plugin/test" -- "${TEST_PATTERNS[@]}"
 else
-    "$JAVA" -cp "$TEST_CP" tools.JUnitRunner "$OUT/plugin/test"
+    "$JAVA" "${RUNNER_FLAGS[@]}" -cp "$TEST_CP" tools.JUnit4Runner "$OUT/plugin/test"
 fi

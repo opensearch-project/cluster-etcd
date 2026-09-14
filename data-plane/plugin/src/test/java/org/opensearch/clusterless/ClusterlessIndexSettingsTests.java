@@ -4,7 +4,6 @@
  */
 package org.opensearch.clusterless;
 
-import org.junit.jupiter.api.Test;
 import org.opensearch.Version;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.common.settings.IndexScopedSettings;
@@ -12,13 +11,11 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsException;
 import org.opensearch.common.settings.SettingsModule;
+import org.opensearch.test.OpenSearchTestCase;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * That the server will accept the index metadata this plugin intends to fabricate.
@@ -40,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * creation rather than as anything pointing here. So the check is made against a registry built the way
  * {@code Node} builds it, and the exact call {@code IndicesService} makes.
  */
-class ClusterlessIndexSettingsTests {
+public class ClusterlessIndexSettingsTests extends OpenSearchTestCase {
 
     /**
      * The registry the node would have, from this plugin's declared settings plus the built-ins.
@@ -66,21 +63,19 @@ class ClusterlessIndexSettingsTests {
             .build();
     }
 
-    @Test
-    void theServerAcceptsTheIndexSettingsThisPluginWrites() {
+    public void testTheServerAcceptsTheIndexSettingsThisPluginWrites() {
         // The exact call IndicesService.createIndexService makes on the apply path: validate dependencies,
         // ignore private settings, ignore archived ones.
         registryWith(new ClusterlessPlugin().getSettings()).validate(fabricatedIndexSettings(), true, true, true);
     }
 
-    @Test
-    void anUnregisteredIdentitySettingWouldFailEveryIndexOnTheNode() {
+    public void testAnUnregisteredIdentitySettingWouldFailEveryIndexOnTheNode() {
         // The failure the plugin nearly shipped, pinned so the reason survives. Without registration the
         // apply path does not shrug -- it throws, per index, with a message pointing at a missing plugin.
         IndexScopedSettings withoutThem = registryWith(List.of());
 
-        SettingsException e = assertThrows(SettingsException.class, () -> withoutThem.validate(fabricatedIndexSettings(), true, true, true));
-        assertTrue(e.getMessage().contains("unknown setting"), e.getMessage());
+        SettingsException e = expectThrows(SettingsException.class, () -> withoutThem.validate(fabricatedIndexSettings(), true, true, true));
+        assertTrue(e.getMessage(), e.getMessage().contains("unknown setting"));
 
         // Every one of them fails, not just the one that surfaced. Validation collects an exception per key
         // and rethrows the first with the rest suppressed, and keys iterate in sorted order -- so which one
@@ -92,14 +87,13 @@ class ClusterlessIndexSettingsTests {
         }
         for (Setting<?> identity : ClusterlessIndexSettings.all()) {
             assertTrue(
-                reported.stream().anyMatch(message -> message.contains(identity.getKey())),
-                identity.getKey() + " was not reported as unknown; reported: " + reported
+                identity.getKey() + " was not reported as unknown; reported: " + reported,
+                reported.stream().anyMatch(message -> message.contains(identity.getKey()))
             );
         }
     }
 
-    @Test
-    void everyIdentitySettingIsRegisteredByThePlugin() {
+    public void testEveryIdentitySettingIsRegisteredByThePlugin() {
         // getSettings() carries both scopes, and the index-scoped half is the half with no other way to be
         // noticed: a missing node setting stops the node booting, a missing index setting waits until
         // something creates an index.
@@ -107,20 +101,22 @@ class ClusterlessIndexSettingsTests {
         new ClusterlessPlugin().getSettings().forEach(setting -> declared.add(setting.getKey()));
 
         for (Setting<?> identity : ClusterlessIndexSettings.all()) {
-            assertTrue(declared.contains(identity.getKey()), identity.getKey() + " is not registered by the plugin");
-            assertTrue(identity.hasIndexScope(), identity.getKey() + " must be index-scoped to reach the index registry");
-            assertTrue(identity.getKey().startsWith(ClusterlessIndexSettings.PREFIX), identity.getKey() + " is outside the reserved prefix");
+            assertTrue(identity.getKey() + " is not registered by the plugin", declared.contains(identity.getKey()));
+            assertTrue(identity.getKey() + " must be index-scoped to reach the index registry", identity.hasIndexScope());
+            assertTrue(
+                identity.getKey() + " is outside the reserved prefix",
+                identity.getKey().startsWith(ClusterlessIndexSettings.PREFIX)
+            );
         }
     }
 
-    @Test
-    void theIdentitySettingsAreInternalSoNothingButThisPluginMaySetThem() {
+    public void testTheIdentitySettingsAreInternalSoNothingButThisPluginMaySetThem() {
         // What the original "do not register them" instinct was actually reaching for, and the right
         // mechanism for it. InternalIndex is ignored where this plugin needs it to be -- the apply path
         // passes validateInternalOrPrivateIndex: false -- and refused on the update-settings API.
         IndexScopedSettings registry = registryWith(new ClusterlessPlugin().getSettings());
 
-        SettingsException e = assertThrows(
+        SettingsException e = expectThrows(
             SettingsException.class,
             () -> registry.validate(
                 Settings.builder().put(ClusterlessIndexSettings.TENANT.getKey(), "somebody-elses-tenant").build(),
@@ -130,11 +126,10 @@ class ClusterlessIndexSettingsTests {
                 true
             )
         );
-        assertTrue(e.getMessage().contains("can not update internal setting"), e.getMessage());
+        assertTrue(e.getMessage(), e.getMessage().contains("can not update internal setting"));
     }
 
-    @Test
-    void theIdentitySettingsReachTheControlPlaneAsNotUserSettable() {
+    public void testTheIdentitySettingsReachTheControlPlaneAsNotUserSettable() {
         // The other half of protecting these keys, and it needs no code here at all -- which is why it is
         // worth a test, since nothing else in this repository would notice it breaking.
         //
@@ -153,27 +148,26 @@ class ClusterlessIndexSettingsTests {
         registry.getRegisteredSettings().forEach(setting -> registered.add(setting.getKey()));
 
         for (Setting<?> identity : ClusterlessIndexSettings.all()) {
-            assertTrue(registered.contains(identity.getKey()), identity.getKey() + " would not appear in the settings registry");
+            assertTrue(identity.getKey() + " would not appear in the settings registry", registered.contains(identity.getKey()));
 
             List<String> propertyNames = new ArrayList<>();
             identity.getProperties().forEach(property -> propertyNames.add(property.name()));
             assertTrue(
-                propertyNames.contains("InternalIndex"),
-                identity.getKey() + " must carry InternalIndex, the token the control plane matches; has " + propertyNames
+                identity.getKey() + " must carry InternalIndex, the token the control plane matches; has " + propertyNames,
+                propertyNames.contains("InternalIndex")
             );
 
             // Rendered as kind "exact", which is what makes the control plane match the whole key rather
             // than treating it as a family. A prefix or affix key would be a different classification and a
             // different rule.
             assertTrue(
-                identity.getKey().indexOf('*') < 0 && identity.getKey().endsWith(".") == false,
-                identity.getKey() + " must render as an exact key"
+                identity.getKey() + " must render as an exact key",
+                identity.getKey().indexOf('*') < 0 && identity.getKey().endsWith(".") == false
             );
         }
     }
 
-    @Test
-    void aRevisionSurvivesTheRoundTripThroughSettingsUnchanged() {
+    public void testARevisionSurvivesTheRoundTripThroughSettingsUnchanged() {
         // Settings are strings on the wire, and a revision is opaque. Reading one back as anything other
         // than what was written would silently change which configuration a copy claims to have applied --
         // and the supervisor compares them for equality, so a value that is off by any amount reads as
@@ -181,14 +175,13 @@ class ClusterlessIndexSettingsTests {
         long revision = 9_007_199_254_740_993L; // past 2^53, where a double would round
         Settings settings = Settings.builder().put(ClusterlessIndexSettings.CONFIG_REVISION.getKey(), revision).build();
 
-        assertEquals(revision, ClusterlessIndexSettings.CONFIG_REVISION.get(settings));
+        assertEquals(Long.valueOf(revision), ClusterlessIndexSettings.CONFIG_REVISION.get(settings));
     }
 
-    @Test
-    void anIndexWithNoRevisionYetReadsAsZeroRatherThanFailing() {
+    public void testAnIndexWithNoRevisionYetReadsAsZeroRatherThanFailing() {
         // Zero is the "nothing applied" value the heartbeat already uses, and a missing setting has to be
         // survivable: torn state is normal, and an index this plugin has not finished fabricating is a
         // pass to wait for rather than an error.
-        assertEquals(0L, ClusterlessIndexSettings.CONFIG_REVISION.get(Settings.EMPTY));
+        assertEquals(Long.valueOf(0L), ClusterlessIndexSettings.CONFIG_REVISION.get(Settings.EMPTY));
     }
 }

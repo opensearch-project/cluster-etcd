@@ -4,8 +4,6 @@
  */
 package org.opensearch.clusterless.publish;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.opensearch.clusterless.contract.AppliedOutcome;
 import org.opensearch.clusterless.contract.Heartbeat;
 import org.opensearch.clusterless.contract.Keys;
@@ -20,6 +18,7 @@ import org.opensearch.clusterless.contract.TenantId;
 import org.opensearch.controlplane.store.InMemoryKeyValueStore;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.supervisor.model.node.NodeJson;
+import org.opensearch.test.OpenSearchTestCase;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -31,9 +30,6 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The publisher's behaviour under conditions the shared conformance suite cannot reach.
@@ -48,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * suite gives: this repository writes these documents and does not read them, so a parser written here to
  * match the writer would only prove the two agree with each other.
  */
-class NodePublisherTests {
+public class NodePublisherTests extends OpenSearchTestCase {
 
     private static final NodeId NODE = NodeId.of("pv1sDMfZRxSTMiW5VrbN9w");
     private static final TenantId ACME = TenantId.of("acme");
@@ -61,8 +57,9 @@ class NodePublisherTests {
     private AtomicReference<Registration> registration;
     private NodePublisher publisher;
 
-    @BeforeEach
-    void setUp() {
+    @Override
+    public void setUp() throws Exception {
+        super.setUp();
         backing = new InMemoryKeyValueStore();
         store = new FailableStore(backing);
         now = new AtomicLong(1788969977000L);
@@ -91,8 +88,7 @@ class NodePublisherTests {
 
     // ---------------------------------------------------------------- registration
 
-    @Test
-    void aChangedAttributeRewritesTheRegistrationAndKeepsTheOriginalRegisteredAt() {
+    public void testAChangedAttributeRewritesTheRegistrationAndKeepsTheOriginalRegisteredAt() {
         // "Written on start and when an attribute changes." The timestamp is deliberately not refreshed: a
         // node that had been up for a day should not look as though it had just arrived because somebody
         // relabelled its rack.
@@ -112,8 +108,7 @@ class NodePublisherTests {
 
     // ---------------------------------------------------------------- the inventory that will not fit
 
-    @Test
-    void anOversizedInventoryWritesNothingAndReportsFailed() {
+    public void testAnOversizedInventoryWritesNothingAndReportsFailed() {
         // D3.6. The wrong answer that looks reasonable is to write as much as fits: the supervisor reads
         // copies absent from an inventory as gone, so a truncated document is an instruction to rebuild
         // thousands of shards that exist.
@@ -127,7 +122,7 @@ class NodePublisherTests {
         held.set(copies(20_000));
         publisher.publish();
 
-        assertEquals(revisionBefore, revisionOf(Keys.nodeShards(NODE)), "nothing may be written");
+        assertEquals("nothing may be written", revisionBefore, revisionOf(Keys.nodeShards(NODE)));
         assertEquals("failed", outcome());
         assertTrue(appliedDetail().contains("over the contract's budget"));
 
@@ -139,8 +134,7 @@ class NodePublisherTests {
         assertEquals(2, storedCopyCount());
     }
 
-    @Test
-    void aFailedInventoryDoesNotStopTheNodeHeartbeating() {
+    public void testAFailedInventoryDoesNotStopTheNodeHeartbeating() {
         // A node whose inventory is too large is a node with a problem. A node that stopped heartbeating
         // because of it would be declared lost and every shard it holds rebuilt elsewhere, turning a
         // reporting problem into an outage.
@@ -154,8 +148,7 @@ class NodePublisherTests {
 
     // ---------------------------------------------------------------- a node that cannot read itself
 
-    @Test
-    void anInventoryThatCannotBeComputedLeavesTheLastOneStanding() {
+    public void testAnInventoryThatCannotBeComputedLeavesTheLastOneStanding() {
         // The most destructive available reading of "I could not work out what I hold" is "I hold
         // nothing", and it is also the easiest one to write by accident: return an empty list on error.
         publisher.publish();
@@ -173,13 +166,12 @@ class NodePublisherTests {
         assertEquals(3, storedCopyCount());
         assertEquals("failed", outcome());
         assertTrue(appliedDetail().contains("cluster state unavailable"));
-        assertEquals(now.get(), heartbeatTimestamp(), "the heartbeat is written anyway");
+        assertEquals("the heartbeat is written anyway", now.get(), heartbeatTimestamp());
     }
 
     // ---------------------------------------------------------------- an unreachable store
 
-    @Test
-    void aStoreOutageIsSurvivedAndTheNextPassRecovers() {
+    public void testAStoreOutageIsSurvivedAndTheNextPassRecovers() {
         // D6.5: losing the store is losing the ability to change, not the ability to work. Nothing here
         // may throw, because a scheduled task that throws stops being rescheduled on some executors, and a
         // node that silently stopped heartbeating would have its shards rebuilt elsewhere.
@@ -201,8 +193,7 @@ class NodePublisherTests {
         assertEquals(NodeDocuments.digest(bytesAt(Keys.nodeShards(NODE))), heartbeatDigest());
     }
 
-    @Test
-    void anInventoryWriteThatFailedIsRetriedRatherThanRememberedAsWritten() {
+    public void testAnInventoryWriteThatFailedIsRetriedRatherThanRememberedAsWritten() {
         // The subtle half of the previous test. If the publisher recorded the inventory as written before
         // the write landed, it would see the copies as unchanged for ever afterwards and never retry --
         // while the heartbeat went on announcing a digest of bytes that are not in the store.
@@ -212,7 +203,7 @@ class NodePublisherTests {
         now.addAndGet(5000);
         publisher.publish();
 
-        assertEquals(0, storedCopyCount(), "the write must not have landed");
+        assertEquals("the write must not have landed", 0, storedCopyCount());
 
         store.recover();
         now.addAndGet(5000);
@@ -222,8 +213,7 @@ class NodePublisherTests {
         assertEquals(NodeDocuments.digest(bytesAt(Keys.nodeShards(NODE))), heartbeatDigest());
     }
 
-    @Test
-    void theHeartbeatNeverAnnouncesADigestOfBytesThatAreNotInTheStore() {
+    public void testTheHeartbeatNeverAnnouncesADigestOfBytesThatAreNotInTheStore() {
         // The invariant behind both of the above, asserted across a sequence that includes a failure. A
         // supervisor re-reads on a digest mismatch, so a digest describing a document that does not exist
         // sends it chasing one for ever.
@@ -238,14 +228,13 @@ class NodePublisherTests {
             now.addAndGet(5000);
             publisher.publish();
 
-            assertEquals(NodeDocuments.digest(bytesAt(Keys.nodeShards(NODE))), heartbeatDigest(), "after " + copies + " copies");
+            assertEquals("after " + copies + " copies", NodeDocuments.digest(bytesAt(Keys.nodeShards(NODE))), heartbeatDigest());
         }
     }
 
     // ---------------------------------------------------------------- what the applier reports
 
-    @Test
-    void anAppliedOutcomeIsEchoedOnTheNextHeartbeat() {
+    public void testAnAppliedOutcomeIsEchoedOnTheNextHeartbeat() {
         publisher.publish();
         assertEquals(Heartbeat.NO_ASSIGNMENT, appliedVersion());
 
@@ -257,20 +246,18 @@ class NodePublisherTests {
         assertEquals("applying", outcome());
     }
 
-    @Test
-    void anInventoryFailureOutranksTheApplierButKeepsItsVersion() {
+    public void testAnInventoryFailureOutranksTheApplierButKeepsItsVersion() {
         publisher.reportApplied(new Heartbeat.Applied(42, AppliedOutcome.APPLIED, null));
         held.set(copies(20_000));
         publisher.publish();
 
         assertEquals("failed", outcome());
-        assertEquals(42, appliedVersion(), "the ack still says which assignment was applied");
+        assertEquals("the ack still says which assignment was applied", 42, appliedVersion());
     }
 
     // ---------------------------------------------------------------- diagnostics
 
-    @Test
-    void theStatusSeparatesWhenTheInventoryChangedFromWhenItWasWritten() {
+    public void testTheStatusSeparatesWhenTheInventoryChangedFromWhenItWasWritten() {
         // D7.3, and the pair is the point: a large gap between them is the system working as designed, and
         // it is the fastest way to confirm from outside that a document is being left alone deliberately
         // rather than failing to be written.

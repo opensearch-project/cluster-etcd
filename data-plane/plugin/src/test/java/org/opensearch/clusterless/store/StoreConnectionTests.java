@@ -4,15 +4,10 @@
  */
 package org.opensearch.clusterless.store;
 
-import org.junit.jupiter.api.Test;
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.test.OpenSearchTestCase;
 
-import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Opening the store, and — more usefully — failing to.
@@ -21,45 +16,45 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * a backend is a separate jar an operator installs, so those two causes produce the same symptom and lead
  * to completely different actions. Every assertion here is about the text an operator will read at 3am.
  */
-class StoreConnectionTests {
+public class StoreConnectionTests extends OpenSearchTestCase {
 
-    @Test
-    void aStoreCanBeOpenedThroughTheSpiWithoutNamingABackend() throws IOException {
+    public void testAStoreCanBeOpenedThroughTheSpiWithoutNamingABackend() {
         // The filesystem backend ships with store-api, so this exercises real ServiceLoader discovery
         // rather than a stub -- and it does it without this repository mentioning any implementation.
-        Path directory = Files.createTempDirectory("clusterless-store-test");
+        //
+        // createTempDir() rather than Files.createTempDirectory: forbidden-APIs bans the JDK call, because
+        // it leaves the directory behind for the operating system to deal with. LuceneTestCase's version is
+        // registered with the test framework and removed when the suite finishes.
+        Path directory = createTempDir();
         try (KeyValueStore store = StoreConnection.open(directory.toUri().toString())) {
             store.put("nodes/heartbeat/n1", new byte[] { 1 });
             assertTrue(store.get("nodes/heartbeat/n1").isPresent());
         }
     }
 
-    @Test
-    void anUnknownSchemeSaysWhatIsInstalledAndHowToAddMore() {
-        IllegalArgumentException e = assertThrows(
+    public void testAnUnknownSchemeSaysWhatIsInstalledAndHowToAddMore() {
+        IllegalArgumentException e = expectThrows(
             IllegalArgumentException.class,
             () -> StoreConnection.open("nosuchbackend://somewhere:1234/root")
         );
 
-        assertTrue(e.getMessage().contains("nosuchbackend"), e.getMessage());
+        assertTrue(e.getMessage(), e.getMessage().contains("nosuchbackend"));
         // The list is what distinguishes a typo from a missing jar...
-        assertTrue(e.getMessage().contains("Installed store backends:"), e.getMessage());
+        assertTrue(e.getMessage(), e.getMessage().contains("Installed store backends:"));
         // ...and this is what stops a short list reading as "those backends do not exist".
-        assertTrue(e.getMessage().contains("found by ServiceLoader"), e.getMessage());
-        assertTrue(e.getMessage().contains("plugin's installation directory"), e.getMessage());
+        assertTrue(e.getMessage(), e.getMessage().contains("found by ServiceLoader"));
+        assertTrue(e.getMessage(), e.getMessage().contains("plugin's installation directory"));
     }
 
-    @Test
-    void aUriWithNoSchemeAtAllIsAlsoExplained() {
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> StoreConnection.open("/var/lib/clusterless"));
-        assertTrue(e.getMessage().contains("Installed store backends:"), e.getMessage());
+    public void testAUriWithNoSchemeAtAllIsAlsoExplained() {
+        IllegalArgumentException e = expectThrows(IllegalArgumentException.class, () -> StoreConnection.open("/var/lib/clusterless"));
+        assertTrue(e.getMessage(), e.getMessage().contains("Installed store backends:"));
     }
 
-    @Test
-    void whatIsInstalledCanBeAskedForWithoutOpeningAnything() {
+    public void testWhatIsInstalledCanBeAskedForWithoutOpeningAnything() {
         // The runtime half of the diagnostic D6.2 asks for; ./gradlew :plugin:schemes prints the same text
         // for a build, which is where somebody packaging a deployment will look.
         String described = StoreConnection.describeInstalled();
-        assertTrue(described.contains("Installed store backends:"), described);
+        assertTrue(described, described.contains("Installed store backends:"));
     }
 }

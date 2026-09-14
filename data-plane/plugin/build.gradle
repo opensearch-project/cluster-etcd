@@ -3,13 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+def pluginName = 'opensearch-data-plane'
+def pluginDescription = 'Makes a node act on desired state read from a shared key/value store, with no cluster manager anywhere'
+
 opensearchplugin {
-    name = 'opensearch-data-plane'
-    description = 'Makes a node act on desired state read from a shared key/value store, with no cluster manager anywhere'
+    name = pluginName
+    description = pluginDescription
     classname = 'org.opensearch.clusterless.ClusterlessPlugin'
     licenseFile rootProject.file('LICENSE.txt')
     noticeFile rootProject.file('NOTICE.txt')
 }
+
 
 dependencies {
     // The store SPI, and nothing else. D6.2: nothing in this repository may name a backend outside test
@@ -29,6 +33,9 @@ dependencies {
 // which has no dependencies at all by design.
 thirdPartyAudit.enabled = false
 loggerUsageCheck.enabled = false
+
+// No need to validate pom, as we do not upload to maven/sonatype
+validateNebulaPom.enabled = false
 
 // Which store schemes a build actually resolves. D6.2 asks for a --help-equivalent diagnostic so that a
 // missing backend jar is distinguishable from a typo in the URI; this is the build-time half, and

@@ -4,7 +4,6 @@
  */
 package org.opensearch.clusterless.publish;
 
-import org.junit.jupiter.api.Test;
 import org.opensearch.Version;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
@@ -27,15 +26,13 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.test.OpenSearchTestCase;
 
 import java.net.InetAddress;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Turning the node's own routing table into the contract's inventory.
@@ -50,14 +47,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * as a total function over the enum: a state OpenSearch adds is then a compilation failure rather than
  * something these fixtures silently never produce. {@code SPLITTING} was found exactly that way.
  */
-class ClusterStateInventorySourceTests {
+public class ClusterStateInventorySourceTests extends OpenSearchTestCase {
 
     private static final String LOCAL = "pv1sDMfZRxSTMiW5VrbN9w";
     private static final String OTHER = "72ZSKeAbRxSTMiW5VrbN9w";
     private static final String INDEX_UUID = "uzKxLWZu4nPSrTknEcDpoA";
 
-    @Test
-    void aNodeWithNoRoutingNodeHoldsNothingRatherThanFailing() {
+    public void testANodeWithNoRoutingNodeHoldsNothingRatherThanFailing() {
         // Before the first assignment is applied there is no routing node for this node at all. "I hold
         // nothing" is a fact worth publishing; it is not the same as "I could not tell", which would be an
         // exception and would leave the last inventory standing.
@@ -67,8 +63,7 @@ class ClusterStateInventorySourceTests {
         assertEquals(List.of(), source.heldCopies());
     }
 
-    @Test
-    void aStartedPrimaryIsReportedWithItsTenantUuidAndSize() {
+    public void testAStartedPrimaryIsReportedWithItsTenantUuidAndSize() {
         ClusterState state = stateWith(startedPrimary(0, LOCAL));
         ClusterStateInventorySource source = source(state, shardId -> 4_823_012L);
 
@@ -85,11 +80,10 @@ class ClusterStateInventorySourceTests {
         assertEquals(3041L, copy.configRevision());
         assertEquals(ShardRole.PRIMARY, copy.role());
         assertEquals(ShardState.STARTED, copy.state());
-        assertEquals(4_823_012L, copy.sizeBytes());
+        assertEquals(Long.valueOf(4_823_012L), copy.sizeBytes());
     }
 
-    @Test
-    void anInitializingCopyIsReportedWithNoSizeAtAll() {
+    public void testAnInitializingCopyIsReportedWithNoSizeAtAll() {
         // D3.5 and D3.8 together: the copy must appear -- a projection filtered to started copies would
         // deadlock a replica waiting for its primary -- and it must appear without a size, because zero is
         // a real size and would tell a disk-aware decider the copy costs nothing.
@@ -100,12 +94,11 @@ class ClusterStateInventorySourceTests {
 
         ShardInventory.HeldCopy copy = source.heldCopies().get(0);
         assertEquals(ShardState.INITIALIZING, copy.state());
-        assertEquals(ShardRole.PRIMARY, copy.role(), "a copy knows what it is going to be before it can serve");
+        assertEquals("a copy knows what it is going to be before it can serve", ShardRole.PRIMARY, copy.role());
         assertNull(copy.sizeBytes());
     }
 
-    @Test
-    void aSizeThatCannotBeMeasuredIsOmittedRatherThanGuessed() {
+    public void testASizeThatCannotBeMeasuredIsOmittedRatherThanGuessed() {
         // Absent means unknown, and the supervisor fills the gap from the largest copy of the same shard
         // elsewhere in the pool. A zero would be believed.
         ClusterState state = stateWith(startedPrimary(0, LOCAL));
@@ -114,27 +107,39 @@ class ClusterStateInventorySourceTests {
         assertNull(source.heldCopies().get(0).sizeBytes());
     }
 
-    @Test
-    void onlyThisNodesCopiesAreReported() {
+    public void testOnlyThisNodesCopiesAreReported() {
         // The document says what this node has. A node reporting a copy held elsewhere would have the
         // supervisor believe a shard has two copies where it has one.
-        ClusterState state = stateWith(startedPrimary(0, LOCAL), startedReplica(1, OTHER));
+        //
+        // Shard 1's copy is a primary rather than a replica, because a replica with no primary anywhere is
+        // not a state OpenSearch will build: RoutingNodes asserts "Primary shard routing can't be null for
+        // non-search-only indices" in its constructor. Assertions are on under Gradle and under
+        // tools/jbuild.sh, so an invalid fixture fails rather than quietly testing something impossible.
+        ClusterState state = stateWith(startedPrimary(0, LOCAL), startedPrimary(1, OTHER));
         ClusterStateInventorySource source = source(state, shardId -> 1L);
 
         assertEquals(1, source.heldCopies().size());
         assertEquals(0, source.heldCopies().get(0).shard());
     }
 
-    @Test
-    void aSearchReplicaIsNotReportedAsAPrimary() {
+    public void testASearchReplicaIsNotReportedAsAPrimary() {
         // primary() and isSearchOnly() are independent flags rather than one enum, so testing for the
         // primary first would report a search replica as one.
-        ClusterState state = stateWith(startedSearchReplica(0, LOCAL));
-        assertEquals(ShardRole.SEARCH_REPLICA, source(state, shardId -> 1L).heldCopies().get(0).role());
+        //
+        // The primary on the other node is not decoration. RoutingNodes refuses a shard with no primary
+        // unless the index is marked search-only, which is a real constraint on the fabricator and not just
+        // on this fixture: at milestone 7, a node holding nothing but a search replica has no primary to put
+        // in its own cluster state, so it will have to either name the primary's node or set
+        // index.blocks.search_only. cluster-etcd chose the latter and left a comment saying why; that choice
+        // is still open here, and this is where it will be forced.
+        ClusterState state = stateWith(startedSearchReplica(0, LOCAL), startedPrimary(0, OTHER));
+
+        List<ShardInventory.HeldCopy> copies = source(state, shardId -> 1L).heldCopies();
+        assertEquals(1, copies.size());
+        assertEquals(ShardRole.SEARCH_REPLICA, copies.get(0).role());
     }
 
-    @Test
-    void anIndexWithNoTenantIsLeftOutRatherThanAttributedToOne() {
+    public void testAnIndexWithNoTenantIsLeftOutRatherThanAttributedToOne() {
         // It should not happen -- this plugin writes those settings -- but an index with no tenant cannot
         // be named in the contract's vocabulary at all, and inventing a tenant would attribute a shard to
         // somebody.
