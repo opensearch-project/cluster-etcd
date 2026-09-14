@@ -114,6 +114,12 @@ public final class DesiredStateResolver {
         if (config.open() == false) {
             // The contract maps a closed index to "no copies at all" rather than to a state of its own, which
             // matches what the supervisor projects: a closed index is green with no shards.
+            //
+            // Declining every copy is right; what matters is what the fabricator does next. An index that
+            // disappears from the cluster state's metadata is read by the server as *deleted*, and a deleted
+            // index has its shard files removed -- so a node that simply dropped a closed index would destroy the
+            // data on close and have nothing to reopen. DataNodeState keeps the metadata of an index it holds no
+            // copy of for exactly this reason; see retainIndicesNoLongerWanted.
             defer(deferred, key + " [" + config.name() + "]: the index is closed, so it holds no copies");
             return;
         }

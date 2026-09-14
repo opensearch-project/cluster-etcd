@@ -126,18 +126,28 @@ public final class AssignmentPoller {
             DesiredState desired = resolver.resolve(assignment);
             lastResolved = desired;
 
-            // Fabricated against the live state for the report, and again inside the applier against whatever
-            // the server hands over. The two can differ -- a shard may have finished recovering in between --
-            // and the applier's copy is the one that counts.
-            ClusterState intended = nodeStates.apply(desired).buildClusterState(currentState.get());
-            report(intended, desired);
+            ClusterState live = currentState.get();
+            // Fabricated against the live state to decide whether anything needs doing, and fabricated again
+            // inside the applier against whatever the server hands over. The two can differ -- a shard may have
+            // finished recovering in between -- and the applier's copy is the one that counts.
+            ClusterState intended = nodeStates.apply(desired).buildClusterState(live);
 
-            if (applyEnabled) {
-                applier.apply(
-                    "clusterless assignment version " + desired.assignmentVersion(),
-                    previous -> nodeStates.apply(desired).buildClusterState(previous),
-                    this::applied
+            if (StateEquivalence.sameContent(live, intended)) {
+                // The fixed point. Applying here would publish a state identical to the running one except for
+                // its version, which costs every applier and listener in the server a pass and says nothing.
+                logger.debug(
+                    "clusterless: already holding what assignment version {} asks for; nothing to apply",
+                    desired.assignmentVersion()
                 );
+            } else {
+                report(intended, desired);
+                if (applyEnabled) {
+                    applier.apply(
+                        "clusterless assignment version " + desired.assignmentVersion(),
+                        previous -> nodeStates.apply(desired).buildClusterState(previous),
+                        this::applied
+                    );
+                }
             }
             publisher.reportApplied(ackFor(desired));
         } catch (Exception e) {
@@ -209,19 +219,27 @@ public final class AssignmentPoller {
     }
 
     /**
-     * Logs the intended state when it differs from the last one logged.
+     * Logs the intended state, at {@code INFO}, when there is something to say.
      *
-     * <p>At {@code INFO}, because in read-only mode this is the output the milestone exists to produce. Only on
-     * change, because it is several hundred bytes per index and the poll interval is seconds — a node with fifty
-     * indices would otherwise write a megabyte an hour saying nothing had happened.
+     * <p>Only reached when the intended state differs from what is applied, which is what makes the line worth
+     * reading: it appears when this node is about to change something. It used to be guarded by comparing the
+     * rendered report with the last one, which did not work — the report names the cluster state version, so it
+     * differed every pass and logged several hundred bytes per index per second. Comparing states rather than
+     * their descriptions is both correct and the thing that decides whether to apply, so there is now one
+     * decision instead of two that could disagree.
+     *
+     * <p>The last report is still remembered, for the one case the state comparison cannot see: in read-only
+     * mode nothing is ever applied, so every pass differs from the live state for ever. Without this the
+     * read-only node would be the noisy one.
      */
     private void report(ClusterState intended, DesiredState desired) {
         String report = ClusterStateReport.describe(intended, desired);
-        if (report.equals(lastReport)) {
+        String withoutVersion = report.substring(report.indexOf(','));
+        if (withoutVersion.equals(lastReport)) {
             logger.debug("clusterless: intended state unchanged at assignment version {}", desired.assignmentVersion());
             return;
         }
-        lastReport = report;
+        lastReport = withoutVersion;
         if (applyEnabled) {
             logger.info("clusterless: applying\n{}", report);
         } else {

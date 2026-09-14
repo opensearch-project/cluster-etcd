@@ -105,16 +105,69 @@ public final class DataNodeState implements NodeState {
         Metadata.Builder metadata = Metadata.builder();
         RoutingTable.Builder routing = RoutingTable.builder();
 
+        Set<Index> stillWanted = new HashSet<>();
         for (DesiredState.DesiredIndex index : desired.indices().values()) {
-            buildIndex(previous, index, metadata, routing);
+            stillWanted.add(buildIndex(previous, index, metadata, routing));
         }
+        retainIndicesNoLongerWanted(previous, stillWanted, metadata, routing);
 
         state.metadata(metadata);
         state.routingTable(routing.build());
         return state.build();
     }
 
-    private void buildIndex(
+    /**
+     * Keeps the metadata of an index this node no longer holds a copy of, with no routing entry for it.
+     *
+     * <p><b>This is what stops "stop serving this" from meaning "destroy this", and the difference is the whole
+     * of D5.4.</b> The server decides what to do with an index's files from why it was removed, and the two
+     * reasons are chosen for it by whether the metadata is still there:
+     *
+     * <ul>
+     *   <li>metadata gone → {@code ClusterChangedEvent.indicesDeleted()} reports a deletion, and
+     *       {@code IndicesClusterStateService} removes the index with {@code DELETED}, whose javadoc says the
+     *       shard files, state and translog "are removed";
+     *   <li>metadata present, no shards here → removed with {@code NO_LONGER_ASSIGNED}, whose javadoc says they
+     *       "are kept around in the case of a disaster recovery".
+     * </ul>
+     *
+     * <p>So an assignment that stops naming a copy must leave the metadata in place. The supervisor's statement is
+     * only ever "stop serving this" — it moves a shard by adding a copy elsewhere and then dropping this one, and
+     * a node that deleted its bytes on hearing the second half would throw away the cheapest recovery path there
+     * is, at the exact moment the new copy might still fail.
+     *
+     * <p>Carried forward from the previous state rather than remembered separately, which keeps this a pure
+     * function of (previous, desired) and means it survives nothing that the previous state does not. A restart
+     * therefore forgets: the index is absent from the first state a new process builds, and absence at that point
+     * is not a transition, so nothing is deleted. Reaping the metadata deliberately — once the index really is
+     * gone from the store and the copy has been reported absent for long enough — is the supervisor's
+     * {@code ORPHANED_COPY} discipline turned inward, and is not implemented here yet.
+     */
+    private void retainIndicesNoLongerWanted(
+        ClusterState previous,
+        Set<Index> stillWanted,
+        Metadata.Builder metadata,
+        RoutingTable.Builder routing
+    ) {
+        for (IndexMetadata previousIndex : previous.metadata()) {
+            Index index = previousIndex.getIndex();
+            if (stillWanted.contains(index)) {
+                continue;
+            }
+            logger.info(
+                "clusterless: no longer assigned any copy of [{}]; keeping its metadata so the server releases it "
+                    + "without deleting what is on disk",
+                index.getName()
+            );
+            metadata.put(previousIndex, false);
+            // An index routing table with no shards, which is what says "this node holds none of it". Removing
+            // the index from the routing table altogether would say the same thing, and this way the index is
+            // visibly present-but-empty rather than half absent.
+            routing.add(IndexRoutingTable.builder(index));
+        }
+    }
+
+    private Index buildIndex(
         ClusterState previous,
         DesiredState.DesiredIndex desiredIndex,
         Metadata.Builder metadata,
@@ -180,6 +233,7 @@ public final class DataNodeState implements NodeState {
 
         metadata.put(built, false);
         routing.add(indexRouting);
+        return index;
     }
 
     /**

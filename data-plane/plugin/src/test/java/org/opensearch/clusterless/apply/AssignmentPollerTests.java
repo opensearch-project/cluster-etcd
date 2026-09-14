@@ -388,6 +388,56 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
         assertTrue(e.getMessage(), e.getMessage().contains("no applier"));
     }
 
+    public void testAnUnchangedAssignmentIsAppliedOnceAndNotAgain() {
+        // The bug this replaced was found by running a node: the fabricator bumps the version by construction,
+        // so applying unconditionally published a fresh cluster state every poll -- version 1917 and climbing --
+        // and ran every applier and listener in the server each time. Level-triggered convergence needs a fixed
+        // point, and this is the assertion that there is one.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(true);
+
+        poller.poll();
+        assertEquals(1, recordingApplier.applications);
+        long versionAfterFirst = recordingApplier.state.version();
+
+        for (int pass = 0; pass < 10; pass++) {
+            poller.poll();
+        }
+
+        assertEquals("the same desired state must be applied once", 1, recordingApplier.applications);
+        assertEquals("and the cluster state version must stop climbing", versionAfterFirst, recordingApplier.state.version());
+    }
+
+    public void testAShardFinishingRecoveryDoesNotProvokeAnotherApplication() {
+        // The state the server hands back after recovery differs from the one that was applied, and the
+        // fabricator carries that difference forward rather than undoing it -- so this must not look like a
+        // change that needs applying, or the node would republish once per recovery for ever.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(true);
+        poller.poll();
+        recordingApplier.finishRecovery();
+
+        poller.poll();
+        poller.poll();
+
+        assertEquals(1, recordingApplier.applications);
+    }
+
+    public void testARealChangeIsStillApplied() {
+        // The other half: the fixed point must not be a dead end.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(true);
+        poller.poll();
+        poller.poll();
+        assertEquals(1, recordingApplier.applications);
+
+        writeAssignment(assignmentJson(43, "{\"0\": \"PRIMARY\", \"1\": \"PRIMARY\"}"));
+        poller.poll();
+
+        assertEquals(2, recordingApplier.applications);
+        assertEquals(2, poller.status().copies());
+    }
+
     public void testReadOnlyModeAppliesNothingAtAll() {
         writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
         AssignmentPoller poller = poller(false);

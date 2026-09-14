@@ -111,17 +111,50 @@ things to watch for first, both of which would fail loudly:
   resumes from local data depends on the server accepting that pair. A first run on an empty node takes the
   `EmptyStoreRecoverySource` path and will not exercise it; restarting the node is what does.
 
-## M5. Idempotence and the rest of the assignment
+## M5. Idempotence and the rest of the assignment — **the idempotence half is done**
 
 - Multiple shards, multiple indices, multiple tenants — including the deterministic `(tenant, index-uuid)` to
   index-name mapping that the flat `ClusterState` namespace forces (see `BORROWING_FROM_CLUSTER_ETCD.md`).
 - **Done when:** applying the same assignment repeatedly does not restart a serving shard (D2.2). Assert it by
   watching shard start counts across many polls, not by inspecting logs.
 
-## M6. Removal
+**Found by running a node, which no test had caught.** The shard was never restarted — D2.2 held — but the node
+published a *new cluster state every second*, version climbing past 1900, each one running every
+`ClusterStateApplier` and `ClusterStateListener` in the server for nothing. The cause is that the fabricator does
+`version(previous.version() + 1)`, which is right, so every state differs from the last and applying
+unconditionally can never reach a fixed point. `StateEquivalence` compares what this plugin actually fabricates —
+index metadata and routing tables, both of which have real `equals` — and the pass applies only on a difference.
+Worth remembering as a shape: "idempotent" is not the same as "reaches a fixed point", and only the second one
+is visible from outside.
+
+The multiple-shards, multiple-indices, multiple-tenants half needs no new code — the fabricator loops and the
+naming is deterministic per `(tenant, uuid)` — but it has not been exercised against a real node yet.
+
+## M6. Removal — **started: the data-loss half is settled**
 
 - A shard absent from the assignment is dropped (D2.3), and local data survives long enough to be reported
   (D5.4).
+
+**The mechanism D5.4 needs turns out to be a choice the server makes for you, and getting it wrong deletes
+data.** `IndicesClusterStateService` picks how to release an index from *why* it went away, and
+`ClusterChangedEvent.indicesDeleted()` decides that purely by whether the metadata is still in the state:
+
+| reason | triggered by | what happens to the files |
+|---|---|---|
+| `DELETED` | index in the previous metadata, absent from the new one | **removed** |
+| `NO_LONGER_ASSIGNED` | metadata still present, no shards on this node | kept "in the case of a disaster recovery" |
+| `CLOSED` | metadata says `close` | kept |
+
+So dropping a copy must keep the index's metadata and remove only its routing entry, which is what
+`DataNodeState.retainIndicesNoLongerWanted` does — carried forward from the previous state, so it stays a pure
+function and a restart forgets it harmlessly.
+
+This also caught a bug already in the tree: the resolver dropped a **closed** index from the desired state
+entirely, which reads as a deletion. Closing an index would have deleted its data and left nothing to reopen.
+
+Still to do here: the second half of a move against a real node, and reaping the retained metadata once an index
+really is gone from the store — the supervisor's `ORPHANED_COPY` discipline turned inward, deliberately not
+guessed at yet.
 - **Done when:** the supervisor's rebalancer completes a move. Its `SurplusReaper` drops the source copy by
   removing it from that node's assignment; this milestone is what makes the second half of a move actually
   happen. `../opensearch-supervisor/DESIGN.md` §14.5 explains why the two halves are deliberately unaware of

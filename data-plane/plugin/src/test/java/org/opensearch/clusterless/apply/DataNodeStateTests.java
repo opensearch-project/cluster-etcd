@@ -253,6 +253,58 @@ public class DataNodeStateTests extends OpenSearchTestCase {
         assertTrue(first > 0);
     }
 
+    // ---------------------------------------------------------------- dropping a copy
+
+    public void testAnIndexNoLongerAssignedKeepsItsMetadataAndLosesItsRouting() {
+        // The difference between "stop serving this" and "destroy this", and the server picks between them by
+        // whether the metadata is still there: absent means DELETED, which removes the shard files, while present
+        // with no shards means NO_LONGER_ASSIGNED, which keeps them. D5.4 wants the second.
+        ClusterState serving = withShardStarted(build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY))));
+        Index index = onlyIndex(serving).getIndex();
+
+        ClusterState afterDrop = build(serving, new DesiredState(43, Map.of(), List.of(), List.of()));
+
+        assertNotNull("the metadata must survive, or the data is deleted", afterDrop.metadata().index(index));
+        assertEquals(1, afterDrop.metadata().indices().size());
+        assertTrue(
+            "this node must hold no copy of it any more",
+            afterDrop.routingTable().index(index) == null || afterDrop.routingTable().index(index).shards().isEmpty()
+        );
+    }
+
+    public void testDroppingOneCopyOfAnIndexLeavesTheOther() {
+        ClusterState serving = withShardStarted(
+            build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.PRIMARY)))
+        );
+
+        ClusterState afterDrop = build(serving, desired(Map.of(0, ShardRole.PRIMARY)));
+
+        Index index = onlyIndex(afterDrop).getIndex();
+        assertEquals(1, afterDrop.routingTable().index(index).shards().size());
+        assertNotNull(afterDrop.routingTable().index(index).shard(0));
+        assertNull(afterDrop.routingTable().index(index).shard(1));
+        assertTrue("the copy that stayed must not have been restarted", onlyCopy(afterDrop, 0).started());
+    }
+
+    public void testAClosedIndexKeepsItsMetadataToo() {
+        // The bug this test exists for: a closed index used to be dropped from the desired state entirely, which
+        // the server reads as a deletion. Closing an index would have deleted its data, leaving nothing to reopen.
+        ClusterState serving = withShardStarted(build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY))));
+        Index index = onlyIndex(serving).getIndex();
+
+        // What the resolver produces for a closed index: no copies at all.
+        ClusterState afterClose = build(serving, new DesiredState(43, Map.of(), List.of(), List.of()));
+
+        assertNotNull(afterClose.metadata().index(index));
+    }
+
+    public void testAnIndexThisNodeNeverHeldIsNotInvented() {
+        // The carry-forward is from the previous state, so it cannot resurrect anything: a fresh process starts
+        // with no metadata, and absence at that point is not a transition and deletes nothing.
+        ClusterState fresh = build(ClusterState.EMPTY_STATE, new DesiredState(43, Map.of(), List.of(), List.of()));
+        assertTrue(fresh.metadata().indices().isEmpty());
+    }
+
     // ---------------------------------------------------------------- empty desired state
 
     public void testAnEmptyDesiredStateIsAValidStateWithNothingInIt() {
