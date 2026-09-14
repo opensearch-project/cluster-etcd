@@ -163,6 +163,11 @@ echo "    lucene $LUCENE_VERSION"
 # the Jackson 2 the supervisor's codec uses -- so both are on the test classpath at once, under different
 # package names, and neither shadows the other. Runtime only: nothing here compiles against either.
 JACKSON3_CORE=$(jar tools.jackson.core jackson-core 3.2.2)
+# XContent auto-detects the format of a byte stream, so CompressedXContent -- and therefore MappingMetadata --
+# touches every dataformat the server registers, not only the JSON one this plugin writes.
+JACKSON3_CBOR=$(jar tools.jackson.dataformat jackson-dataformat-cbor 3.2.2)
+JACKSON3_SMILE=$(jar tools.jackson.dataformat jackson-dataformat-smile 3.2.2)
+JACKSON3_YAML=$(jar tools.jackson.dataformat jackson-dataformat-yaml 3.2.2)
 JACKSON_DATABIND=$(jar com.fasterxml.jackson.core jackson-databind "$JACKSON_VERSION")
 JACKSON_CORE=$(jar com.fasterxml.jackson.core jackson-core "$JACKSON_VERSION")
 JACKSON_ANNOTATIONS=$(jar com.fasterxml.jackson.core jackson-annotations "$JACKSON_ANNOTATIONS_VERSION")
@@ -206,7 +211,7 @@ OPENTEST4J=$(jar org.opentest4j opentest4j 1.3.0)
 APIGUARDIAN=$(jar org.apiguardian apiguardian-api 1.1.2)
 
 OPENSEARCH_CP=$(join_cp "${OPENSEARCH_JARS[@]}" "$LOG4J_API" "${LUCENE_JARS%:}")
-OPENSEARCH_RUNTIME_CP=$(join_cp "$OPENSEARCH_CP" "$JACKSON3_CORE")
+OPENSEARCH_RUNTIME_CP=$(join_cp "$OPENSEARCH_CP" "$JACKSON3_CORE" "$JACKSON3_CBOR" "$JACKSON3_SMILE" "$JACKSON3_YAML")
 JACKSON_CP=$(join_cp "$JACKSON_DATABIND" "$JACKSON_CORE" "$JACKSON_ANNOTATIONS")
 # What the supervisor's fixtures compile against, and what runs them here.
 JUNIT_CP=$(join_cp "$JUNIT4" "$HAMCREST" "$RANDOMIZED_RUNNER" "$OPENSEARCH_TEST_FRAMEWORK" "$LOG4J_CORE" "$JODA_TIME" "$JNA" "$REACTOR_CORE" "$REACTIVE_STREAMS" "$ZSTD" \

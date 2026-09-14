@@ -7,21 +7,41 @@ package org.opensearch.clusterless.contract;
 import java.util.Locale;
 
 /**
- * What a node may be given. {@code data} takes shard copies, {@code coordinator} takes routing and no
- * copies, and a node may have both.
- *
- * <p>No {@code UNKNOWN} sentinel here, unlike the supervisor's copy of this enum. The contract's
- * forward-compatibility rules — an unknown value becomes a sentinel that is never counted as healthy —
- * are obligations on a <em>reader</em>, and at this milestone the plugin only writes. The sentinel arrives
- * with the assignment reader, where a value this build has never heard of is a real possibility during a
- * rolling upgrade.
+ * What a node may be given, and what a tenant entry in an assignment asks of it. {@code data} takes shard
+ * copies, {@code coordinator} takes routing and no copies, and a node may have both.
  */
 public enum NodeRole {
 
     DATA,
-    COORDINATOR;
+    COORDINATOR,
 
+    /**
+     * A role this build does not recognise.
+     *
+     * <p>Read-only. It grants no capability, so a tenant assigned an unknown role is a tenant this node does
+     * nothing for — and says so — rather than one it guesses about. Failing the parse instead would lose the
+     * whole assignment, including the tenants it does understand.
+     */
+    UNKNOWN;
+
+    /**
+     * @throws IllegalStateException if this is the sentinel.
+     */
     public String wireName() {
+        if (this == UNKNOWN) {
+            throw new IllegalStateException("UNKNOWN is a read-only sentinel and must never be written");
+        }
         return name().toLowerCase(Locale.ROOT);
+    }
+
+    public static NodeRole from(String value) {
+        if (value == null) {
+            return UNKNOWN;
+        }
+        return switch (value.toLowerCase(Locale.ROOT)) {
+            case "data" -> DATA;
+            case "coordinator" -> COORDINATOR;
+            default -> UNKNOWN;
+        };
     }
 }

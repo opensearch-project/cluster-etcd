@@ -55,7 +55,7 @@ plugin can stand in for `fake-node` in `supervisor-integ`.
 
 This is also where a **shared conformance suite** starts paying for itself — see the note at the bottom.
 
-## M3. Read the assignment and say what you would do
+## M3. Read the assignment and say what you would do — **done**
 
 Mirror the supervisor's own read-only mode, and for the same reason: this service can move data, and the safest
 way to introduce it is to have it explain itself for a while first.
@@ -68,6 +68,19 @@ way to introduce it is to have it explain itself for a while first.
 
 Build the fabrication under test here, not in M4. `NodeState.buildClusterState` is a pure function of
 (previous state, desired state) and deserves to be tested as one, without a cluster.
+
+**It is.** `tools/supervisor-assigns-me.sh` is the acceptance check, and `DataNodeStateTests` is the fabrication
+tested as a pure function — including the assertions about the *second* call, which is where the expensive
+mistake lives: a fabricator that looks right from an empty previous state and then restarts every shard on the
+next pass. Three things this milestone settled that the plan did not name:
+
+- **A node must consult its own disk to choose a recovery source.** The contract deliberately publishes no
+  allocation ids, so nothing in the store can tell a restarting node that it used to hold a shard. Getting it
+  wrong in one direction discards data; in the other it fails a recovery visibly. See `LocalShardStore`.
+- **Identity travels in index settings, not in the fabricated index name.** That defers the naming question to
+  a matter of legibility, which is what `IndexNaming` is now about.
+- **A docrep replica is declined with a reason** rather than built as a segrep copy, and the supervisor's own
+  planner draws the line in the same place.
 
 ## M4. Apply: one primary, one shard, one tenant
 

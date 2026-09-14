@@ -10,10 +10,16 @@ than state it received from an elected node.
 
 ## Status
 
-**Milestones 1 and 2 are done: this plugin publishes, and does not yet apply.** A node with it installed
-opens the store, writes `nodes/registration/<id>`, `nodes/heartbeat/<id>` and `nodes/shards/<id>`, and keeps
-them current. It reads nothing and fabricates no `ClusterState`, so there is nothing it can get wrong that
-would move data — which is the whole reason for doing it in this order.
+**Milestones 1 to 3 are done: this plugin publishes, reads, and explains — but does not yet apply.** A node
+with it installed opens the store, writes `nodes/registration/<id>`, `nodes/heartbeat/<id>` and
+`nodes/shards/<id>`, reads `nodes/assignment/<id>` and the `tenant/<t>/indices/<name>` documents it names, and
+logs the `ClusterState` it would hand the server. `clusterless.apply` is what will make it act, and that step
+is milestone 4.
+
+Read-only is the default, mirroring the supervisor's, and for the same reason: this is the component that can
+move data, so it explains itself for a while first, somewhere somebody can check the explanation. In that mode
+the node reports `outcome: failed` on its heartbeat rather than claiming to have applied anything — the
+supervisor should see a node that is not doing what it was told, because it is not.
 
 The specification is still the point of this directory: `REQUIREMENTS.md` for what the thing must do,
 `MILESTONES.md` for the order to build it in, and `BORROWING_FROM_CLUSTER_ETCD.md` for a survey of the
@@ -24,7 +30,8 @@ implementation next door saying which parts to lift, which to adapt and which ar
 ```
 ./gradlew build                    # the build; needs ../OpenSearch installed to mavenLocal first
 tools/jbuild.sh                    # compile and test with javac, for environments where Gradle cannot run
-tools/supervisor-sees-me.sh        # milestone 2's acceptance check, against a real supervisor
+tools/supervisor-sees-me.sh        # milestone 2's acceptance check: the supervisor sees this node
+tools/supervisor-assigns-me.sh     # milestone 3's: it assigns a shard, and the node explains what it would do
 ./gradlew :plugin:schemes          # which store backends this build can see
 ```
 
@@ -39,9 +46,24 @@ prints what it made of them:
   unreadable_documents: 0
 ```
 
-Two live, placeable nodes, and an index the supervisor now wants to place on them. No OpenSearch node and
-no container, because the only part of the plugin involved is the part that talks to the store — which is
-exactly what this milestone is.
+Two live, placeable nodes, and an index the supervisor now wants to place on them.
+
+`tools/supervisor-assigns-me.sh` goes a step further: it runs the supervisor in `--write` mode so that it
+really assigns the shards, then runs one read-only pass and prints what would have been applied —
+
+```
+intended cluster state: version 1, from assignment version 1, 1 index(es), 2 copy(ies)
+  index acme.my-index.7d84389e80
+    identity: tenant=acme name=my-index uuid=uzKxLWZu4nPSrTknEcDpoA config_revision=1
+    metadata: version=1 settings_version=1 mapping_version=1 shards=2 replicas=0
+    settings: {index.number_of_replicas=0, index.number_of_shards=2, index.replication.type=SEGMENT, ...}
+    mappings: {"_doc":{"properties":{"host":{"type":"keyword"}}}}
+    shard 0: primary_term=1 in_sync=[A4N5GG...] [PRIMARY INITIALIZING on dp-node-0 recovery=EMPTY_STORE]
+```
+
+Neither needs an OpenSearch node or a container. Everything from the store to the fabricated `ClusterState` is
+ordinary Java; only the last step — handing that state to `ClusterApplierService` — needs a running node, and
+that is the next milestone.
 
 The plugin targets **OpenSearch 3.9**, the first version carrying the clusterless server path it steers —
 `LocalClusterService`, `LocalDiscovery`, `LocalShardStateAction`. Build the sibling checkout once
@@ -53,7 +75,7 @@ OpenSearch jars in `../OpenSearch` and runs the tests with JUnit 4 under `Random
 framework the real build uses — matching it is the whole point, since a launcher that discovered tests Gradle
 would not, or the reverse, reports a green build for a suite nobody runs.
 
-**`./gradlew build` passes**, and the two agree: 53 tests, class for class. It remains the authority, because
+**`./gradlew build` passes**, and the two agree test for test. It remains the authority, because
 it also runs plugin packaging, forbidden-APIs, `testingConventions` and the license checks, none of which
 `jbuild.sh` reproduces. Three of those four have already caught something the script could not.
 
@@ -66,9 +88,18 @@ it also runs plugin packaging, forbidden-APIs, `testingConventions` and the lice
 | `clusterless.node.roles` | `data`, `coordinator`, or both. Defaults to a derivation from OpenSearch's own `node.roles`. |
 | `clusterless.heartbeat.interval` | default 5s. Published in the registration, and the supervisor derives this node's staleness threshold from it, so it must be the interval the node really writes at. |
 | `clusterless.poll.interval` | default: the heartbeat interval. Separate because the costs are different — one is a write by every node in the fleet, the other a read of one small key. |
+| `clusterless.apply` | default **false**. Whether to act on the assignment, or only to log what acting on it would do. |
 
-`GET /_clusterless/status` reports what this node last read, applied and wrote.
+`GET /_clusterless/status` reports what this node last read, applied and wrote — including
+`assignment.deferred`, the copies it was told to hold and did not build, with a reason for each. That list is
+the answer to the most confusing question this architecture can produce: the supervisor reports a shard as
+unassigned, the node looks healthy, and nothing anywhere says the node considered the shard and declined it.
 
+**One boundary worth knowing.** A document-replication replica needs to know which node holds its primary,
+which is peer resolution, which is milestone 9 — so those copies are declined with a reason rather than built
+as something else. It costs less than it sounds: the supervisor already plans `SEARCH_REPLICA` for a
+segment-replication index and `REPLICA` only for a document-replication one, so the two sides agree on exactly
+where the unimplemented half begins.
 
 ## The three planes, and why this one is last
 

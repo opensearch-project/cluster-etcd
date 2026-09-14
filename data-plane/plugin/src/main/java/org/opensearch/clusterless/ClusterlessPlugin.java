@@ -13,11 +13,16 @@ import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.contract.Registration;
+import org.opensearch.clusterless.apply.AssignmentPoller;
+import org.opensearch.clusterless.apply.DataNodeState;
+import org.opensearch.clusterless.apply.DesiredStateResolver;
+import org.opensearch.clusterless.apply.MapperServiceMappingSource;
+import org.opensearch.clusterless.apply.NodeEnvironmentShardStore;
+import org.opensearch.clusterless.apply.StoreIndexConfigSource;
 import org.opensearch.clusterless.publish.ClusterStateInventorySource;
 import org.opensearch.clusterless.publish.IndicesServiceShardSizes;
 import org.opensearch.clusterless.publish.LocalCapacityProbe;
 import org.opensearch.clusterless.publish.NodePublisher;
-import org.opensearch.clusterless.publish.PublishScheduler;
 import org.opensearch.clusterless.rest.RestClusterlessStatusAction;
 import org.opensearch.clusterless.store.StoreConnection;
 import org.opensearch.common.inject.Inject;
@@ -93,7 +98,8 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
 
     private volatile KeyValueStore store;
     private volatile NodePublisher publisher;
-    private volatile PublishScheduler scheduler;
+    private volatile AssignmentPoller poller;
+    private volatile ScheduledPasses passes;
 
     @Override
     public Collection<Object> createComponents(
@@ -129,10 +135,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         ClusterStateInventorySource inventorySource = new ClusterStateInventorySource(
             clusterService::state,
             localNode.getId(),
-            new IndicesServiceShardSizes(() -> {
-                GuiceHolder holder = GUICE_HOLDER.get();
-                return holder == null ? null : holder.indicesService;
-            })
+            new IndicesServiceShardSizes(this::indicesService)
         );
 
         publisher = new NodePublisher(
@@ -145,8 +148,41 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
             System::currentTimeMillis
         );
 
-        scheduler = new PublishScheduler(publisher, threadPool, ClusterlessSettings.HEARTBEAT_INTERVAL.get(settings));
-        scheduler.start();
+        boolean apply = ClusterlessSettings.APPLY.get(settings);
+        poller = new AssignmentPoller(
+            store,
+            nodeId,
+            new DesiredStateResolver(new StoreIndexConfigSource(store)),
+            clusterService::state,
+            desired -> new DataNodeState(
+                localNode,
+                desired,
+                new MapperServiceMappingSource(this::indicesService),
+                new NodeEnvironmentShardStore(nodeEnvironment)
+            ),
+            publisher,
+            apply
+        );
+
+        if (apply == false) {
+            logger.info(
+                "clusterless: read-only. This node publishes what it holds and reads what it is assigned, and "
+                    + "logs the cluster state it would build without applying it. Set [{}] to true to act on it.",
+                ClusterlessSettings.APPLY.getKey()
+            );
+        }
+
+        // The publishing pass first, so that a node is visible to the supervisor before it starts reading
+        // instructions from it -- an assignment can only exist for a node the supervisor has already seen.
+        passes = new ScheduledPasses(threadPool);
+        passes.start("publishing", publisher::publish, ClusterlessSettings.HEARTBEAT_INTERVAL.get(settings));
+        passes.start("polling for an assignment", poller::poll, ClusterlessSettings.POLL_INTERVAL.get(settings));
+    }
+
+    /** {@code null} until Guice has built the holder, which every caller has to treat as ordinary. */
+    private IndicesService indicesService() {
+        GuiceHolder holder = GUICE_HOLDER.get();
+        return holder == null ? null : holder.indicesService;
     }
 
     /**
@@ -204,7 +240,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
 
     @Override
     public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
-        return List.of(PublishScheduler.executorBuilder(settings));
+        return List.of(ScheduledPasses.executorBuilder(settings));
     }
 
     @Override
@@ -217,7 +253,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         IndexNameExpressionResolver indexNameExpressionResolver,
         Supplier<DiscoveryNodes> nodesInCluster
     ) {
-        return List.of(new RestClusterlessStatusAction(() -> publisher));
+        return List.of(new RestClusterlessStatusAction(() -> publisher, () -> poller));
     }
 
     /**
@@ -271,8 +307,8 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
      */
     @Override
     public void close() {
-        if (scheduler != null) {
-            scheduler.close();
+        if (passes != null) {
+            passes.close();
         }
         if (store != null) {
             store.close();

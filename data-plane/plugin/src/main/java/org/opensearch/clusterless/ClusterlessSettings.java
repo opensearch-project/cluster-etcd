@@ -100,9 +100,8 @@ public final class ClusterlessSettings {
      * key. Defaulting to the same value keeps the common case simple, and a deployment that wants faster
      * convergence can shorten the poll without tripling the store's write load.
      *
-     * <p>Nothing reads it yet — the assignment reader is the next milestone — but it is declared here so
-     * that the two intervals are visibly independent from the start rather than accidentally coupled by
-     * one being introduced as "the interval".
+     * <p>They were declared separately before either was read, so that the two would be visibly independent
+     * from the start rather than accidentally coupled by one being introduced as "the interval".
      */
     public static final Setting<TimeValue> POLL_INTERVAL = Setting.timeSetting(
         "clusterless.poll.interval",
@@ -119,8 +118,23 @@ public final class ClusterlessSettings {
         };
     }
 
+    /**
+     * Whether to act on the assignment, or only to say what acting on it would do.
+     *
+     * <p>Default false, mirroring the supervisor's default and for the same reason it has one: this is the
+     * component that can move data, and the safest way to introduce one of those is to have it explain itself
+     * for a while where somebody can check the explanation. In read-only mode the node still publishes
+     * everything it holds and still reads everything it is told, so the whole seam is exercised — it simply
+     * declines the last step, and reports {@code failed} rather than pretending otherwise.
+     *
+     * <p>Not dynamic, unlike the supervisor's flag. Flipping this on a running node would apply a state it had
+     * never applied before at an arbitrary moment; a restart makes the transition an operator's decision about
+     * a node rather than a side effect of a settings update.
+     */
+    public static final Setting<Boolean> APPLY = Setting.boolSetting("clusterless.apply", false, Setting.Property.NodeScope);
+
     public static List<Setting<?>> all() {
-        return List.of(STORE, POOL, ROLES, HEARTBEAT_INTERVAL, POLL_INTERVAL);
+        return List.of(STORE, POOL, ROLES, HEARTBEAT_INTERVAL, POLL_INTERVAL, APPLY);
     }
 
     public static String storeUri(Settings settings) {

@@ -101,6 +101,33 @@ which `NODE_CONTRACT.md` predates. Mapped to `STARTED`, matching the server's ow
 the mapping as an exhaustive `switch` rather than a chain of `if`s: that is what turned a new enum constant
 into a compile error instead of a silent mislabelling.
 
+### The store cannot tell a returning node that it held a shard
+
+Found while choosing a recovery source, and it is a gap by construction rather than an oversight. Two decisions
+in `NODE_CONTRACT.md` are individually right and together leave a hole:
+
+- allocation ids are deliberately **not** in the shard inventory — measured at 37% of that document's size
+  budget for a field the supervisor has no use for; and
+- reading them back out of the store is explicitly listed as a thing not to copy from `cluster-etcd`, because
+  "allocation ids are on the node's local disk; a store round-trip makes them lossable in a way they otherwise
+  would not be".
+
+So nothing an assignment can say distinguishes *"create this copy"* from *"you already have this copy, resume
+it"*. Only the disk knows. That is what D2.5 is really asking for when it says a node must converge from an
+empty disk and from a returning one "without special-casing either" — the answer is not to special-case, it is
+to look, which is `LocalShardStore` and `NodeEnvironment.availableShardPaths`.
+
+The consequence is asymmetric, which is why it gets a seam and a conservative default rather than an inline
+check: answering "no data" when there is some recovers from empty and **discards the shard**, while answering
+"there is data" when there is none fails the recovery visibly and recoverably. When in doubt, claim data.
+
+### XContent reaches every dataformat, not just the one you write
+
+`CompressedXContent` — and therefore `MappingMetadata`, and therefore anything that fabricates index
+metadata — auto-detects the format of a byte stream, so it touches the CBOR, Smile and YAML dataformats even
+for a plugin that only ever writes JSON. The symptom is `NoClassDefFoundError: tools/jackson/dataformat/cbor/...`
+from a test that looks like it only builds a cluster state. `tools/jbuild.sh` carries all four.
+
 ## Tests are JUnit 4, and this is not a preference
 
 The first real `./gradlew build` found a forbidden-APIs failure, and pulling on it found something worse:

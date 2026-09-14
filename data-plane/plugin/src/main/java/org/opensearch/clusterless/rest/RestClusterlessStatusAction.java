@@ -4,6 +4,7 @@
  */
 package org.opensearch.clusterless.rest;
 
+import org.opensearch.clusterless.apply.AssignmentPoller;
 import org.opensearch.clusterless.publish.NodePublisher;
 import org.opensearch.core.rest.RestStatus;
 import org.opensearch.core.xcontent.XContentBuilder;
@@ -27,18 +28,27 @@ import java.util.function.Supplier;
  * no fan-out. A fan-out would need a transport action and a node list, and the node list is the thing this
  * architecture does not have.
  *
- * <p>The one field worth explaining to whoever reads the output is the pair
- * {@code inventory.generated_at} and {@code inventory.written_at}. They differ on purpose: the first is
- * when the copies last changed and the second is when the document was last put into the store. A large
- * gap between them is the system working — the inventory is deliberately not rewritten while nothing has
- * changed — and it is the fastest way to confirm that from outside.
+ * <p>Two parts of the output are worth explaining to whoever reads it.
+ *
+ * <p>{@code inventory.generated_at} and {@code inventory.written_at} differ on purpose: the first is when the
+ * copies last changed and the second is when the document was last put into the store. A large gap between them
+ * is the system working — the inventory is deliberately not rewritten while nothing has changed — and it is the
+ * fastest way to confirm that from outside.
+ *
+ * <p>{@code assignment.deferred} is the list of copies this node was told to hold and did not build, with a
+ * reason for each. It is the answer to the most confusing question this architecture can produce: the supervisor
+ * reports a shard as unassigned, the node looks healthy, and nothing anywhere says that the node considered the
+ * shard and declined it. Usually the reason is ordinary and temporary — an index document that has not landed —
+ * and it should be empty on a converged node.
  */
 public class RestClusterlessStatusAction extends BaseRestHandler {
 
     private final Supplier<NodePublisher> publisher;
+    private final Supplier<AssignmentPoller> poller;
 
-    public RestClusterlessStatusAction(Supplier<NodePublisher> publisher) {
+    public RestClusterlessStatusAction(Supplier<NodePublisher> publisher, Supplier<AssignmentPoller> poller) {
         this.publisher = publisher;
+        this.poller = poller;
     }
 
     @Override
@@ -53,20 +63,41 @@ public class RestClusterlessStatusAction extends BaseRestHandler {
 
     @Override
     protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) {
-        NodePublisher current = publisher.get();
+        NodePublisher currentPublisher = publisher.get();
+        AssignmentPoller currentPoller = poller.get();
         return channel -> {
             XContentBuilder builder = channel.newBuilder();
             builder.startObject();
-            if (current == null) {
+            if (currentPublisher == null) {
                 // Between the plugin being constructed and the node finishing its start. Saying so beats
                 // a 500, and beats an empty object that looks like a node holding nothing.
                 builder.field("publishing", "not started");
             } else {
-                write(builder, current.status());
+                write(builder, currentPublisher.status());
+            }
+            if (currentPoller != null) {
+                write(builder, currentPoller.status());
             }
             builder.endObject();
             channel.sendResponse(new BytesRestResponse(RestStatus.OK, builder));
         };
+    }
+
+    private static void write(XContentBuilder builder, AssignmentPoller.PollStatus status) throws java.io.IOException {
+        builder.startObject("assignment");
+        builder.field("apply_enabled", status.applyEnabled());
+        builder.field("assignments_read", status.assignmentsRead());
+        builder.field("version", status.assignmentVersion());
+        builder.field("indices", status.indices());
+        builder.field("copies", status.copies());
+        if (status.coordinatorTenants().isEmpty() == false) {
+            builder.field("coordinating_for", status.coordinatorTenants());
+        }
+        builder.field("deferred", status.deferred());
+        if (status.lastFailure() != null) {
+            builder.field("last_failure", status.lastFailure());
+        }
+        builder.endObject();
     }
 
     private static void write(XContentBuilder builder, NodePublisher.PublishStatus status) throws java.io.IOException {
