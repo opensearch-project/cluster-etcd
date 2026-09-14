@@ -3,7 +3,9 @@ package org.opensearch.supervisor.app;
 import org.opensearch.controlplane.store.KeyValueStores;
 import org.opensearch.supervisor.core.Balancer;
 import org.opensearch.supervisor.core.LivenessTracker;
+import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
+import org.opensearch.supervisor.model.pool.PoolKind;
 import org.opensearch.supervisor.model.plan.Planner;
 
 import java.time.Duration;
@@ -47,7 +49,8 @@ public record Options(
     Log.Level logLevel,
     long maxPasses,
     Duration shutdownBudget,
-    LivenessTracker.Config liveness
+    LivenessTracker.Config liveness,
+    DefinePool.Request definePool
 ) {
 
     /** Sentinel for {@code --max-passes}: run until told to stop. */
@@ -131,15 +134,64 @@ public record Options(
             Log.Level.parse(resolve(given, env, "log-level", "info")),
             integer(resolve(given, env, "max-passes", "-1"), "max-passes"),
             duration(resolve(given, env, "shutdown-budget", "10s"), "shutdown-budget"),
-            liveness(given, env)
+            liveness(given, env),
+            definePool(given, env)
         );
+    }
+
+    /**
+     * The one-shot pool definition, or {@code null} for an ordinary run.
+     *
+     * <p>Its companions are only read when {@code --define-pool} is given, so a stray {@code --pool-kind} in a
+     * deployment template is refused rather than silently ignored — the same reasoning as rejecting an unknown
+     * option outright.
+     */
+    private static DefinePool.Request definePool(Map<String, String> given, Map<String, String> env) {
+        String pool = resolve(given, env, "define-pool", null);
+        if (pool == null || pool.isBlank()) {
+            for (String companion : List.of("pool-kind", "pool-default", "pool-awareness", "pool-max-copies-per-node")) {
+                if (given.containsKey(companion)) {
+                    throw new UsageException("[--" + companion + "] only means anything with --define-pool\n\n" + usage(), false);
+                }
+            }
+            return null;
+        }
+
+        PoolId id;
+        try {
+            id = PoolId.of(pool);
+        } catch (IllegalArgumentException e) {
+            throw new UsageException("--define-pool: " + e.getMessage(), false);
+        }
+
+        String kind = resolve(given, env, "pool-kind", "shared");
+        PoolKind poolKind = PoolKind.from(kind);
+        if (poolKind == PoolKind.UNKNOWN) {
+            throw new UsageException("--pool-kind must be shared or dedicated, not [" + kind + "]", false);
+        }
+
+        String maxCopies = resolve(given, env, "pool-max-copies-per-node", "");
+        Integer maxShardCopiesPerNode = maxCopies.isBlank() ? null : integer(maxCopies, "pool-max-copies-per-node");
+
+        List<String> awareness = new ArrayList<>();
+        for (String attribute : resolve(given, env, "pool-awareness", "").split(",")) {
+            if (attribute.isBlank() == false) {
+                awareness.add(attribute.trim());
+            }
+        }
+
+        // Default to being the default pool. A pool that serves nothing is the state somebody running this
+        // command is trying to get out of, and requiring a second flag to escape it would be a trap.
+        boolean isDefault = flag(resolve(given, env, "pool-default", "true"), "pool-default");
+        return new DefinePool.Request(id, poolKind, isDefault, maxShardCopiesPerNode, awareness);
     }
 
     private static final Set<String> KNOWN = Set.of(
         "store", "id", "interval", "lease-ttl", "capacity-weight", "tenants", "write", "work-ceiling",
         "per-tenant-floor", "minimum-passes", "rebalance", "hysteresis", "release-after-passes",
         "default-pool-weight", "log-level", "max-passes", "shutdown-budget", "liveness-floor",
-        "stale-multiplier", "lost-multiplier"
+        "stale-multiplier", "lost-multiplier", "define-pool", "pool-kind", "pool-default", "pool-awareness",
+        "pool-max-copies-per-node"
     );
 
     /**
@@ -302,6 +354,19 @@ public record Options(
 
             Required:
               --store=<uri>                Where desired state lives.
+
+            Setup, before anything will happen at all:
+              --define-pool=<pool-id>      Write pools/definitions/<pool-id> and exit. Nothing else in any of the
+                                           three planes creates one, and until one exists there are no pools, so
+                                           no reconciliation runs: indices are accepted, nodes register, and
+                                           nothing is ever assigned. Refuses to overwrite an existing pool.
+              --pool-kind=<kind>           shared or dedicated. Default shared.
+              --pool-default=<true|false>  Whether unbound tenants are served by it. Default true, since a pool
+                                           that serves nothing is the state you are trying to leave.
+              --pool-awareness=<a,b,c>     Node attributes to spread a shard's copies across. Default none:
+                                           spreading across an attribute nobody chose would refuse placements
+                                           for a reason nobody asked for.
+              --pool-max-copies-per-node=<n>  Cap on copies one node may hold. Default unset.
 
             Safety:
               --write                      Actually write assignments. Default is read-only: observe, diff and

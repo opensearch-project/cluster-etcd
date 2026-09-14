@@ -218,4 +218,94 @@ class MainTests {
             ));
         }
     }
+
+    // ---------------------------------------------------------------- --define-pool
+
+    @Test
+    void definePoolWritesADefinitionAndExits() throws Exception {
+        // The gap this closes: until a pool exists there are no pools, so no reconciliation runs at all, and the
+        // whole system looks broken while behaving exactly as designed.
+        int code = Main.run(new String[] { "--store=" + storeUri(), "--define-pool=shared-a" });
+
+        assertEquals(0, code);
+        try (KeyValueStore store = KeyValueStores.open(storeUri())) {
+            PoolDefinition written = PoolDefinition.from(store.get(Keys.poolDefinition(PoolId.of("shared-a"))).orElseThrow().value());
+            assertEquals(PoolId.of("shared-a"), written.pool());
+            assertEquals(PoolKind.SHARED, written.kind());
+            // Default by default: a pool that serves nothing is the state the operator is trying to leave.
+            assertTrue(written.isDefault());
+            assertTrue(written.awarenessAttributes().isEmpty());
+        }
+        assertTrue(output().contains("defined pool"), output());
+    }
+
+    @Test
+    void definePoolDoesNotStartASupervisor() throws Exception {
+        // A one-shot action: no lease is taken and no pass runs, so it is safe to point at a store some other
+        // supervisor already owns.
+        Main.run(new String[] { "--store=" + storeUri(), "--define-pool=shared-a" });
+
+        try (KeyValueStore store = KeyValueStores.open(storeUri())) {
+            assertTrue(store.scanPrefix("supervisor/pools/").isEmpty(), "no lease may be taken");
+            assertTrue(store.scanPrefix("supervisor/status/").isEmpty(), "no pass may run");
+        }
+        assertFalse(output().contains("running"), output());
+    }
+
+    @Test
+    void definePoolRefusesToOverwriteAnExistingDefinition() throws Exception {
+        // A definition carries an operator's tuning, and the command line it would be overwritten from was
+        // probably copied out of a README.
+        Main.run(new String[] { "--store=" + storeUri(), "--define-pool=shared-a", "--pool-awareness=zone" });
+        int second = Main.run(new String[] { "--store=" + storeUri(), "--define-pool=shared-a" });
+
+        assertEquals(1, second);
+        try (KeyValueStore store = KeyValueStores.open(storeUri())) {
+            PoolDefinition kept = PoolDefinition.from(store.get(Keys.poolDefinition(PoolId.of("shared-a"))).orElseThrow().value());
+            assertEquals(List.of("zone"), kept.awarenessAttributes());
+        }
+        assertTrue(output().contains("already defined"), output());
+    }
+
+    @Test
+    void definePoolCarriesTheOptionsItWasGiven() throws Exception {
+        int code = Main.run(
+            new String[] {
+                "--store=" + storeUri(),
+                "--define-pool=dedicated-acme",
+                "--pool-kind=dedicated",
+                "--pool-default=false",
+                "--pool-awareness=zone,rack",
+                "--pool-max-copies-per-node=500" }
+        );
+
+        assertEquals(0, code);
+        try (KeyValueStore store = KeyValueStores.open(storeUri())) {
+            PoolDefinition written = PoolDefinition.from(
+                store.get(Keys.poolDefinition(PoolId.of("dedicated-acme"))).orElseThrow().value()
+            );
+            assertEquals(PoolKind.DEDICATED, written.kind());
+            assertFalse(written.isDefault());
+            assertEquals(List.of("zone", "rack"), written.awarenessAttributes());
+            assertEquals(Integer.valueOf(500), written.maxShardCopiesPerNode());
+        }
+    }
+
+    @Test
+    void aPoolOptionWithoutDefinePoolIsRefusedRatherThanIgnored() {
+        // The same reasoning as rejecting an unknown option: a stray --pool-kind in a deployment template is a
+        // mistake somebody wants to hear about, not one to silently drop.
+        int code = Main.run(new String[] { "--store=" + storeUri(), "--pool-kind=dedicated" });
+
+        assertEquals(2, code);
+        assertTrue(output().contains("only means anything with --define-pool"), output());
+    }
+
+    @Test
+    void anInvalidPoolIdIsRefusedWithTheRule() {
+        int code = Main.run(new String[] { "--store=" + storeUri(), "--define-pool=not/a/pool" });
+
+        assertEquals(2, code);
+        assertTrue(output().contains("--define-pool"), output());
+    }
 }

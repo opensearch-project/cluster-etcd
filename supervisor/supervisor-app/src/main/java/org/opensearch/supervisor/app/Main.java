@@ -36,6 +36,18 @@ public final class Main {
         }
 
         Log.threshold(options.logLevel());
+
+        if (options.definePool() != null) {
+            // A one-shot operator action, not a supervisor. Nothing is leased, no pass runs, and the process
+            // exits -- so this can safely be pointed at a store a running supervisor already owns.
+            try (KeyValueStore store = open(options)) {
+                return DefinePool.run(store, options.definePool());
+            } catch (Throwable thrown) {
+                log.error("could not define the pool", thrown, "store", options.storeUri());
+                return 1;
+            }
+        }
+
         log.info("starting", options.describe().toArray());
         if (options.readOnly()) {
             log.info("read-only: this process will observe, diff and project, but will not write any assignment."
