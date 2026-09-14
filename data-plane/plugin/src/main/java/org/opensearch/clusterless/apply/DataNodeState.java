@@ -154,11 +154,11 @@ public final class DataNodeState implements NodeState {
             if (stillWanted.contains(index)) {
                 continue;
             }
-            logger.info(
-                "clusterless: no longer assigned any copy of [{}]; keeping its metadata so the server releases it "
-                    + "without deleting what is on disk",
-                index.getName()
-            );
+            // Not logged here. This method runs on every pass -- twice on a pass that applies, since the state is
+            // fabricated once to compare and once inside the applier -- so an INFO line here is a line per poll
+            // interval for as long as the index is retained, which is exactly what it did. The fact belongs in
+            // the report, which is printed only when something changes.
+            logger.debug("clusterless: keeping the metadata of [{}], which this node no longer holds", index.getName());
             metadata.put(previousIndex, false);
             // An index routing table with no shards, which is what says "this node holds none of it". Removing
             // the index from the routing table altogether would say the same thing, and this way the index is

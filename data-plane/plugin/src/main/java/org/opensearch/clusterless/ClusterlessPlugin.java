@@ -24,6 +24,7 @@ import org.opensearch.clusterless.publish.ClusterStateInventorySource;
 import org.opensearch.clusterless.publish.IndicesServiceShardSizes;
 import org.opensearch.clusterless.publish.LocalCapacityProbe;
 import org.opensearch.clusterless.publish.NodePublisher;
+import org.opensearch.clusterless.rest.ClusterManagerActionFilter;
 import org.opensearch.clusterless.rest.RestClusterlessStatusAction;
 import org.opensearch.clusterless.store.StoreConnection;
 import org.opensearch.common.inject.Inject;
@@ -40,6 +41,7 @@ import org.opensearch.core.xcontent.NamedXContentRegistry;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.indices.IndicesService;
+import org.opensearch.action.support.ActionFilter;
 import org.opensearch.plugins.ActionPlugin;
 import org.opensearch.plugins.ClusterPlugin;
 import org.opensearch.plugins.Plugin;
@@ -243,6 +245,15 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
     @Override
     public List<ExecutorBuilder<?>> getExecutorBuilders(Settings settings) {
         return List.of(ScheduledPasses.executorBuilder(settings));
+    }
+
+    /**
+     * Where cluster-manager actions get intercepted, which D5.2 requires: answered locally or refused with a
+     * reason, never left waiting for a manager that does not exist.
+     */
+    @Override
+    public List<ActionFilter> getActionFilters() {
+        return List.of(new ClusterManagerActionFilter(clusterService::state, clusterService.getClusterName().value()));
     }
 
     @Override

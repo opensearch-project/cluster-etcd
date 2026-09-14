@@ -182,11 +182,22 @@ This is the milestone that makes the system *usable* rather than merely converge
 
 Expect D8.2 to be in the way. Read it before starting, and treat what you learn as a finding.
 
-## M10. Cluster-manager actions
+## M10. Cluster-manager actions — **the not-hanging half is done**
 
 - `cluster.health` and `cluster.state` answered from the projections; mutations refused with a reason naming
   the control plane.
 - **Done when:** the client libraries people actually use do not hang.
+
+**Brought forward, because it was blocking basic use.** Indexing a document waited thirty seconds and answered
+`cluster_manager_not_discovered_exception` with a null reason — the write needed a mapping change, which goes to
+the cluster manager. `ClusterManagerActionFilter` now marks read requests local and refuses everything else that
+needs a manager, immediately, with a message naming the control plane.
+
+What is still missing is the half this milestone is really about: health and state are answered from **local**
+state, which is one node's view where a client asking about a cluster expects the fleet's. The supervisor already
+projects the fleet's view into `tenant/<t>/status/cluster` and `tenant/<t>/status/indices/<uuid>`; serving those
+is the remaining work, and it needs a tenant to answer for — which is a question the current filter does not even
+ask.
 
 ## M11. Watch
 

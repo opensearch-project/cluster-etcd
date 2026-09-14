@@ -166,6 +166,49 @@ metadata — auto-detects the format of a byte stream, so it touches the CBOR, S
 for a plugin that only ever writes JSON. The symptom is `NoClassDefFoundError: tools/jackson/dataformat/cbor/...`
 from a test that looks like it only builds a cluster state. `tools/jbuild.sh` carries all four.
 
+### A cluster-manager action hangs for thirty seconds and then lies about why
+
+Indexing a document into an index whose mapping does not cover it produced this, after a thirty-second wait:
+
+```
+{"type":"cluster_manager_not_discovered_exception","reason":null,"status":503}
+```
+
+Every part of that is unhelpful. The status says "retry later" for something that can never succeed; the reason is
+null; and the actual cause — the write needed a mapping change — is nowhere in it. What happens is that the server
+sends `indices:admin/mapping/auto_put` to the cluster manager and waits `indices.mapping.dynamic_timeout`.
+
+`PutMappingRequest extends AcknowledgedRequest extends ClusterManagerNodeRequest`, which is the hook: an
+`ActionFilter` can see the request type and answer without a manager. `ClusterManagerActionFilter` does what
+`cluster-etcd` does — mark `ClusterManagerNodeReadRequest` local and let it through, refuse anything else that
+needs a manager — with two additions. Refusals name the control plane, because in this design a rejected mutation
+has somewhere specific to go. And `internal:` actions are skipped entirely: shard-started notifications travel
+through `LocalShardStateAction`, and a filter that refused server-to-server traffic would break the shard
+lifecycle this plugin exists to drive.
+
+**This does not make dynamic mapping work, and it should not.** Mappings are desired state; they come from the
+control plane. What changed is that the failure is immediate, a 400, and says which service to send the mapping to.
+
+### Do not log from inside the fabrication
+
+`buildClusterState` runs on **every** pass — twice on a pass that applies, since the state is built once to
+compare and once inside the applier — so an `INFO` line in it is a line per poll interval for as long as the
+condition holds. Closing an index produced one per second saying the metadata was being kept. The fact belonged in
+the report, which prints only when something changes.
+
+Worth generalising: the fabricator is a pure function called speculatively, and anything with a side effect in it
+happens more often than it looks like it does.
+
+### `./gradlew run` deletes the data directory on restart
+
+Corrected by testing: testclusters wipes it unless told otherwise, so a restarted node finds nothing and recovers
+from an empty store — which is correct behaviour and proves nothing about the existing-store path.
+`--preserve-data`, or `--data-dir=<path>` (always preserved), is how to test a returning node.
+
+The existing-store path is nonetheless **confirmed**: closing an index and reopening it recovered with
+`EXISTING_STORE`, which is `ExistingStoreRecoverySource` paired with a freshly generated allocation id — the one
+piece of the fabrication with no precedent in `cluster-etcd` and no test that could prove it.
+
 ## Tests are JUnit 4, and this is not a preference
 
 The first real `./gradlew build` found a forbidden-APIs failure, and pulling on it found something worse:

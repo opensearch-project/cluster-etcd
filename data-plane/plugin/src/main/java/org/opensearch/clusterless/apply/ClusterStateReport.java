@@ -50,6 +50,16 @@ public final class ClusterStateReport {
         }
 
         for (IndexMetadata index : state.metadata()) {
+            if (holdsNoCopyOf(state, index)) {
+                // Retained so that the server releases it with NO_LONGER_ASSIGNED rather than DELETED, which is
+                // the difference between keeping and deleting what is on disk. Described in one line rather than
+                // in full: there is nothing to say about settings and mappings of an index this node is not
+                // serving, and the interesting fact is that the bytes are still there.
+                report.append("\n  index ")
+                    .append(index.getIndex().getName())
+                    .append("\n    released: no copy assigned here any more; metadata kept so the data on disk survives");
+                continue;
+            }
             describeIndex(report, state, index);
         }
 
@@ -60,6 +70,11 @@ public final class ClusterStateReport {
             }
         }
         return report.toString();
+    }
+
+    private static boolean holdsNoCopyOf(ClusterState state, IndexMetadata index) {
+        IndexRoutingTable routing = state.routingTable().index(index.getIndex());
+        return routing == null || routing.shards().isEmpty();
     }
 
     private static void describeIndex(StringBuilder report, ClusterState state, IndexMetadata index) {
