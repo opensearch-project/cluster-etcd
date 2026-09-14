@@ -47,11 +47,15 @@ The plugin targets **OpenSearch 3.9**, the first version carrying the clusterles
 `LocalClusterService`, `LocalDiscovery`, `LocalShardStateAction`. Build the sibling checkout once
 (`cd ../OpenSearch && ./gradlew publishToMavenLocal`) before building here.
 
-`tools/jbuild.sh` exists because Gradle cannot run in the sandbox this was written in: it fails creating
-its file-lock service, since binding a socket is denied. It compiles every module against the OpenSearch
-jars in `../OpenSearch` and runs the tests through a hand-rolled JUnit launcher. **It is not the build** —
-it skips plugin packaging, forbidden-APIs and the license checks — so `./gradlew build` is currently
-unverified and should be run by someone who can.
+`tools/jbuild.sh` exists because Gradle cannot run in the sandbox much of this was written in: it fails
+creating its file-lock service, since binding a socket is denied. It compiles every module against the
+OpenSearch jars in `../OpenSearch` and runs the tests with JUnit 4 under `RandomizedRunner`, which is the
+framework the real build uses — matching it is the whole point, since a launcher that discovered tests Gradle
+would not, or the reverse, reports a green build for a suite nobody runs.
+
+**`./gradlew build` passes**, and the two agree: 53 tests, class for class. It remains the authority, because
+it also runs plugin packaging, forbidden-APIs, `testingConventions` and the license checks, none of which
+`jbuild.sh` reproduces. Three of those four have already caught something the script could not.
 
 ### Configuration
 

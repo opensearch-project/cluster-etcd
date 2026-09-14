@@ -9,8 +9,13 @@
 # reason; this one differs only in having to find OpenSearch.
 #
 # THIS IS NOT THE BUILD. ./gradlew build is, and it additionally runs the OpenSearch plugin packaging,
-# forbidden-APIs and the license checks, none of which are reproduced here. Anything this script has to
-# special-case is a difference between the two, and the difference is the bug.
+# forbidden-APIs, testingConventions and the license checks, none of which are reproduced here. Anything this
+# script has to special-case is a difference between the two, and the difference is the bug.
+#
+# The two currently agree: 53 tests, class for class. That is worth re-checking rather than assuming, because
+# the last time they disagreed the Gradle build was running *none* of them -- the tests were JUnit 5, nothing
+# in the OpenSearch build enables the JUnit platform, and a suite nobody runs looks exactly like a suite that
+# passes. See WORKING_NOTES.md.
 #
 # Usage:
 #   tools/jbuild.sh                 compile everything and run every test

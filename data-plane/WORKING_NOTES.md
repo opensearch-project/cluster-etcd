@@ -157,8 +157,19 @@ runs here with nothing edited, which was the only property that mattered.
 
 Same environment the supervisor's `WORKING_NOTES.md` describes, and its notes hold here. In short:
 
-- **Gradle cannot run** — it fails creating its file-lock service, because binding a socket is denied. Use
-  `tools/jbuild.sh`, and report honestly that `./gradlew build` is unverified.
+- **Gradle cannot run in here** — it fails creating its file-lock service, because binding a socket is
+  denied. Use `tools/jbuild.sh`, and say plainly which of the two produced a result. The Gradle build does
+  pass on a machine that can run it, and the two now agree test for test; what `jbuild.sh` still cannot tell
+  you is anything about plugin packaging, forbidden-APIs, `testingConventions` or the license checks, and
+  three of those four have already caught something real.
+
+  **Both of the build's own complaints so far needed a human, and neither was about the code.** The
+  forbidden-APIs failures — `System.out.println` in a `main`, `Files.createTempDirectory` in a test — are in
+  `opensearch-test-signatures.txt` and `jdk-signatures.txt`, which are worth reading up front rather than
+  discovering one task at a time. And `validateNebulaPom` wants publishing configuration that a plugin
+  nobody publishes to Maven does not have; `cluster-etcd` disables it too, in an `afterEvaluate`. Turning it
+  off is the right call until there is somewhere to publish to, and then it is a real `publishing` block
+  rather than a smaller edit.
 - **No listening sockets, no raw TCP, no Unix sockets, no Maven Central, no containers.** So **a real
   OpenSearch node cannot be started here**, which is the sharpest limitation for this repository
   specifically: everything about talking to the store is testable, and nothing about a running node is.
