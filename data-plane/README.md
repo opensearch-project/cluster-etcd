@@ -10,16 +10,34 @@ than state it received from an elected node.
 
 ## Status
 
-**Milestones 1 to 3 are done, and milestone 4 is written but not yet verified against a running node.** A node
-with the plugin installed opens the store, writes `nodes/registration/<id>`, `nodes/heartbeat/<id>` and
-`nodes/shards/<id>`, reads `nodes/assignment/<id>` and the `tenant/<t>/indices/<name>` documents it names,
-fabricates the `ClusterState` it would hand the server, and — with `clusterless.apply` — hands it over.
+**Milestones 1 to 4 are done, and the whole loop has run against a real node.** A node with the plugin installed
+opens the store, writes `nodes/registration/<id>`, `nodes/heartbeat/<id>` and `nodes/shards/<id>`, reads
+`nodes/assignment/<id>` and the `tenant/<t>/indices/<name>` documents it names, fabricates a `ClusterState` and —
+with `clusterless.apply` — hands it to the server.
 
-**What "not yet verified" means precisely.** Everything up to and including the fabrication is tested as a pure
-function, and the read-only path is exercised end to end against a real supervisor. The one step that needs a
-running OpenSearch node is `ClusterApplierService.updateClusterState` and what the server does afterwards, and
-no node can start in the sandbox most of this was written in — no sockets. `./gradlew run` is how that gets
-checked; until somebody has, treat applying as unproven.
+What that has been observed doing, with a control plane, a supervisor and a data node sharing one store: an index
+created through the control plane is planned by the supervisor, applied here, and recovers to `STARTED` with a
+real `size_bytes` in the inventory. It can be searched. It can be **written to**:
+
+```
+$ curl -XPOST .../default.my-index.c526cf4262/_doc/1 -d '{"title":"foo"}'
+{"result":"created","_shards":{"total":1,"successful":1,"failed":0},"_seq_no":0,"_primary_term":1}
+```
+
+Closing the index releases the shard without deleting its files, and reopening it recovers with
+`EXISTING_STORE` — which was the one part of the fabrication with no precedent and no test that could prove it.
+
+**Two things in that write response are worth reading twice.** `"total":1` where a cluster with one replica would
+say 2: the accounting comes from the fabricated state, and a data node's state contains only its own copies, so
+`_shards` reports what this node knows rather than what the fleet has. And `"_primary_term":1`, which is D8.2 made
+visible — every write this system makes is stamped term 1, because nothing in the contract carries a term to
+fabricate from, so the fencing a term normally provides is absent and the supervisor never failing over a primary
+is what stands in for it.
+
+**What is not proven.** The index reaches *yellow*, not green: it was created with one replica, document
+replication is the default, and a docrep replica needs peer resolution — milestone 9. Green needs either zero
+replicas, or a segment-replication index across two nodes (milestone 7). And the sandbox most of this was written
+in cannot start a node at all, so anything not on that list has been reasoned about rather than seen.
 
 Read-only is the default, mirroring the supervisor's, and for the same reason: this is the component that can
 move data, so it explains itself for a while first, somewhere somebody can check the explanation. In that mode

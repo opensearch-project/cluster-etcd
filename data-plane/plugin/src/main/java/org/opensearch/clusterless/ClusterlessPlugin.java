@@ -158,6 +158,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
             new DesiredStateResolver(new StoreIndexConfigSource(store)),
             clusterService::state,
             desired -> new DataNodeState(
+                clusterService.getClusterName(),
                 localNode,
                 desired,
                 new MapperServiceMappingSource(this::indicesService),

@@ -7,6 +7,7 @@ package org.opensearch.clusterless.apply;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.Version;
+import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.MappingMetadata;
@@ -83,12 +84,28 @@ public final class DataNodeState implements NodeState {
      */
     private static final long INITIAL_PRIMARY_TERM = 1L;
 
+    private final ClusterName clusterName;
     private final DiscoveryNode localNode;
     private final DesiredState desired;
     private final MappingSource mappings;
     private final LocalShardStore shardStore;
 
-    public DataNodeState(DiscoveryNode localNode, DesiredState desired, MappingSource mappings, LocalShardStore shardStore) {
+    /**
+     * @param clusterName this node's own, from its settings. Passed in rather than inherited from the previous
+     *     state, which was a bug: the first fabrication of a process picks up whatever name the state it was
+     *     handed happened to carry, and every state after that copies it. In practice that meant
+     *     {@code ClusterName.DEFAULT} — "opensearch" — so {@code GET /_cluster/state} reported a different cluster
+     *     from {@code GET /_cluster/health}, which reads its name from the settings. Two of this plugin's own
+     *     answers disagreeing about which cluster they describe is worse than either being wrong.
+     */
+    public DataNodeState(
+        ClusterName clusterName,
+        DiscoveryNode localNode,
+        DesiredState desired,
+        MappingSource mappings,
+        LocalShardStore shardStore
+    ) {
+        this.clusterName = Objects.requireNonNull(clusterName, "clusterName");
         this.localNode = Objects.requireNonNull(localNode, "localNode");
         this.desired = Objects.requireNonNull(desired, "desired");
         this.mappings = Objects.requireNonNull(mappings, "mappings");
@@ -97,7 +114,7 @@ public final class DataNodeState implements NodeState {
 
     @Override
     public ClusterState buildClusterState(ClusterState previous) {
-        ClusterState.Builder state = ClusterState.builder(previous.getClusterName());
+        ClusterState.Builder state = ClusterState.builder(clusterName);
         // Each application has to look like a newer publication than the last, or the applier ignores it.
         state.version(previous.version() + 1);
         state.nodes(DiscoveryNodes.builder().localNodeId(localNode.getId()).add(localNode).build());
@@ -240,7 +257,7 @@ public final class DataNodeState implements NodeState {
         boolean searchOnly = holdsOnlySearchReplicas(desiredIndex.shards());
         IndexMetadata.Builder builder = IndexMetadata.builder(indexName).settings(settingsFor(desiredIndex, searchOnly));
 
-        MappingMetadata mapping = mappings.mappingFor(index, config.mappings());
+        MappingMetadata mapping = mappingFor(index, config, previousMetadata);
         if (mapping != null) {
             builder.putMapping(mapping);
         }
@@ -291,6 +308,34 @@ public final class DataNodeState implements NodeState {
         metadata.put(built, false);
         routing.add(indexRouting);
         return index;
+    }
+
+    /**
+     * The mapping, canonicalised only when the index document it came from has actually changed.
+     *
+     * <p>Canonicalising means asking {@code IndicesService.createIndexMapperService}, and that turns out to be an
+     * expensive and <em>side-effecting</em> thing to do: it builds an {@code IndexSettings} and an
+     * {@code IndexModule}, calls {@code pluginsService.onIndexModule} on every installed plugin, and does it all
+     * inside a {@code synchronized} method that real index operations also queue behind. Doing it on every pass
+     * produced two log lines per second per index from unrelated components — which read exactly like a shard
+     * restarting in a loop, and sent two people looking for a bug in the applier.
+     *
+     * <p>So it is skipped when it cannot matter. The store revision of the index document is carried in the
+     * fabricated settings, so if the previously applied metadata was built from the same revision then the
+     * document has not changed, and neither can its mapping: the applied {@code MappingMetadata} is reused
+     * verbatim. Revisions are opaque and this compares them for equality only, which is the single operation the
+     * contract permits.
+     *
+     * <p>That leaves canonicalisation running once per revision, which is the frequency it was always for. Its
+     * purpose is that byte-identical intent produces byte-identical metadata — otherwise every pass looks like a
+     * mapping change and {@code mappingVersion} climbs for ever — and comparing revisions achieves the same
+     * property more cheaply for the case that is not a change at all.
+     */
+    private MappingMetadata mappingFor(Index index, IndexConfig config, IndexMetadata previousMetadata) {
+        if (previousMetadata != null && ClusterlessIndexSettings.CONFIG_REVISION.get(previousMetadata.getSettings()) == config.revision()) {
+            return previousMetadata.mapping();
+        }
+        return mappings.mappingFor(index, config.mappings());
     }
 
     /**

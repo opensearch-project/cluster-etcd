@@ -4,6 +4,7 @@
  */
 package org.opensearch.clusterless.apply;
 
+import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.clusterless.contract.IndexConfig;
 import org.opensearch.clusterless.contract.ShardRole;
@@ -24,6 +25,7 @@ import java.util.Map;
  */
 public class ClusterStateReportTests extends OpenSearchTestCase {
 
+    private static final ClusterName CLUSTER = new ClusterName("clusterless");
     private static final TenantId ACME = TenantId.of("acme");
     private static final String UUID = "uzKxLWZu4nPSrTknEcDpoA";
 
@@ -44,8 +46,7 @@ public class ClusterStateReportTests extends OpenSearchTestCase {
             List.of(TenantId.of("globex")),
             deferred
         );
-        ClusterState intended = new DataNodeState(
-            TestFixtures.localNode("pv1sDMfZRxSTMiW5VrbN9w"),
+        ClusterState intended = new DataNodeState(CLUSTER, TestFixtures.localNode("pv1sDMfZRxSTMiW5VrbN9w"),
             desired,
             MappingSource.WRAPPED,
             LocalShardStore.EMPTY

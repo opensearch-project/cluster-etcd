@@ -82,7 +82,7 @@ next pass. Three things this milestone settled that the plan did not name:
 - **A docrep replica is declined with a reason** rather than built as a segrep copy, and the supervisor's own
   planner draws the line in the same place.
 
-## M4. Apply: one primary, one shard, one tenant — **written, not yet verified**
+## M4. Apply: one primary, one shard, one tenant — **done, and seen working**
 
 - `ClusterApplierService.updateClusterState(...)`.
 - Report the copy in the inventory as it moves `INITIALIZING` → `STARTED`, with `size_bytes` appearing only
@@ -93,23 +93,32 @@ next pass. Three things this milestone settled that the plan did not name:
 
 Resist adding replicas, coordinators or removal here. Every one of them is easier once this loop is closed.
 
-**Written, and the "done when" is not met yet** — deliberately stated that way rather than left ambiguous. The
-applier call, the acknowledgement and the failure handling are in and unit-tested against a stand-in applier
-that really runs the update function; the inventory side needs no new code, because it already reads the routing
-table. What has never happened is a real `ClusterApplierService` accepting one of these states, and no node can
-start in the sandbox most of this was written in.
+**Done, with a control plane, a supervisor and a data node sharing one store.** The supervisor plans a primary,
+this node applies it, the shard recovers to `STARTED` with a real `size_bytes`, and the index can be searched and
+written to. Closing it releases the shard without deleting the files; reopening recovers with `EXISTING_STORE`,
+which closes the one question the fabrication could not answer by itself.
 
-`./gradlew run` is how it gets checked, and `plugin/build.gradle` now configures a cluster for it —
-`PluginBuildPlugin` registers the `run` task but attaches no cluster, so it previously started nothing. Two
-things to watch for first, both of which would fail loudly:
+The "done when" asked for the index to be reported **green**, and it reaches yellow. That is not a defect here: it
+was created with one replica and document replication, and a docrep replica needs peer resolution (M9). Green
+needs zero replicas, or segment replication across two nodes (M7).
 
-- **Settings validation.** Every index setting the control plane stored is validated when the index is created,
-  and an unregistered one fails the index. In a deployment where the control plane's registry came from a node
-  with different plugins installed, that is a real possibility rather than a hypothetical.
-- **Recovery source.** An `ExistingStoreRecoverySource` paired with a freshly generated allocation id is the
-  part of the fabrication with no precedent in `cluster-etcd` and no test that can prove it: whether a shard
-  resumes from local data depends on the server accepting that pair. A first run on an empty node takes the
-  `EmptyStoreRecoverySource` path and will not exercise it; restarting the node is what does.
+**Five bugs came out of the first real run, and four were of one kind.** Worth reading the list before writing
+anything else that runs on a pass:
+
+- an `INFO` log inside `buildClusterState` — one line per poll interval, for ever;
+- a `NullPointerException` in the mapping merge, on an index created with no mappings;
+- that exception aborting the *whole* fabrication, so one index's problem stopped the node entirely;
+- `createIndexMapperService` called every pass — expensive, `synchronized`, and it fires every installed plugin's
+  `onIndexModule` hook, which logged two lines a second from unrelated components and read exactly like a shard
+  restart loop;
+- and, before those, applying a new cluster state every pass because the version always differs.
+
+The pattern: **the fabricator is a pure function called speculatively on every pass**, so anything expensive,
+observable or fallible inside it happens far more often than the code suggests — and when the observable thing is
+another component's log line, the symptom points anywhere but here.
+
+The one prediction that held: index settings the node has not registered fail the index at creation. Nothing hit
+it, because the control plane's registry came from a node with the same plugins.
 
 ## M5. Idempotence and the rest of the assignment — **the idempotence half is done**
 
@@ -152,9 +161,19 @@ function and a restart forgets it harmlessly.
 This also caught a bug already in the tree: the resolver dropped a **closed** index from the desired state
 entirely, which reads as a deletion. Closing an index would have deleted its data and left nothing to reopen.
 
-Still to do here: the second half of a move against a real node, and reaping the retained metadata once an index
-really is gone from the store — the supervisor's `ORPHANED_COPY` discipline turned inward, deliberately not
-guessed at yet.
+**Verified against a real node**, and further than expected: a restart with `--preserve-data` recovers the shard
+with `EXISTING_STORE` and the document written before the restart is still searchable, which closes D2.5's
+returning-node case properly rather than by the close/open shortcut. Deleting the index from the control plane
+leaves the metadata in place, as intended.
+
+Two things still to do, and the second is now more pressing than it looked. The second half of a move — the
+supervisor's `SurplusReaper` dropping a source copy — has never run. And the retained metadata has to be
+**reaped**, because a node that has outlived a deleted index reports `cluster.health` as red with nothing
+unassigned and a percentage of `NaN`: health is computing over an index state OpenSearch never produces, metadata
+declaring a shard with a routing table containing none. The node has what it needs to reap — the tenant and name
+of every retained index are in the fabricated settings, so it can check whether the index document is still in the
+store and drop the metadata once it has been gone for K passes, which is the supervisor's `ORPHANED_COPY`
+discipline turned inward.
 - **Done when:** the supervisor's rebalancer completes a move. Its `SurplusReaper` drops the source copy by
   removing it from that node's assignment; this milestone is what makes the second half of a move actually
   happen. `../opensearch-supervisor/DESIGN.md` §14.5 explains why the two halves are deliberately unaware of

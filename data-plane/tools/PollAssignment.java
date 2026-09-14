@@ -5,6 +5,7 @@
 package tools;
 
 import org.opensearch.Version;
+import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodeRole;
@@ -98,7 +99,7 @@ public final class PollAssignment {
                 // No node, so no state has ever been applied. Which is exactly true of a node in read-only
                 // mode however it is run: the intended state is always fabricated against an empty previous one.
                 () -> ClusterState.EMPTY_STATE,
-                desired -> new DataNodeState(localNode, desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+                desired -> new DataNodeState(new ClusterName("clusterless"), localNode, desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
                 publisher,
                 // Nothing to apply to: there is no node here. Read-only mode is the only mode this tool has,
                 // which is why it needs no applier and can run in a sandbox with no sockets.

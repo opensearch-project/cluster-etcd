@@ -189,6 +189,74 @@ lifecycle this plugin exists to drive.
 **This does not make dynamic mapping work, and it should not.** Mappings are desired state; they come from the
 control plane. What changed is that the failure is immediate, a 400, and says which service to send the mapping to.
 
+### Retained metadata makes local `cluster.health` report nonsense
+
+Deleting an index leaves this node holding its metadata with an empty routing table, which is what stops the
+server deleting the files. The cost shows up in `GET /_cluster/health`, answered from local state:
+
+```
+"status" : "red",
+"active_primary_shards" : 0,
+"unassigned_shards" : 0,
+"active_shards_percent_as_number" : "NaN"
+```
+
+Red, with nothing unassigned, and a percentage that is not a number. Health is computing over an index state
+OpenSearch itself never produces — metadata declaring one shard, a routing table containing none — so it has
+nothing sensible to say.
+
+Two things follow, and both were already on the list for other reasons. **Retained metadata has to be reaped**: the
+node knows the tenant and name of every index it retains, because they are in the fabricated settings, so it can
+check whether the index document is still in the store and drop the metadata once it has been gone for K passes —
+the supervisor's `ORPHANED_COPY` discipline turned inward. And **health belongs to the supervisor's projections**,
+not to local state: `tenant/<t>/status/cluster` is computed from the fleet, and would simply not mention an index
+that no longer exists.
+
+Until both exist, a node that has outlived a deleted index reports red. Worth knowing before it is mistaken for a
+broken shard.
+
+### The fabricated cluster name has to be given, not inherited
+
+`GET /_cluster/state` reported `"cluster_name" : "opensearch"` while `GET /_cluster/health` reported
+`"cluster_name" : "runTask"` on the same node. `opensearch` is `ClusterName.DEFAULT`, and the state's name was
+being copied from the previous state — so whatever the first fabrication of a process was handed propagated for
+ever, while health read its name from the settings.
+
+Harmless in a single-node run and not worth leaving: a cluster name is one of the things a transport handshake and
+a good deal of tooling check, and two answers from the same plugin disagreeing about which cluster they describe
+is its own kind of bug.
+
+### `createIndexMapperService` is expensive, side-effecting, and looks like a shard restart loop
+
+The most misleading symptom so far. A node with one healthy index logged this once a second, for ever:
+
+```
+[o.o.p.PluginsService     ] PluginService:onIndexModule index:[default.my-index.c526cf4262/TBOf...]
+[o.o.i.MergeSchedulerConfig] Initialized index default.my-index.c526cf4262 with maxMergeCount=9, ...
+```
+
+which reads unmistakably as an index being created over and over. Nothing was wrong with the shard. The lines come
+from `IndicesService.createIndexMapperService`, which the mapping canonicalisation calls, and which
+
+```java
+final IndexSettings idxSettings = new IndexSettings(...);   // MergeSchedulerConfig logs here
+final IndexModule indexModule = new IndexModule(...);
+pluginsService.onIndexModule(indexModule);                  // PluginService logs here
+```
+
+does on the way to building a throwaway `MapperService` — inside a `synchronized` method that real index
+operations also queue behind. So canonicalising on every pass is not merely noisy: it fires every installed
+plugin's `onIndexModule` hook and serialises against index work, once per poll interval per index.
+
+The fix is to skip it when it cannot matter. The store revision of the index document is carried in the fabricated
+settings, so if the previously applied metadata came from the same revision, the document has not changed and
+neither can its mapping — the applied `MappingMetadata` is reused verbatim. Canonicalisation then runs once per
+revision, which is the frequency it was always for.
+
+**The general lesson is the one from the log-spam bug, one level up.** The fabricator is a pure function called
+speculatively on every pass, so anything expensive or observable inside it happens far more often than the code
+suggests — and when the observable thing is somebody else's log line, the symptom points anywhere but here.
+
 ### A fabrication failure must be contained to one index
 
 Building the whole cluster state is a single operation, so an exception anywhere in it aborts all of it: the node

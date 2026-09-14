@@ -4,6 +4,7 @@
  */
 package org.opensearch.clusterless.apply;
 
+import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.clusterless.contract.Keys;
 import org.opensearch.clusterless.contract.NodeId;
@@ -32,6 +33,7 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public class AssignmentPollerTests extends OpenSearchTestCase {
 
+    private static final ClusterName CLUSTER = new ClusterName("clusterless");
     private static final NodeId NODE = NodeId.of("pv1sDMfZRxSTMiW5VrbN9w");
     private static final String EPHEMERAL = "OYidGJ1ITdC2mMrZEW0BNQ";
     private static final String UUID = "uzKxLWZu4nPSrTknEcDpoA";
@@ -117,7 +119,7 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
             NODE,
             new DesiredStateResolver((tenant, name) -> Optional.of(TestFixtures.indexConfig(UUID))),
             () -> recordingApplier.state,
-            desired -> new DataNodeState(TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+            desired -> new DataNodeState(CLUSTER, TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
             publisher,
             recordingApplier,
             apply
@@ -255,7 +257,7 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
             NODE,
             new DesiredStateResolver((tenant, name) -> Optional.empty()),
             () -> ClusterState.EMPTY_STATE,
-            desired -> new DataNodeState(TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+            desired -> new DataNodeState(CLUSTER, TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
             publisher,
             recordingApplier,
             false
@@ -379,7 +381,7 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
                 NODE,
                 new DesiredStateResolver((tenant, name) -> Optional.empty()),
                 () -> ClusterState.EMPTY_STATE,
-                desired -> new DataNodeState(TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+                desired -> new DataNodeState(CLUSTER, TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
                 publisher,
                 null,
                 true

@@ -5,6 +5,7 @@
 package org.opensearch.clusterless.apply;
 
 import org.opensearch.Version;
+import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
@@ -40,6 +41,7 @@ import java.util.Set;
  */
 public class DataNodeStateTests extends OpenSearchTestCase {
 
+    private static final ClusterName CLUSTER = new ClusterName("clusterless");
     private static final String LOCAL = "pv1sDMfZRxSTMiW5VrbN9w";
     private static final TenantId ACME = TenantId.of("acme");
     private static final String UUID = "uzKxLWZu4nPSrTknEcDpoA";
@@ -62,6 +64,21 @@ public class DataNodeStateTests extends OpenSearchTestCase {
             // The in-sync set has to believe in the allocation id the routing entry carries.
             assertTrue(index.inSyncAllocationIds(shard).contains(routing.allocationId().getId()));
         }
+    }
+
+    public void testTheStateCarriesThisNodesClusterNameRatherThanInheritingOne() {
+        // Found in a real node's GET /_cluster/state, which said "opensearch" -- ClusterName.DEFAULT -- while GET
+        // /_cluster/health said "runTask". The state's name used to be copied from the previous state, so whatever
+        // the first fabrication was handed propagated for ever, and two of this plugin's own answers disagreed
+        // about which cluster they were describing.
+        ClusterState first = build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY)));
+        assertEquals(CLUSTER, first.getClusterName());
+
+        // And it stays right even when the previous state's name is wrong, which is the case that was broken.
+        ClusterState second = build(first, desired(Map.of(0, ShardRole.PRIMARY)));
+        assertEquals(CLUSTER, second.getClusterName());
+        assertNotEquals("EMPTY_STATE carries the default name, which is where the wrong one came from",
+            ClusterState.EMPTY_STATE.getClusterName(), second.getClusterName());
     }
 
     public void testTheStateCarriesOnlyTheLocalNode() {
@@ -253,6 +270,86 @@ public class DataNodeStateTests extends OpenSearchTestCase {
         assertTrue(first > 0);
     }
 
+    // ---------------------------------------------------------------- the mapping is not rebuilt every pass
+
+    public void testTheMappingIsCanonicalisedOnceAndThenReused() {
+        // Canonicalising asks IndicesService for a MapperService, which builds an IndexModule, calls
+        // onIndexModule on every installed plugin, and holds a lock real index operations queue behind. Doing that
+        // once per pass produced two log lines a second from unrelated components and read exactly like a shard
+        // restarting in a loop.
+        java.util.concurrent.atomic.AtomicInteger canonicalisations = new java.util.concurrent.atomic.AtomicInteger();
+        MappingSource counting = (index, mapping) -> {
+            canonicalisations.incrementAndGet();
+            return MappingSource.WRAPPED.mappingFor(index, mapping);
+        };
+
+        ClusterState state = new DataNodeState(CLUSTER, localNode(), desired(Map.of(0, ShardRole.PRIMARY)), counting, LocalShardStore.EMPTY)
+            .buildClusterState(ClusterState.EMPTY_STATE);
+        assertEquals("the first application has nothing to reuse", 1, canonicalisations.get());
+
+        for (int pass = 0; pass < 10; pass++) {
+            state = new DataNodeState(CLUSTER, localNode(), desired(Map.of(0, ShardRole.PRIMARY)), counting, LocalShardStore.EMPTY)
+                .buildClusterState(state);
+        }
+
+        assertEquals("the same index document must not be canonicalised again", 1, canonicalisations.get());
+        assertNotNull(onlyIndex(state).mapping());
+        assertEquals("and the mapping version must not climb", 1, onlyIndex(state).getMappingVersion());
+    }
+
+    public void testANewConfigRevisionDoesCanonicaliseAgain() {
+        // The other half: the skip is keyed on the store revision of the index document, so a real change to it is
+        // still picked up. Revisions are compared for equality only, which is all the contract permits.
+        java.util.concurrent.atomic.AtomicInteger canonicalisations = new java.util.concurrent.atomic.AtomicInteger();
+        MappingSource counting = (index, mapping) -> {
+            canonicalisations.incrementAndGet();
+            return MappingSource.WRAPPED.mappingFor(index, mapping);
+        };
+
+        ClusterState first = new DataNodeState(CLUSTER, localNode(), desired(Map.of(0, ShardRole.PRIMARY)), counting, LocalShardStore.EMPTY)
+            .buildClusterState(ClusterState.EMPTY_STATE);
+
+        IndexConfig newRevision = new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            settings(),
+            Map.of("properties", Map.of("host", Map.of("type", "keyword"), "level", Map.of("type", "integer"))),
+            3042
+        );
+        ClusterState second = new DataNodeState(
+            CLUSTER,
+            localNode(),
+            desiredWith(newRevision, Map.of(0, ShardRole.PRIMARY)),
+            counting,
+            LocalShardStore.EMPTY
+        ).buildClusterState(first);
+
+        assertEquals(2, canonicalisations.get());
+        assertTrue(onlyIndex(second).mapping().source().string(), onlyIndex(second).mapping().source().string().contains("level"));
+        assertEquals("a real mapping change moves the mapping version", 2, onlyIndex(second).getMappingVersion());
+    }
+
+    public void testAnIndexWithNoMappingStaysThatWayWithoutCanonicalising() {
+        // What indices.create with no body produces. Reusing a null mapping is a legitimate reuse, not a reason to
+        // go and ask again on every pass.
+        java.util.concurrent.atomic.AtomicInteger canonicalisations = new java.util.concurrent.atomic.AtomicInteger();
+        MappingSource counting = (index, mapping) -> {
+            canonicalisations.incrementAndGet();
+            return MappingSource.WRAPPED.mappingFor(index, mapping);
+        };
+        IndexConfig unmapped = new IndexConfig("my-index", UUID, 1788969977933L, true, settings(), Map.of(), 3041);
+
+        ClusterState state = new DataNodeState(CLUSTER, localNode(), desiredWith(unmapped, Map.of(0, ShardRole.PRIMARY)), counting,
+            LocalShardStore.EMPTY).buildClusterState(ClusterState.EMPTY_STATE);
+        state = new DataNodeState(CLUSTER, localNode(), desiredWith(unmapped, Map.of(0, ShardRole.PRIMARY)), counting,
+            LocalShardStore.EMPTY).buildClusterState(state);
+
+        assertEquals(1, canonicalisations.get());
+        assertNull(onlyIndex(state).mapping());
+    }
+
     // ---------------------------------------------------------------- one index's failure is not the node's
 
     public void testAnIndexThatCannotBeBuiltDoesNotTakeTheRestWithIt() {
@@ -282,7 +379,7 @@ public class DataNodeStateTests extends OpenSearchTestCase {
             }
             return MappingSource.WRAPPED.mappingFor(index, mapping);
         };
-        ClusterState state = new DataNodeState(localNode(), desired, explodesForOne, LocalShardStore.EMPTY).buildClusterState(
+        ClusterState state = new DataNodeState(CLUSTER, localNode(), desired, explodesForOne, LocalShardStore.EMPTY).buildClusterState(
             ClusterState.EMPTY_STATE
         );
 
@@ -301,6 +398,7 @@ public class DataNodeStateTests extends OpenSearchTestCase {
             throw new IllegalStateException("no mapping for you");
         };
         ClusterState after = new DataNodeState(
+            CLUSTER,
             localNode(),
             desired(Map.of(0, ShardRole.PRIMARY)),
             explodes,
@@ -382,7 +480,7 @@ public class DataNodeStateTests extends OpenSearchTestCase {
     }
 
     private static ClusterState build(ClusterState previous, DesiredState desired, LocalShardStore shardStore) {
-        return new DataNodeState(localNode(), desired, MappingSource.WRAPPED, shardStore).buildClusterState(previous);
+        return new DataNodeState(CLUSTER, localNode(), desired, MappingSource.WRAPPED, shardStore).buildClusterState(previous);
     }
 
     private static Map<String, String> settings() {
