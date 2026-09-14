@@ -14,6 +14,11 @@
 # No OpenSearch node and no container: the only part of the plugin involved is the part that talks to the
 # store, which is exactly the part this milestone is about.
 #
+# This seeds its own pool definition, because a store with no pool has no pools and therefore no reconciliation.
+# For a real deployment the command is the supervisor's:
+#
+#     supervisor-app --store=<uri> --define-pool=shared-a
+#
 # Usage:
 #   tools/supervisor-sees-me.sh [store-directory] [node-count]
 #

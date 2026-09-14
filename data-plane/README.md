@@ -83,8 +83,19 @@ the other half of the loop:
 
 ```
 cd ../opensearch-supervisor && ./gradlew :supervisor-app:installDist
-./supervisor-app/build/install/supervisor-app/bin/supervisor-app     --store=file://<repo>/plugin/build/clusterless-store --write --interval=1s
+SUP=./supervisor-app/build/install/supervisor-app/bin/supervisor-app
+STORE=file://<repo>/plugin/build/clusterless-store
+
+$SUP --store=$STORE --define-pool=shared-a     # once: nothing happens at all until a pool exists
+$SUP --store=$STORE --write --interval=1s      # then reconcile
 ```
+
+**`--define-pool` is not optional the first time.** A pool definition is operator-owned — only an operator knows
+which node attribute names a thing that fails independently — so nothing in any of the three planes writes one,
+and until one exists there are no pools and therefore no reconciliation: the control plane accepts an index,
+nodes register and heartbeat, and nothing is ever assigned. The only thing that says why is `unpooled_tenants` in
+`supervisor/status/housekeeping`. The `run` cluster puts its nodes in `shared-a`, which is why that is the name
+above.
 
 Note that `PluginBuildPlugin` registers `run` but attaches no cluster to it — only `RestIntegTestTask` gets one
 automatically — so `plugin/build.gradle` creates and uses one. It also has to set `clusterless.store`, since
