@@ -609,14 +609,18 @@ exposes Jackson's streaming API and not databind, so nothing but that suite conn
 
 **Five things it found. Four are silences in this document rather than errors.**
 
-1. **`SPLITTING` is a shard state this document does not enumerate, and should.** OpenSearch 3.x has an
-   in-place shard split, so `ShardRoutingState` has five values rather than the four assumed above. The
-   *Two states OpenSearch has are deliberately absent* list is therefore incomplete rather than wrong. The
-   plugin maps it to `STARTED`, which matches the server's own `active()` — that counts started,
-   relocating and splitting alike — and the copy is on disk and serving throughout. **Proposed: add
-   `SPLITTING` to that list with the same reasoning `RELOCATING` has.** Found by the mapping being written
-   as an exhaustive switch, which made a new enum constant a compile error; a chain of `if`s would have
-   silently reported a splitting shard as whatever the last branch said.
+1. **`SPLITTING` is a shard state this document does not enumerate.** OpenSearch 3.x has an in-place shard
+   split, so `ShardRoutingState` has five values rather than the four assumed above. The plugin maps it to
+   `STARTED`, which matches the server's own `active()` — that counts started, relocating and splitting
+   alike — and the copy is on disk and serving throughout.
+
+   **Low priority, and recorded mainly so the mapping is not left to chance.** In-place live shard splitting
+   is not the approach this design takes: pull-based ingestion makes a split a matter of standing up a new
+   index with the new shard layout, restoring from snapshot, deleting the out-of-shard documents and
+   resuming from the checkpoint in the shard snapshot — so `SPLITTING` should never appear in a pool this
+   system owns. Handling it costs one enum case and nothing else. Found by the mapping being written as an
+   exhaustive switch, which made a new enum constant a compile error; a chain of `if`s would have silently
+   reported a splitting shard as whatever the last branch said.
 
 2. **`FAILED` is not observable from the routing table, so a node cannot report it the way it reports the
    other two.** A shard that fails in OpenSearch is *removed* from the routing table rather than marked in
