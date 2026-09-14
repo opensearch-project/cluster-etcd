@@ -134,6 +134,45 @@ class ClusterlessIndexSettingsTests {
     }
 
     @Test
+    void theIdentitySettingsReachTheControlPlaneAsNotUserSettable() {
+        // The other half of protecting these keys, and it needs no code here at all -- which is why it is
+        // worth a test, since nothing else in this repository would notice it breaking.
+        //
+        // GET /_cluster/settings_registry renders every setting in this node's live IndexScopedSettings,
+        // emitting each Setting.Property by name(). The control plane snapshots that
+        // (settings_registry.json), and DeclaredSettings maps the literal strings "InternalIndex" and
+        // "PrivateIndex" onto Updateability.NOT_USER_SETTABLE, which SettingsValidation refuses on
+        // indices.create, put_settings and the template puts alike -- unconditionally, unlike static and
+        // final, which those paths legitimately allow.
+        //
+        // So the coupling is: this setting must be in the registry the endpoint walks, and its property
+        // must be spelled the way the control plane matches. Both are asserted rather than assumed, because
+        // both are invisible from either side alone.
+        IndexScopedSettings registry = registryWith(new ClusterlessPlugin().getSettings());
+        List<String> registered = new ArrayList<>();
+        registry.getRegisteredSettings().forEach(setting -> registered.add(setting.getKey()));
+
+        for (Setting<?> identity : ClusterlessIndexSettings.all()) {
+            assertTrue(registered.contains(identity.getKey()), identity.getKey() + " would not appear in the settings registry");
+
+            List<String> propertyNames = new ArrayList<>();
+            identity.getProperties().forEach(property -> propertyNames.add(property.name()));
+            assertTrue(
+                propertyNames.contains("InternalIndex"),
+                identity.getKey() + " must carry InternalIndex, the token the control plane matches; has " + propertyNames
+            );
+
+            // Rendered as kind "exact", which is what makes the control plane match the whole key rather
+            // than treating it as a family. A prefix or affix key would be a different classification and a
+            // different rule.
+            assertTrue(
+                identity.getKey().indexOf('*') < 0 && identity.getKey().endsWith(".") == false,
+                identity.getKey() + " must render as an exact key"
+            );
+        }
+    }
+
+    @Test
     void aRevisionSurvivesTheRoundTripThroughSettingsUnchanged() {
         // Settings are strings on the wire, and a revision is opaque. Reading one back as anything other
         // than what was written would silently change which configuration a copy claims to have applied --

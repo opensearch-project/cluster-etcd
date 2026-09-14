@@ -38,10 +38,35 @@ Consequences, both now in the code:
   `AbstractScopedSettings` says is "only if this call is coming via the update settings API" — so the apply
   path accepts them and a user's attempt to set one is refused with *"can not update internal setting"*.
 
-**Still open, and it belongs to the control plane:** nothing stops a user creating an index whose settings
-include `index.clusterless.tenant`. The control plane would store it and this plugin would overwrite it,
-which is survivable but means a user can put a misleading value into a document an operator reads.
-`index.clusterless.` should be a reserved prefix that `indices.create` and `put_settings` reject.
+**And the control plane already refuses them, which closes the obvious hole.** A user could otherwise
+create an index whose settings include `index.clusterless.tenant`; the control plane would store it and this
+plugin would overwrite it, which is survivable but lets a user put a misleading tenant into a document an
+operator reads during an incident. The settings registry the control plane was built around handles it, and
+it needs nothing from this repository beyond the `InternalIndex` property:
+
+- `GET /_cluster/settings_registry` renders every setting in the node's **live** `IndexScopedSettings` —
+  which is the registry `SettingsModule` built from the built-ins *plus* `Plugin.getSettings()` — and emits
+  each `Setting.Property` by `name()`. The endpoint's own javadoc gives the reason: so a consumer need not
+  hardcode a list that goes stale "on the next upgrade or the next plugin install".
+- The control plane snapshots that into `settings_registry.json`, and `DeclaredSettings` maps the literal
+  strings `InternalIndex` and `PrivateIndex` onto `Updateability.NOT_USER_SETTABLE`.
+- `SettingsValidation.check` refuses those on `indices.create`, `put_settings` and the template puts —
+  **unconditionally**, unlike `STATIC` and `FINAL`, which `indices.create` legitimately permits. That
+  unconditional branch is what makes this work at creation time and not only on update.
+
+There is precedent in the snapshot already: the five `index.searchable_snapshot.*` settings are declared
+`InternalIndex` and land in the registry exactly this way.
+
+Worth noticing that **both** possible states of that snapshot are safe, which is why this needs no
+coordination. Regenerated from a node carrying this plugin, `index.clusterless.tenant` is present and
+`NOT_USER_SETTABLE`; regenerated from a node without it, the key is simply unknown and rejected as such. The
+two differ only in which error the user gets. The one case that permits it is a control plane running a
+non-enforcing registry, which is that service's deliberate default when nothing is declared and not
+something specific to these settings.
+
+`ClusterlessIndexSettingsTests` pins the two ends of the coupling that are invisible from either side alone:
+that each identity setting is in the registry the endpoint walks, and that its property is spelled the way
+the control plane matches.
 
 ### `IndicesService` is still only reachable through Guice
 

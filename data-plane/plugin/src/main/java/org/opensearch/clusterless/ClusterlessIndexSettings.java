@@ -51,10 +51,16 @@ import java.util.List;
  * an upgrade, not on a state being applied. And archiving <em>renames</em> the key to {@code archived.*},
  * so even where it applies it would lose the value rather than preserve it.
  *
- * <p>{@code InternalIndex} is what recovers the intent the original reasoning was reaching for. It is
- * ignored by the apply path — which passes {@code validateInternalOrPrivateIndex: false} — and rejected by
- * the update-settings API with "this setting is managed via a dedicated API". Registered so the server will
- * accept them; internal so nothing but this plugin may set them.
+ * <p>{@code InternalIndex} is what recovers the intent the original reasoning was reaching for, and it does
+ * it in two places rather than one. Locally, it is ignored by the apply path — which passes
+ * {@code validateInternalOrPrivateIndex: false} — and refused by the update-settings API with "this setting
+ * is managed via a dedicated API". Remotely, it is what stops a <em>user</em> supplying one: these settings
+ * appear in {@code GET /_cluster/settings_registry}, which walks the node's live registry and emits each
+ * property by name, and the control plane maps {@code InternalIndex} onto {@code NOT_USER_SETTABLE} and
+ * refuses it on {@code indices.create} and {@code put_settings} alike. So the property is load-bearing on
+ * both sides of the store, and {@code ClusterlessIndexSettingsTests} asserts the far end too.
+ *
+ * <p>Registered so the server will accept them; internal so nothing but this plugin may set them.
  */
 public final class ClusterlessIndexSettings {
 
