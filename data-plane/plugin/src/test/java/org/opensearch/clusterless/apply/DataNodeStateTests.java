@@ -253,6 +253,65 @@ public class DataNodeStateTests extends OpenSearchTestCase {
         assertTrue(first > 0);
     }
 
+    // ---------------------------------------------------------------- one index's failure is not the node's
+
+    public void testAnIndexThatCannotBeBuiltDoesNotTakeTheRestWithIt() {
+        // D2.4, in the place it is easiest to violate. Fabricating the whole state is one operation, so an
+        // exception anywhere in it aborts all of it -- and the node then applies nothing, holds nothing new, and
+        // retries the same failing fabrication for ever. That is what a NullPointerException in the mapping merge
+        // actually did: one index's problem became every index's problem.
+        DesiredState.IndexKey good = new DesiredState.IndexKey(ACME, UUID);
+        DesiredState.IndexKey bad = new DesiredState.IndexKey(ACME, "aSecondIndexUuid1234");
+        IndexConfig config = new IndexConfig("my-index", UUID, 1788969977933L, true, settings(), mappings(), 3041);
+        IndexConfig other = new IndexConfig("other-index", "aSecondIndexUuid1234", 1788969977933L, true, settings(), mappings(), 3041);
+        DesiredState desired = new DesiredState(
+            42,
+            Map.of(
+                good,
+                new DesiredState.DesiredIndex(good, config, Map.of(0, ShardRole.PRIMARY)),
+                bad,
+                new DesiredState.DesiredIndex(bad, other, Map.of(0, ShardRole.PRIMARY))
+            ),
+            List.of(),
+            List.of()
+        );
+
+        MappingSource explodesForOne = (index, mapping) -> {
+            if (index.getUUID().equals("aSecondIndexUuid1234")) {
+                throw new NullPointerException("as thrown from inside the mapping merge");
+            }
+            return MappingSource.WRAPPED.mappingFor(index, mapping);
+        };
+        ClusterState state = new DataNodeState(localNode(), desired, explodesForOne, LocalShardStore.EMPTY).buildClusterState(
+            ClusterState.EMPTY_STATE
+        );
+
+        assertEquals("the healthy index must still be described", 1, state.metadata().indices().size());
+        assertNotNull(state.metadata().index(state.metadata().iterator().next().getIndex()));
+        assertEquals(UUID, state.metadata().iterator().next().getIndexUUID());
+    }
+
+    public void testAnIndexThatCannotBeBuiltKeepsWhatWasAlreadyApplied() {
+        // And the copy already serving keeps serving, rather than being dropped -- which would both stop the shard
+        // and, because the metadata would vanish, delete its files.
+        ClusterState serving = withShardStarted(build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY))));
+        ShardRouting before = onlyCopy(serving, 0);
+
+        MappingSource explodes = (index, mapping) -> {
+            throw new IllegalStateException("no mapping for you");
+        };
+        ClusterState after = new DataNodeState(
+            localNode(),
+            desired(Map.of(0, ShardRole.PRIMARY)),
+            explodes,
+            LocalShardStore.EMPTY
+        ).buildClusterState(serving);
+
+        assertEquals(1, after.metadata().indices().size());
+        assertEquals("the serving copy must be untouched", before, onlyCopy(after, 0));
+        assertTrue(onlyCopy(after, 0).started());
+    }
+
     // ---------------------------------------------------------------- dropping a copy
 
     public void testAnIndexNoLongerAssignedKeepsItsMetadataAndLosesItsRouting() {

@@ -57,7 +57,13 @@ public final class MapperServiceMappingSource implements MappingSource {
         }
         IndicesService indices = indicesService.get();
         IndexService indexService = indices == null ? null : indices.indexService(index);
-        if (indexService == null) {
+        if (indexService == null || indexService.getMetadata().mapping() == null) {
+            // Nothing to merge with, so the written form *is* the canonical one. Two ways to get here, and the
+            // second was a crash: no index yet, which is the ordinary first application; or an index created with
+            // no mappings at all, which is what the control plane produces for `indices.create` with no body.
+            // Setting a mapping on such an index then reached the merge path with a null existing mapping and
+            // threw an NPE inside the applier -- and cluster-etcd's version of this method has the same latent
+            // bug, since it was copied from there faithfully enough to include it.
             return MappingSource.WRAPPED.mappingFor(index, mapping);
         }
         try {

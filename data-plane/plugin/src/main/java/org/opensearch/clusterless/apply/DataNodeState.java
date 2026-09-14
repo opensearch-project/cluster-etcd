@@ -107,13 +107,70 @@ public final class DataNodeState implements NodeState {
 
         Set<Index> stillWanted = new HashSet<>();
         for (DesiredState.DesiredIndex index : desired.indices().values()) {
-            stillWanted.add(buildIndex(previous, index, metadata, routing));
+            Index built = buildIndexOrKeepWhatIsThere(previous, index, metadata, routing);
+            if (built != null) {
+                stillWanted.add(built);
+            }
         }
         retainIndicesNoLongerWanted(previous, stillWanted, metadata, routing);
 
         state.metadata(metadata);
         state.routingTable(routing.build());
         return state.build();
+    }
+
+    /**
+     * Builds one index, or leaves it exactly as the previous state had it.
+     *
+     * <p>D2.4 in the place it is easiest to violate: <em>"One unrecoverable shard must never stop a node applying
+     * the rest of its assignment."</em> That requirement is usually read as being about a shard that will not
+     * recover, but it applies just as much to a shard this code cannot describe — and the second case is worse,
+     * because a bug here is not confined to one index. Fabricating the whole state is a single operation, so an
+     * exception anywhere in it aborts all of it, and the node then holds nothing new, applies nothing, and retries
+     * the same failing fabrication for ever.
+     *
+     * <p>Which is exactly what happened: a mapping update on an index that had no mapping threw a
+     * {@code NullPointerException} inside the applier, and the node spent the rest of its life re-initialising a
+     * shard once per second. One index's problem became every index's problem, and the node's.
+     *
+     * <p>So a failure here costs that index a pass and nothing more. The previous state's version of it is carried
+     * across untouched, which is the safe fallback in both directions: a copy already serving keeps serving, and —
+     * more importantly — the index does not vanish from the metadata, because vanishing is what tells the server
+     * to delete the files.
+     */
+    private Index buildIndexOrKeepWhatIsThere(
+        ClusterState previous,
+        DesiredState.DesiredIndex desiredIndex,
+        Metadata.Builder metadata,
+        RoutingTable.Builder routing
+    ) {
+        try {
+            return buildIndex(previous, desiredIndex, metadata, routing);
+        } catch (Exception e) {
+            String indexName = IndexNaming.indexName(desiredIndex.tenant(), desiredIndex.uuid(), desiredIndex.config().name());
+            Index index = new Index(indexName, desiredIndex.uuid());
+            IndexMetadata previousMetadata = previous.metadata().index(index);
+            logger.error(
+                "clusterless: could not build the cluster state for [{}]; keeping {} and carrying on with the rest "
+                    + "of the assignment",
+                desiredIndex.key(),
+                previousMetadata == null ? "it out of the state" : "what was already applied",
+                e
+            );
+            if (previousMetadata == null) {
+                return null;
+            }
+            metadata.put(previousMetadata, false);
+            IndexRoutingTable previousRouting = previous.routingTable().index(index);
+            if (previousRouting == null) {
+                routing.add(IndexRoutingTable.builder(index));
+            } else {
+                // Added as-is rather than rebuilt, so every copy keeps its allocation id and its state. Rebuilding
+                // is what restarts a serving shard, and this is the path taken when something is already wrong.
+                routing.add(previousRouting);
+            }
+            return index;
+        }
     }
 
     /**

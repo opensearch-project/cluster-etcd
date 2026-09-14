@@ -189,6 +189,25 @@ lifecycle this plugin exists to drive.
 **This does not make dynamic mapping work, and it should not.** Mappings are desired state; they come from the
 control plane. What changed is that the failure is immediate, a 400, and says which service to send the mapping to.
 
+### A fabrication failure must be contained to one index
+
+Building the whole cluster state is a single operation, so an exception anywhere in it aborts all of it: the node
+applies nothing, holds nothing new, and retries the same failing fabrication on the next pass, for ever. What
+that looked like from outside was a shard re-initialising once per second, with the real cause a hundred lines
+earlier in the log.
+
+The cause was a `NullPointerException` in the mapping merge — `IndexMetadata.mapping()` is null on an index
+created with no mappings, which is exactly what `indices.create` with no body produces, and setting a mapping on
+such an index then reached the merge path. `cluster-etcd`'s version of that method has the same latent bug; it was
+copied faithfully enough to include it.
+
+Both halves are now fixed, and the second one is the one worth keeping: a failure building one index costs that
+index a pass and nothing else, with the previous state's version carried across untouched. That is D2.4 — *"one
+unrecoverable shard must never stop a node applying the rest of its assignment"* — read as covering a shard this
+code cannot *describe*, not only one that will not recover. Carrying the previous version forward is also the safe
+direction for the data: a copy already serving keeps serving, and the index does not vanish from the metadata,
+which is what would tell the server to delete its files.
+
 ### Do not log from inside the fabrication
 
 `buildClusterState` runs on **every** pass — twice on a pass that applies, since the state is built once to
