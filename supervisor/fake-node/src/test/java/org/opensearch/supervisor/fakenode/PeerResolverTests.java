@@ -51,14 +51,14 @@ class PeerResolverTests {
     private void projectIndex(Replication replication, List<IndexStatus.ShardPlacement> shard0) {
         IndexStatus status = new IndexStatus(
             "my-index", INDEX_UUID, 3041, HealthStatus.YELLOW, replication,
-            1, 1, Map.of(0, shard0), 1788969977933L, 10432
+            1, 1, 0, Map.of(0, shard0), 1788969977933L, 10432
         );
         store.put(Keys.indexStatus(ACME, INDEX_UUID), status.toBytes());
     }
 
     private void projectNode(NodeId nodeId, String address, Liveness liveness) {
         NodeStatus status = new NodeStatus(
-            nodeId, nodeId.value(), Set.of(NodeRole.DATA), address, 9300, "3.7.0",
+            nodeId, "eph-" + nodeId.value(), nodeId.value(), Set.of(NodeRole.DATA), address, 9300, "3.7.0",
             Map.of("zone", "z1"), liveness, 1788969977933L
         );
         store.put(Keys.nodeStatus(ACME, nodeId), status.toBytes());

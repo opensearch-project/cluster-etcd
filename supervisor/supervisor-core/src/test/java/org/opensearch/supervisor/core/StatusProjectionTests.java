@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -324,5 +325,43 @@ class StatusProjectionTests {
         Set<String> keys = store.scanPrefix(Keys.statusPrefix(ACME)).keySet();
         assertFalse(keys.isEmpty());
         keys.forEach(key -> assertTrue(key.startsWith(Keys.tenantPrefix(ACME)), key));
+    }
+
+    @Test
+    void aNodesProjectionCarriesTheEphemeralIdItRegisteredWith() {
+        // Without it a reader can locate a peer and still be refused by the transport: DiscoveryNode.equals
+        // compares only the ephemeral id, and the connection validator rejects a handshake whose remote node is
+        // unequal to the one it was handed. An address is necessary and not sufficient.
+        FakeNode node = node(NODE, "z1");
+        node.start();
+        createIndex("my-index", UUID, 1, 0);
+        run(supervisor(), List.of(node), 8);
+
+        NodeStatus status = NodeStatus.from(store.get(Keys.nodeStatus(ACME, NODE)).orElseThrow().value());
+
+        assertEquals(node.ephemeralId(), status.ephemeralId());
+    }
+
+    @Test
+    void restartingANodeUpdatesTheProjectedEphemeralId() {
+        // It identifies an incarnation, so it changes on every restart by design. A projection left holding the
+        // old one is a coordinator that cannot connect until it catches up.
+        FakeNode first = node(NODE, "z1");
+        first.start();
+        createIndex("my-index", UUID, 1, 0);
+        Supervisor supervisor = supervisor();
+        run(supervisor, List.of(first), 8);
+        String before = NodeStatus.from(store.get(Keys.nodeStatus(ACME, NODE)).orElseThrow().value()).ephemeralId();
+
+        FakeNode restarted = new FakeNode(store, new Registration(
+            NODE, "placeholder", NODE.value(), POOL, EnumSet.of(NodeRole.DATA),
+            "10.0.0.1", 9300, "3.7.0", Map.of("zone", "z1"), 5000, 0L
+        ), clock, "eph-second-incarnation");
+        restarted.start();
+        run(supervisor, List.of(restarted), 8);
+        String after = NodeStatus.from(store.get(Keys.nodeStatus(ACME, NODE)).orElseThrow().value()).ephemeralId();
+
+        assertEquals("eph-second-incarnation", after);
+        assertNotEquals(before, after, "a restart must not leave the previous incarnation projected");
     }
 }

@@ -100,7 +100,7 @@ public final class StatusComputation {
         if (index.open() == false) {
             return new IndexStatus(
                 index.name(), index.uuid(), index.configRevision(), HealthStatus.GREEN, index.replication(),
-                index.numberOfShards(), index.numberOfReplicas(), Map.of(),
+                index.numberOfShards(), index.numberOfReplicas(), index.numberOfSearchReplicas(), Map.of(),
                 observation.observedAt().toEpochMilli(), observation.pass()
             );
         }
@@ -148,7 +148,7 @@ public final class StatusComputation {
 
         return new IndexStatus(
             index.name(), index.uuid(), index.configRevision(), status, index.replication(),
-            index.numberOfShards(), index.numberOfReplicas(), shards,
+            index.numberOfShards(), index.numberOfReplicas(), index.numberOfSearchReplicas(), shards,
             observation.observedAt().toEpochMilli(), observation.pass()
         );
     }
@@ -216,6 +216,9 @@ public final class StatusComputation {
             }
             nodes.put(nodeId, new NodeStatus(
                 nodeId,
+                // From the registration rather than the heartbeat: both carry it, and the registration is the
+                // document whose change already triggers this projection being rewritten.
+                node.registration().ephemeralId(),
                 node.registration().name(),
                 node.registration().roles(),
                 node.registration().address(),

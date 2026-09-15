@@ -84,9 +84,13 @@ class DifferTests {
     void aFullyPlacedIndexProducesNothing() {
         // R2.2 in spirit: the interesting property of a reconciler is that it says nothing when there is
         // nothing to say. A differ that always finds something is a differ nobody will read.
+        // SEARCH_REPLICA, because index(...) builds a segment-replication index and that is the role its
+        // replicas take. The fixture said REPLICA when the count was checked in total and the role was ignored;
+        // now that copies are counted per role, a REPLICA here is a surplus and a search replica is missing.
         Diff diff = Differ.diff(observe(index(1, 1), Map.of(
             NODE_A, node(NODE_A, Liveness.LIVE, holding(NODE_A, Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))),
-            NODE_B, node(NODE_B, Liveness.LIVE, holding(NODE_B, Map.of(0, copy(ShardRole.REPLICA, ShardState.STARTED))))
+            NODE_B, node(NODE_B, Liveness.LIVE,
+                holding(NODE_B, Map.of(0, copy(ShardRole.SEARCH_REPLICA, ShardState.STARTED))))
         )));
 
         assertTrue(diff.isEmpty(), () -> "expected nothing, got " + diff.findings());
@@ -135,9 +139,11 @@ class DifferTests {
             NODE_A, node(NODE_A, Liveness.LIVE, holding(NODE_A, Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED))))
         )));
 
+        // A segment-replication index's missing replica is a missing *search* replica, which is its own kind so
+        // that the planner knows which role to place and an operator can read the two counts apart.
         assertTrue(diff.of(FindingKind.UNASSIGNED_PRIMARY).isEmpty());
-        assertEquals(1, diff.of(FindingKind.UNASSIGNED_REPLICA).size());
-        assertEquals(Severity.WARNING, diff.of(FindingKind.UNASSIGNED_REPLICA).get(0).severity());
+        assertEquals(1, diff.of(FindingKind.UNASSIGNED_SEARCH_REPLICA).size());
+        assertEquals(Severity.WARNING, diff.of(FindingKind.UNASSIGNED_SEARCH_REPLICA).get(0).severity());
     }
 
     @Test
@@ -239,7 +245,8 @@ class DifferTests {
         // nothing wrong with it recovering first.
         Diff diff = Differ.diff(observe(index(1, 1), Map.of(
             NODE_A, node(NODE_A, Liveness.LIVE, holding(NODE_A, Map.of(0, copy(ShardRole.PRIMARY, ShardState.INITIALIZING)))),
-            NODE_B, node(NODE_B, Liveness.LIVE, holding(NODE_B, Map.of(0, copy(ShardRole.REPLICA, ShardState.INITIALIZING))))
+            NODE_B, node(NODE_B, Liveness.LIVE,
+                holding(NODE_B, Map.of(0, copy(ShardRole.SEARCH_REPLICA, ShardState.INITIALIZING))))
         )));
 
         assertTrue(diff.of(FindingKind.PRIMARY_BEFORE_REPLICA).isEmpty());
@@ -301,5 +308,97 @@ class DifferTests {
 
         assertEquals(3, diff.countsByKind().get(FindingKind.UNASSIGNED_PRIMARY));
         assertEquals(diff.findings().size(), diff.countsByKind().values().stream().mapToInt(Integer::intValue).sum());
+    }
+
+    // ---------------------------------------------------------- search replicas (FINDINGS_FROM_THE_DATA_PLANE 1)
+
+    @Test
+    void aRequestedSearchReplicaIsWantedRatherThanIgnored() {
+        // The defect: index.number_of_search_replicas was read by nothing, so a tenant who set it got no copy, no
+        // complaint, and a status saying everything asked for had been delivered.
+        IndexConfig withSearchReplica = new IndexConfig("my-index", UUID, true, 1, 0, 1, Replication.SEGMENT,
+            false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041, Map.of());
+
+        Diff diff = Differ.diff(observe(withSearchReplica, Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, holding(NODE_A, Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED))))
+        )));
+
+        assertEquals(1, diff.of(FindingKind.UNASSIGNED_SEARCH_REPLICA).size(), diff.findings().toString());
+        assertTrue(diff.of(FindingKind.UNASSIGNED_SEARCH_REPLICA).get(0).because().contains("0 of 1 search replicas"),
+            diff.of(FindingKind.UNASSIGNED_SEARCH_REPLICA).get(0).because());
+        assertTrue(diff.of(FindingKind.UNASSIGNED_REPLICA).isEmpty(), "no ordinary replica was asked for");
+    }
+
+    @Test
+    void theTwoCountsAddUpOnASegmentReplicationIndex() {
+        // Both settings ask for search replicas here, which is the mapping IndexConfig.desiredCopiesOf documents
+        // and which is a contract with the data plane rather than a detail of this service.
+        IndexConfig both = new IndexConfig("my-index", UUID, true, 1, 1, 1, Replication.SEGMENT, false,
+            org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041, Map.of());
+
+        assertEquals(3, both.copiesPerShard());
+        assertEquals(2, both.desiredCopiesOf(ShardRole.SEARCH_REPLICA));
+        assertEquals(0, both.desiredCopiesOf(ShardRole.REPLICA));
+
+        Diff oneShort = Differ.diff(observe(both, Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, holding(NODE_A, Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))),
+            NODE_B, node(NODE_B, Liveness.LIVE,
+                holding(NODE_B, Map.of(0, copy(ShardRole.SEARCH_REPLICA, ShardState.STARTED))))
+        )));
+
+        assertEquals(1, oneShort.of(FindingKind.UNASSIGNED_SEARCH_REPLICA).size(), oneShort.findings().toString());
+        assertTrue(oneShort.of(FindingKind.SURPLUS_COPY).isEmpty());
+    }
+
+    @Test
+    void copiesAreCountedPerRoleRatherThanInTotal() {
+        // Two counts that sum correctly can still both be wrong. A document-replication index wanting one replica
+        // is not satisfied by a search replica, however many copies there are.
+        IndexConfig docrep = new IndexConfig("my-index", UUID, true, 1, 1, 0, Replication.DOCUMENT, false,
+            org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041, Map.of());
+
+        Diff diff = Differ.diff(observe(docrep, Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, holding(NODE_A, Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))),
+            NODE_B, node(NODE_B, Liveness.LIVE,
+                holding(NODE_B, Map.of(0, copy(ShardRole.SEARCH_REPLICA, ShardState.STARTED))))
+        )));
+
+        assertEquals(1, diff.of(FindingKind.UNASSIGNED_REPLICA).size(), diff.findings().toString());
+        assertEquals(1, diff.of(FindingKind.SURPLUS_COPY).size(), "and the search replica is one too many");
+    }
+
+    @Test
+    void searchReplicasOnADocumentReplicationIndexAreReportedRatherThanPlanned() {
+        // The general defect behind the specific one: a request this supervisor declines must leave a reason
+        // behind. Not counted as unassigned, because unassigned means "intended and not yet placed" and this can
+        // never be placed -- reporting it that way would leave the index yellow for ever with nothing to do.
+        IndexConfig impossible = new IndexConfig("my-index", UUID, true, 1, 0, 2, Replication.DOCUMENT, false,
+            org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041, Map.of());
+
+        assertEquals(0, impossible.desiredCopiesOf(ShardRole.SEARCH_REPLICA));
+        assertEquals(1, impossible.copiesPerShard(), "the primary alone");
+
+        Diff diff = Differ.diff(observe(impossible, Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, holding(NODE_A, Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED))))
+        )));
+
+        assertEquals(1, diff.of(FindingKind.DESIRED_COPY_IGNORED).size(), diff.findings().toString());
+        assertTrue(diff.of(FindingKind.DESIRED_COPY_IGNORED).get(0).because().contains("document replication"),
+            diff.of(FindingKind.DESIRED_COPY_IGNORED).get(0).because());
+        assertTrue(diff.of(FindingKind.UNASSIGNED_SEARCH_REPLICA).isEmpty(),
+            "not pending: nothing could ever place it");
+    }
+
+    @Test
+    void theSettingIsParsedTheWayOpenSearchSpellsIt() {
+        IndexConfig parsed = IndexConfig.parse(IndexConfig.toDocument("my-index", UUID, true, Map.of(
+            IndexConfig.SETTING_SHARDS, "1",
+            IndexConfig.SETTING_REPLICAS, "0",
+            IndexConfig.SETTING_SEARCH_REPLICAS, "1",
+            IndexConfig.SETTING_REPLICATION, "SEGMENT"
+        )), 4);
+
+        assertEquals(1, parsed.numberOfSearchReplicas());
+        assertEquals(2, parsed.copiesPerShard(), "a primary and the search replica that was asked for");
     }
 }

@@ -160,6 +160,54 @@ public final class AllocationContext {
         return nodes;
     }
 
+    /**
+     * Copies of the shard being placed that carry one particular role — held, assigned, or planned this pass.
+     *
+     * <p>Needed because a shard's desired copies are no longer one number. A shard wanting one replica and one
+     * search replica is not satisfied by two search replicas, so "how many copies are there" cannot answer
+     * "should another of *this* role be planned".
+     */
+    public int copiesOfThisShardInRole(ShardRole wanted) {
+        int count = 0;
+        for (Observation.NodeObservation node : observation.nodes().values()) {
+            if (node.copiesCount() == false) {
+                continue;
+            }
+            Optional<ShardInventory.ShardCopy> held = heldCopy(node, shard);
+            if (held.isPresent()) {
+                // What a node reports holding beats what it was told to hold: the assignment may name a role it
+                // has not applied yet, and counting both would double-count the same copy.
+                if (held.get().role() == wanted) {
+                    count++;
+                }
+                continue;
+            }
+            if (assignedRole(node) == wanted) {
+                count++;
+            }
+        }
+        for (PlannedCopy copy : planned) {
+            if (copy.tenant().equals(tenant) && copy.indexUuid().equals(index.uuid())
+                && copy.shard() == shard && copy.role() == wanted) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private ShardRole assignedRole(Observation.NodeObservation node) {
+        Assignment assignment = node.assignment();
+        if (assignment == null) {
+            return null;
+        }
+        Assignment.TenantAssignment tenantAssignment = assignment.tenants().get(tenant);
+        if (tenantAssignment == null) {
+            return null;
+        }
+        Assignment.IndexAssignment indexAssignment = tenantAssignment.indices().get(index.uuid());
+        return indexAssignment == null ? null : indexAssignment.shards().get(shard);
+    }
+
     /** Whether some node already has a started primary of this shard. */
     public boolean primaryIsActive() {
         for (Observation.NodeObservation node : observation.nodes().values()) {

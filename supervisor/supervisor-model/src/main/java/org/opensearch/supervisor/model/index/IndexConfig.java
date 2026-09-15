@@ -2,6 +2,7 @@ package org.opensearch.supervisor.model.index;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import org.opensearch.supervisor.model.Json;
+import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.settings.AllocationEnable;
 import org.opensearch.supervisor.model.status.Replication;
 
@@ -34,6 +35,7 @@ public record IndexConfig(
     boolean open,
     int numberOfShards,
     int numberOfReplicas,
+    int numberOfSearchReplicas,
     Replication replication,
     boolean hidden,
     AllocationEnable allocationEnable,
@@ -43,11 +45,36 @@ public record IndexConfig(
 
     public static final String SETTING_SHARDS = "index.number_of_shards";
     public static final String SETTING_REPLICAS = "index.number_of_replicas";
+
+    /**
+     * Read-only copies that recover from the remote store and are never promoted.
+     *
+     * <p>Independent of {@link #SETTING_REPLICAS} in OpenSearch, and it was inert here until a tenant wrote it
+     * and got a green index with no copy to show for it.
+     */
+    public static final String SETTING_SEARCH_REPLICAS = "index.number_of_search_replicas";
     public static final String SETTING_REPLICATION = "index.replication.type";
     public static final String SETTING_HIDDEN = "index.hidden";
 
     /** Overrides the cluster-wide value, so one index can be frozen without freezing the rest. */
     public static final String SETTING_ALLOCATION_ENABLE = "index.routing.allocation.enable";
+
+    /** Everything except the search-replica count, which most callers do not set. */
+    public IndexConfig(
+        String name,
+        String uuid,
+        boolean open,
+        int numberOfShards,
+        int numberOfReplicas,
+        Replication replication,
+        boolean hidden,
+        AllocationEnable allocationEnable,
+        long configRevision,
+        Map<Integer, Integer> copyOverrides
+    ) {
+        this(name, uuid, open, numberOfShards, numberOfReplicas, 0, replication, hidden, allocationEnable,
+            configRevision, copyOverrides);
+    }
 
     /**
      * Everything except the per-shard copy overrides, which almost nothing sets.
@@ -66,7 +93,7 @@ public record IndexConfig(
         AllocationEnable allocationEnable,
         long configRevision
     ) {
-        this(name, uuid, open, numberOfShards, numberOfReplicas, replication, hidden, allocationEnable,
+        this(name, uuid, open, numberOfShards, numberOfReplicas, 0, replication, hidden, allocationEnable,
             configRevision, Map.of());
     }
 
@@ -83,6 +110,10 @@ public record IndexConfig(
         if (numberOfReplicas < 0) {
             throw new IllegalArgumentException("index [" + name + "] declares " + numberOfReplicas + " replicas");
         }
+        if (numberOfSearchReplicas < 0) {
+            throw new IllegalArgumentException(
+                "index [" + name + "] declares " + numberOfSearchReplicas + " search replicas");
+        }
     }
 
     /**
@@ -96,9 +127,55 @@ public record IndexConfig(
         return allocationEnable == AllocationEnable.UNKNOWN ? clusterValue : allocationEnable;
     }
 
-    /** Copies desired per shard: one primary plus its replicas. */
+    /** Copies desired per shard: one primary plus every kind of replica. */
     public int copiesPerShard() {
-        return 1 + numberOfReplicas;
+        return 1 + desiredCopiesOf(ShardRole.REPLICA) + desiredCopiesOf(ShardRole.SEARCH_REPLICA);
+    }
+
+    /**
+     * How many copies of one shard should carry a given role — <b>the one place the two settings are mapped onto
+     * roles</b>, and the place to change when that mapping does.
+     *
+     * <p>It is not the obvious mapping, and the reason is worth stating because the obvious one is what OpenSearch
+     * does. There, {@code number_of_replicas} means ordinary replicas that peer-recover and can be promoted,
+     * while {@code number_of_search_replicas} means read-only copies that never can. Here,
+     * {@code number_of_replicas} has always been read through the <em>replication type</em>: on a
+     * document-replication index it asks for {@code REPLICA}, and on a segment-replication index it asks for
+     * {@code SEARCH_REPLICA}, because a segment-replication copy recovers from the remote store and does not
+     * behave like a peer-recovering replica at all.
+     *
+     * <p>That reading is kept rather than corrected, deliberately, because it is <b>a contract with the data
+     * plane rather than a detail of this service</b>. The plugin dispatches on the role it is assigned and not on
+     * the replication type: it builds a {@code SEARCH_REPLICA} when a remote store backs the index, and it
+     * currently <em>defers</em> a {@code REPLICA} with "a document-replication replica needs peer resolution,
+     * which this node does not implement yet". Changing what {@code number_of_replicas} produces would therefore
+     * turn working search replicas into deferred ones, which is a change both sides have to make together.
+     *
+     * <p>The consequence, stated so nobody has to infer it: on a segment-replication index the two settings are
+     * <b>added together</b> and both ask for search replicas, so "one ordinary replica and one search replica on
+     * a segment-replication index" is still not expressible. See {@code DESIGN.md} §13.
+     */
+    public int desiredCopiesOf(ShardRole role) {
+        return switch (role) {
+            case PRIMARY -> 1;
+            case REPLICA -> replication == Replication.DOCUMENT ? numberOfReplicas : 0;
+            case SEARCH_REPLICA -> replication == Replication.DOCUMENT
+                // Search replicas need a remote store, which document replication does not imply. Asking for
+                // them here is a contradiction, reported as a finding rather than planned -- see
+                // FindingKind.DESIRED_COPY_IGNORED. Counting them would leave the index permanently short of
+                // copies nothing could ever place.
+                ? 0
+                : numberOfSearchReplicas + numberOfReplicas;
+            case UNKNOWN -> 0;
+        };
+    }
+
+    /**
+     * Whether this index asks for search replicas that cannot exist, because it does not use segment
+     * replication and so has no remote store to recover them from.
+     */
+    public boolean asksForImpossibleSearchReplicas() {
+        return numberOfSearchReplicas > 0 && replication == Replication.DOCUMENT;
     }
 
     /**
@@ -127,8 +204,8 @@ public record IndexConfig(
 
     /** Same index, with extra copies authorised for particular shards. */
     public IndexConfig withCopyOverrides(Map<Integer, Integer> overrides) {
-        return new IndexConfig(name, uuid, open, numberOfShards, numberOfReplicas, replication, hidden,
-            allocationEnable, configRevision, overrides);
+        return new IndexConfig(name, uuid, open, numberOfShards, numberOfReplicas, numberOfSearchReplicas,
+            replication, hidden, allocationEnable, configRevision, overrides);
     }
 
     /** Total copies this index wants across the pool. Zero while closed — a closed index serves nothing. */
@@ -163,10 +240,12 @@ public record IndexConfig(
             "close".equalsIgnoreCase(text(root, "state", "open")) == false,
             intSetting(settings, SETTING_SHARDS, 1, name),
             intSetting(settings, SETTING_REPLICAS, 0, name),
+            intSetting(settings, SETTING_SEARCH_REPLICAS, 0, name),
             Replication.from(stringSetting(settings, SETTING_REPLICATION, "SEGMENT")),
             Boolean.parseBoolean(stringSetting(settings, SETTING_HIDDEN, "false")),
             AllocationEnable.from(stringSetting(settings, SETTING_ALLOCATION_ENABLE, null)),
-            configRevision
+            configRevision,
+            Map.of()
         );
     }
 
@@ -220,9 +299,19 @@ public record IndexConfig(
     }
 
     public static Map<String, String> settingsOf(int shards, int replicas, Replication replication) {
+        return settingsOf(shards, replicas, 0, replication);
+    }
+
+    public static Map<String, String> settingsOf(
+        int shards,
+        int replicas,
+        int searchReplicas,
+        Replication replication
+    ) {
         return Map.of(
             SETTING_SHARDS, Integer.toString(shards),
             SETTING_REPLICAS, Integer.toString(replicas),
+            SETTING_SEARCH_REPLICAS, Integer.toString(searchReplicas),
             SETTING_REPLICATION, replication.name().toUpperCase(Locale.ROOT)
         );
     }

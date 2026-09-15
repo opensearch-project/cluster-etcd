@@ -160,6 +160,7 @@ document — that data is already in `nodes/heartbeat/<id>` for anyone entitled 
 ```json
 {
   "node_id": "pv1sDMfZRxSTMiW5VrbN9w",
+  "ephemeral_id": "eph-91c2",
   "name": "data-3",
   "roles": ["data"],
   "address": "10.0.3.14",
@@ -172,6 +173,13 @@ document — that data is already in `nodes/heartbeat/<id>` for anyone entitled 
 ```
 
 `liveness` is `live`, `stale` or `lost`, on the two-threshold rule in `NODE_CONTRACT.md`.
+
+`ephemeral_id` is here because **an address is necessary and not sufficient**, which a real coordinator
+discovered by locating a node correctly and being refused anyway: `DiscoveryNode.equals` compares only the
+ephemeral id, and the transport's connection validator rejects a handshake whose remote node is unequal to the one
+it was handed. A reader cannot work around it — a fabricated ephemeral id cannot match by construction — so the
+projection has to carry it. It changes on every restart, which is the point of it, and it changes on the same
+trigger as everything else in this document.
 
 ### `tenant/<t>/status/awareness` — the check the control plane cannot make today
 

@@ -109,8 +109,15 @@ public final class SurplusReaper {
                     + " without reducing redundancy at all"));
         }
 
+        // Drop a copy of a role that is itself over, not merely any non-primary. A shard wanting one replica and
+        // one search replica, holding one replica and two search replicas, is over by a search replica -- and
+        // dropping the replica would satisfy the total while leaving the shard wrong in both roles.
+        //
+        // This cannot empty out spuriously: the authorised count is at least the sum of the per-role counts, so a
+        // total above it means some role is above its own.
         List<LoadModel.Held> droppable = started.stream()
             .filter(copy -> copy.role() != ShardRole.PRIMARY)
+            .filter(copy -> startedInRole(started, copy.role()) > index.desiredCopiesOf(copy.role()))
             .toList();
         if (droppable.isEmpty()) {
             // Every surplus copy is a primary, which cannot happen from a plan this service produced and is
@@ -125,6 +132,10 @@ public final class SurplusReaper {
                 + " is the busiest node holding it, leaves %d started copies and relieves the node that most"
                 + " needs relieving",
             started.size(), desired, copy.node(), loads.loadOf(copy.node()), started.size() - 1)));
+    }
+
+    private static long startedInRole(List<LoadModel.Held> started, ShardRole role) {
+        return started.stream().filter(copy -> copy.role() == role).count();
     }
 
     /**

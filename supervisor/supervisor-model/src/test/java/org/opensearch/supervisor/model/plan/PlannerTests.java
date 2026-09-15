@@ -382,7 +382,8 @@ class PlannerTests {
         );
 
         Diff diff = diffAfter(3, observation);
-        assertEquals(1, diff.of(FindingKind.UNASSIGNED_REPLICA).size());
+        assertEquals(1, diff.of(FindingKind.UNASSIGNED_SEARCH_REPLICA).size(),
+            "a segment-replication index's replicas are search replicas");
 
         Plan plan = Planner.plan(observation, diff, 7, POLICY);
         Instruction.PlaceCopy place = (Instruction.PlaceCopy) plan.instructions().get(0);

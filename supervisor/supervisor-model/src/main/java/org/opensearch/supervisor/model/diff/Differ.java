@@ -158,18 +158,40 @@ public final class Differ {
             ));
         }
 
-        if (nonPrimaries < index.numberOfReplicas()) {
+        // Per role, not in total. Two counts that happen to sum correctly can still be individually wrong -- a
+        // shard with two search replicas and no ordinary replica satisfies a total of two and is not what was
+        // asked for -- and the planner needs to know which role a missing copy wants in any case.
+        for (ShardRole role : List.of(ShardRole.REPLICA, ShardRole.SEARCH_REPLICA)) {
+            long held = copies.stream().filter(copy -> copy.role() == role).count();
+            int wanted = index.desiredCopiesOf(role);
+            String plural = role == ShardRole.SEARCH_REPLICA ? "search replicas" : "replicas";
+
+            if (held < wanted) {
+                findings.add(Finding.of(
+                    role == ShardRole.SEARCH_REPLICA
+                        ? FindingKind.UNASSIGNED_SEARCH_REPLICA
+                        : FindingKind.UNASSIGNED_REPLICA,
+                    subject, observation.pass(),
+                    "index [" + index.name() + "] shard " + key.shard() + " has " + held + " of " + wanted + " "
+                        + plural + placementHint(observation)
+                ));
+            } else if (held > wanted) {
+                findings.add(Finding.of(
+                    FindingKind.SURPLUS_COPY, subject, observation.pass(),
+                    "index [" + index.name() + "] shard " + key.shard() + " has " + held + " " + plural
+                        + " where " + wanted + " are wanted; likely a move that has added before removing,"
+                        + " which is the intended order"
+                ));
+            }
+        }
+
+        if (index.asksForImpossibleSearchReplicas()) {
             findings.add(Finding.of(
-                FindingKind.UNASSIGNED_REPLICA, subject, observation.pass(),
-                "index [" + index.name() + "] shard " + key.shard() + " has " + nonPrimaries + " of "
-                    + index.numberOfReplicas() + " replicas" + placementHint(observation)
-            ));
-        } else if (nonPrimaries > index.numberOfReplicas()) {
-            findings.add(Finding.of(
-                FindingKind.SURPLUS_COPY, subject, observation.pass(),
-                "index [" + index.name() + "] shard " + key.shard() + " has " + nonPrimaries + " replicas"
-                    + " where " + index.numberOfReplicas() + " are wanted; likely a move that has added"
-                    + " before removing, which is the intended order"
+                FindingKind.DESIRED_COPY_IGNORED, subject, observation.pass(),
+                "index [" + index.name() + "] asks for " + index.numberOfSearchReplicas() + " search replica(s),"
+                    + " which are not planned because the index uses document replication: a search-only copy"
+                    + " recovers from a remote store, and document replication does not imply one. Either set"
+                    + " index.replication.type to SEGMENT or use index.number_of_replicas instead"
             ));
         }
 

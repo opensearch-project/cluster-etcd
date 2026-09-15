@@ -21,6 +21,8 @@ import org.opensearch.supervisor.model.plan.Planner;
 import org.opensearch.supervisor.model.pool.PoolBinding;
 import org.opensearch.supervisor.model.pool.PoolDefinition;
 import org.opensearch.supervisor.model.pool.PoolKind;
+import org.opensearch.supervisor.model.status.IndexStatus;
+import org.opensearch.supervisor.model.status.HealthStatus;
 import org.opensearch.supervisor.model.status.Replication;
 
 import java.time.Clock;
@@ -691,7 +693,8 @@ class ActingTests {
         }
 
         assertEquals(1, only.inventory().copyCount(), "one node, one copy");
-        assertEquals(1, supervisor.lastDiffOf(POOL).of(FindingKind.UNASSIGNED_REPLICA).size());
+        assertEquals(1, supervisor.lastDiffOf(POOL).of(FindingKind.UNASSIGNED_SEARCH_REPLICA).size(),
+            "createIndex builds a segment-replication index, so the copy it still wants is a search replica");
     }
 
     @Test
@@ -806,5 +809,111 @@ class ActingTests {
 
         assertEquals(3, a.inventory().copyCount() + b.inventory().copyCount(),
             "three shards, three copies -- no duplicates from three supervisors");
+    }
+
+    // ---------------------------------------------------- search replicas (FINDINGS_FROM_THE_DATA_PLANE 1)
+
+    private void createIndexWithSearchReplicas(int shards, int replicas, int searchReplicas) {
+        store.put(Keys.indicesPrefix(ACME) + "my-index", IndexConfig.toDocument(
+            "my-index", UUID, true,
+            IndexConfig.settingsOf(shards, replicas, searchReplicas, Replication.SEGMENT)
+        ));
+    }
+
+    @Test
+    void aRequestedSearchReplicaIsActuallyPlaced() {
+        // The regression this comes from, end to end: a tenant asked for one shard, no replicas and one search
+        // replica; the supervisor planned one copy and projected the index green with zero unassigned shards.
+        FakeNode a = node(NODE);
+        FakeNode b = node(NODE_B);
+        a.start();
+        b.start();
+        createIndexWithSearchReplicas(1, 0, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        assertEquals(2, a.inventory().copyCount() + b.inventory().copyCount(),
+            "a primary and the search replica that was asked for");
+        assertEquals(1, rolesHeld(a, b).stream().filter(role -> role == ShardRole.SEARCH_REPLICA).count(),
+            "and the second copy is a search replica: " + rolesHeld(a, b));
+
+        IndexStatus status = IndexStatus.from(store.get(Keys.indexStatus(ACME, UUID)).orElseThrow().value());
+        assertEquals(HealthStatus.GREEN, status.status(), "both copies are placed, so this is green");
+        assertEquals(1, status.numberOfSearchReplicas(), "and the projection says what was asked for");
+    }
+
+    @Test
+    void anIndexIsNotGreenWhileARequestedSearchReplicaIsUnplaced() {
+        // The half that made this expensive to find. One node cannot hold both copies of a shard, so the search
+        // replica stays unplaced -- and the old arithmetic left the index green with a copy missing, which is a
+        // status that tells an operator to look somewhere else.
+        FakeNode only = node(NODE);
+        only.start();
+        createIndexWithSearchReplicas(1, 0, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            only.tick();
+            advance();
+        }
+
+        assertEquals(1, only.inventory().copyCount(), "one node, one copy");
+
+        IndexStatus status = IndexStatus.from(store.get(Keys.indexStatus(ACME, UUID)).orElseThrow().value());
+        assertEquals(1, status.unassignedShards(), "the search replica is desired and absent");
+        assertEquals(HealthStatus.YELLOW, status.status(), "so this is not green");
+
+        // And the diff says which kind of copy is missing, rather than leaving it to be inferred.
+        assertEquals(1, supervisor.lastDiffOf(POOL).of(FindingKind.UNASSIGNED_SEARCH_REPLICA).size());
+    }
+
+    @Test
+    void aSearchReplicaOnADocumentReplicationIndexIsReportedNotPlanned() {
+        FakeNode a = node(NODE);
+        FakeNode b = node(NODE_B);
+        a.start();
+        b.start();
+        store.put(Keys.indicesPrefix(ACME) + "my-index", IndexConfig.toDocument(
+            "my-index", UUID, true, IndexConfig.settingsOf(1, 0, 1, Replication.DOCUMENT)
+        ));
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 12; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        assertEquals(1, a.inventory().copyCount() + b.inventory().copyCount(),
+            "the primary only; a search-only copy has no remote store to recover from here");
+        assertEquals(1, supervisor.lastDiffOf(POOL).of(FindingKind.DESIRED_COPY_IGNORED).size());
+
+        String diff = new String(store.get(Keys.tenantDiff(ACME)).orElseThrow().value(),
+            java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(diff.contains("DESIRED_COPY_IGNORED"), diff);
+        assertTrue(diff.contains("document replication"), diff);
+    }
+
+    private java.util.List<ShardRole> rolesHeld(FakeNode... nodes) {
+        java.util.List<ShardRole> roles = new java.util.ArrayList<>();
+        for (FakeNode node : nodes) {
+            var tenant = node.inventory().tenants().get(ACME);
+            if (tenant == null) {
+                continue;
+            }
+            var index = tenant.indices().get(UUID);
+            if (index != null) {
+                index.shards().values().forEach(copy -> roles.add(copy.role()));
+            }
+        }
+        return roles;
     }
 }

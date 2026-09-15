@@ -738,6 +738,20 @@ wants the same fix.
 9. **Rollover.** `generation` only advances on rollover, which the control plane does not implement. By the
    lifetime rule it is the supervisor's, but that is not yet agreed with the other side.
 
+10. **An ordinary replica of a segment-replication index cannot be asked for.** `IndexConfig.desiredCopiesOf`
+    maps `number_of_replicas` onto `SEARCH_REPLICA` when the index uses segment replication, so that setting and
+    `number_of_search_replicas` are *added together* and both produce search replicas. OpenSearch treats them as
+    independent — ordinary replicas peer-recover and can be promoted; search replicas never can — and this cannot
+    express that.
+
+    It is kept because it is **a contract with the data plane, not a detail of this service**. The plugin
+    dispatches on the assigned role rather than on the replication type: it builds a `SEARCH_REPLICA` when a
+    remote store backs the index, and currently *defers* a `REPLICA` with "a document-replication replica needs
+    peer resolution, which this node does not implement yet". So changing the mapping unilaterally would turn
+    working search replicas into deferred ones. Closing it means the two sides agreeing at once, and it is worth
+    doing when the plugin implements peer resolution — until then the change would buy an inexpressible
+    configuration for a broken one.
+
 ---
 
 ## 14. Balancing

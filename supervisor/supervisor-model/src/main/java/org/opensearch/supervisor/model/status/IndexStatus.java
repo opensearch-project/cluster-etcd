@@ -31,6 +31,7 @@ public record IndexStatus(
     Replication replication,
     int numberOfShards,
     int numberOfReplicas,
+    int numberOfSearchReplicas,
     Map<Integer, List<ShardPlacement>> shards,
     long observedAt,
     long observedPass
@@ -79,7 +80,9 @@ public record IndexStatus(
     /** Desired copies that exist nowhere. Zero for a closed index, which wants none. */
     @JsonProperty("unassigned_shards")
     public int unassignedShards() {
-        int desired = shards.isEmpty() ? 0 : numberOfShards * (1 + numberOfReplicas);
+        // Every kind of copy the index asked for. Leaving search replicas out is what let an index report green
+        // with a requested copy missing.
+        int desired = shards.isEmpty() ? 0 : numberOfShards * (1 + numberOfReplicas + numberOfSearchReplicas);
         int present = shards.values().stream().mapToInt(List::size).sum();
         return Math.max(0, desired - present);
     }

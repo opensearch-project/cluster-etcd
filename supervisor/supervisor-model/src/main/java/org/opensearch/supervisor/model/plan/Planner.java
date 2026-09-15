@@ -137,6 +137,9 @@ public final class Planner {
         List<Finding> actionable = new ArrayList<>();
         actionable.addAll(diff.of(FindingKind.UNASSIGNED_PRIMARY));
         actionable.addAll(diff.of(FindingKind.UNASSIGNED_REPLICA));
+        // Last, because a search replica recovers from the remote store and so waits for nobody. Placing the
+        // copies that *do* have an ordering constraint first costs nothing and saves a round trip.
+        actionable.addAll(diff.of(FindingKind.UNASSIGNED_SEARCH_REPLICA));
         actionable = actionable.stream()
             .filter(finding -> finding.passes() >= policy.minimumPasses())
             .toList();
@@ -179,9 +182,7 @@ public final class Planner {
                 continue;
             }
 
-            ShardRole role = finding.kind() == FindingKind.UNASSIGNED_PRIMARY
-                ? ShardRole.PRIMARY
-                : replicaRoleOf(index);
+            ShardRole role = roleWantedBy(finding.kind());
 
             // How many copies of this shard already exist or are on their way. The allocator's same-shard rule
             // stops a duplicate landing on one node; this stops planning a copy the shard does not want.
@@ -189,6 +190,11 @@ public final class Planner {
                 tenant, index, shard, role, observation, awarenessAttributes, maxCopiesPerNode,
                 refuseCopiesSharingAHost, planned
             );
+            // Two ceilings, and both are needed. The per-role one is what the finding is actually about; the
+            // total is a safety net that also covers the per-shard authorised count, which is not split by role.
+            if (context.copiesOfThisShardInRole(role) >= index.desiredCopiesOf(role)) {
+                continue;
+            }
             if (context.nodesWithThisShard().size() >= index.copiesAuthorisedFor(shard)) {
                 continue;
             }
@@ -281,16 +287,22 @@ public final class Planner {
     }
 
     /**
-     * What a replica of this index is called.
+     * The role a finding is asking for.
      *
-     * <p>Segment replication calls its read-only copies search replicas and document replication calls them
-     * replicas, and the difference is not cosmetic: a node given the wrong one either waits for a primary that
-     * will never contact it or contacts a primary that is not expecting it.
+     * <p>Read from the kind rather than derived from the index, which is where it used to come from. The mapping
+     * of settings onto roles now lives in {@link IndexConfig#desiredCopiesOf} — one place, with the reasoning —
+     * and the differ has already applied it by the time a finding exists. Deriving it a second time here is how
+     * the two would eventually disagree.
      */
-    private static ShardRole replicaRoleOf(IndexConfig index) {
-        return index.replication() == org.opensearch.supervisor.model.status.Replication.SEGMENT
-            ? ShardRole.SEARCH_REPLICA
-            : ShardRole.REPLICA;
+    private static ShardRole roleWantedBy(FindingKind kind) {
+        return switch (kind) {
+            case UNASSIGNED_PRIMARY -> ShardRole.PRIMARY;
+            case UNASSIGNED_SEARCH_REPLICA -> ShardRole.SEARCH_REPLICA;
+            case UNASSIGNED_REPLICA -> ShardRole.REPLICA;
+            default -> throw new IllegalArgumentException(
+                "finding kind " + kind + " does not ask for a shard copy; only the three unassigned kinds are"
+                    + " actionable here, and adding a fourth means deciding what role it wants");
+        };
     }
 
 }

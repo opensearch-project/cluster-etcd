@@ -17,8 +17,34 @@ public enum FindingKind {
     /** An open index's shard has no primary anywhere in the pool. */
     UNASSIGNED_PRIMARY(CRITICAL),
 
-    /** Fewer copies than {@code index.number_of_replicas} asks for. */
+    /** Fewer {@code REPLICA} copies than desired state asks for. */
     UNASSIGNED_REPLICA(WARNING),
+
+    /**
+     * Fewer {@code SEARCH_REPLICA} copies than desired state asks for.
+     *
+     * <p>Its own kind rather than a field on {@link Finding}, for two reasons. The planner has to know which role
+     * a missing copy wants — the roles have different placement rules, since only a document-replication replica
+     * has to wait for a serving primary — and it dispatches on kind. And an operator reading the counts by kind
+     * gets "two search replicas unplaced, no replicas unplaced", which is the distinction they would otherwise
+     * have to reconstruct from the reasons.
+     */
+    UNASSIGNED_SEARCH_REPLICA(WARNING),
+
+    /**
+     * Desired state asks for copies this supervisor will not plan, and says why.
+     *
+     * <p>The general form of a specific embarrassment: {@code index.number_of_search_replicas} was read by
+     * nothing for as long as it existed, so a tenant who set it got no copy, no complaint, and a status claiming
+     * everything asked for had been delivered. The count <em>defined</em> what was wanted, which made anything
+     * outside it invisible by construction.
+     *
+     * <p>So a request this supervisor declines has to leave a reason behind rather than being dropped from the
+     * arithmetic. Its copies are deliberately <b>not</b> counted as unassigned: unassigned means "intended and
+     * not yet placed", and reporting a permanently unplaceable request that way would leave the index yellow for
+     * ever with nothing an operator could do about it.
+     */
+    DESIRED_COPY_IGNORED(WARNING),
 
     /** More copies than desired. */
     SURPLUS_COPY(WARNING),
