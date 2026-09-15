@@ -95,6 +95,7 @@ that is the next milestone.
 ./gradlew run -Pclusterless.apply=false    # the same, read-only
 ./gradlew run -Pclusterless.nodes=2        # two of them, sharing one store
 ./gradlew run -Pclusterless.remote_store=false   # no remote store, so search replicas are declined
+./gradlew run -Pclusterless.segments_only=true   # segments in the repository, translog on local disk
 ```
 
 The run cluster also configures a remote store by default — an `fs` repository under
@@ -153,6 +154,7 @@ it also runs plugin packaging, forbidden-APIs, `testingConventions` and the lice
 | `clusterless.apply` | default **false**. Whether to act on the assignment, or only to log what acting on it would do. `./gradlew run` sets it true. |
 | `clusterless.retention.passes` | default 12. How many consecutive passes an index must be absent from the store before this node releases its data. A node keeps the files of an index it no longer holds a copy of, so that "stop serving this" is not "destroy this"; this is how patient the decision to finally delete them is. |
 | `node.attr.remote_store.*` | not this plugin's settings, and read by it. OpenSearch's own remote-store node attributes say where this node's segments live; the plugin registers the repository they name and points segment-replication indices at it. A node with none declines search replicas, because there would be nothing for them to read. Every node holding a copy of the same shard must name the same repository — the copies share one remote path, and nothing here can check that from one node. |
+| `node.attr.remote_store.mode` | `segments_only` keeps segments in the repository and the translog on local disk, and needs no translog or cluster-state repository. Right where the ingestion source holds every operation, since a transaction log is then a second copy of something already durable. It costs the ability to recover a primary from the remote store — that path restores through the remote translog — so a primary of such an index that has lost its disk is declined with a reason rather than started empty over its own data. |
 
 `GET /_clusterless/status` reports what this node last read, applied and wrote — including
 `assignment.deferred`, the copies it was told to hold and did not build, with a reason for each. That list is

@@ -21,7 +21,10 @@ import org.opensearch.clusterless.apply.IndexConfigSource;
 import org.opensearch.clusterless.apply.RetainedIndexReaper;
 import org.opensearch.clusterless.apply.MapperServiceMappingSource;
 import org.opensearch.clusterless.apply.NodeEnvironmentShardStore;
+import org.opensearch.clusterless.apply.LocalShardStore;
+import org.opensearch.clusterless.apply.RemoteRecovery;
 import org.opensearch.clusterless.apply.RemoteStore;
+import org.opensearch.clusterless.apply.RepositoryRemoteShardData;
 import org.opensearch.clusterless.apply.StoreIndexConfigSource;
 import org.opensearch.clusterless.publish.ClusterStateInventorySource;
 import org.opensearch.clusterless.publish.IndicesServiceShardSizes;
@@ -101,6 +104,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
     private ClusterService clusterService;
     private ThreadPool threadPool;
     private NodeEnvironment nodeEnvironment;
+    private Supplier<RepositoriesService> repositoriesService;
 
     private volatile KeyValueStore store;
     private volatile NodePublisher publisher;
@@ -125,6 +129,9 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         this.clusterService = clusterService;
         this.threadPool = threadPool;
         this.nodeEnvironment = nodeEnvironment;
+        // Handed to us directly, unlike IndicesService: no Guice holder needed. Kept as the supplier rather than
+        // resolved now, because it is not built yet at this point.
+        this.repositoriesService = repositoriesServiceSupplier;
 
         // Opened here rather than in onNodeStarted so that a bad store URI fails the node while it is
         // still starting, with the settings that caused it in scope, instead of after it is accepting
@@ -162,23 +169,31 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         // One source shared by the resolver and the reaper: they ask the same question of the same keys, one to
         // decide what to build and the other to decide what has genuinely gone away.
         IndexConfigSource indexConfigs = new StoreIndexConfigSource(store);
+        LocalShardStore localShardStore = new NodeEnvironmentShardStore(nodeEnvironment);
         poller = new AssignmentPoller(
             store,
             nodeId,
             new DesiredStateResolver(indexConfigs, remoteStore),
             clusterService::state,
-            (desired, stopRetaining) -> new DataNodeState(
+            (desired, stopRetaining, recoverySources) -> new DataNodeState(
                 clusterService.getClusterName(),
                 localNode,
                 desired,
                 new MapperServiceMappingSource(this::indicesService),
-                new NodeEnvironmentShardStore(nodeEnvironment),
+                localShardStore,
                 remoteStore,
-                stopRetaining
+                stopRetaining,
+                recoverySources
             ),
             publisher,
             new ClusterApplierServiceStateApplier(clusterService.getClusterApplierService()),
             new RetainedIndexReaper(indexConfigs, ClusterlessSettings.RETENTION_PASSES.get(settings)),
+            new RemoteRecovery(
+                remoteStore,
+                localShardStore,
+                new RepositoryRemoteShardData(repositoriesService, threadPool, settings),
+                localNode.getId()
+            ),
             apply
         );
 

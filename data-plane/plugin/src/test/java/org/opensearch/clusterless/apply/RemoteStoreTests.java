@@ -71,17 +71,51 @@ public class RemoteStoreTests extends OpenSearchTestCase {
     }
 
     public void testAHalfConfiguredNodeFailsLoudlyRatherThanSilently() {
-        // A node naming a segment repository but no cluster-state one is not a remote-store node as far as
-        // DiscoveryNode is concerned, so it reads as having no remote store at all -- which would decline every
-        // search replica with a reason saying to configure the attributes that are, in fact, half configured. Not
-        // ideal, and better than the alternative of building a copy against a repository that will not resolve.
+        // A node naming a segment repository and nothing else, in the default mode, is genuinely misconfigured:
+        // RemoteStoreNodeAttribute requires a translog and a cluster-state repository alongside it. Failing here
+        // -- at startup, naming the attribute -- is the point. Reading it as "no remote store" instead would let
+        // the node run and decline every search replica with a reason telling an operator to set attributes they
+        // had in fact already set.
         Map<String, String> attributes = new HashMap<>();
         attributes.put("remote_store.segment.repository", "segments");
         attributes.put("remote_store.repository.segments.type", "fs");
 
+        IllegalStateException e = expectThrows(IllegalStateException.class, () -> RemoteStore.of(nodeWith(attributes)));
+
+        assertTrue(e.getMessage(), e.getMessage().contains("remote_store.translog.repository"));
+    }
+
+    public void testSegmentsOnlyModeNeedsNoTranslogRepository() {
+        // The upstream attribute added for this architecture. It makes RemoteStoreNodeAttribute require the segment
+        // repository alone, which is what lets a deployment keep segments in a repository and skip the transaction
+        // log -- reasonable when the ingestion source holds every operation.
+        Map<String, String> attributes = new HashMap<>();
+        attributes.put("remote_store.mode", "segments_only");
+        attributes.put("remote_store.segment.repository", "segments");
+        attributes.put("remote_store.repository.segments.type", "fs");
+        attributes.put("remote_store.repository.segments.settings.location", "/tmp/clusterless-remote-store");
+
         RemoteStore store = RemoteStore.of(nodeWith(attributes));
 
-        assertFalse(store.configured());
+        assertTrue("segments still go to a repository", store.configured());
+        assertFalse("and the translog does not", store.translogConfigured());
+        assertEquals("segments", store.repositories().repositories().get(0).name());
+    }
+
+    public void testSuchANodeIsNotWhatTheServerCallsARemoteStoreNode() {
+        // The trap this class is keyed against. DiscoveryNode.isRemoteStoreNode() demands a cluster-state
+        // repository, which segments_only does not have -- while IndexSettings.assignedOnRemoteNode is computed
+        // from isRemoteDataAttributePresent, which such a node satisfies. Gating on the first would leave the
+        // server routing replicas to RemoteStoreReplicationSource with no repository registered at all.
+        Map<String, String> attributes = new HashMap<>();
+        attributes.put("remote_store.mode", "segments_only");
+        attributes.put("remote_store.segment.repository", "segments");
+        attributes.put("remote_store.repository.segments.type", "fs");
+        attributes.put("remote_store.repository.segments.settings.location", "/tmp/clusterless-remote-store");
+        DiscoveryNode node = nodeWith(attributes);
+
+        assertFalse("the server would not call this a remote store node", node.isRemoteStoreNode());
+        assertTrue("and this plugin must still back its indices", RemoteStore.of(node).configured());
     }
 
     private static IndexConfig withReplicationType(String replicationType) {

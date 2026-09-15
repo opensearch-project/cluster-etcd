@@ -372,6 +372,43 @@ one that might disagree with itself.
 The same reasoning is why `index.replication.type` is read from the index document rather than from a node-local
 default: a default is the one input that could make two nodes disagree about the same index.
 
+### Remote store: three predicates that are not the same predicate
+
+Worth a table, because picking the wrong one produces a broken node rather than an error.
+
+| predicate | true when | used for |
+|---|---|---|
+| `DiscoveryNode.isRemoteStoreNode()` | cluster-state **and** segment repositories | nothing this plugin should gate on |
+| `RemoteStoreNodeAttribute.isRemoteDataAttributePresent(settings)` | segment **or** translog repository | `IndexSettings.assignedOnRemoteNode`, which chooses the segment replication source |
+| `IndexSettings.isRemoteTranslogStoreEnabled()` | `index.remote_store.translog.repository` is set | which translog factory a primary gets, and therefore whether `REMOTE_STORE` recovery works |
+
+`node.attr.remote_store.mode=segments_only` — added upstream for this architecture — makes
+`RemoteStoreNodeAttribute` require the segment repository alone. Such a node is therefore **not** an
+`isRemoteStoreNode()`, while `assignedOnRemoteNode` is still true for its shards. Gating on the first would leave
+the server routing replicas to `RemoteStoreReplicationSource` with no repository registered: the one genuinely
+broken state available here. `RemoteStore` keys on the segment repository, and `RemoteStoreTests` pins it.
+
+In the default mode all three repositories are mandatory — a segment repository without a translog and a
+cluster-state one throws `IllegalStateException` naming the missing attribute, at startup, which is the right place
+to find out.
+
+### `REMOTE_STORE` recovery fails on an empty repository, and that inverts the safe direction
+
+The instinct is that recovering from a remote store which happens to be empty produces an empty shard, so
+preferring it when unsure is the cautious choice. It is not.
+
+`RemoteFsTranslog.download` takes an `else` branch when there is no remote translog metadata — "we don't have any
+translog files uploaded to remote store" — and creates no `translog.ckp`. `StoreRecovery.recoverFromRemoteStore`
+then finds the local store empty, so `listAll().length <= 1` holds, and `Checkpoint.read(location.resolve(
+CHECKPOINT_FILE_NAME))` throws `NoSuchFileException`, wrapped as `IndexShardRecoveryException`. Since a failed copy
+is handed a fresh routing entry on the next pass, a new index whose primary defaulted to `REMOTE_STORE` never
+starts at all.
+
+So both directions are unsafe and the answer must be *looked up*: `EMPTY_STORE` over data is silent loss,
+`REMOTE_STORE` over nothing is an infinite loop. Where it cannot be looked up, decline the copy — see
+`RemoteRecovery`. And `UNKNOWN` must never collapse into `EMPTY`: an unreachable repository and an empty one are
+the same silence and opposite facts.
+
 ### D5.3 is satisfied by the server, not by us
 
 A search replica placed in the same pass as its primary does not need to be made to wait. Its recovery goes
@@ -381,13 +418,24 @@ and *then* calls `openEngineAndSkipTranslogRecoveryFromSnapshot` → `openEngine
 recovery source is `EMPTY_STORE` or `EXISTING_STORE`, which is exactly what `LocalShardStore` already produces — so
 the recovery-source decision needed no change for search replicas.
 
-### `cluster.remote_store.fencing.enabled` exists now
+### The remote store has a real fence, and it is not the primary term
 
-Spotted while reading `MetadataCreateIndexService.updateRemoteStoreFencingSetting`, whose comment says the fence
-"is the primary's write witness" and that the per-index setting is final because toggling it on a live index would
-leave a window in which a stale primary is checked against neither the fence nor the replicas. That is D8.2's
-problem — two nodes briefly believing they are primary for a remote-store-backed shard — with server machinery
-attached. Not used yet, and the thing to read first when D8.2 comes up.
+`cluster.remote_store.fencing.enabled` and `index.remote_store.fencing.enabled` exist in 3.9, and the machinery
+behind them is more than a flag. `IndexShard.sealRemoteStoreFence` claims the fence for a copy through a **CAS
+token on the remote translog** (`RemoteFsTranslog.sealFence`), and `sealRemoteStoreFenceForRecovery` runs it for
+*every* recovery source except `PEER` — peer recovery is skipped deliberately, because a relocation target
+recovers while the source is still serving at the same primary term, and sealing there would fence a healthy
+primary mid-handoff.
+
+**This materially improves D8.2's outlook.** That gap is recorded here as "every fabricated primary term is 1, so
+nothing can fence a superseded primary", and the fence turns out not to be keyed on the term at all: it is a
+compare-and-set, so two writers are ordered by who claims it, not by who has the larger number. A primary term
+stuck at 1 does not defeat it. Read `sealRemoteStoreFence` and `RemoteFsTranslog.sealFence` before doing anything
+else about D8.2 — the honest position now is "unverified", not "known broken".
+
+The same machinery is why the empty-primary hole in `MILESTONES.md` M7.1 is worse than it first looks: an empty
+`EMPTY_STORE` primary seals the fence like any other non-peer recovery, so it becomes authoritative in a way the
+copy that still has the data cannot contest.
 
 ## Tests are JUnit 4, and this is not a preference
 

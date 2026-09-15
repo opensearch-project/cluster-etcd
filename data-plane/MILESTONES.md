@@ -190,12 +190,28 @@ machinery for, and is deliberately not attempted yet.
   happen. `../opensearch-supervisor/DESIGN.md` §14.5 explains why the two halves are deliberately unaware of
   each other, and it is worth reading before implementing this one.
 
-## M7. Replicas, and waiting for a peer — **done**
+## M7. Replicas, and waiting for a peer — **done, and confirmed on two real nodes**
 
 - Search replicas for segment replication.
 - D5.3 is the requirement that bites: a replica placed in the same pass as its primary must **wait**, not fail.
 - **Done when:** an index with one replica goes green, and a test that places both copies in one pass does not
   produce a failed shard.
+
+**Confirmed end to end.** Two nodes, a one-shard segment-replication index with one replica: the supervisor
+placed the primary on one and a `SEARCH_REPLICA` on the other, the replica's routing entry came out
+`primary: false, searchOnly: true`, and a search against the *replica's* node returned a document written to the
+primary's. That last step is the one worth having, and it is stronger than the milestone's stated "goes green":
+
+- it proves the fabricated `RepositoriesMetadata` really does register the repository, which nothing but a
+  running node could show — `RepositoriesService` could have rejected metadata it considers a system
+  repository's, and the copy would have had nothing to open;
+- it proves **both nodes derived the same remote path independently**. That is the subtlest requirement here,
+  and had they disagreed the symptom would have been a perfectly healthy-looking replica returning zero hits;
+- it proves the search-only marker holds under `-ea`: the replica applied a state whose routing table has no
+  primary for that shard without tripping `RoutingNodes`, and strict search-replica routing then chose it.
+
+What is *not* observed is D5.3's same-pass case — the primary had been serving for a long time before the
+replica was placed. The argument that it is safe is the server's code rather than a run; see below.
 
 **This milestone is really about the remote store, which no earlier milestone said.** The server picks a
 replica's segment source in `SegmentReplicationSourceFactory`:
@@ -265,6 +281,85 @@ Two copies are declined rather than built, both with reasons that name what to d
 - a search replica of a document-replication index — `index.remote_store.enabled` is validated against
   `index.replication.type` when the index service is created, so there is no way to back it with the store the copy
   would need to read.
+
+## M7.1. A remote-backed primary that lost its disk — **done**
+
+Turning the remote store on has made an existing gap dangerous instead of merely visible.
+
+`LocalShardStore` chooses `EXISTING_STORE` when there are bytes on disk for a shard and `EMPTY_STORE` when there
+are not, and that was right while the disk was the only copy: a node whose data directory had been wiped
+rebuilt an empty shard, which is honest and obvious. With a remote store it is neither. `StoreRecovery`'s
+`internalRecoverFromStore` never consults the remote store — `indexShouldExists` is simply false for
+`EMPTY_STORE` — and the remote path is a *separate recovery source*, `REMOTE_STORE`, which OpenSearch uses on
+failover. So a primary that comes back without its disk starts empty **while a complete copy of the shard sits
+in the repository, unread**, and it is then the authoritative primary of an index whose data it does not have.
+
+Worse, it seals the fence on the way (see below), so it is authoritative in a way the previous writer cannot
+contest. Nothing in the pass is wrong; the node simply answered a question it did not know it was being asked.
+
+That was the state before this milestone, and it is worth keeping written down: the failure was silent and reached
+the search replica, which faithfully syncs to whatever the primary uploads.
+
+**Why it is not a one-line change.** The right source is `RemoteStoreRecoverySource`, but not unconditionally: a
+brand-new index has nothing in the repository either, and OpenSearch gives *that* primary `EMPTY_STORE` on
+purpose. So the node has to distinguish "new index" from "primary that lost its disk".
+
+**And "err towards `REMOTE_STORE` when in doubt" — the first answer written here — is wrong.** It reads like the
+safe direction and is not, because `REMOTE_STORE` recovery *fails* against an empty repository rather than
+producing an empty shard. `RemoteFsTranslog.download` takes its `else` branch when there is no remote metadata
+("we don't have any translog files uploaded to remote store") and creates no `translog.ckp`; back in
+`recoverFromRemoteStore` the local store is then empty, so `listAll().length <= 1` holds and `Checkpoint.read(...)`
+throws. Combined with this node's own retry behaviour — a failed copy gets a fresh routing entry on the next pass
+— defaulting to `REMOTE_STORE` would leave a *new* remote-backed index failing its first recovery for ever. So
+neither source is safe to guess:
+
+| | remote store has data | remote store is empty |
+|---|---|---|
+| `EMPTY_STORE` | **silent data loss** | correct |
+| `REMOTE_STORE` | correct | fails for ever, index never starts |
+
+**Done, as `RemoteRecovery` plus `RemoteShardData`.** The answer is looked up rather than defaulted, and where it
+cannot be looked up the copy is **declined for the pass with a reason** — the pattern `DesiredStateResolver`
+already uses. A copy declined for a pass costs a pass; a copy built on a guess costs the shard or loops for ever.
+
+Four things about the shape, each of which was a mistake avoided rather than a preference:
+
+- **The probe runs in the poller, not the fabricator.** It reads a repository over a network, and the fabricator is
+  a pure function called twice on an applying pass — the mistake this repository has made four times. It runs once
+  per pass and only for copies about to be created *fresh*: a copy already in the live state keeps its routing
+  entry and is never asked about, so a converged node probes nothing at all. That matters when the alternative is
+  a network round trip per shard per second.
+- **It goes through `RemoteSegmentStoreDirectoryFactory` rather than listing blobs.** Reproducing the path
+  derivation would be the same hazard as two nodes disagreeing about it, with the worst possible failure: a probe
+  looking in the wrong place finds nothing, and "nothing" is the answer that discards data. The two inputs still
+  passed by hand — `PathType.FIXED` and the `cluster.remote_store.segments.path.prefix` setting — are pinned by a
+  test asserting the fabrication stamps no remote-store custom data, since that is what makes `FIXED` correct.
+- **Local bytes still win.** The looked-up source is consulted only where the fabricator would otherwise choose an
+  empty store, so a disk that gained bytes since the lookup is believed over the lookup. The two cannot disagree in
+  the direction that loses data.
+- **`UNKNOWN` is not `EMPTY`.** An unreachable repository and an empty one are the same silence and opposite facts.
+
+**Segments without a remote translog is a supported configuration, and it cannot use this path.**
+`REMOTE_STORE` recovery restores through the remote translog — `syncTranslogFilesFromRemoteTranslog` asserts its
+factory is the remote one, and that factory is chosen by `isRemoteTranslogStoreEnabled()`, true exactly when
+`index.remote_store.translog.repository` is set. The upstream switch is
+`node.attr.remote_store.mode=segments_only`, added for this architecture, which makes `RemoteStoreNodeAttribute`
+require the segment repository alone. It is the right configuration when the ingestion source holds every
+operation — pull-based ingestion makes a transaction log a second copy of something already durable, which is why
+`cluster-etcd` disabled it — and a primary of such an index that has lost its disk is therefore **declined with a
+reason** rather than started empty over its own data. Recovering *that* shard means segments plus an ingestion
+checkpoint, which is a different mechanism and belongs with pull-based ingestion.
+
+That mode also exposed a trap worth keeping: **`DiscoveryNode.isRemoteStoreNode()` is the wrong predicate to gate
+on.** It requires a cluster-state repository, which `segments_only` does not have, while
+`IndexSettings.assignedOnRemoteNode` comes from `isRemoteDataAttributePresent`, which such a node satisfies.
+Gating on the first would have produced the one genuinely broken state available here: the server routing replicas
+to `RemoteStoreReplicationSource` while this plugin had registered no repository and backed no index. `RemoteStore`
+keys on the segment repository instead, and a test pins the distinction.
+
+Note the asymmetry `LocalShardStore` already documents, one level out — and the third time the same rule has
+decided a design here: **when the choice is between failing loudly and starting empty, fail loudly.** What was new
+is that neither available recovery source fails loudly by itself, so the loudness had to be built.
 
 ## M8. Coordinators
 

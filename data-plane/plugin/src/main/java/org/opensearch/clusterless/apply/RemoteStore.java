@@ -89,23 +89,31 @@ public final class RemoteStore {
      * Reads this node's own remote-store attributes, or {@link #NONE} if it has none.
      *
      * <p>Done once at startup rather than per pass: node attributes cannot change while the process runs, and the
-     * derivation throws {@link IllegalStateException} on a half-configured node — a segment repository named
-     * without a translog or cluster-state one. Failing there is right, and failing there <em>once</em>, at
-     * startup, with the reason, beats failing inside every fabrication for ever.
+     * derivation throws {@link IllegalStateException} on a half-configured node. Failing there is right, and
+     * failing there <em>once</em>, at startup, with the reason, beats failing inside every fabrication for ever.
+     *
+     * <p><b>Keyed on the segment repository, deliberately not on {@code DiscoveryNode.isRemoteStoreNode()}.</b>
+     * That predicate requires a <em>cluster-state</em> repository as well, which a node running
+     * {@code node.attr.remote_store.mode=segments_only} does not have — and that mode exists precisely for this
+     * architecture. Meanwhile {@code IndexSettings.assignedOnRemoteNode} is computed from
+     * {@code isRemoteDataAttributePresent}, which is true for such a node. So gating on
+     * {@code isRemoteStoreNode()} would produce the one genuinely broken state available here: the server routing
+     * replicas to {@code RemoteStoreReplicationSource} while this plugin had registered no repository and backed no
+     * index. Match the predicate the server actually uses.
      */
     public static RemoteStore of(DiscoveryNode localNode) {
         Objects.requireNonNull(localNode, "localNode");
-        if (localNode.isRemoteStoreNode() == false) {
+        String segment = RemoteStoreNodeAttribute.getSegmentRepoName(localNode.getAttributes());
+        if (segment == null || segment.isEmpty()) {
             return NONE;
         }
-        String segment = RemoteStoreNodeAttribute.getSegmentRepoName(localNode.getAttributes());
         String translog = RemoteStoreNodeAttribute.getTranslogRepoName(localNode.getAttributes());
         RepositoriesMetadata repositories = new RemoteStoreNodeAttribute(localNode).getRepositoriesMetadata();
         logger.info(
-            "clusterless: remote store configured on this node -- segments in [{}], translog in [{}]. Indices using "
+            "clusterless: remote store configured on this node -- segments in [{}], translog {}. Indices using "
                 + "segment replication will be backed by it, and search replicas will read their segments from it.",
             segment,
-            translog
+            translog == null ? "kept locally, so a primary cannot recover from the remote store" : "in [" + translog + "]"
         );
         return new RemoteStore(segment, translog, repositories);
     }
@@ -113,6 +121,30 @@ public final class RemoteStore {
     /** Whether this node has a remote store at all. */
     public boolean configured() {
         return segmentRepository != null;
+    }
+
+    /** The repository segments go to, or {@code null} when there is none. */
+    public String segmentRepository() {
+        return segmentRepository;
+    }
+
+    /**
+     * Whether a translog repository is configured as well as a segment one.
+     *
+     * <p>Worth asking separately, because it decides whether a primary can recover from the remote store at all:
+     * {@code IndexShard.syncTranslogFilesFromRemoteTranslog} asserts its translog factory is the remote one, and
+     * that factory is chosen only when {@code index.remote_store.translog.repository} is set.
+     *
+     * <p>Segments without a translog is a supported configuration rather than a misconfiguration, and it has its
+     * own upstream switch: {@code node.attr.remote_store.mode=segments_only}, which makes
+     * {@code RemoteStoreNodeAttribute} require the segment repository alone. It was added for this architecture.
+     * The reasoning is that with pull-based ingestion the ingestion source holds every operation and the shard
+     * tracks an offset into it, so a transaction log is a second copy of something already durable — which is why
+     * {@code cluster-etcd} turned it off. What it costs is this recovery path, so {@link RemoteRecovery} declines
+     * a primary that would need it rather than starting one empty over its own data.
+     */
+    public boolean translogConfigured() {
+        return translogRepository != null && translogRepository.isEmpty() == false;
     }
 
     /**

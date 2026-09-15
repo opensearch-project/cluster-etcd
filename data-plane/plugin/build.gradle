@@ -73,6 +73,11 @@ def clusterlessNodes = providers.gradleProperty('clusterless.nodes').getOrElse('
 // fails to start with these attributes, -Pclusterless.remote_store=false restores a purely local node.
 def clusterlessRemoteStoreDir = layout.buildDirectory.dir('clusterless-remote-store').get().asFile
 def clusterlessRemoteStore = providers.gradleProperty('clusterless.remote_store').getOrElse('true') == 'true'
+// Segments in the repository, translog on local disk -- node.attr.remote_store.mode=segments_only, an upstream
+// attribute added for this architecture. Reasonable when the ingestion source holds every operation, and it costs
+// the ability to recover a primary from the remote store, so the data plane declines such a primary rather than
+// starting it empty over its own data. See RemoteRecovery.
+def clusterlessSegmentsOnly = providers.gradleProperty('clusterless.segments_only').getOrElse('false') == 'true'
 
 def runCluster = testClusters.maybeCreate('runTask')
 if (clusterlessNodes != 1) {
@@ -93,13 +98,17 @@ testClusters.all {
     if (clusterlessRemoteStore) {
         // An `fs` repository has to live under path.repo or FsRepository refuses the location.
         setting 'path.repo', "${clusterlessRemoteStoreDir}"
-        // The three repositories DiscoveryNode.isRemoteStoreNode() and RemoteStoreNodeAttribute demand: naming a
-        // segment repository without a translog and a cluster-state one throws. All three point at one place; the
-        // cluster-state one is never written to, because remote cluster state stays off -- there is no cluster
-        // state here to publish.
+        // In the default mode RemoteStoreNodeAttribute demands all three repositories: naming a segment repository
+        // without a translog and a cluster-state one throws. All three point at one place, and the cluster-state
+        // one is never written to, because remote cluster state stays off -- there is no cluster state to publish.
         setting 'node.attr.remote_store.segment.repository', 'segments'
-        setting 'node.attr.remote_store.translog.repository', 'segments'
-        setting 'node.attr.remote_store.state.repository', 'segments'
+        if (clusterlessSegmentsOnly) {
+            // This mode requires the segment repository alone, and rejects a routing-table one.
+            setting 'node.attr.remote_store.mode', 'segments_only'
+        } else {
+            setting 'node.attr.remote_store.translog.repository', 'segments'
+            setting 'node.attr.remote_store.state.repository', 'segments'
+        }
         setting 'node.attr.remote_store.repository.segments.type', 'fs'
         setting 'node.attr.remote_store.repository.segments.settings.location', "${clusterlessRemoteStoreDir}"
     }
@@ -113,7 +122,8 @@ tasks.named('run') {
         logger.lifecycle("clusterless: apply=${clusterlessApply}, nodes=${clusterlessNodes}")
         if (clusterlessRemoteStore) {
             clusterlessRemoteStoreDir.mkdirs()
-            logger.lifecycle("clusterless: remote store at ${clusterlessRemoteStoreDir} (shared by every node)")
+            logger.lifecycle("clusterless: remote store at ${clusterlessRemoteStoreDir} (shared by every node)"
+                + (clusterlessSegmentsOnly ? ", segments only -- no remote translog" : ""))
         } else {
             logger.lifecycle("clusterless: no remote store, so search replicas will be declined")
         }

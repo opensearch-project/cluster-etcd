@@ -7,6 +7,7 @@ package org.opensearch.clusterless.apply;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.routing.RecoverySource;
 import org.opensearch.clusterless.contract.AppliedOutcome;
 import org.opensearch.clusterless.contract.Assignment;
 import org.opensearch.clusterless.contract.Heartbeat;
@@ -15,13 +16,14 @@ import org.opensearch.clusterless.contract.MalformedDocumentException;
 import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.publish.NodePublisher;
 import org.opensearch.core.index.Index;
+import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.controlplane.store.KeyValueStore;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.BiFunction;
 import java.util.function.Supplier;
 
 /**
@@ -54,11 +56,18 @@ public final class AssignmentPoller {
     private final NodeId nodeId;
     private final DesiredStateResolver resolver;
     private final Supplier<ClusterState> currentState;
-    private final BiFunction<DesiredState, Set<Index>, NodeState> nodeStates;
+    private final NodeStateFactory nodeStates;
     private final NodePublisher publisher;
     private final ClusterStateApplier applier;
     private final RetainedIndexReaper reaper;
+    private final RemoteRecovery remoteRecovery;
     private final boolean applyEnabled;
+
+    /** What the poller needs of the fabricator: everything a pass decides, and nothing it has to decide itself. */
+    @FunctionalInterface
+    public interface NodeStateFactory {
+        NodeState create(DesiredState desired, Set<Index> stopRetaining, Map<ShardId, RecoverySource> recoverySources);
+    }
 
     private DesiredState lastResolved = DesiredState.nothing();
     private String lastReport;
@@ -76,10 +85,30 @@ public final class AssignmentPoller {
         NodeId nodeId,
         DesiredStateResolver resolver,
         Supplier<ClusterState> currentState,
-        BiFunction<DesiredState, Set<Index>, NodeState> nodeStates,
+        NodeStateFactory nodeStates,
         NodePublisher publisher,
         ClusterStateApplier applier,
         RetainedIndexReaper reaper,
+        boolean applyEnabled
+    ) {
+        this(store, nodeId, resolver, currentState, nodeStates, publisher, applier, reaper, null, applyEnabled);
+    }
+
+    /**
+     * @param remoteRecovery looks up where a remote-backed primary should recover from, once per pass. May be
+     *     {@code null}, which is the same as a node with no remote store: nothing is looked up and the fabricator
+     *     keeps its own answer.
+     */
+    public AssignmentPoller(
+        KeyValueStore store,
+        NodeId nodeId,
+        DesiredStateResolver resolver,
+        Supplier<ClusterState> currentState,
+        NodeStateFactory nodeStates,
+        NodePublisher publisher,
+        ClusterStateApplier applier,
+        RetainedIndexReaper reaper,
+        RemoteRecovery remoteRecovery,
         boolean applyEnabled
     ) {
         this.store = Objects.requireNonNull(store, "store");
@@ -90,6 +119,7 @@ public final class AssignmentPoller {
         this.publisher = Objects.requireNonNull(publisher, "publisher");
         this.applier = applier;
         this.reaper = Objects.requireNonNull(reaper, "reaper");
+        this.remoteRecovery = remoteRecovery;
         this.applyEnabled = applyEnabled;
         if (applyEnabled && applier == null) {
             throw new IllegalArgumentException("applying is enabled but no applier was given");
@@ -135,10 +165,19 @@ public final class AssignmentPoller {
             // Once per pass, before anything is fabricated. The fabricator is called twice on a pass that applies,
             // so a counter advanced from inside it would reach its threshold in half the intended time.
             Set<Index> stopRetaining = reaper.reapable(live, desired);
+
+            // Also once per pass, and for the same reason plus a stronger one: this one reads a repository over a
+            // network. It can reduce the desired state -- a copy whose recovery source cannot be established is
+            // declined rather than built on a guess -- so what it returns is what everything downstream uses.
+            RemoteRecovery.Plan recovery = remoteRecovery == null
+                ? RemoteRecovery.noOpinion(desired)
+                : remoteRecovery.planFor(desired, live);
+            desired = recovery.desired();
+            lastResolved = desired;
             // Fabricated against the live state to decide whether anything needs doing, and fabricated again
             // inside the applier against whatever the server hands over. The two can differ -- a shard may have
             // finished recovering in between -- and the applier's copy is the one that counts.
-            ClusterState intended = nodeStates.apply(desired, stopRetaining).buildClusterState(live);
+            ClusterState intended = nodeStates.create(desired, stopRetaining, recovery.sources()).buildClusterState(live);
 
             if (StateEquivalence.sameContent(live, intended)) {
                 // The fixed point. Applying here would publish a state identical to the running one except for
@@ -149,10 +188,12 @@ public final class AssignmentPoller {
                 );
             } else {
                 report(intended, desired);
+                DesiredState finalDesired = desired;
                 if (applyEnabled) {
                     applier.apply(
                         "clusterless assignment version " + desired.assignmentVersion(),
-                        previous -> nodeStates.apply(desired, stopRetaining).buildClusterState(previous),
+                        previous -> nodeStates.create(finalDesired, stopRetaining, recovery.sources())
+                            .buildClusterState(previous),
                         this::applied
                     );
                 }

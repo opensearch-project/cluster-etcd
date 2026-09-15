@@ -101,7 +101,7 @@ public final class PollAssignment {
                 // No node, so no state has ever been applied. Which is exactly true of a node in read-only
                 // mode however it is run: the intended state is always fabricated against an empty previous one.
                 () -> ClusterState.EMPTY_STATE,
-                (desired, stopRetaining) -> new DataNodeState(
+                (desired, stopRetaining, recoverySources) -> new DataNodeState(
                     new ClusterName("clusterless"),
                     localNode,
                     desired,

@@ -92,6 +92,7 @@ public final class DataNodeState implements NodeState {
     private final LocalShardStore shardStore;
     private final RemoteStore remoteStore;
     private final Set<Index> stopRetaining;
+    private final Map<ShardId, RecoverySource> recoverySources;
 
     /**
      * @param clusterName this node's own, from its settings. Passed in rather than inherited from the previous
@@ -124,7 +125,7 @@ public final class DataNodeState implements NodeState {
         LocalShardStore shardStore,
         Set<Index> stopRetaining
     ) {
-        this(clusterName, localNode, desired, mappings, shardStore, RemoteStore.NONE, stopRetaining);
+        this(clusterName, localNode, desired, mappings, shardStore, RemoteStore.NONE, stopRetaining, Map.of());
     }
 
     /**
@@ -141,6 +142,25 @@ public final class DataNodeState implements NodeState {
         RemoteStore remoteStore,
         Set<Index> stopRetaining
     ) {
+        this(clusterName, localNode, desired, mappings, shardStore, remoteStore, stopRetaining, Map.of());
+    }
+
+    /**
+     * @param recoverySources recovery sources already looked up for copies about to be created, by
+     *     {@link RemoteRecovery} once per pass. Consulted only where this class would otherwise choose an empty
+     *     store, so a disk that has gained bytes since the lookup still wins: the two cannot disagree in the
+     *     direction that discards data.
+     */
+    public DataNodeState(
+        ClusterName clusterName,
+        DiscoveryNode localNode,
+        DesiredState desired,
+        MappingSource mappings,
+        LocalShardStore shardStore,
+        RemoteStore remoteStore,
+        Set<Index> stopRetaining,
+        Map<ShardId, RecoverySource> recoverySources
+    ) {
         this.clusterName = Objects.requireNonNull(clusterName, "clusterName");
         this.localNode = Objects.requireNonNull(localNode, "localNode");
         this.desired = Objects.requireNonNull(desired, "desired");
@@ -148,6 +168,7 @@ public final class DataNodeState implements NodeState {
         this.shardStore = Objects.requireNonNull(shardStore, "shardStore");
         this.remoteStore = Objects.requireNonNull(remoteStore, "remoteStore");
         this.stopRetaining = Set.copyOf(Objects.requireNonNull(stopRetaining, "stopRetaining"));
+        this.recoverySources = recoverySources == null ? Map.of() : Map.copyOf(recoverySources);
     }
 
     @Override
@@ -416,11 +437,19 @@ public final class DataNodeState implements NodeState {
             }
         }
 
-        RecoverySource recoverySource = shardStore.hasShardData(shardId)
+        RecoverySource recoverySource;
+        if (shardStore.hasShardData(shardId)) {
             // There are bytes on disk for this shard. Recovering from an empty store would throw them away and
-            // rebuild from the remote store or from nothing, which is slow at best and lossy at worst.
-            ? RecoverySource.ExistingStoreRecoverySource.INSTANCE
-            : RecoverySource.EmptyStoreRecoverySource.INSTANCE;
+            // rebuild from the remote store or from nothing, which is slow at best and lossy at worst. Checked
+            // first, and deliberately ahead of anything looked up in the repository: local bytes are the cheapest
+            // correct answer, and if the disk has gained them since the lookup then the lookup is the stale one.
+            recoverySource = RecoverySource.ExistingStoreRecoverySource.INSTANCE;
+        } else {
+            // No local bytes, which stops meaning "no data" once the segments live in a repository. What that
+            // repository actually holds was looked up in the pass; see RemoteRecovery for why guessing either way
+            // is unsafe. Nothing looked up means nothing remote-backed, so an empty store it is.
+            recoverySource = recoverySources.getOrDefault(shardId, RecoverySource.EmptyStoreRecoverySource.INSTANCE);
+        }
 
         return ShardRouting.newUnassigned(
             shardId,

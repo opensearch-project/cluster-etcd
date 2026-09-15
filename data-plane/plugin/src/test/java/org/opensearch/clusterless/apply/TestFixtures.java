@@ -90,6 +90,34 @@ final class TestFixtures {
         );
     }
 
+    /**
+     * A node that keeps segments in a repository and its translog on local disk.
+     *
+     * <p>{@code remote_store.mode=segments_only} is an upstream attribute added for this architecture, and it is
+     * what makes the configuration expressible: it tells {@code RemoteStoreNodeAttribute} to require the segment
+     * repository alone, where the default mode demands a translog and a cluster-state repository alongside it.
+     * Note that such a node is <em>not</em> a remote store node by {@code DiscoveryNode.isRemoteStoreNode()},
+     * which wants a cluster-state repository — see {@link RemoteStore#of}.
+     */
+    static DiscoveryNode segmentsOnlyNode(String nodeId, String repository) {
+        Map<String, String> attributes = new java.util.HashMap<>();
+        attributes.put("remote_store.mode", "segments_only");
+        attributes.put("remote_store.segment.repository", repository);
+        attributes.put("remote_store.repository." + repository + ".type", "fs");
+        attributes.put("remote_store.repository." + repository + ".settings.location", "/tmp/clusterless-remote-store");
+        return new DiscoveryNode(
+            "data-3",
+            nodeId,
+            "ephemeral",
+            "localhost",
+            "127.0.0.1",
+            new TransportAddress(InetAddress.getLoopbackAddress(), 9300),
+            Map.copyOf(attributes),
+            Set.of(DiscoveryNodeRole.DATA_ROLE),
+            Version.CURRENT
+        );
+    }
+
     /** A store that is not there, for the passes that have to survive one. */
     static final class FailingStore implements KeyValueStore {
 
