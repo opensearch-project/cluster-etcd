@@ -58,4 +58,62 @@ public interface ContractNode {
      * which is where a format drifts.
      */
     void holdServing(List<ContractCopy> copies);
+
+    /**
+     * What this node made of an assignment document.
+     *
+     * <p><b>The other direction, which the rest of this interface is silent about.</b> Every other method here is
+     * about documents a node <em>writes</em>, and every check reads them back out of the store. The assignment is
+     * the one document flowing the other way — the supervisor writes it, the node reads it — so nothing shared
+     * asserted that both implementations read it the same way, because there was no shared way to ask a node what
+     * it understood.
+     *
+     * <p>That gap cost a running deployment. A {@code roles} array replaced a {@code role} string, the plugin's
+     * reader knew only the old spelling, and its coordinator quietly deferred every tenant with "role is not one
+     * this node understands". Neither service's several hundred tests noticed, and neither did the suite whose
+     * entire purpose is stopping the two drifting apart on a format.
+     *
+     * <p>{@code fake-node} cannot catch it either, structurally: it writes its own assignment in order to
+     * converge, so it reads a document produced by the same code that produced its expectations, and a format
+     * change moves both together. Which is why the checks that use this feed it documents built by <b>the
+     * supervisor's own writer</b>. Hand-written JSON in either repository only tests that repository's opinion of
+     * the format.
+     *
+     * @param document the bytes of a {@code nodes/assignment/<id>} document
+     */
+    Understood readAssignment(byte[] document);
+
+    /**
+     * A node's reading of an assignment, in terms the suite can compare.
+     *
+     * <p>Deliberately not the parsed {@code Assignment} object: that would test that both sides call the same
+     * parser, which is the thing not in question. What is in question is what each side <em>concluded</em>, so
+     * this is stated as the two things a node acts on — which tenants it does what for, and which copies it is
+     * meant to hold.
+     *
+     * @param roles per tenant, and never empty for a tenant that appears. A role the node did not recognise must
+     *     show as {@link org.opensearch.supervisor.model.node.NodeRole#UNKNOWN} rather than being dropped, so
+     *     that "understood by nothing" is distinguishable from "no roles" — silently empty is the failure this
+     *     whole seam exists to catch.
+     * @param copies every shard copy the document asks for, carrying the index name and config revision, because
+     *     those are what a node builds against and a format change can lose them without losing anything else.
+     */
+    record Understood(
+        java.util.Map<org.opensearch.supervisor.model.TenantId,
+            java.util.Set<org.opensearch.supervisor.model.node.NodeRole>> roles,
+        List<ContractCopy> copies
+    ) {
+
+        public Understood {
+            roles = java.util.Map.copyOf(roles);
+            copies = List.copyOf(copies);
+        }
+
+        /** Copies sorted, so two implementations that agree are not reported as differing on iteration order. */
+        public List<ContractCopy> sortedCopies() {
+            return copies.stream()
+                .sorted(java.util.Comparator.comparing(ContractCopy::toString))
+                .toList();
+        }
+    }
 }

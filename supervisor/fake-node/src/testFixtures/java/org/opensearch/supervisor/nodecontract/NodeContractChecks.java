@@ -9,6 +9,12 @@ import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
 
 import java.time.Duration;
+import org.opensearch.supervisor.model.PoolId;
+import org.opensearch.supervisor.model.node.Assignment;
+import org.opensearch.supervisor.model.node.NodeRole;
+import org.opensearch.supervisor.model.node.ShardRole;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -359,6 +365,110 @@ public final class NodeContractChecks {
             assertTrue(harness.backing().scanPrefix("supervisor/").isEmpty(), "a node writes nothing the supervisor owns");
         }));
 
+        // ------------------------------------------------------------ reading the assignment
+        //
+        // The other direction. Everything above asserts on documents the node wrote; these assert on what it made
+        // of the one document written *for* it. Every assignment below is built with the supervisor's own writer,
+        // deliberately: hand-written JSON in either repository tests that repository's opinion of the format,
+        // which is exactly the assumption that let a roles/role rename reach a running deployment.
+
+        checks.add(new Check("bothRolesForOneTenantAreUnderstoodAsBoth", harness -> {
+            // The regression. A node holding copies of an index and coordinating for its tenant is the natural
+            // shape of a small deployment, and the reader that knew only a single role deferred the whole tenant.
+            ContractNode.Understood understood = harness.node().readAssignment(
+                assignmentWith(harness, Set.of(NodeRole.DATA, NodeRole.COORDINATOR), exampleCopies()));
+
+            assertEquals(
+                Set.of(NodeRole.DATA, NodeRole.COORDINATOR),
+                understood.roles().get(ContractFixtures.ACME),
+                "both roles must be understood, not one of them and not neither"
+            );
+        }));
+
+        checks.add(new Check("aCoordinatorOnlyTenantIsUnderstoodWithNoCopies", harness -> {
+            ContractNode.Understood understood = harness.node().readAssignment(
+                assignmentWith(harness, Set.of(NodeRole.COORDINATOR), List.of()));
+
+            assertEquals(Set.of(NodeRole.COORDINATOR), understood.roles().get(ContractFixtures.ACME));
+            assertTrue(understood.copies().isEmpty(), "a coordinator entry asks for no copies: " + understood.copies());
+        }));
+
+        checks.add(new Check("theSingularRoleFieldIsStillUnderstood", harness -> {
+            // The two services are deployed and upgraded separately, so for some window one of them is older and
+            // reading the other's documents. This is the one check here that cannot use the supervisor's writer,
+            // because the supervisor no longer writes this form -- which is the point of checking it.
+            byte[] legacy = ("{\"version\":1,\"pool\":\"shared-a\",\"epoch\":7,\"node_id\":\""
+                + harness.node().nodeId().value() + "\",\"generated_at\":1788969977500,"
+                + "\"tenants\":{\"" + ContractFixtures.ACME.value() + "\":{\"role\":\"coordinator\","
+                + "\"indices\":{}}}}").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+            ContractNode.Understood understood = harness.node().readAssignment(legacy);
+
+            assertEquals(Set.of(NodeRole.COORDINATOR), understood.roles().get(ContractFixtures.ACME),
+                "a singular role string must still be understood, or an upgrade breaks whichever side is older");
+        }));
+
+        checks.add(new Check("anUnrecognisedRoleIsUnderstoodByNothingRatherThanSilentlyEmpty", harness -> {
+            // The distinction that matters: a node that reads a role it does not know must end up unable to act
+            // on that tenant *visibly*. Quietly treating it as no roles is how a tenant stops being served with
+            // nothing anywhere saying so.
+            byte[] futureRole = ("{\"version\":1,\"pool\":\"shared-a\",\"epoch\":7,\"node_id\":\""
+                + harness.node().nodeId().value() + "\",\"generated_at\":1788969977500,"
+                + "\"tenants\":{\"" + ContractFixtures.ACME.value() + "\":{\"roles\":[\"astrologer\"],"
+                + "\"indices\":{}}}}").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+            ContractNode.Understood understood = harness.node().readAssignment(futureRole);
+            Set<NodeRole> roles = understood.roles().get(ContractFixtures.ACME);
+
+            assertNotNull(roles, "the tenant must still appear, or the node cannot report that it did nothing");
+            assertEquals(Set.of(NodeRole.UNKNOWN), roles,
+                "an unrecognised role must read as UNKNOWN rather than being dropped: " + roles);
+        }));
+
+        checks.add(new Check("shardRolesAndConfigRevisionSurviveTheRoundTrip", harness -> {
+            // The general principle, and the cheapest thing a format change breaks without breaking anything
+            // else: a node builds against the config revision it was given, and reports it back on its inventory
+            // so the supervisor can tell a copy built against stale configuration from a current one.
+            List<ContractCopy> asked = List.of(
+                new ContractCopy(ContractFixtures.ACME, ContractFixtures.INDEX_UUID, ContractFixtures.INDEX_NAME,
+                    ContractFixtures.CONFIG_REVISION, 0, ShardRole.PRIMARY),
+                new ContractCopy(ContractFixtures.ACME, ContractFixtures.INDEX_UUID, ContractFixtures.INDEX_NAME,
+                    ContractFixtures.CONFIG_REVISION, 1, ShardRole.SEARCH_REPLICA)
+            );
+
+            ContractNode.Understood understood = harness.node().readAssignment(
+                assignmentWith(harness, Set.of(NodeRole.DATA), asked));
+
+            assertEquals(asked, understood.sortedCopies(),
+                "every field a node builds against must survive: index name, config revision and shard role");
+        }));
+
         return List.copyOf(checks);
+    }
+
+    /**
+     * An assignment document, built by the supervisor's own writer.
+     *
+     * <p>The whole point of the checks that use this. A fixture hand-written in either repository asserts that
+     * repository's belief about the format; bytes from {@code NodeJson.write} assert the format itself, so a
+     * change on the writing side reaches the reading side as a failing check rather than as a node that has
+     * quietly stopped doing its job.
+     */
+    private static byte[] assignmentWith(Harness harness, Set<NodeRole> roles, List<ContractCopy> copies) {
+        Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>();
+        Map<String, Map<Integer, ShardRole>> shardsByIndex = new LinkedHashMap<>();
+        for (ContractCopy copy : copies) {
+            shardsByIndex.computeIfAbsent(copy.indexUuid(), key -> new LinkedHashMap<>())
+                .put(copy.shard(), copy.role());
+        }
+        for (ContractCopy copy : copies) {
+            indices.put(copy.indexUuid(), new Assignment.IndexAssignment(
+                copy.indexName(), copy.configRevision(), shardsByIndex.get(copy.indexUuid())));
+        }
+
+        return NodeJson.write(new Assignment(
+            1, PoolId.of("shared-a"), 7, harness.node().nodeId(), 1788969977500L,
+            Map.of(ContractFixtures.ACME, new Assignment.TenantAssignment(roles, indices))
+        ));
     }
 }

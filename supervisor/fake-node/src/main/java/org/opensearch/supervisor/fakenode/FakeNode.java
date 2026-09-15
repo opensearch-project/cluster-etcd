@@ -150,7 +150,7 @@ public final class FakeNode {
     }
 
     /** One desired copy: which tenant, which index, which shard. */
-    private record Desired(TenantId tenant, String indexUuid, String indexName, long configRevision, int shard)
+    record Desired(TenantId tenant, String indexUuid, String indexName, long configRevision, int shard)
         implements Comparable<Desired> {
 
         @Override
@@ -164,7 +164,14 @@ public final class FakeNode {
         }
     }
 
-    private static Map<Desired, ShardRole> desiredOf(Assignment assignment) {
+    /**
+     * The copies an assignment asks this node to hold.
+     *
+     * <p>Package-private rather than private so the node-contract adapter can ask this node what it made of a
+     * document, using the same derivation the node itself acts on. Re-deriving it in the adapter would test the
+     * adapter.
+     */
+    static Map<Desired, ShardRole> desiredOf(Assignment assignment) {
         Map<Desired, ShardRole> desired = new TreeMap<>();
         assignment.tenants().forEach((tenant, tenantAssignment) ->
             tenantAssignment.indices().forEach((uuid, index) ->

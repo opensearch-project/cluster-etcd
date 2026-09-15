@@ -729,6 +729,14 @@ exposes Jackson's streaming API and not databind, so nothing but that suite conn
    every copy with a reason naming this document. Detail, including why reading each peer's registration instead
    is the wrong fix, is in [`FINDINGS_FROM_THE_DATA_PLANE.md`](FINDINGS_FROM_THE_DATA_PLANE.md) item 3.
 
+**And one gap in the suite that was closed by finding it the expensive way.** The conformance suite covered only
+the documents a node *writes* — every check read keys back out of a recording store — so the assignment, the one
+document flowing the other way, had no shared check that both implementations *read* it alike. A `roles` array
+replaced a `role` string and the plugin's coordinator quietly deferred every tenant; neither service's tests nor
+the shared suite noticed. `ContractNode.readAssignment` now asks a node what it understood, and the checks feed it
+documents built by the supervisor's own writer, because a fixture hand-written in either repository only tests that
+repository's opinion of the format.
+
 **One thing it confirms with a caveat.** `heartbeat_interval_millis` is the node's own declaration and the
 plugin honours it, but a node scheduling at a *fixed delay* — which is what it should do, since a fixed
 rate against a slow store queues passes that were stale when they were queued — writes every

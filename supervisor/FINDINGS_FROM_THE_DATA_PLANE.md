@@ -384,6 +384,9 @@ one tenant should get a routing table containing its own copies. A dual-role nod
 
 ## 5. The conformance suite covers only the documents a node writes
 
+> **Closed on this side.** `ContractNode.readAssignment` exists, five checks use it, and the checks are verified to
+> fail against a reader that knows only `role`. The plugin needs to implement the method — notes at the end.
+
 ### What happened
 
 The `roles` set landed, and the data plane's coordinator immediately stopped understanding its assignment:
@@ -443,6 +446,41 @@ fixtures are bytes copied verbatim out of a real store — but that is a snapsho
 **Not urgent, and cheap relative to what it prevents.** This is the second time a cross-repo format detail has cost
 a running deployment (the first being item 3's missing ephemeral id), and both times the format was documented
 correctly and read wrongly.
+
+### What was done
+
+`ContractNode.readAssignment(byte[]) -> Understood` is added, close to the sketch. `Understood` carries
+`Map<TenantId, Set<NodeRole>>` and a `List<ContractCopy>` rather than the nested triple map — `ContractCopy`
+already exists for the write side and carries the index name and config revision, so the two directions are now
+symmetric and a copy compares as one value.
+
+Five checks, all fed by `NodeJson.write` rather than by hand-written JSON, except the two that deliberately cannot
+be:
+
+- both roles for one tenant are understood as both — **the regression**;
+- a coordinator-only tenant is understood, with no copies;
+- the singular `role` string is still understood (hand-built, because the supervisor no longer writes that form,
+  which is the point);
+- an unrecognised role reads as `UNKNOWN` rather than being dropped, so "understood by nothing" stays
+  distinguishable from "no roles" (hand-built, same reason);
+- shard roles, index name and `config_revision` survive the round trip.
+
+**Verified by reintroducing the bug**, because an unverified conformance check is the problem this item describes.
+With `TenantAssignment.fromJson` altered to read only `role`, two checks fail with
+`expected: <[DATA, COORDINATOR]> but was: <[UNKNOWN]>`.
+
+On the `fake-node` side the copies half goes through `FakeNode.desiredOf` — the node's own derivation, so it
+reports what it would act on rather than what the adapter thinks the bytes say. The roles half is the bare parse,
+**and honestly so: fake-node does not act on roles at all**, it walks `indices` and nothing else. It has no
+interpretation of its own to report, which is exactly why these checks earn their keep on your side, where a role
+decides whether a tenant is served.
+
+### What the plugin needs to do
+
+Implement `readAssignment` from `Assignment.read` plus the resolver, returning what the resolver *concluded* rather
+than what the parser produced — the point is to catch a resolver that understood a document it parsed fine. The
+`UNKNOWN` check is the one most worth getting right there: a role the plugin does not recognise should leave the
+tenant present and unserved, not silently absent.
 
 ---
 
