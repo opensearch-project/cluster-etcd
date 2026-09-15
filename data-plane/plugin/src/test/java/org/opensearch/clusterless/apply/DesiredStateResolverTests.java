@@ -103,7 +103,7 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
             Map.of(
                 ACME,
                 new Assignment.TenantAssignment(
-                    NodeRole.DATA,
+                    java.util.Set.of(NodeRole.DATA),
                     Map.of(
                         UUID,
                         new Assignment.IndexAssignment("good", 3041, Map.of(0, ShardRole.PRIMARY)),
@@ -212,7 +212,7 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
         Assignment assignment = new Assignment(
             7,
             0,
-            Map.of(TenantId.of("globex"), new Assignment.TenantAssignment(NodeRole.COORDINATOR, Map.of()))
+            Map.of(TenantId.of("globex"), new Assignment.TenantAssignment(java.util.Set.of(NodeRole.COORDINATOR), Map.of()))
         );
         DesiredState desired = strict.resolve(assignment);
 
@@ -220,18 +220,64 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
         assertEquals(0, desired.copyCount());
     }
 
+    public void testANodeToldToDoBothHoldsCopiesAndCoordinates() {
+        // The case a single role could not express, and the one a two-node deployment wants: hold this tenant's
+        // shards and serve queries for it. CoordinatorState decorates the data path precisely so that the two
+        // produce one routing table.
+        documents.put("acme/my-index", config(UUID, true, 2));
+        Assignment assignment = new Assignment(
+            7,
+            0,
+            Map.of(
+                ACME,
+                new Assignment.TenantAssignment(
+                    java.util.Set.of(NodeRole.DATA, NodeRole.COORDINATOR),
+                    Map.of(UUID, new Assignment.IndexAssignment("my-index", 3041, Map.of(0, ShardRole.PRIMARY)))
+                )
+            )
+        );
+
+        DesiredState desired = resolver.resolve(assignment);
+
+        assertEquals("the copy is resolved", 1, desired.copyCount());
+        assertEquals("and the tenant is coordinated", List.of(ACME), desired.coordinatorTenants());
+        assertTrue(desired.deferred().toString(), desired.deferred().isEmpty());
+    }
+
+    public void testCopiesNamedWithoutTheDataRoleAreDeclined() {
+        // The two halves of the entry contradict each other, and only one of them can be obeyed.
+        documents.put("acme/my-index", config(UUID, true, 2));
+        Assignment assignment = new Assignment(
+            7,
+            0,
+            Map.of(
+                ACME,
+                new Assignment.TenantAssignment(
+                    java.util.Set.of(NodeRole.COORDINATOR),
+                    Map.of(UUID, new Assignment.IndexAssignment("my-index", 3041, Map.of(0, ShardRole.PRIMARY)))
+                )
+            )
+        );
+
+        DesiredState desired = resolver.resolve(assignment);
+
+        assertEquals(0, desired.copyCount());
+        assertEquals(List.of(ACME), desired.coordinatorTenants());
+        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("without the data role"));
+    }
+
     public void testAnUnknownTenantRoleDoesNothingForThatTenant() {
         Assignment assignment = new Assignment(
             7,
             0,
-            Map.of(ACME, new Assignment.TenantAssignment(NodeRole.UNKNOWN, Map.of()))
+            Map.of(ACME, new Assignment.TenantAssignment(java.util.Set.of(NodeRole.UNKNOWN), Map.of()))
         );
 
         DesiredState desired = resolver.resolve(assignment);
 
         assertTrue(desired.indices().isEmpty());
         assertTrue(desired.coordinatorTenants().isEmpty());
-        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("not one this node understands"));
+        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("not ones this node understands"));
     }
 
     public void testTheReasonsAreBoundedSoAnOutageCannotFillTheLog() {
@@ -283,7 +329,7 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
             0,
             Map.of(
                 ACME,
-                new Assignment.TenantAssignment(NodeRole.DATA, Map.of(UUID, new Assignment.IndexAssignment("my-index", 3041, shards)))
+                new Assignment.TenantAssignment(java.util.Set.of(NodeRole.DATA), Map.of(UUID, new Assignment.IndexAssignment("my-index", 3041, shards)))
             )
         );
     }

@@ -6,10 +6,12 @@ package org.opensearch.clusterless.contract;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -53,12 +55,39 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
         }
     }
 
-    /** What one tenant asks of this node. */
-    public record TenantAssignment(NodeRole role, Map<String, IndexAssignment> indices) {
+    /**
+     * What one tenant asks of this node.
+     *
+     * <p><b>A set, not one role.</b> It was one, and one cannot say the thing a small deployment most wants to
+     * say: that a node holds copies of a tenant's indices <em>and</em> serves queries for it. Both at once is a
+     * real configuration — OpenSearch's own default is that every node can coordinate — and it is the only one
+     * testable on two or three nodes, which is why the data plane's {@code CoordinatorState} decorates the data
+     * path rather than replacing it.
+     *
+     * @param roles never empty. An entry that asks for nothing is an entry that should not exist, and treating it
+     *     as "no data and no queries" would silently drop a tenant the supervisor meant to say something about.
+     */
+    public record TenantAssignment(Set<NodeRole> roles, Map<String, IndexAssignment> indices) {
 
         public TenantAssignment {
-            Objects.requireNonNull(role, "role");
+            Objects.requireNonNull(roles, "roles");
+            roles = roles.isEmpty() ? Set.of(NodeRole.UNKNOWN) : Collections.unmodifiableSet(EnumSet.copyOf(roles));
             indices = indices == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(indices));
+        }
+
+        /** Whether this node is to hold copies of this tenant's indices. */
+        public boolean holdsData() {
+            return roles.contains(NodeRole.DATA);
+        }
+
+        /** Whether this node is to serve queries for this tenant, whether or not it also holds data. */
+        public boolean coordinates() {
+            return roles.contains(NodeRole.COORDINATOR);
+        }
+
+        /** Whether this build understood any of what it was asked to be. */
+        public boolean understood() {
+            return holdsData() || coordinates();
         }
     }
 
@@ -89,11 +118,16 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
         return total;
     }
 
-    /** Tenants this node is to serve queries for without holding data. */
+    /**
+     * Tenants this node is to serve queries for, whether or not it also holds their data.
+     *
+     * <p>Not "without holding data", which is what this meant while a tenant entry carried one role. A node that
+     * does both routes to its own copies and to everyone else's, from one routing table.
+     */
     public List<TenantId> coordinatorTenants() {
         List<TenantId> coordinating = new ArrayList<>();
         tenants.forEach((tenant, assignment) -> {
-            if (assignment.role() == NodeRole.COORDINATOR) {
+            if (assignment.coordinates()) {
                 coordinating.add(tenant);
             }
         });
@@ -166,7 +200,7 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
     }
 
     private static TenantAssignment readTenant(Map<String, Object> document, String what) {
-        NodeRole role = NodeRole.from(Documents.string(document, "role", null));
+        Set<NodeRole> roles = rolesOf(document);
 
         Map<String, IndexAssignment> indices = new LinkedHashMap<>();
         Documents.object(document, "indices").forEach((uuid, value) -> {
@@ -178,7 +212,30 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
             indices.put(uuid, readIndex(indexDocument, what));
         });
 
-        return new TenantAssignment(role, indices);
+        return new TenantAssignment(roles, indices);
+    }
+
+    /**
+     * The roles a tenant entry asks for, from either spelling.
+     *
+     * <p>{@code roles} is the current one and {@code role} is what preceded it. Reading both is not politeness: a
+     * supervisor and a data plane are deployed and upgraded separately, so for some window one is older than the
+     * other — and a node that understood only the newer spelling treated every tenant of an older supervisor as
+     * unintelligible. Which is exactly what happened: a coordinator read {@code roles: ["coordinator"]}, found no
+     * {@code role}, and reported that the role was not one it understood while doing nothing at all.
+     */
+    private static Set<NodeRole> rolesOf(Map<String, Object> document) {
+        Set<NodeRole> roles = EnumSet.noneOf(NodeRole.class);
+        Object declared = document.get("roles");
+        if (declared instanceof Iterable<?> values) {
+            for (Object value : values) {
+                roles.add(NodeRole.from(value == null ? null : String.valueOf(value)));
+            }
+        }
+        if (roles.isEmpty()) {
+            roles.add(NodeRole.from(Documents.string(document, "role", null)));
+        }
+        return roles;
     }
 
     private static IndexAssignment readIndex(Map<String, Object> document, String what) {

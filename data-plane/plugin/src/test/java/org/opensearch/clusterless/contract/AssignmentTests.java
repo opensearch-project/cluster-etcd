@@ -16,6 +16,45 @@ import java.nio.charset.StandardCharsets;
  */
 public class AssignmentTests extends OpenSearchTestCase {
 
+    public void testTheRolesArrayIsReadAndSoIsTheRoleStringThatPrecededIt() {
+        // Found by a coordinator that read nothing at all. The supervisor moved from `role` to `roles` so that a
+        // node could be told it holds data *and* coordinates; a reader that understood only one spelling treated
+        // every tenant of a differently-versioned supervisor as unintelligible. The two services are deployed and
+        // upgraded separately, so one of them being older is a state to survive rather than an accident.
+        Assignment current = read("""
+            {"version": 1, "tenants": {"default": {"roles": ["coordinator"], "indices": {}}}}""");
+        assertEquals(java.util.Set.of(NodeRole.COORDINATOR), current.tenants().get(TenantId.of("default")).roles());
+        assertEquals(java.util.List.of(TenantId.of("default")), current.coordinatorTenants());
+
+        Assignment older = read("""
+            {"version": 1, "tenants": {"default": {"role": "coordinator", "indices": {}}}}""");
+        assertEquals(java.util.Set.of(NodeRole.COORDINATOR), older.tenants().get(TenantId.of("default")).roles());
+        assertEquals(java.util.List.of(TenantId.of("default")), older.coordinatorTenants());
+    }
+
+    public void testBothRolesAtOnceIsReadAsBoth() {
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"default": {"roles": ["data", "coordinator"],
+              "indices": {"uzKxLWZu4nPSrTknEcDpoA": {"name": "my-index", "config_revision": 3041,
+                "shards": {"0": "PRIMARY"}}}}}}""");
+
+        Assignment.TenantAssignment tenant = assignment.tenants().get(TenantId.of("default"));
+        assertTrue(tenant.holdsData());
+        assertTrue(tenant.coordinates());
+        assertEquals(1, assignment.copyCount());
+        assertEquals(java.util.List.of(TenantId.of("default")), assignment.coordinatorTenants());
+    }
+
+    public void testARoleThisBuildDoesNotKnowLeavesTheEntryUnderstoodByNothing() {
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"default": {"roles": ["archivist"], "indices": {}}}}""");
+
+        Assignment.TenantAssignment tenant = assignment.tenants().get(TenantId.of("default"));
+        assertFalse(tenant.understood());
+        assertFalse(tenant.holdsData());
+        assertFalse(tenant.coordinates());
+    }
+
     private static Assignment read(String json) {
         return Assignment.read(json.getBytes(StandardCharsets.UTF_8));
     }
@@ -52,14 +91,14 @@ public class AssignmentTests extends OpenSearchTestCase {
         assertEquals(2, assignment.copyCount());
 
         Assignment.TenantAssignment acme = assignment.tenants().get(TenantId.of("acme"));
-        assertEquals(NodeRole.DATA, acme.role());
+        assertEquals(java.util.Set.of(NodeRole.DATA), acme.roles());
         Assignment.IndexAssignment index = acme.indices().get("uzKxLWZu4nPSrTknEcDpoA");
         assertEquals("my-index", index.name());
         assertEquals(3041L, index.configRevision());
         assertEquals(ShardRole.PRIMARY, index.shards().get(0));
         assertEquals(ShardRole.REPLICA, index.shards().get(1));
 
-        assertEquals(NodeRole.COORDINATOR, assignment.tenants().get(TenantId.of("globex")).role());
+        assertEquals(java.util.Set.of(NodeRole.COORDINATOR), assignment.tenants().get(TenantId.of("globex")).roles());
         assertEquals(java.util.List.of(TenantId.of("globex")), assignment.coordinatorTenants());
     }
 
@@ -138,7 +177,7 @@ public class AssignmentTests extends OpenSearchTestCase {
 
     public void testAnUnknownTenantRoleBecomesASentinel() {
         Assignment assignment = read("{\"version\": 1, \"tenants\": {\"acme\": {\"role\": \"warehouse\"}}}");
-        assertEquals(NodeRole.UNKNOWN, assignment.tenants().get(TenantId.of("acme")).role());
+        assertEquals(java.util.Set.of(NodeRole.UNKNOWN), assignment.tenants().get(TenantId.of("acme")).roles());
         assertTrue(assignment.coordinatorTenants().isEmpty());
     }
 

@@ -60,23 +60,25 @@ public final class DesiredStateResolver {
         List<String> deferred = new ArrayList<>();
 
         assignment.tenants().forEach((tenant, tenantAssignment) -> {
-            switch (tenantAssignment.role()) {
-                case DATA -> tenantAssignment.indices()
-                    .forEach((uuid, index) -> resolveIndex(tenant, uuid, index, indices, deferred));
-                case COORDINATOR -> {
-                    // Holds no data, so there is nothing to resolve. Where it gets the routing table it needs
-                    // is tenant/<t>/status/indices/<uuid>, which is milestone 8.
-                    if (tenantAssignment.indices().isEmpty() == false) {
-                        defer(
-                            deferred,
-                            tenant + ": assigned the coordinator role and " + tenantAssignment.indices().size()
-                                + " indices; a coordinator holds no copies, so the indices were ignored"
-                        );
-                    }
-                }
-                case UNKNOWN -> defer(
+            // Not a switch any more, because the roles are a set and both at once is the interesting case: a node
+            // that holds copies of a tenant's indices and serves queries for it does both, from one routing table.
+            // Where the coordinating half gets that table is tenant/<t>/status/indices/<uuid>.
+            if (tenantAssignment.holdsData()) {
+                tenantAssignment.indices().forEach((uuid, index) -> resolveIndex(tenant, uuid, index, indices, deferred));
+            } else if (tenantAssignment.coordinates() && tenantAssignment.indices().isEmpty() == false) {
+                // Copies named for a tenant this node was not told to hold data for. Declined rather than built,
+                // because the two halves of the entry contradict each other and only one of them can be obeyed.
+                defer(
                     deferred,
-                    tenant + ": role is not one this node understands, so nothing was done for this tenant"
+                    tenant + ": " + tenantAssignment.indices().size() + " index(es) named without the data role, so"
+                        + " the copies were ignored"
+                );
+            }
+            if (tenantAssignment.understood() == false) {
+                defer(
+                    deferred,
+                    tenant + ": roles " + tenantAssignment.roles() + " are not ones this node understands, so nothing"
+                        + " was done for this tenant"
                 );
             }
         });

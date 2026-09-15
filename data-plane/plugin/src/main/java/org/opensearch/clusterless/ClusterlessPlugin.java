@@ -110,6 +110,22 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
     private NodeEnvironment nodeEnvironment;
     private Supplier<RepositoriesService> repositoriesService;
 
+    /**
+     * How a request's tenant is worked out, or {@code null} until there is enough to say.
+     *
+     * <p>Volatile and late-bound because of an ordering this plugin does not control: {@code ClusterModule} is
+     * constructed at {@code Node.<init>:830} and asks for {@link #getIndexNameCustomResolvers()} there, while
+     * {@code createComponents} — the first callback handed a {@code ThreadPool} or an {@code Environment} — runs at
+     * line 1212. So the resolver must exist before anything it needs does, and it reads this field per request
+     * rather than capturing a collaborator at construction.
+     *
+     * <p>Getting that wrong threw {@code NullPointerException} out of {@code getIndexNameCustomResolvers} and the
+     * node did not start at all. Failing closed instead — no tenant, so no expression is rewritten — is the same
+     * answer this gives a request with no resolvable tenant, and the reason it is safe: an unqualified name does
+     * not resolve, rather than resolving to somebody's data.
+     */
+    private volatile org.opensearch.clusterless.tenant.TenantResolver tenants;
+
     private volatile KeyValueStore store;
     private volatile NodePublisher publisher;
     private volatile AssignmentPoller poller;
@@ -136,6 +152,8 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         // Handed to us directly, unlike IndicesService: no Guice holder needed. Kept as the supplier rather than
         // resolved now, because it is not built yet at this point.
         this.repositoriesService = repositoriesServiceSupplier;
+        // Late-bound on purpose: the resolver that reads this was built before this method ran. See the field.
+        this.tenants = ClusterlessSettings.tenantResolver(settings, threadPool.getThreadContext());
 
         // Opened here rather than in onNodeStarted so that a bad store URI fails the node while it is
         // still starting, with the settings that caused it in scope, instead of after it is accepting
@@ -233,7 +251,12 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
      */
     @Override
     public Collection<org.opensearch.cluster.metadata.IndexNameExpressionResolver.ExpressionResolver> getIndexNameCustomResolvers() {
-        return List.of(new TenantIndexNameResolver(ClusterlessSettings.tenantResolver(settings, threadPool.getThreadContext())));
+        // Nothing this needs exists yet -- see the `tenants` field for why -- so it is given a view of a field that
+        // is filled in later, and answers "no tenant" until it is.
+        return List.of(new TenantIndexNameResolver(() -> {
+            var resolver = tenants;
+            return resolver == null ? java.util.Optional.empty() : resolver.current();
+        }));
     }
 
     /** {@code null} until Guice has built the holder, which every caller has to treat as ordinary. */

@@ -68,6 +68,29 @@ something specific to these settings.
 that each identity setting is in the registry the endpoint walks, and that its property is spelled the way
 the control plane matches.
 
+### Plugin callbacks do not all run after `createComponents`
+
+Obvious once stated and not before: `createComponents` is the first callback handed a `ThreadPool`, an
+`Environment` or a `ClusterService`, and some callbacks run **before** it. From `Node.<init>`:
+
+| line | what | can it use `createComponents`' arguments? |
+|---|---|---|
+| 830 | `new ClusterModule(...)` → `getIndexNameCustomResolvers()` | **no** |
+| 1212 | `createComponents(...)` | this is where they arrive |
+| 1360 | `new ActionModule(...)` → `getActionFilters()` | yes |
+| 1953 | `initRestHandlers(...)` → `getRestHandlers()` | yes |
+
+`getSettings()` runs earlier still and is fine, because it returns static descriptions rather than using anything.
+
+Getting this wrong cost the whole node: a resolver that captured `threadPool` at construction threw
+`NullPointerException` out of a plugin callback during bootstrap, and OpenSearch does not start with a plugin that
+cannot be asked for its resolvers. The fix is a late-bound field the resolver reads per request, which is safe here
+only because the failure mode is benign — no tenant means no index expression is rewritten, and an unqualified name
+then fails to resolve rather than resolving to another tenant's data.
+
+**`ClusterlessPluginTests` pins it**, and it is worth keeping: the ordering is upstream's and can change under us,
+and this is the one class of bug in this plugin that stops a node from existing at all rather than degrading it.
+
 ### `IndicesService` is still only reachable through Guice
 
 Neither `createComponents` overload receives it — including the newer one that takes a
