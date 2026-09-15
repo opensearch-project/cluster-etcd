@@ -152,8 +152,42 @@ public final class ClusterlessSettings {
         Setting.Property.NodeScope
     );
 
+    /**
+     * The one tenant this node serves, if it serves one.
+     *
+     * <p>Unset by default, which means the tenant of a request comes from its {@code x-tenant-id} header — and is
+     * therefore only as trustworthy as whatever sets that header. Setting this needs nothing in front of the node
+     * to be trustworthy, because a request cannot ask for another tenant: a header naming a different one is
+     * refused rather than served. Where a deployment can afford a coordinator per tenant, prefer it.
+     *
+     * <p>It does not restrict what the supervisor may assign — a node's pool decides that, and a node given
+     * copies of another tenant's index still holds them. What it decides is whose names resolve. See
+     * {@link org.opensearch.clusterless.tenant.TenantResolver}.
+     */
+    public static final Setting<String> TENANT = Setting.simpleString("clusterless.tenant", Setting.Property.NodeScope);
+
     public static List<Setting<?>> all() {
-        return List.of(STORE, POOL, ROLES, HEARTBEAT_INTERVAL, POLL_INTERVAL, APPLY, RETENTION_PASSES);
+        return List.of(STORE, POOL, ROLES, HEARTBEAT_INTERVAL, POLL_INTERVAL, APPLY, RETENTION_PASSES, TENANT);
+    }
+
+    /**
+     * How to work out the tenant of a request on this node.
+     *
+     * <p>One place, so that the precedence is written down once: a declared tenant wins and a header is then only
+     * checked for disagreement; otherwise the header is it.
+     */
+    public static org.opensearch.clusterless.tenant.TenantResolver tenantResolver(
+        Settings settings,
+        org.opensearch.common.util.concurrent.ThreadContext threadContext
+    ) {
+        String declared = TENANT.get(settings);
+        if (declared == null || declared.isBlank()) {
+            return org.opensearch.clusterless.tenant.TenantResolver.fromHeader(threadContext);
+        }
+        return org.opensearch.clusterless.tenant.TenantResolver.fixed(
+            org.opensearch.clusterless.contract.TenantId.of(declared.trim()),
+            threadContext
+        );
     }
 
     public static String storeUri(Settings settings) {

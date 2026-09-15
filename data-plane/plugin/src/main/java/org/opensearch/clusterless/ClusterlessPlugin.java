@@ -33,6 +33,7 @@ import org.opensearch.clusterless.publish.NodePublisher;
 import org.opensearch.clusterless.rest.ClusterManagerActionFilter;
 import org.opensearch.clusterless.rest.RestClusterlessStatusAction;
 import org.opensearch.clusterless.store.StoreConnection;
+import org.opensearch.clusterless.tenant.TenantIndexNameResolver;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.lifecycle.LifecycleComponent;
@@ -210,6 +211,19 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         passes = new ScheduledPasses(threadPool);
         passes.start("publishing", publisher::publish, ClusterlessSettings.HEARTBEAT_INTERVAL.get(settings));
         passes.start("polling for an assignment", poller::poll, ClusterlessSettings.POLL_INTERVAL.get(settings));
+    }
+
+    /**
+     * The index-name mapping, and the tenant scope that comes with it.
+     *
+     * <p>{@code getIndexNameCustomResolvers} is an unused upstream extension point that places custom resolvers
+     * ahead of wildcard and date-math expansion, which is what makes the mapping possible — and what lets
+     * {@code _all} be narrowed to one tenant on a node serving several. See {@link TenantIndexNameResolver},
+     * including why an extension point this powerful is defensible here.
+     */
+    @Override
+    public Collection<org.opensearch.cluster.metadata.IndexNameExpressionResolver.ExpressionResolver> getIndexNameCustomResolvers() {
+        return List.of(new TenantIndexNameResolver(ClusterlessSettings.tenantResolver(settings, threadPool.getThreadContext())));
     }
 
     /** {@code null} until Guice has built the holder, which every caller has to treat as ordinary. */
