@@ -609,7 +609,7 @@ The two implementations now share a conformance suite (`fake-node/src/testFixtur
 which is how they stay one format: the plugin re-implements the codec on XContent because the server
 exposes Jackson's streaming API and not databind, so nothing but that suite connects them.
 
-**Seven things it found. Five are silences in this document rather than errors.**
+**Eight things it found. Five are silences in this document rather than errors, and one is a claim it makes that does not hold.**
 
 1. **`SPLITTING` is a shard state this document does not enumerate.** OpenSearch 3.x has an in-place shard
    split, so `ShardRoutingState` has five values rather than the four assumed above. The plugin maps it to
@@ -701,6 +701,19 @@ exposes Jackson's streaming API and not databind, so nothing but that suite conn
    clusterless node, so it costs the primary nothing. Recorded because the natural placement — two nodes, a
    two-shard index, one replica each — *is* that combination, and a contract rule forbidding it would have been
    both unnecessary and expensive.
+
+8. **`tenant/<t>/status/nodes/<id>` cannot produce a node object that can connect**, which makes the *Routing is
+   not here, and neither is peer wiring* section above true about the address and wrong about the outcome. The
+   projection carries `address` and `port`; `DiscoveryNode.equals` compares **only** the ephemeral id, and
+   `TransportService.connectionValidator` refuses a connection whose handshake returns a node unequal to the one
+   it was given. So a coordinator — and, later, a document-replication replica resolving its primary — can learn
+   exactly where a peer is and still be unable to reach it.
+
+   **Proposed: add `ephemeral_id` to the projection**, from the registration the supervisor already reads. One
+   more string in a document already being written, and there is no data-plane workaround: a fabricated ephemeral
+   id fails the equality check by construction, so the alternative is a coordinator that declines to route to
+   every copy with a reason naming this document. Detail, including why reading each peer's registration instead
+   is the wrong fix, is in [`FINDINGS_FROM_THE_DATA_PLANE.md`](FINDINGS_FROM_THE_DATA_PLANE.md) item 3.
 
 **One thing it confirms with a caveat.** `heartbeat_interval_millis` is the node's own declaration and the
 plugin honours it, but a node scheduling at a *fixed delay* — which is what it should do, since a fixed
