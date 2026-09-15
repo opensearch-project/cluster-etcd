@@ -29,14 +29,47 @@ public enum ShardState {
     STARTED,
 
     /** The copy exists and is broken. It occupies disk and cannot serve. */
-    FAILED;
+    FAILED,
+
+    /**
+     * A state this build does not recognise, from a supervisor newer than it.
+     *
+     * <p>Read-only, like the sentinel on every other enum here. It exists because this enum acquired a second
+     * direction: a node <em>writes</em> its own copies' states, where the set is closed and known, and it now also
+     * <em>reads</em> other nodes' states out of {@code tenant/<t>/status/indices/<uuid>} to route to them. Failing
+     * that parse over one unfamiliar string would cost a coordinator the placement of a whole index, so an
+     * unrecognised state is carried as "present, and not something I can act on" instead.
+     */
+    UNKNOWN;
 
     public boolean isServing() {
         return this == STARTED;
     }
 
     public String wireName() {
+        if (this == UNKNOWN) {
+            throw new IllegalStateException("UNKNOWN is a read-only sentinel and must never be written");
+        }
         return name();
+    }
+
+    /**
+     * The contract state named by a document, tolerantly.
+     *
+     * <p>Case-insensitive on purpose rather than by accident: node-written documents in this package spell enums
+     * in lower case and the supervisor's projections spell these in upper case, and a reader that depended on
+     * which would be one refactor away from breaking on a document it should have understood.
+     */
+    public static ShardState from(String value) {
+        if (value == null) {
+            return UNKNOWN;
+        }
+        return switch (value.trim().toUpperCase(java.util.Locale.ROOT)) {
+            case "INITIALIZING" -> INITIALIZING;
+            case "STARTED" -> STARTED;
+            case "FAILED" -> FAILED;
+            default -> UNKNOWN;
+        };
     }
 
     /**
