@@ -282,7 +282,7 @@ Two copies are declined rather than built, both with reasons that name what to d
   `index.replication.type` when the index service is created, so there is no way to back it with the store the copy
   would need to read.
 
-## M7.1. A remote-backed primary that lost its disk — **done**
+## M7.1. A remote-backed primary that lost its disk — **done, and confirmed by wiping one**
 
 Turning the remote store on has made an existing gap dangerous instead of merely visible.
 
@@ -317,6 +317,32 @@ neither source is safe to guess:
 |---|---|---|
 | `EMPTY_STORE` | **silent data loss** | correct |
 | `REMOTE_STORE` | correct | fails for ever, index never starts |
+
+**Confirmed on a real pair of nodes, in the way that matters: both data directories were deleted.** A document
+was written, both nodes were restarted without `--preserve-data`, and the primary logged a remote-store recovery
+and returned the document — from both its own node and the search replica's. Before this milestone that exact
+action destroyed the document silently, primary first and then the replica syncing to the empty state it
+published.
+
+What the run proves that no test here can:
+
+- **the probe works against a real repository** — the factory call, the cast, `init()` returning non-null;
+- **the path it derives is the path the shard uses.** This was the identified risk, and it is in the dangerous
+  direction: `PathType.FIXED` plus the prefix setting had to resolve where the shard actually wrote, and a
+  mismatch would have read an empty container, answered `EMPTY`, and discarded the shard while looking exactly
+  like a healthy new index;
+- **a search replica needs no probe.** Its directory was wiped too and it recovered through the ordinary store
+  path — empty store, then sync from remote — which is why replicas are deliberately excluded from the lookup.
+
+**And the other branch, on the same pair of nodes and the same repository.** A newly created index probed, was
+told the repository held nothing for its shard, and started from an empty store — primary on one node, search
+replica on the other, with the roles falling the opposite way round from the first index. So the discriminating
+pair is covered: one shard that had been uploaded and one that had not, against a single live repository, told
+apart correctly and given different recovery sources. That is the property the design rests on, and the only way
+to test it is with a repository that really has one and not the other.
+
+The `UNKNOWN` branch — decline with a reason — has only ever run under test, and exercising it for real needs a
+deliberately unreachable repository. Left alone.
 
 **Done, as `RemoteRecovery` plus `RemoteShardData`.** The answer is looked up rather than defaulted, and where it
 cannot be looked up the copy is **declined for the pass with a reason** — the pattern `DesiredStateResolver`
