@@ -95,7 +95,8 @@ public class ClusterlessSettingsTests extends OpenSearchTestCase {
                 "clusterless.node.roles",
                 "clusterless.heartbeat.interval",
                 "clusterless.poll.interval",
-                "clusterless.apply"
+                "clusterless.apply",
+                "clusterless.retention.passes"
             ),
             registered
         );

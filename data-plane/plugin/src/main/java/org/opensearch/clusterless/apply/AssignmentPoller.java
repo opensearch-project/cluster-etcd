@@ -14,12 +14,14 @@ import org.opensearch.clusterless.contract.Keys;
 import org.opensearch.clusterless.contract.MalformedDocumentException;
 import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.publish.NodePublisher;
+import org.opensearch.core.index.Index;
 import org.opensearch.controlplane.store.KeyValueStore;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Function;
+import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.function.Supplier;
 
 /**
@@ -52,9 +54,10 @@ public final class AssignmentPoller {
     private final NodeId nodeId;
     private final DesiredStateResolver resolver;
     private final Supplier<ClusterState> currentState;
-    private final Function<DesiredState, NodeState> nodeStates;
+    private final BiFunction<DesiredState, Set<Index>, NodeState> nodeStates;
     private final NodePublisher publisher;
     private final ClusterStateApplier applier;
+    private final RetainedIndexReaper reaper;
     private final boolean applyEnabled;
 
     private DesiredState lastResolved = DesiredState.nothing();
@@ -73,9 +76,10 @@ public final class AssignmentPoller {
         NodeId nodeId,
         DesiredStateResolver resolver,
         Supplier<ClusterState> currentState,
-        Function<DesiredState, NodeState> nodeStates,
+        BiFunction<DesiredState, Set<Index>, NodeState> nodeStates,
         NodePublisher publisher,
         ClusterStateApplier applier,
+        RetainedIndexReaper reaper,
         boolean applyEnabled
     ) {
         this.store = Objects.requireNonNull(store, "store");
@@ -85,6 +89,7 @@ public final class AssignmentPoller {
         this.nodeStates = Objects.requireNonNull(nodeStates, "nodeStates");
         this.publisher = Objects.requireNonNull(publisher, "publisher");
         this.applier = applier;
+        this.reaper = Objects.requireNonNull(reaper, "reaper");
         this.applyEnabled = applyEnabled;
         if (applyEnabled && applier == null) {
             throw new IllegalArgumentException("applying is enabled but no applier was given");
@@ -127,10 +132,13 @@ public final class AssignmentPoller {
             lastResolved = desired;
 
             ClusterState live = currentState.get();
+            // Once per pass, before anything is fabricated. The fabricator is called twice on a pass that applies,
+            // so a counter advanced from inside it would reach its threshold in half the intended time.
+            Set<Index> stopRetaining = reaper.reapable(live, desired);
             // Fabricated against the live state to decide whether anything needs doing, and fabricated again
             // inside the applier against whatever the server hands over. The two can differ -- a shard may have
             // finished recovering in between -- and the applier's copy is the one that counts.
-            ClusterState intended = nodeStates.apply(desired).buildClusterState(live);
+            ClusterState intended = nodeStates.apply(desired, stopRetaining).buildClusterState(live);
 
             if (StateEquivalence.sameContent(live, intended)) {
                 // The fixed point. Applying here would publish a state identical to the running one except for
@@ -144,7 +152,7 @@ public final class AssignmentPoller {
                 if (applyEnabled) {
                     applier.apply(
                         "clusterless assignment version " + desired.assignmentVersion(),
-                        previous -> nodeStates.apply(desired).buildClusterState(previous),
+                        previous -> nodeStates.apply(desired, stopRetaining).buildClusterState(previous),
                         this::applied
                     );
                 }

@@ -89,6 +89,7 @@ public final class DataNodeState implements NodeState {
     private final DesiredState desired;
     private final MappingSource mappings;
     private final LocalShardStore shardStore;
+    private final Set<Index> stopRetaining;
 
     /**
      * @param clusterName this node's own, from its settings. Passed in rather than inherited from the previous
@@ -105,11 +106,28 @@ public final class DataNodeState implements NodeState {
         MappingSource mappings,
         LocalShardStore shardStore
     ) {
+        this(clusterName, localNode, desired, mappings, shardStore, Set.of());
+    }
+
+    /**
+     * @param stopRetaining indices whose metadata to leave out even though the previous state had it, which is what
+     *     lets the server delete their files. Decided by {@link RetainedIndexReaper} once per pass and passed in
+     *     already settled: this class is called twice on a pass that applies, so it must not be the thing counting.
+     */
+    public DataNodeState(
+        ClusterName clusterName,
+        DiscoveryNode localNode,
+        DesiredState desired,
+        MappingSource mappings,
+        LocalShardStore shardStore,
+        Set<Index> stopRetaining
+    ) {
         this.clusterName = Objects.requireNonNull(clusterName, "clusterName");
         this.localNode = Objects.requireNonNull(localNode, "localNode");
         this.desired = Objects.requireNonNull(desired, "desired");
         this.mappings = Objects.requireNonNull(mappings, "mappings");
         this.shardStore = Objects.requireNonNull(shardStore, "shardStore");
+        this.stopRetaining = Set.copyOf(Objects.requireNonNull(stopRetaining, "stopRetaining"));
     }
 
     @Override
@@ -226,6 +244,13 @@ public final class DataNodeState implements NodeState {
         for (IndexMetadata previousIndex : previous.metadata()) {
             Index index = previousIndex.getIndex();
             if (stillWanted.contains(index)) {
+                continue;
+            }
+            if (stopRetaining.contains(index)) {
+                // Left out on purpose. Absence from the metadata is what tells the server to remove the index with
+                // DELETED rather than NO_LONGER_ASSIGNED, and therefore to delete the files -- which is the point:
+                // the index is gone from the store and the reaper has watched it stay gone.
+                logger.info("clusterless: releasing [{}] and the data on disk with it", index.getName());
                 continue;
             }
             // Not logged here. This method runs on every pass -- twice on a pass that applies, since the state is

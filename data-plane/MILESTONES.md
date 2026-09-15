@@ -166,14 +166,25 @@ with `EXISTING_STORE` and the document written before the restart is still searc
 returning-node case properly rather than by the close/open shortcut. Deleting the index from the control plane
 leaves the metadata in place, as intended.
 
-Two things still to do, and the second is now more pressing than it looked. The second half of a move — the
-supervisor's `SurplusReaper` dropping a source copy — has never run. And the retained metadata has to be
-**reaped**, because a node that has outlived a deleted index reports `cluster.health` as red with nothing
-unassigned and a percentage of `NaN`: health is computing over an index state OpenSearch never produces, metadata
-declaring a shard with a routing table containing none. The node has what it needs to reap — the tenant and name
-of every retained index are in the fabricated settings, so it can check whether the index document is still in the
-store and drop the metadata once it has been gone for K passes, which is the supervisor's `ORPHANED_COPY`
-discipline turned inward.
+**Reaping is now implemented.** `RetainedIndexReaper` reads `tenant/<t>/indices/<name>` for each index the node is
+retaining — it has the tenant and the name from the fabricated settings — and drops the metadata, and therefore the
+files, once the document has been absent for `clusterless.retention.passes` consecutive passes. The uuid is checked
+too, since a document under the same name may describe a different index, in which case the retained one is gone.
+
+Three properties are worth keeping, and each has a test:
+
+- **Doubt is not evidence.** A store that cannot be read and a document that will not parse both reset the count.
+  Treating silence as deletion is how a network blip becomes data loss.
+- **The count resets on any clear look**, so a copy that comes and goes cannot accumulate strikes across the gaps.
+- **The counting happens in the poller, once per pass** — never in the fabricator, which is called twice on a pass
+  that applies and would reach the threshold in half the intended time. That is the fourth bug of that shape,
+  avoided rather than discovered.
+
+Still to do: the second half of a move — the supervisor's `SurplusReaper` dropping a source copy — has never run.
+And **a restart still orphans retained data**: the retained set comes from the previous cluster state, so a new
+process has nothing to reap and the files sit there until somebody removes them. Closing that means reading the
+node's data directory rather than its cluster state, which is the dangling-index problem OpenSearch has its own
+machinery for, and is deliberately not attempted yet.
 - **Done when:** the supervisor's rebalancer completes a move. Its `SurplusReaper` drops the source copy by
   removing it from that node's assignment; this milestone is what makes the second half of a move actually
   happen. `../opensearch-supervisor/DESIGN.md` §14.5 explains why the two halves are deliberately unaware of

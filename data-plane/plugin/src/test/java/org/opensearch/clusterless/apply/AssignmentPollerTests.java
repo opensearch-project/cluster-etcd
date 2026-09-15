@@ -113,15 +113,30 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
         );
     }
 
+    /** The index document both the resolver and the reaper read. Removed to simulate a delete. */
+    private final java.util.concurrent.atomic.AtomicBoolean indexExists = new java.util.concurrent.atomic.AtomicBoolean(true);
+
+    private final IndexConfigSource indexConfigs = (tenant, name) -> indexExists.get()
+        ? Optional.of(TestFixtures.indexConfig(UUID))
+        : Optional.empty();
+
     private AssignmentPoller poller(boolean apply) {
         return new AssignmentPoller(
             store,
             NODE,
-            new DesiredStateResolver((tenant, name) -> Optional.of(TestFixtures.indexConfig(UUID))),
+            new DesiredStateResolver(indexConfigs),
             () -> recordingApplier.state,
-            desired -> new DataNodeState(CLUSTER, TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+            (desired, stopRetaining) -> new DataNodeState(
+                CLUSTER,
+                TestFixtures.localNode(NODE.value()),
+                desired,
+                MappingSource.WRAPPED,
+                LocalShardStore.EMPTY,
+                stopRetaining
+            ),
             publisher,
             recordingApplier,
+            new RetainedIndexReaper(indexConfigs, 12),
             apply
         );
     }
@@ -247,6 +262,75 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
         assertEquals(0, poller.status().copies());
     }
 
+    // ---------------------------------------------------------------- letting go of a deleted index
+
+    public void testADeletedIndexIsReleasedOnlyAfterItStaysGone() {
+        // Deleting the index document is not enough on its own: an index that has not been observed and one that
+        // has been deleted look identical, and only one of those readings is recoverable. So the node keeps the
+        // metadata -- and therefore the files -- until it has watched the document stay absent.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(true);
+        poller.poll();
+        recordingApplier.finishRecovery();
+        assertEquals(1, recordingApplier.state.metadata().indices().size());
+
+        // The control plane deletes the index, so the supervisor stops assigning the copy.
+        indexExists.set(false);
+        store.put(Keys.nodeAssignment(NODE), "{\"version\": 43, \"tenants\": {}}".getBytes(StandardCharsets.UTF_8));
+
+        poller.poll();
+        assertEquals("the metadata must survive the first look", 1, recordingApplier.state.metadata().indices().size());
+        for (int pass = 0; pass < 10; pass++) {
+            poller.poll();
+        }
+        assertEquals("and every look until the threshold", 1, recordingApplier.state.metadata().indices().size());
+
+        poller.poll();
+        assertTrue(
+            "at which point the metadata goes, which is what lets the server delete the data",
+            recordingApplier.state.metadata().indices().isEmpty()
+        );
+    }
+
+    public void testAnIndexThatIsStillInTheStoreIsKeptForEver() {
+        // The other reading of the same signal: the copy moved elsewhere, or the index was closed. The index
+        // document is still there, so the data stays -- for as many passes as it takes.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(true);
+        poller.poll();
+        recordingApplier.finishRecovery();
+
+        store.put(Keys.nodeAssignment(NODE), "{\"version\": 43, \"tenants\": {}}".getBytes(StandardCharsets.UTF_8));
+        for (int pass = 0; pass < 30; pass++) {
+            poller.poll();
+        }
+
+        assertEquals(1, recordingApplier.state.metadata().indices().size());
+    }
+
+    public void testAnIndexThatComesBackForgetsItsStrikes() {
+        // A copy that comes and goes must not accumulate strikes across the gaps, or a long-lived node would
+        // eventually delete an index that had merely been absent a few times.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = poller(true);
+        poller.poll();
+        recordingApplier.finishRecovery();
+
+        for (int cycle = 0; cycle < 5; cycle++) {
+            indexExists.set(false);
+            store.put(Keys.nodeAssignment(NODE), "{\"version\": 43, \"tenants\": {}}".getBytes(StandardCharsets.UTF_8));
+            poller.poll();
+            poller.poll();
+
+            indexExists.set(true);
+            writeAssignment(assignmentJson(44 + cycle, "{\"0\": \"PRIMARY\"}"));
+            poller.poll();
+            recordingApplier.finishRecovery();
+        }
+
+        assertEquals("ten absent passes in total, and it is still here", 1, recordingApplier.state.metadata().indices().size());
+    }
+
     // ---------------------------------------------------------------- the pass never throws
 
     public void testAStoreThatCannotBeReadDoesNotKillThePass() {
@@ -257,9 +341,17 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
             NODE,
             new DesiredStateResolver((tenant, name) -> Optional.empty()),
             () -> ClusterState.EMPTY_STATE,
-            desired -> new DataNodeState(CLUSTER, TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+            (desired, stopRetaining) -> new DataNodeState(
+                CLUSTER,
+                TestFixtures.localNode(NODE.value()),
+                desired,
+                MappingSource.WRAPPED,
+                LocalShardStore.EMPTY,
+                stopRetaining
+            ),
             publisher,
             recordingApplier,
+            new RetainedIndexReaper(indexConfigs, 12),
             false
         );
 
@@ -381,9 +473,17 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
                 NODE,
                 new DesiredStateResolver((tenant, name) -> Optional.empty()),
                 () -> ClusterState.EMPTY_STATE,
-                desired -> new DataNodeState(CLUSTER, TestFixtures.localNode(NODE.value()), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+                (desired, stopRetaining) -> new DataNodeState(
+                    CLUSTER,
+                    TestFixtures.localNode(NODE.value()),
+                    desired,
+                    MappingSource.WRAPPED,
+                    LocalShardStore.EMPTY,
+                    stopRetaining
+                ),
                 publisher,
                 null,
+                new RetainedIndexReaper(indexConfigs, 12),
                 true
             )
         );

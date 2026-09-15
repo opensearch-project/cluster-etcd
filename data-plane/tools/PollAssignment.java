@@ -14,6 +14,7 @@ import org.opensearch.clusterless.apply.DataNodeState;
 import org.opensearch.clusterless.apply.DesiredStateResolver;
 import org.opensearch.clusterless.apply.LocalShardStore;
 import org.opensearch.clusterless.apply.MappingSource;
+import org.opensearch.clusterless.apply.RetainedIndexReaper;
 import org.opensearch.clusterless.apply.StoreIndexConfigSource;
 import org.opensearch.clusterless.contract.Heartbeat;
 import org.opensearch.clusterless.contract.NodeId;
@@ -92,18 +93,27 @@ public final class PollAssignment {
                 System::currentTimeMillis
             );
 
+            StoreIndexConfigSource indexConfigs = new StoreIndexConfigSource(store);
             AssignmentPoller poller = new AssignmentPoller(
                 store,
                 nodeId,
-                new DesiredStateResolver(new StoreIndexConfigSource(store)),
+                new DesiredStateResolver(indexConfigs),
                 // No node, so no state has ever been applied. Which is exactly true of a node in read-only
                 // mode however it is run: the intended state is always fabricated against an empty previous one.
                 () -> ClusterState.EMPTY_STATE,
-                desired -> new DataNodeState(new ClusterName("clusterless"), localNode, desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+                (desired, stopRetaining) -> new DataNodeState(
+                    new ClusterName("clusterless"),
+                    localNode,
+                    desired,
+                    MappingSource.WRAPPED,
+                    LocalShardStore.EMPTY,
+                    stopRetaining
+                ),
                 publisher,
                 // Nothing to apply to: there is no node here. Read-only mode is the only mode this tool has,
                 // which is why it needs no applier and can run in a sandbox with no sockets.
                 null,
+                new RetainedIndexReaper(indexConfigs, 12),
                 false
             );
 

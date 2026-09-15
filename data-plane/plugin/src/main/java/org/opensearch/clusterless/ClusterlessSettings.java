@@ -133,8 +133,27 @@ public final class ClusterlessSettings {
      */
     public static final Setting<Boolean> APPLY = Setting.boolSetting("clusterless.apply", false, Setting.Property.NodeScope);
 
+    /**
+     * How many consecutive passes an index must look deleted before this node releases its data.
+     *
+     * <p>The node keeps the metadata of an index it no longer holds a copy of, so that the server releases the
+     * shard without deleting the files — the difference between "stop serving this" and "destroy this". Something
+     * has to eventually decide it really is gone, and this is how patient that decision is.
+     *
+     * <p>Twelve passes rather than the two the supervisor uses for a finding, because the outcomes are not
+     * comparable: a finding raised early is noise, and data deleted early is data. At the default poll interval
+     * that is a minute of the index document being absent, which is long enough to outlast a store that is briefly
+     * unreadable and short enough that disk is not held for ever.
+     */
+    public static final Setting<Integer> RETENTION_PASSES = Setting.intSetting(
+        "clusterless.retention.passes",
+        12,
+        1,
+        Setting.Property.NodeScope
+    );
+
     public static List<Setting<?>> all() {
-        return List.of(STORE, POOL, ROLES, HEARTBEAT_INTERVAL, POLL_INTERVAL, APPLY);
+        return List.of(STORE, POOL, ROLES, HEARTBEAT_INTERVAL, POLL_INTERVAL, APPLY, RETENTION_PASSES);
     }
 
     public static String storeUri(Settings settings) {

@@ -17,6 +17,8 @@ import org.opensearch.clusterless.apply.AssignmentPoller;
 import org.opensearch.clusterless.apply.ClusterApplierServiceStateApplier;
 import org.opensearch.clusterless.apply.DataNodeState;
 import org.opensearch.clusterless.apply.DesiredStateResolver;
+import org.opensearch.clusterless.apply.IndexConfigSource;
+import org.opensearch.clusterless.apply.RetainedIndexReaper;
 import org.opensearch.clusterless.apply.MapperServiceMappingSource;
 import org.opensearch.clusterless.apply.NodeEnvironmentShardStore;
 import org.opensearch.clusterless.apply.StoreIndexConfigSource;
@@ -152,20 +154,25 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         );
 
         boolean apply = ClusterlessSettings.APPLY.get(settings);
+        // One source shared by the resolver and the reaper: they ask the same question of the same keys, one to
+        // decide what to build and the other to decide what has genuinely gone away.
+        IndexConfigSource indexConfigs = new StoreIndexConfigSource(store);
         poller = new AssignmentPoller(
             store,
             nodeId,
-            new DesiredStateResolver(new StoreIndexConfigSource(store)),
+            new DesiredStateResolver(indexConfigs),
             clusterService::state,
-            desired -> new DataNodeState(
+            (desired, stopRetaining) -> new DataNodeState(
                 clusterService.getClusterName(),
                 localNode,
                 desired,
                 new MapperServiceMappingSource(this::indicesService),
-                new NodeEnvironmentShardStore(nodeEnvironment)
+                new NodeEnvironmentShardStore(nodeEnvironment),
+                stopRetaining
             ),
             publisher,
             new ClusterApplierServiceStateApplier(clusterService.getClusterApplierService()),
+            new RetainedIndexReaper(indexConfigs, ClusterlessSettings.RETENTION_PASSES.get(settings)),
             apply
         );
 

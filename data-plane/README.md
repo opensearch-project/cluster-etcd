@@ -143,6 +143,7 @@ it also runs plugin packaging, forbidden-APIs, `testingConventions` and the lice
 | `clusterless.heartbeat.interval` | default 5s. Published in the registration, and the supervisor derives this node's staleness threshold from it, so it must be the interval the node really writes at. |
 | `clusterless.poll.interval` | default: the heartbeat interval. Separate because the costs are different — one is a write by every node in the fleet, the other a read of one small key. |
 | `clusterless.apply` | default **false**. Whether to act on the assignment, or only to log what acting on it would do. `./gradlew run` sets it true. |
+| `clusterless.retention.passes` | default 12. How many consecutive passes an index must be absent from the store before this node releases its data. A node keeps the files of an index it no longer holds a copy of, so that "stop serving this" is not "destroy this"; this is how patient the decision to finally delete them is. |
 
 `GET /_clusterless/status` reports what this node last read, applied and wrote — including
 `assignment.deferred`, the copies it was told to hold and did not build, with a reason for each. That list is
