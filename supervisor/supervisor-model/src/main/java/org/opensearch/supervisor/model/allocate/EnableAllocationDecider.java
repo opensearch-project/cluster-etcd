@@ -40,15 +40,15 @@ public final class EnableAllocationDecider implements AllocationDecider {
         }
 
         return switch (effective) {
-            case NONE -> Decision.no(NAME, "allocation is disabled by routing.allocation.enable=none;"
+            case NONE -> Decision.no(NAME, "none", "allocation is disabled by routing.allocation.enable=none;"
                 + " nothing is wrong with this cluster, somebody asked it to stop");
-            case PRIMARIES -> Decision.no(NAME, "routing.allocation.enable=primaries allows primaries only,"
+            case PRIMARIES -> Decision.no(NAME, "primaries_only", "routing.allocation.enable=primaries allows primaries only,"
                 + " so this replica waits until the setting is relaxed");
-            case NEW_PRIMARIES -> Decision.no(NAME, "routing.allocation.enable=new_primaries is applied as"
+            case NEW_PRIMARIES -> Decision.no(NAME, "new_primaries", "routing.allocation.enable=new_primaries is applied as"
                 + " none, because telling a never-allocated shard from one whose copies have all gone needs"
                 + " per-shard history this supervisor does not keep; refusing is the safe direction, since an"
                 + " operator who set this was protecting the cluster from data movement");
-            default -> Decision.no(NAME, "routing.allocation.enable is set to a value this build does not"
+            default -> Decision.no(NAME, "unrecognised", "routing.allocation.enable is set to a value this build does not"
                 + " recognise, so nothing is allocated; guessing [all] would silently ignore an instruction"
                 + " to stop");
         };

@@ -28,7 +28,7 @@ public final class RebalanceEnabledDecider implements RebalanceDecider {
     public Decision canRebalance(RebalanceContext context) {
         AllocationEnable allocation = context.allocationEnable();
         if (allocation.allows(context.isPrimary()) == false) {
-            return Decision.no(NAME, "allocation is set to [" + allocation.name().toLowerCase(java.util.Locale.ROOT)
+            return Decision.no(NAME, "allocation_disabled", "allocation is set to [" + allocation.name().toLowerCase(java.util.Locale.ROOT)
                 + "], and a move is an allocation followed by a removal, so nothing can move until allocation is"
                 + " allowed again — the rebalance setting is not the one holding this up");
         }
@@ -41,11 +41,11 @@ public final class RebalanceEnabledDecider implements RebalanceDecider {
         }
 
         if (context.rebalanceEnableIsRecognised() == false) {
-            return Decision.no(NAME, "cluster.routing.rebalance.enable is set to something this does not"
+            return Decision.no(NAME, "unrecognised", "cluster.routing.rebalance.enable is set to something this does not"
                 + " recognise, so it is being read as [none]; an unrecognised value is treated as a request to"
                 + " stop rather than guessed at, and the cost of being wrong here is only an untidy pool");
         }
-        return Decision.no(NAME, "rebalancing is set to [" + rebalance.name().toLowerCase(java.util.Locale.ROOT)
+        return Decision.no(NAME, "role_not_allowed", "rebalancing is set to [" + rebalance.name().toLowerCase(java.util.Locale.ROOT)
             + "], which does not allow moving a " + (context.isPrimary() ? "primary" : "replica"));
     }
 }

@@ -41,7 +41,7 @@ public final class AwarenessDecider implements AllocationDecider {
         for (String attribute : context.awarenessAttributes()) {
             var candidateValue = context.attributeOf(candidate, attribute);
             if (candidateValue.isEmpty()) {
-                return Decision.no(NAME, "node [" + candidate + "] declares no [" + attribute + "] attribute,"
+                return Decision.no(NAME, "no_attribute", "node [" + candidate + "] declares no [" + attribute + "] attribute,"
                     + " and this pool spreads copies across " + attribute + " values; a node that cannot say"
                     + " where it is cannot be placed into a spread");
             }
@@ -57,7 +57,7 @@ public final class AwarenessDecider implements AllocationDecider {
             int alreadyHere = perValue.getOrDefault(candidateValue.get(), 0);
 
             if (alreadyHere >= maximumPerValue) {
-                return Decision.no(NAME, "[" + attribute + "=" + candidateValue.get() + "] already holds "
+                return Decision.no(NAME, "value_at_capacity", "[" + attribute + "=" + candidateValue.get() + "] already holds "
                     + alreadyHere + " of the " + copies + " copies of this shard, and with " + values.size()
                     + " known " + attribute + " values no value may hold more than " + maximumPerValue);
             }

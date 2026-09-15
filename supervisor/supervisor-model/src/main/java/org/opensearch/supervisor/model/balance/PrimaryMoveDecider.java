@@ -38,12 +38,12 @@ public final class PrimaryMoveDecider implements RebalanceDecider {
                 + " dropped, so no node ever has to stop being the authority for anything");
         }
         if (context.replication() == Replication.SEGMENT) {
-            return Decision.no(NAME, "moving a primary is not implemented: with segment replication to a remote"
+            return Decision.no(NAME, "segment_no_fencing", "moving a primary is not implemented: with segment replication to a remote"
                 + " store, two nodes briefly believing they are primary would write to the same remote path,"
                 + " which can corrupt the shard, and fencing the old one needs a per-primary generation that"
                 + " OpenSearch does not yet expose (DESIGN.md §13, open question 1)");
         }
-        return Decision.no(NAME, "moving a primary is not implemented: with document replication the handover"
+        return Decision.no(NAME, "document_no_term", "moving a primary is not implemented: with document replication the handover"
             + " needs an interval with no primary at all and the primary term incremented across it, and this"
             + " service does not yet keep a primary term (DESIGN.md §13, open question 1)");
     }

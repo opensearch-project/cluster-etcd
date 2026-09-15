@@ -585,4 +585,168 @@ class AllocationDeciderTests {
         var names = Allocator.defaultDeciders().stream().map(AllocationDecider::name).toList();
         assertEquals(names.size(), Set.copyOf(names).size(), names.toString());
     }
+
+    // ------------------------------------------- grouped refusals (FINDINGS_FROM_THE_DATA_PLANE 2)
+
+    private static NodeId nodeNumbered(int n) {
+        return NodeId.of("node" + String.format("%018d", n));
+    }
+
+    @Test
+    void everyDistinctRefusalReasonGetsAnExample() {
+        // Two candidates, two different reasons: showing one of them is showing half the answer.
+        var outcome = new Allocator().choose(
+            simple(ShardRole.SEARCH_REPLICA,
+                NodeBuilder.of(A).holding(0, ShardRole.PRIMARY, ShardState.STARTED),
+                NodeBuilder.of(B).roles(NodeRole.COORDINATOR)),
+            List.of(A, B)
+        );
+
+        assertFalse(outcome.placed());
+        String because = outcome.refusal().because();
+        assertTrue(because.contains("2 distinct reason(s)"), because);
+        assertTrue(because.contains("already holds"), because);
+        assertTrue(because.contains("not data"), because);
+    }
+
+    @Test
+    void theReasonBlockingMostCandidatesLeadsRatherThanWhicheverNodeSortsFirst() {
+        // The regression this comes from. Node A legitimately holds the primary and is refused by the rule that is
+        // obviously right and tells nobody anything; four other nodes are refused for sharing A's host, which is
+        // the refusal that actually blocked progress. A sorts first, so the old code showed A's.
+        List<NodeBuilder> nodes = new java.util.ArrayList<>();
+        List<NodeId> candidates = new java.util.ArrayList<>();
+        NodeId holder = nodeNumbered(0);
+        nodes.add(NodeBuilder.of(holder).at("127.0.0.1").holding(0, ShardRole.PRIMARY, ShardState.STARTED));
+        candidates.add(holder);
+        for (int i = 1; i <= 4; i++) {
+            nodes.add(NodeBuilder.of(nodeNumbered(i)).at("127.0.0.1"));
+            candidates.add(nodeNumbered(i));
+        }
+
+        var outcome = new Allocator().choose(
+            refusingSharedHosts(ShardRole.SEARCH_REPLICA, nodes.toArray(NodeBuilder[]::new)), candidates);
+
+        assertFalse(outcome.placed());
+        String because = outcome.refusal().because();
+        assertTrue(because.contains("5 candidate(s) refused for 2 distinct reason(s)"), because);
+        // Both present, and the one affecting four nodes comes first.
+        int sharedHost = because.indexOf("shares address");
+        int alreadyHolds = because.indexOf("already holds");
+        assertTrue(sharedHost > 0 && alreadyHolds > 0, because);
+        assertTrue(sharedHost < alreadyHolds,
+            "the reason blocking four candidates must lead the one blocking a single node: " + because);
+        assertTrue(because.contains("(4 nodes)"), because);
+        assertTrue(because.contains("(1 node)"), because);
+    }
+
+    @Test
+    void manyCandidatesRefusedTheSameWayAreOneClauseWithACount() {
+        // Not twenty clauses. The string is projected into the store, so a large pool must not produce a large
+        // document, and twenty copies of one sentence carry no more information than one.
+        List<NodeBuilder> nodes = new java.util.ArrayList<>();
+        List<NodeId> candidates = new java.util.ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            nodes.add(NodeBuilder.of(nodeNumbered(i)).roles(NodeRole.COORDINATOR));
+            candidates.add(nodeNumbered(i));
+        }
+
+        var outcome = new Allocator().choose(
+            simple(ShardRole.PRIMARY, nodes.toArray(NodeBuilder[]::new)), candidates);
+
+        String because = outcome.refusal().because();
+        assertTrue(because.contains("20 candidate(s) refused for 1 distinct reason(s)"), because);
+        assertTrue(because.contains("(20 nodes)"), because);
+        assertEquals(1, because.split("not data", -1).length - 1,
+            "the sentence appears once, not once per node: " + because);
+    }
+
+    @Test
+    void aRefusalGroupedByReasonIgnoresTheNodeNamesAndNumbersInsideIt() {
+        // The property that makes grouping possible at all. These nodes are each refused for being over the disk
+        // watermark, and every sentence differs -- its own node id, its own percentage -- so grouping on the prose
+        // would call all three distinct. The code is what says they are the same rule.
+        var outcome = new Allocator().choose(
+            simple(ShardRole.PRIMARY,
+                NodeBuilder.of(A).disk(1000, 40),
+                NodeBuilder.of(B).disk(1000, 50),
+                NodeBuilder.of(C).disk(1000, 60)),
+            List.of(A, B, C)
+        );
+
+        String because = outcome.refusal().because();
+        assertTrue(because.contains("3 candidate(s) refused for 1 distinct reason(s)"), because);
+        assertTrue(because.contains("(3 nodes)"), because);
+    }
+
+    @Test
+    void tooManyDistinctReasonsAreCappedAndTheOmissionIsStated() {
+        // Bounded, and honest about being bounded.
+        List<NodeBuilder> nodes = List.of(
+            NodeBuilder.of(nodeNumbered(1)).roles(NodeRole.COORDINATOR),
+            NodeBuilder.of(nodeNumbered(2)).disk(1000, 40),
+            NodeBuilder.of(nodeNumbered(3)).holding(0, ShardRole.PRIMARY, ShardState.STARTED),
+            NodeBuilder.of(nodeNumbered(4)).roles(NodeRole.DATA).at("10.9.9.9")
+        );
+        // Four candidates; the fourth is refused by the shard limit, giving four distinct reasons.
+        var context = context(1, Replication.SEGMENT, ShardRole.SEARCH_REPLICA, List.of(), 0,
+            nodes.toArray(NodeBuilder[]::new));
+
+        var outcome = new Allocator().choose(context,
+            List.of(nodeNumbered(1), nodeNumbered(2), nodeNumbered(3), nodeNumbered(4)));
+
+        String because = outcome.refusal().because();
+        assertTrue(because.contains("further distinct reason(s) not shown"), because);
+        assertEquals(Allocator.MAX_DISTINCT_REASONS,
+            because.split("\\(1 node\\)|\\([0-9]+ nodes\\)", -1).length - 1,
+            "exactly the cap is shown: " + because);
+    }
+
+    @Test
+    void theThrottledOnlySentenceIsUnchanged() {
+        // "Everything is throttled, so this is paced rather than blocked" is already the right answer, and
+        // grouping identical pacing messages would bury it in arithmetic.
+        var outcome = new Allocator(List.of(new ThrottlingDecider(1))).choose(
+            simple(ShardRole.SEARCH_REPLICA,
+                NodeBuilder.of(A).holding(1, ShardRole.PRIMARY, ShardState.INITIALIZING),
+                NodeBuilder.of(B).holding(2, ShardRole.PRIMARY, ShardState.INITIALIZING)),
+            List.of(A, B)
+        );
+
+        assertFalse(outcome.placed());
+        assertTrue(outcome.refusal().throttledOnly());
+        String because = outcome.refusal().because();
+        assertTrue(because.contains("is throttled, so this is paced rather than blocked"), because);
+        assertFalse(because.contains("distinct reason(s)"), because);
+    }
+
+    @Test
+    void theExplanationIsBoundedAndNeverEndsMidSentence() {
+        // Six candidates refused in three distinct ways, each clause naming every rule that refused it. The
+        // guarantee is not a character count -- it is that at most MAX_DISTINCT_REASONS clauses appear, that no
+        // clause after the first is added once the budget is spent, and that characters are never cut inside a
+        // sentence. Written after expecting truncation here and not getting it: with clauses this length the
+        // group cap binds first, which is the right way round and worth knowing.
+        List<NodeBuilder> nodes = new java.util.ArrayList<>();
+        List<NodeId> candidates = new java.util.ArrayList<>();
+        for (int i = 1; i <= 6; i++) {
+            NodeBuilder node = NodeBuilder.of(nodeNumbered(i)).disk(1000, 1000 - i * 150);
+            nodes.add(i % 2 == 0 ? node.roles(NodeRole.COORDINATOR) : node);
+            candidates.add(nodeNumbered(i));
+        }
+
+        String because = new Allocator()
+            .choose(context(1, Replication.SEGMENT, ShardRole.SEARCH_REPLICA, List.of(), 0,
+                nodes.toArray(NodeBuilder[]::new)), candidates)
+            .refusal().because();
+
+        long clauses = because.split("\\(1 node\\)|\\([0-9]+ nodes\\)", -1).length - 1;
+        assertTrue(clauses <= Allocator.MAX_DISTINCT_REASONS,
+            clauses + " clauses, above the cap: " + because);
+        assertTrue(because.contains("6 candidate(s) refused"), because);
+        // Every clause is complete: the string ends either on a node count or on the omission sentence.
+        assertTrue(because.endsWith("node)") || because.endsWith("nodes)")
+                || because.endsWith("not shown"),
+            "ends mid-sentence: " + because);
+    }
 }

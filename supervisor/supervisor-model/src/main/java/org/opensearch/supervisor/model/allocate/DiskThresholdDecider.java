@@ -52,7 +52,7 @@ public final class DiskThresholdDecider implements AllocationDecider {
         var node = context.observation().nodes().get(candidate);
         Heartbeat heartbeat = node == null ? null : node.heartbeat();
         if (heartbeat == null || heartbeat.capacity() == null || heartbeat.capacity().diskTotalBytes() <= 0) {
-            return Decision.no(NAME, "node [" + candidate + "] reports no usable disk figures, and assuming it"
+            return Decision.no(NAME, "no_figures", "node [" + candidate + "] reports no usable disk figures, and assuming it"
                 + " has room is how the one node nobody can see gets filled up");
         }
 
@@ -62,13 +62,13 @@ public final class DiskThresholdDecider implements AllocationDecider {
         double used = 1.0 - ((double) free / total);
 
         if (used >= highWatermark) {
-            return Decision.no(NAME, String.format(
+            return Decision.no(NAME, "high_watermark", String.format(
                 "node [%s] is %.1f%% full, at or above the high watermark of %.0f%%; copies should be moving"
                     + " off it rather than onto it", candidate, used * 100, highWatermark * 100
             ));
         }
         if (used >= lowWatermark) {
-            return Decision.no(NAME, String.format(
+            return Decision.no(NAME, "low_watermark", String.format(
                 "node [%s] is %.1f%% full, at or above the low watermark of %.0f%%, so it keeps what it has"
                     + " but takes nothing new", candidate, used * 100, lowWatermark * 100
             ));

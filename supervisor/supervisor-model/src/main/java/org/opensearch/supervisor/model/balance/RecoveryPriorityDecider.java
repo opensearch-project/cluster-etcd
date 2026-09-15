@@ -33,7 +33,7 @@ public final class RecoveryPriorityDecider implements RebalanceDecider {
     public Decision canRebalance(RebalanceContext context) {
         int missing = context.underReplicatedCount();
         if (missing > 0) {
-            return Decision.throttle(NAME, missing + " shard(s) in this pool have fewer copies than they want;"
+            return Decision.throttle(NAME, "under_replicated", missing + " shard(s) in this pool have fewer copies than they want;"
                 + " restoring redundancy comes before evening out load, because both need the same recovery"
                 + " bandwidth and only one of them is protecting data");
         }

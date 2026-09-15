@@ -151,16 +151,90 @@ public final class Allocator {
             + candidates + " node(s) every decider allowed";
     }
 
+    /** Distinct refusal reasons shown before the rest are summarised as a count. */
+    static final int MAX_DISTINCT_REASONS = 3;
+
+    /**
+     * A second bound, on characters, because the number of reasons is not the only thing that grows.
+     *
+     * <p>Each clause carries <em>every</em> rule that refused that candidate — deliberately, since fixing only
+     * the first of three would not unblock anything — so one clause can be several sentences. Three of those is
+     * comfortably inside this; a pathological pool is not, and this is what stops it. Whole clauses are dropped
+     * rather than characters, because a reason cut off mid-sentence is worse than a reason replaced by a count.
+     */
+    static final int MAX_BECAUSE_LENGTH = 1200;
+
     private String refusalBecause(Map<NodeId, Decision.Combined> verdicts, boolean throttledOnly) {
         if (verdicts.isEmpty()) {
             return "there are no candidate nodes in this pool at all";
         }
         if (throttledOnly) {
+            // Unchanged, deliberately. "Everything is throttled, so this is paced rather than blocked" is already
+            // the whole answer, and grouping identical pacing messages would bury it in arithmetic.
             return "every one of the " + verdicts.size() + " candidate node(s) is throttled, so this is paced"
                 + " rather than blocked: " + first(verdicts);
         }
-        return "no node was allowed by every decider; " + verdicts.size() + " candidate(s) refused, for example "
-            + first(verdicts);
+
+        List<ReasonGroup> groups = groupByReason(verdicts);
+        StringBuilder because = new StringBuilder("no node was allowed by every decider; ")
+            .append(verdicts.size()).append(" candidate(s) refused for ").append(groups.size())
+            .append(" distinct reason(s)");
+
+        int shown = 0;
+        for (int i = 0; i < Math.min(groups.size(), MAX_DISTINCT_REASONS); i++) {
+            ReasonGroup group = groups.get(i);
+            String clause = (i == 0 ? ": " : "; ") + "node [" + group.example() + "]: " + group.summary()
+                + " (" + group.nodes() + (group.nodes() == 1 ? " node)" : " nodes)");
+            // The first clause always goes in whatever its length: a refusal with no example at all would be
+            // worse than a long one, and it is the most-affected reason by the ordering above.
+            if (shown > 0 && because.length() + clause.length() > MAX_BECAUSE_LENGTH) {
+                break;
+            }
+            because.append(clause);
+            shown++;
+        }
+        if (groups.size() > shown) {
+            // Bounded because this string is projected into the store and read by the control plane; a pool with
+            // hundreds of nodes must not produce hundreds of clauses. Same discipline as the differ's truncation.
+            because.append("; and ").append(groups.size() - shown).append(" further distinct reason(s) not shown");
+        }
+        return because.toString();
+    }
+
+    /**
+     * One example per distinct refusal reason, most-affected first.
+     *
+     * <p>Showing an arbitrary single refusal wasted the whole point of having rules that explain themselves, and
+     * the arbitrary choice was biased towards the useless one: the node legitimately holding the primary sorts
+     * early and is always refused, so "that node already has a copy" hid the reason that was actually blocking
+     * progress.
+     *
+     * <p>Ordering by the number of nodes affected is what makes this systematically useful rather than merely
+     * complete. The reason blocking four of five candidates is far more likely to be the one worth acting on than
+     * the one blocking a single node, and it is also the one that survives the cap. The node id breaks ties, so
+     * two supervisors reading the same observation produce the same sentence.
+     */
+    private List<ReasonGroup> groupByReason(Map<NodeId, Decision.Combined> verdicts) {
+        Map<List<String>, ReasonGroup> byReason = new LinkedHashMap<>();
+        verdicts.forEach((node, verdict) -> {
+            ReasonGroup existing = byReason.get(verdict.reasonKey());
+            if (existing == null) {
+                byReason.put(verdict.reasonKey(), new ReasonGroup(node, verdict.summary(), 1));
+            } else {
+                byReason.put(verdict.reasonKey(), existing.andAnother());
+            }
+        });
+        return byReason.values().stream()
+            .sorted(Comparator.comparingInt(ReasonGroup::nodes).reversed()
+                .thenComparing(group -> group.example().value()))
+            .toList();
+    }
+
+    /** @param example one node refused this way, whose full text illustrates the group */
+    private record ReasonGroup(NodeId example, String summary, int nodes) {
+        ReasonGroup andAnother() {
+            return new ReasonGroup(example, summary, nodes + 1);
+        }
     }
 
     private String first(Map<NodeId, Decision.Combined> verdicts) {

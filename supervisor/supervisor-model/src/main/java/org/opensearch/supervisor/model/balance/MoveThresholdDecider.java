@@ -57,7 +57,7 @@ public final class MoveThresholdDecider implements RebalanceDecider {
         double required = weight * (1.0 + context.threshold());
 
         if (weight <= 0.0) {
-            return Decision.no(NAME, "this copy weighs nothing under the current signals, so moving it would"
+            return Decision.no(NAME, "weightless", "this copy weighs nothing under the current signals, so moving it would"
                 + " change no node's load and cost bytes for nothing");
         }
         if (gap > required) {
@@ -67,13 +67,13 @@ public final class MoveThresholdDecider implements RebalanceDecider {
                 weight, context.sourceLoad(), context.targetLoad(), gap, required));
         }
         if (gap <= weight) {
-            return Decision.no(NAME, String.format(java.util.Locale.ROOT,
+            return Decision.no(NAME, "overshoot", String.format(java.util.Locale.ROOT,
                 "the load gap between these nodes is %.3f but the copy itself weighs %.3f, so moving it would"
                     + " overshoot: the target would end up at %.3f against the source's current %.3f, and the"
                     + " same reasoning would then propose moving it back",
                 gap, weight, context.targetLoad() + weight, context.sourceLoad()));
         }
-        return Decision.no(NAME, String.format(java.util.Locale.ROOT,
+        return Decision.no(NAME, "below_margin", String.format(java.util.Locale.ROOT,
             "moving this copy would improve the spread, but only by %.3f against the %.3f margin required;"
                 + " the pool is close enough to balanced that moving %d MiB is not worth it",
             gap - weight, required - weight, context.copy().sizeBytes() / (1024 * 1024)));

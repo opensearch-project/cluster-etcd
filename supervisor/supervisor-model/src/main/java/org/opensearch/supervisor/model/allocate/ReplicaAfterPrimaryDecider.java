@@ -35,7 +35,7 @@ public final class ReplicaAfterPrimaryDecider implements AllocationDecider {
                 + " replica syncs from the remote store and has no primary to wait for");
         }
         if (context.primaryIsActive() == false) {
-            return Decision.throttle(NAME, "index [" + context.index().name() + "] shard " + context.shard()
+            return Decision.throttle(NAME, "no_serving_primary", "index [" + context.index().name() + "] shard " + context.shard()
                 + " has no serving primary yet, and a document-replication replica cannot recover without one;"
                 + " this is a wait rather than a refusal");
         }

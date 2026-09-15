@@ -63,7 +63,7 @@ public final class ConcurrentRebalanceDecider implements RebalanceDecider {
     public Decision canRebalance(RebalanceContext context) {
         int inPool = context.arrivingInPool();
         if (inPool >= poolLimit) {
-            return Decision.throttle(NAME, inPool + " copies are already in flight across this pool, at the"
+            return Decision.throttle(NAME, "pool_limit", inPool + " copies are already in flight across this pool, at the"
                 + " limit of " + poolLimit + "; balancing is deliberately slow so that correcting a lopsided"
                 + " pool does not itself become the reason the pool is slow");
         }
@@ -71,7 +71,7 @@ public final class ConcurrentRebalanceDecider implements RebalanceDecider {
         NodeId target = context.target();
         int incoming = context.arrivingOn(target);
         if (incoming >= incomingLimit) {
-            return Decision.throttle(NAME, "node [" + target + "] already has " + incoming + " copies arriving,"
+            return Decision.throttle(NAME, "target_limit", "node [" + target + "] already has " + incoming + " copies arriving,"
                 + " at its limit of " + incomingLimit + "; the target writes the bytes whichever replication"
                 + " mode is in use, so it is metered on every move");
         }
@@ -86,7 +86,7 @@ public final class ConcurrentRebalanceDecider implements RebalanceDecider {
         NodeId source = context.source();
         int outgoing = context.arrivingOn(source);
         if (outgoing >= outgoingLimit) {
-            return Decision.throttle(NAME, "node [" + source + "] is already busy with " + outgoing
+            return Decision.throttle(NAME, "source_limit", "node [" + source + "] is already busy with " + outgoing
                 + " recoveries, at its limit of " + outgoingLimit + ", and " + cost.because()
                 + " — so moving more off it now would slow down the node this move is meant to relieve");
         }

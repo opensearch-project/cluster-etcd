@@ -44,7 +44,7 @@ public final class ThrottlingDecider implements AllocationDecider {
     public Decision canAllocate(AllocationContext context, NodeId candidate) {
         int recovering = context.recoveringOn(candidate);
         if (recovering >= concurrentRecoveries) {
-            return Decision.throttle(NAME, "node [" + candidate + "] is already recovering " + recovering
+            return Decision.throttle(NAME, "recovering", "node [" + candidate + "] is already recovering " + recovering
                 + " copies, at the limit of " + concurrentRecoveries + "; this is pacing, not a refusal");
         }
         return Decision.yes(NAME, "node [" + candidate + "] is recovering " + recovering + " of at most "

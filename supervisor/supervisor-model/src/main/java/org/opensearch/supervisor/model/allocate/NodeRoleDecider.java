@@ -24,10 +24,10 @@ public final class NodeRoleDecider implements AllocationDecider {
     public Decision canAllocate(AllocationContext context, NodeId candidate) {
         var node = context.observation().nodes().get(candidate);
         if (node == null || node.registration() == null) {
-            return Decision.no(NAME, "node [" + candidate + "] has no registration, so its roles are unknown");
+            return Decision.no(NAME, "unregistered", "node [" + candidate + "] has no registration, so its roles are unknown");
         }
         if (node.registration().hasRole(NodeRole.DATA) == false) {
-            return Decision.no(NAME, "node [" + candidate + "] declares roles " + node.registration().roles()
+            return Decision.no(NAME, "not_data", "node [" + candidate + "] declares roles " + node.registration().roles()
                 + " and not data, so it cannot hold a shard copy");
         }
         return Decision.yes(NAME, "node [" + candidate + "] is a data node");

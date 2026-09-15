@@ -1012,3 +1012,48 @@ Recorded so the shape is clear, not as a plan:
 - **A floor that is never crossed.** Whatever the autoscaler decides, the configured count remains a floor and
   health is still judged against it. An autoscaler that can reduce redundancy below what an operator asked for
   is a different and much less welcome feature.
+
+---
+
+## 16. Explaining a refusal
+
+A placement that cannot happen produces one verdict per candidate, and showing an arbitrary one of them wasted
+the point of having rules that explain themselves — worse, the arbitrary choice was biased towards the useless
+answer. The node legitimately holding the primary sorts early and is always refused, so "that node already has a
+copy" reliably hid whatever was actually blocking progress.
+
+So `Allocator` shows **one example per distinct reason**, most-affected first:
+
+```
+no node was allowed by every decider; 5 candidate(s) refused for 2 distinct reason(s):
+  node [n1]: [same_shard] node [n1] shares address 127.0.0.1 with node [n0], which already has
+    a copy, and this pool refuses copies that share a host (4 nodes);
+  node [n0]: [same_shard] node [n0] already holds, is assigned, or is about to be given a copy
+    of this shard; a second copy on one node adds no redundancy at all (1 node)
+```
+
+Three decisions in that, each of which the obvious implementation gets wrong.
+
+**Grouping is on a reason code, not on the prose.** `Decision` carries a short slug — `shared_host`,
+`high_watermark` — beside the sentence, and the key is the set of `(decider, code)` pairs that refused. Grouping
+on the text cannot work, because most reasons name the node or a measurement and so differ for every candidate:
+three nodes over the disk watermark produce three different sentences about the same rule. Grouping on the
+decider *name* is too coarse in the other direction, and that is not hypothetical — the regression that prompted
+this had one decider (`same_shard`) giving two genuinely different answers, so a per-decider example would still
+have shown only one of them. Only the decider knows what varies and what does not, so it says.
+
+The code is **required** for a refusal and defaulted for an approval. Nothing groups approvals, and making it
+mandatory where it matters means the compiler finds every new rule that can block a placement.
+
+**Ordering is by number of nodes affected.** This is what makes the output systematically useful rather than
+merely complete: the reason blocking four of five candidates is far likelier to be the actionable one than the
+reason blocking one, and it is also the one that survives the cap. Node id breaks ties, so two supervisors reading
+one observation write one sentence.
+
+**Two bounds, both dropping whole clauses.** At most three distinct reasons, and a character budget on top,
+because each clause names *every* rule that refused that candidate and so is not short. Characters are never cut
+inside a sentence — a reason truncated mid-way is worse than a reason replaced by a count — and the number
+omitted is always stated. In practice the reason cap binds first, which is the right way round.
+
+**The throttled-only case is left exactly as it was.** "Every candidate is throttled, so this is paced rather
+than blocked" is already the whole answer, and grouping identical pacing messages would bury it in arithmetic.

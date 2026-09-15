@@ -30,7 +30,7 @@ public final class ShardsLimitDecider implements AllocationDecider {
         }
         int current = context.copiesOn(candidate);
         if (current >= limit.get()) {
-            return Decision.no(NAME, "node [" + candidate + "] holds or is assigned " + current
+            return Decision.no(NAME, "at_limit", "node [" + candidate + "] holds or is assigned " + current
                 + " copies, at this pool's limit of " + limit.get()
                 + "; disk is not the only thing a shard costs");
         }

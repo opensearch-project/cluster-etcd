@@ -45,7 +45,7 @@ public final class SameShardDecider implements AllocationDecider {
     @Override
     public Decision canAllocate(AllocationContext context, NodeId candidate) {
         if (context.nodesWithThisShard().contains(candidate)) {
-            return Decision.no(NAME, "node [" + candidate + "] already holds, is assigned, or is about to be"
+            return Decision.no(NAME, "already_holds", "node [" + candidate + "] already holds, is assigned, or is about to be"
                 + " given a copy of this shard; a second copy on one node adds no redundancy at all");
         }
 
@@ -61,7 +61,7 @@ public final class SameShardDecider implements AllocationDecider {
         for (NodeId other : context.nodesWithThisShard()) {
             String otherAddress = addressOf(context, other);
             if (candidateAddress.equals(otherAddress)) {
-                return Decision.no(NAME, "node [" + candidate + "] shares address " + candidateAddress
+                return Decision.no(NAME, "shared_host", "node [" + candidate + "] shares address " + candidateAddress
                     + " with node [" + other + "], which already has a copy, and this pool refuses copies that"
                     + " share a host");
             }
