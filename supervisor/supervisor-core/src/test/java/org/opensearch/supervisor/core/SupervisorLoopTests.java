@@ -109,7 +109,7 @@ class SupervisorLoopTests {
     private void assign(Map<Integer, ShardRole> shards, long version) {
         store.put(Keys.nodeAssignment(NODE), NodeJson.write(new Assignment(
             version, POOL, 1, NODE, clock.millis(), Map.of(
-                ACME, new Assignment.TenantAssignment(NodeRole.DATA, Map.of(
+                ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
                     UUID, new Assignment.IndexAssignment("my-index", 3041, shards)
                 ))
             )

@@ -27,6 +27,7 @@ import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -100,7 +101,7 @@ class PlannerTests {
 
     private static Observation.NodeObservation nodeAssigned(NodeId id) {
         Assignment assignment = new Assignment(1, POOL, 1, id, 1L, Map.of(
-            ACME, new Assignment.TenantAssignment(NodeRole.DATA, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
                 UUID, new Assignment.IndexAssignment("my-index", 3041, Map.of(0, ShardRole.PRIMARY))
             ))
         ));

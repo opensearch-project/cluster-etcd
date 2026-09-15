@@ -371,7 +371,7 @@ The node's full desired state. Written only when it changes.
   "generated_at": 1788969977500,
   "tenants": {
     "acme": {
-      "role": "data",
+      "roles": ["data", "coordinator"],
       "indices": {
         "uzKxLWZu4nPSrTknEcDpoA": {
           "name": "my-index",
@@ -380,7 +380,7 @@ The node's full desired state. Written only when it changes.
         }
       }
     },
-    "globex": { "role": "coordinator" }
+    "globex": { "roles": ["coordinator"], "indices": {} }
   }
 }
 ```
@@ -417,8 +417,22 @@ The node's full desired state. Written only when it changes.
   under the same name gives the node a perfectly valid document describing a different index. Both halves
   read cleanly; only the pair is wrong. This is the one torn read in the contract that a later pass would
   not correct, because the node would have built the shard already.
-- **A tenant entry with `role: coordinator`** and no `indices` means "serve queries for this tenant, hold no
-  data". Where the coordinator gets the routing table it needs is the next section.
+- **`roles` is a set, and both at once is a normal configuration.** An entry with `coordinator` and no
+  `indices` means "serve queries for this tenant, hold no data"; an entry with both roles means "hold these
+  copies *and* serve queries for this tenant", which gets the node one routing table containing its own copies
+  and everybody else's. That second case is not an exotic one — OpenSearch runs a coordinator on every node out
+  of the box, which is a poor idea once there is enough hardware to separate work by type and exactly the right
+  idea for three nodes on a laptop. It was unsayable while this field was a single value.
+
+  The supervisor writes only the plural form. It still **reads** the singular `role` string, because assignments
+  outlive the process that wrote one and an upgraded supervisor should not report every node's assignment as
+  unreadable for a pass. Readers that want the same tolerance should treat a missing `roles` with a present
+  `role` as a one-element set.
+
+  A node is told this rather than inferring it. Its registration `roles` say what it *may* be given; the
+  assignment says what it *is* given, and the two are deliberately different questions — a node should be able
+  to learn everything it does from the document written for it. Where a coordinator gets the routing table it
+  needs is the next section.
 - **Size budget: 512 KiB hard**, same reasoning. If a node's assignment would exceed it the supervisor
   writes nothing and raises a finding; it does not truncate. The escape hatch, if this is ever hit in
   practice, is to split per tenant — `nodes/assignment/<node-id>/<tenant>` — which the layout permits

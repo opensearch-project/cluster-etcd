@@ -18,6 +18,7 @@ import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -270,7 +271,7 @@ class StatusComputationTests {
     @Test
     void aNodeAssignedSomethingCountsAsServingTheTenantBeforeItReportsAnything() {
         Assignment assignment = new Assignment(1, POOL, 1, NODE_B, 1L, Map.of(
-            ACME, new Assignment.TenantAssignment(NodeRole.DATA, Map.of())
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of())
         ));
         Observation.NodeObservation assigned = new Observation.NodeObservation(
             NODE_B, registration(NODE_B, Map.of("zone", "z2")), null, null, Liveness.LIVE, POOL, assignment, 4

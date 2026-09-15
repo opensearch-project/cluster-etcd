@@ -277,6 +277,9 @@ which is honest and useless. That is why this is first.
 
 ## 4. Nothing ever assigns the coordinator role
 
+> **Closed.** Both halves, taking recommendation (1): `roles` is a set per tenant entry, and coordinator entries
+> are computed in the applier as membership. Notes at the end of this item.
+
 **This blocks the data plane's milestone 8 from being tested at all**, in the same way item 3 blocked building it.
 The routing side is now written and unit-tested; it cannot be exercised against a real supervisor because no
 supervisor ever tells a node to coordinate.
@@ -339,6 +342,35 @@ Two ways out, and this is the contract's call rather than the data plane's:
 **Recommended: (1).** The grain is worth keeping — a node should be able to learn everything it does from the
 document written for it — and a set is what the fleet will want anyway once coordinators run on dedicated capacity
 and a tenant's coordinators are not its data nodes.
+
+### What was done
+
+Recommendation (1) for the format, and the applier for the mechanism, exactly as suggested.
+
+- **`TenantAssignment.roles` is a `Set<NodeRole>`**, written as `"roles": ["data", "coordinator"]`. The singular
+  `role` string is still *read*, because assignments outlive the process that wrote them and an upgraded supervisor
+  should not report every node's assignment unreadable for a pass. Readers wanting the same tolerance should treat
+  a missing `roles` with a present `role` as a one-element set. `NODE_CONTRACT.md` now documents both.
+- **Coordinator entries are computed in `Applier.applyCoordinatorMembership`**, from the node's registration roles
+  and the tenants bound to the pool — membership, not an instruction, so it does not consume the work ceiling.
+- **The applier no longer returns early on an empty plan.** That was the thing making this invisible: a pool with
+  no shard work never told its coordinators anything, and a coordinator's job is precisely the case where nothing
+  is being placed.
+- **Which made a no-op guard load-bearing**, in two cases. An unchanged tenants map is not rewritten; and a node
+  that was never told anything and has nothing to be told is *left alone* rather than handed an empty document,
+  because an absent key already means that. Missing the second wrote an empty assignment to every idle node, which
+  is how I found it.
+- **Removal falls out of the level-triggered shape**: the desired set is computed from the currently bound tenants,
+  so a rebound tenant is simply not in it.
+
+One thing to check on your side: the data plane's reader needs to accept `roles`, and a node with both roles for
+one tenant should get a routing table containing its own copies. A dual-role node's document now looks like this:
+
+```json
+{ "tenants": { "acme": { "roles": ["data", "coordinator"],
+    "indices": { "uzKx…": { "name": "my-index", "config_revision": 6,
+                            "shards": { "0": "PRIMARY", "1": "SEARCH_REPLICA" } } } } } }
+```
 
 ### Tests worth having
 

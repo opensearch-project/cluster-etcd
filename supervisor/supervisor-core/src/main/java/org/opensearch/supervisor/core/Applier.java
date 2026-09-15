@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -85,10 +86,12 @@ public final class Applier {
      *     late as possible instead of at whatever moment the caller happened to evaluate it
      */
     public Outcome apply(Plan plan, Observation observation, BooleanSupplier stillHoldsLease) {
-        if (plan.isEmpty()) {
-            return new Outcome(0, 0, 0, false, null);
-        }
-
+        // No early return for an empty plan, which it used to have. An assignment carries two different kinds of
+        // statement: what to place, which comes from the plan, and which tenants to coordinate for, which comes
+        // from membership and has no plan behind it. Skipping the whole method when nothing is being placed meant
+        // a pool with no shard work never told its coordinators anything -- and a coordinator's whole job is
+        // exactly the case where nothing is being placed. The unchanged() guard below is what keeps this from
+        // becoming a write per node per pass.
         Duration age = Duration.between(plan.observedAt(), clock.instant());
         if (age.compareTo(maxPlanAge) > 0) {
             return Outcome.abandoned("plan is " + age.toMillis() + "ms old, over the " + maxPlanAge.toMillis()
@@ -103,7 +106,16 @@ public final class Applier {
         int rejected = 0;
         int skipped = 0;
 
-        for (var entry : plan.byNode().entrySet()) {
+        // Plan-touched nodes first, then every other node whose coordinator entries are wrong. The second set is
+        // usually empty; when it is not, nothing in it consumes the plan's work ceiling. A pass that spent its
+        // budget placing shards should still be able to tell a new coordinator what it serves, because nothing is
+        // moving and the alternative is a coordinator that waits for a quiet pass to learn its own job.
+        Map<NodeId, List<Instruction>> byNode = new LinkedHashMap<>(plan.byNode());
+        for (NodeId node : observation.placeableNodes().keySet()) {
+            byNode.putIfAbsent(node, List.of());
+        }
+
+        for (var entry : byNode.entrySet()) {
             NodeId node = entry.getKey();
             Observation.NodeObservation observed = observation.nodes().get(node);
             if (observed == null) {
@@ -117,14 +129,22 @@ public final class Applier {
                 return new Outcome(applied, rejected, skipped, true, "lease lost partway through the plan");
             }
 
-            Assignment next = merge(observed, entry.getValue(), plan);
+            Assignment next = merge(observed, entry.getValue(), plan, observation);
+
+            // Nothing to say. Worth checking explicitly now that every placeable node is considered every pass:
+            // writing an identical assignment would bump its version and revision, which the node reads as a
+            // change and the liveness tracker reads as activity. A no-op write is not free, it is noise.
+            if (unchanged(observed.assignment(), next)) {
+                continue;
+            }
+
             try {
                 store.put(Keys.nodeAssignment(node), NodeJson.write(next), observed.assignmentRevision());
-                applied += entry.getValue().size();
+                applied += Math.max(entry.getValue().size(), 1);
             } catch (RevisionConflictException e) {
                 // Somebody wrote this node's assignment since it was observed. Dropping the write is the
                 // mechanism working, not a failure: whatever they wrote was based on a newer view than this.
-                rejected += entry.getValue().size();
+                rejected += Math.max(entry.getValue().size(), 1);
             }
         }
 
@@ -145,7 +165,12 @@ public final class Applier {
      * asking for is already the case, which is success under a level-triggered reconciler, and the usual cause
      * is simply that a previous pass got there first.
      */
-    private Assignment merge(Observation.NodeObservation observed, List<Instruction> changes, Plan plan) {
+    private Assignment merge(
+        Observation.NodeObservation observed,
+        List<Instruction> changes,
+        Plan plan,
+        Observation observation
+    ) {
         Assignment existing = observed.assignment();
         Map<TenantId, Assignment.TenantAssignment> tenants = new LinkedHashMap<>(
             existing == null ? Map.of() : existing.tenants()
@@ -167,9 +192,10 @@ public final class Applier {
                 indices.put(place.indexUuid(), new Assignment.IndexAssignment(
                     place.indexName(), place.configRevision(), shards
                 ));
-                tenants.put(place.tenant(), new Assignment.TenantAssignment(
-                    tenant == null ? NodeRole.DATA : tenant.role(), indices
-                ));
+                tenants.put(place.tenant(), tenant == null
+                    ? Assignment.TenantAssignment.data(indices)
+                    // Keeps whatever else this node does for the tenant -- coordinating for it, most likely.
+                    : tenant.withIndices(indices).with(NodeRole.DATA));
             } else if (instruction instanceof Instruction.RemoveCopy remove) {
                 Assignment.TenantAssignment tenant = tenants.get(remove.tenant());
                 if (tenant == null) {
@@ -198,20 +224,94 @@ public final class Applier {
                     ));
                 }
 
-                if (indices.isEmpty() && tenant.role() == NodeRole.DATA) {
-                    // Same reasoning one level up, with one exception: a coordinator's tenant entry is what
-                    // makes it a coordinator for that tenant and holds no shards by design, so it must survive.
-                    tenants.remove(remove.tenant());
+                if (indices.isEmpty()) {
+                    // No data left for this tenant, so the DATA role goes -- and with it the whole entry unless
+                    // the node also coordinates for the tenant, which is a job that holds no shards by design.
+                    tenant.withIndices(indices).without(NodeRole.DATA)
+                        .ifPresentOrElse(
+                            remaining -> tenants.put(remove.tenant(), remaining),
+                            () -> tenants.remove(remove.tenant())
+                        );
                 } else {
-                    tenants.put(remove.tenant(), new Assignment.TenantAssignment(tenant.role(), indices));
+                    tenants.put(remove.tenant(), tenant.withIndices(indices));
                 }
             }
         }
+
+        applyCoordinatorMembership(observed, observation, tenants);
 
         long version = existing == null ? 1 : existing.version() + 1;
         return new Assignment(
             version, plan.pool(), plan.epoch(), observed.nodeId(), clock.millis(), tenants
         );
+    }
+
+    /**
+     * Adds or removes the coordinator role, for every tenant bound to this pool.
+     *
+     * <p><b>Membership, not placement</b>, which is why it lives here rather than as an instruction. Every other
+     * assignment this service writes is the end of a chain that starts with a finding: the diff says a copy is
+     * missing, the planner places it, this writes it. A coordinator entry has no such chain, because there is no
+     * shard to place and therefore nothing to find missing — and inventing a finding per (node, tenant) would fill
+     * the diff with items that are never <em>wrong</em>. A coordinator without a tenant is not a deficiency; it is
+     * a node waiting to be told what it is for.
+     *
+     * <p>Level-triggered like everything else, and <b>the removal half matters more than it looks</b>: a tenant
+     * rebound to another pool must lose its coordinator entry, or a coordinator keeps routing queries to shards a
+     * different supervisor now owns. That falls out of computing the desired set from the bound tenants rather than
+     * tracking changes — a tenant that is no longer bound is simply not in it.
+     */
+    private void applyCoordinatorMembership(
+        Observation.NodeObservation observed,
+        Observation observation,
+        Map<TenantId, Assignment.TenantAssignment> tenants
+    ) {
+        boolean coordinates = observed.registration() != null
+            && observed.registration().roles().contains(NodeRole.COORDINATOR);
+        Set<TenantId> bound = observation.tenants().keySet();
+
+        if (coordinates) {
+            for (TenantId tenant : bound) {
+                Assignment.TenantAssignment existing = tenants.get(tenant);
+                tenants.put(tenant, existing == null
+                    ? Assignment.TenantAssignment.coordinator()
+                    : existing.with(NodeRole.COORDINATOR));
+            }
+        }
+
+        // Strip the role from anything it should not be on: every tenant if this node does not coordinate, and
+        // tenants no longer bound to this pool even if it does.
+        for (TenantId tenant : Set.copyOf(tenants.keySet())) {
+            if (coordinates && bound.contains(tenant)) {
+                continue;
+            }
+            Assignment.TenantAssignment entry = tenants.get(tenant);
+            if (entry.coordinates() == false) {
+                continue;
+            }
+            entry.without(NodeRole.COORDINATOR)
+                .ifPresentOrElse(remaining -> tenants.put(tenant, remaining), () -> tenants.remove(tenant));
+        }
+    }
+
+    /**
+     * Whether writing this would tell the node anything it does not already know.
+     *
+     * <p>Two cases, and the first is easy to miss: a node that was never told anything and has nothing to be told
+     * must be left alone rather than handed an empty document, because an absent key already means exactly that.
+     */
+    private static boolean unchanged(Assignment existing, Assignment next) {
+        if (existing == null) {
+            // Nothing was said before and there is nothing to say now, so saying it would be a document whose
+            // whole content is "no instructions" -- which is what the absence of the key already means. Without
+            // this, every placeable node with no shards and no tenants to coordinate got an empty assignment the
+            // moment the applier stopped skipping empty plans.
+            return next.tenants().isEmpty();
+        }
+        // An existing assignment emptied by this pass is a real instruction: drop everything. Only the tenants
+        // map is compared, because version and timestamp differ on every rebuild and including them would make
+        // every assignment perpetually changed.
+        return existing.tenants().equals(next.tenants());
     }
 
     /** Instructions that were dropped, for the convergence document. */

@@ -263,7 +263,7 @@ class NodeJsonTests {
 
     private static Assignment assignment() {
         return new Assignment(42, PoolId.of("shared-a"), 7, NODE, 1788969977500L, Map.of(
-            ACME, new Assignment.TenantAssignment(NodeRole.DATA, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
                 "uzKxLWZu4nPSrTknEcDpoA", new Assignment.IndexAssignment("my-index", 3041, Map.of(
                     0, ShardRole.PRIMARY,
                     1, ShardRole.REPLICA
@@ -290,8 +290,13 @@ class NodeJsonTests {
         assertEquals("REPLICA", index.get("shards").get("1").asText());
 
         JsonNode globex = json.get("tenants").get("globex");
-        assertEquals("coordinator", globex.get("role").asText());
+        // An array, because a node can hold data for a tenant and coordinate for it at once -- which is the
+        // out-of-the-box shape of a small deployment and could not be said while this was one value.
+        assertTrue(globex.get("roles").isArray(), globex.toString());
+        assertEquals(1, globex.get("roles").size());
+        assertEquals("coordinator", globex.get("roles").get(0).asText());
         assertTrue(globex.get("indices").isEmpty());
+        assertTrue(globex.get("role") == null, "only the plural form is ever written: " + globex);
     }
 
     @Test
@@ -460,5 +465,53 @@ class NodeJsonTests {
         assertNull(parsed.shardsDigest());
         assertNull(parsed.applied());
         assertNull(parsed.capacity());
+    }
+
+    @Test
+    void bothRolesForOneTenantRoundTrip() {
+        // The configuration the data plane needed and the format could not express: one node holding copies of an
+        // index and coordinating for its tenant, so it gets one routing table with its own copies and the others'.
+        Assignment both = new Assignment(1, PoolId.of("shared-a"), 7, NODE, 1788969977500L, Map.of(
+            ACME, new Assignment.TenantAssignment(
+                Set.of(NodeRole.DATA, NodeRole.COORDINATOR),
+                Map.of("uzKxLWZu4nPSrTknEcDpoA",
+                    new Assignment.IndexAssignment("my-index", 3041, Map.of(0, ShardRole.PRIMARY)))
+            )
+        ));
+
+        Assignment back = NodeJson.readAssignment(NodeJson.write(both));
+        Assignment.TenantAssignment tenant = back.tenants().get(ACME);
+
+        assertEquals(Set.of(NodeRole.DATA, NodeRole.COORDINATOR), tenant.roles());
+        assertTrue(tenant.holdsData());
+        assertTrue(tenant.coordinates());
+        assertEquals(1, tenant.indices().size());
+    }
+
+    @Test
+    void theSingularRoleFieldIsStillReadable() {
+        // Assignments outlive the process that wrote them, so an upgraded supervisor reads its predecessor's
+        // documents. Refusing them would report every node's assignment unreadable for a pass, during an upgrade,
+        // which is exactly when nobody wants novel findings.
+        byte[] old = ("{\"version\":1,\"pool\":\"shared-a\",\"epoch\":7,\"node_id\":\"" + NODE.value()
+            + "\",\"generated_at\":1788969977500,\"tenants\":{\"acme\":{\"role\":\"coordinator\","
+            + "\"indices\":{}}}}").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        Assignment back = NodeJson.readAssignment(old);
+
+        assertEquals(Set.of(NodeRole.COORDINATOR), back.tenants().get(ACME).roles());
+    }
+
+    @Test
+    void rolesAreOrderedSoIdenticalIntentProducesIdenticalBytes() {
+        // The digest handshake compares bytes, so an ordering difference would read as a change and put the
+        // document back on the hot path.
+        Assignment one = new Assignment(1, PoolId.of("shared-a"), 7, NODE, 1L, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA, NodeRole.COORDINATOR), Map.of())));
+        Assignment other = new Assignment(1, PoolId.of("shared-a"), 7, NODE, 1L, Map.of(
+            ACME, new Assignment.TenantAssignment(
+                new java.util.LinkedHashSet<>(java.util.List.of(NodeRole.COORDINATOR, NodeRole.DATA)), Map.of())));
+
+        org.junit.jupiter.api.Assertions.assertArrayEquals(NodeJson.write(one), NodeJson.write(other));
     }
 }

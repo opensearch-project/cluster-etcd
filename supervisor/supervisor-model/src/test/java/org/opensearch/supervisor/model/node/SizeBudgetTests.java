@@ -7,6 +7,7 @@ import org.opensearch.supervisor.model.TenantId;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -136,7 +137,7 @@ class SizeBudgetTests {
                 indices.put("uzKxLWZu4nPSrTknEcD" + String.format("%03d", i),
                     new Assignment.IndexAssignment("logs-application-" + i, 3041 + i, shards));
             }
-            byTenant.put(TenantId.of("tenant-" + t), new Assignment.TenantAssignment(NodeRole.DATA, indices));
+            byTenant.put(TenantId.of("tenant-" + t), new Assignment.TenantAssignment(Set.of(NodeRole.DATA), indices));
         }
         Assignment assignment = new Assignment(42, PoolId.of("shared-a"), 7, NODE, 1L, byTenant);
 

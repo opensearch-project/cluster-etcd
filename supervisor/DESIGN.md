@@ -1116,3 +1116,58 @@ default in every node fixture, and tests about this rule override it.
 Worth stating because it generalises: a rule that refuses something nothing had refused before will fail every
 test that assumed the old permissiveness, and the useful question is always whether those tests were describing a
 configuration that could have worked.
+
+---
+
+## 18. Coordinators are membership, not placement
+
+Every other assignment this service writes is the end of a chain that starts with a finding: the diff says a copy
+is missing, the planner places it, the applier writes it. **A coordinator entry has no such chain**, and that is
+why nothing wrote one for so long — `TenantAssignment.coordinator()` existed and its only caller was a test.
+
+There is no shard to place, so there is nothing to find missing, and inventing a finding per (node, tenant) would
+fill the diff with items that are never *wrong*: a coordinator without a tenant is not a deficiency, it is a node
+waiting to be told what it is for. So it is computed where the assignment document is assembled, as a property of
+the assignment rather than as an instruction: *for each node in this pool with the coordinator role, for each
+tenant bound to this pool, carry `coordinator`.* Both inputs are already in the observation.
+
+Three consequences, each of which had to be handled rather than noticed later.
+
+**It does not consume the work ceiling.** Nothing is moving, and a pass that spent its budget placing shards
+should still be able to tell a new coordinator what it serves. Making it an instruction would have put it in
+competition with shard recovery for no reason.
+
+**The applier no longer skips an empty plan.** It used to return immediately when there was nothing to place —
+which meant a pool with no shard work never told its coordinators anything, and a coordinator's whole job is
+precisely the case where nothing is being placed.
+
+**Which makes a no-op guard load-bearing.** Every placeable node is now considered every pass, so writing an
+identical assignment would bump its version and revision for ever; the node reads that as a change and liveness
+reads it as activity. Two cases, and the second is easy to miss: an assignment whose tenants map is unchanged is
+not rewritten, and **a node that was never told anything and has nothing to be told is left alone** rather than
+handed an empty document, because an absent key already means exactly that. Missing the second wrote an empty
+assignment to every idle node.
+
+**Removal matters more than it looks.** A tenant rebound to another pool must lose its coordinator entry, or a
+coordinator keeps routing queries to shards a different supervisor now owns — the hazard `DESIGN.md` §4 discusses
+for rebinding, arriving through a document nothing used to write. It falls out of computing the desired set from
+the currently bound tenants rather than tracking changes: a tenant no longer bound is simply not in the set.
+
+### 18.1 Why `roles` became a set
+
+`TenantAssignment.roles` is a `Set<NodeRole>` rather than one value, because **a node holding copies of an index
+and coordinating for its tenant is a real configuration** — and the natural one for a small deployment, since
+OpenSearch runs a coordinator on every node out of the box. That is a poor idea once there is enough hardware to
+separate work by type, and exactly the right idea for three nodes on a laptop.
+
+The alternative was to let `DATA` imply the capability and rule that a node whose *registration* declares the
+coordinator role coordinates for everything it has an assignment for. No format change, but it makes a node's
+behaviour depend partly on its own configuration rather than wholly on the instruction written for it, which cuts
+against the grain of everything else here. **A node should be able to learn everything it does from its own
+document.** Registration `roles` say what a node may be given; the assignment says what it *is* given; keeping
+those separate is what lets a coordinator be moved between tenants without touching the node.
+
+The supervisor writes only the plural form and still reads the singular one, because assignments outlive the
+process that wrote them — a supervisor that has just been upgraded reads its predecessor's documents, and
+reporting every node's assignment as unreadable for one pass during an upgrade is when nobody wants novel
+findings. The tolerance costs one pass and then nothing.

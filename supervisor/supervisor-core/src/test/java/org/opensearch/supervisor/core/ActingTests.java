@@ -35,6 +35,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -927,5 +928,169 @@ class ActingTests {
             }
         }
         return roles;
+    }
+
+    // ------------------------------------------- coordinators (FINDINGS_FROM_THE_DATA_PLANE 4)
+
+    private static final NodeId COORDINATOR = NodeId.of("nodeDDDDDDDDDDDDDDDDDD");
+
+    private FakeNode coordinatorNode(NodeId id) {
+        return new FakeNode(store, new Registration(
+            id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.COORDINATOR),
+            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", remoteStoreNode("z1"), 5000, 0L
+        ), clock, "eph-" + id.value());
+    }
+
+    private FakeNode bothRolesNode(NodeId id) {
+        return new FakeNode(store, new Registration(
+            id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.DATA, NodeRole.COORDINATOR),
+            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", remoteStoreNode("z1"), 5000, 0L
+        ), clock, "eph-" + id.value());
+    }
+
+    private Assignment assignmentOf(NodeId node) {
+        return store.get(Keys.nodeAssignment(node))
+            .map(entry -> NodeJson.readAssignment(entry.value()))
+            .orElse(null);
+    }
+
+    private void registerTenant(TenantId tenant) {
+        store.put(Keys.poolBinding(tenant), PoolBinding.to(POOL).toBytes());
+        store.put(Keys.tenantRegistration(tenant),
+            ("{\"tenant\":\"" + tenant.value() + "\"}").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void aCoordinatorIsToldWhichTenantsItServes() {
+        // Nothing used to write this at all: assignments came only from placement, and a coordinator has nothing
+        // to place, so it was observed, counted, found placeable for nothing, and told nothing for ever.
+        TenantId globex = TenantId.of("globex");
+        registerTenant(globex);
+        FakeNode coordinator = coordinatorNode(COORDINATOR);
+        coordinator.start();
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            coordinator.tick();
+            advance();
+        }
+
+        Assignment assignment = assignmentOf(COORDINATOR);
+        assertNotNull(assignment, "a coordinator with bound tenants must be told about them");
+        assertEquals(java.util.Set.of(ACME, globex), assignment.tenants().keySet());
+        assignment.tenants().forEach((tenant, entry) -> {
+            assertTrue(entry.coordinates(), tenant + " should be coordinated: " + entry.roles());
+            assertFalse(entry.holdsData(), tenant + " holds no data on a coordinator-only node");
+            assertTrue(entry.indices().isEmpty());
+        });
+    }
+
+    @Test
+    void aNodeCanBeToldItHoldsDataAndCoordinatesForOneTenant() {
+        // The configuration that could not be expressed, and the natural one for a small deployment: OpenSearch
+        // runs a coordinator on every node out of the box, which is wrong at scale and exactly right for three
+        // nodes on a laptop.
+        FakeNode both = bothRolesNode(NODE);
+        FakeNode other = bothRolesNode(NODE_B);
+        both.start();
+        other.start();
+        createIndex(2, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            both.tick();
+            other.tick();
+            advance();
+        }
+
+        Assignment assignment = assignmentOf(NODE);
+        Assignment.TenantAssignment entry = assignment.tenants().get(ACME);
+        assertTrue(entry.holdsData(), entry.roles().toString());
+        assertTrue(entry.coordinates(), entry.roles().toString());
+        assertFalse(entry.indices().isEmpty(), "and it really does hold copies");
+    }
+
+    @Test
+    void aTenantReboundAwayLosesItsCoordinatorEntry() {
+        // The removal half, which matters more than it looks: a coordinator that keeps a rebound tenant keeps
+        // routing queries to shards a different supervisor now owns.
+        TenantId globex = TenantId.of("globex");
+        registerTenant(globex);
+        FakeNode coordinator = coordinatorNode(COORDINATOR);
+        coordinator.start();
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            coordinator.tick();
+            advance();
+        }
+        assertTrue(assignmentOf(COORDINATOR).tenants().containsKey(globex));
+
+        // Rebound to some other pool, which this supervisor does not own.
+        store.put(Keys.poolBinding(globex), PoolBinding.to(PoolId.of("shared-b")).toBytes());
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            coordinator.tick();
+            advance();
+        }
+
+        Assignment assignment = assignmentOf(COORDINATOR);
+        assertFalse(assignment.tenants().containsKey(globex),
+            "a rebound tenant must be dropped, not left to be routed to: " + assignment.tenants().keySet());
+        assertTrue(assignment.tenants().containsKey(ACME), "and the tenant still bound here is untouched");
+    }
+
+    @Test
+    void aSettledCoordinatorIsNotRewrittenEveryPass() {
+        // Every placeable node is now considered every pass, so a no-op write would bump the version and revision
+        // of every coordinator for ever -- which the node reads as a change and liveness reads as activity.
+        FakeNode coordinator = coordinatorNode(COORDINATOR);
+        coordinator.start();
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            coordinator.tick();
+            advance();
+        }
+        long settled = assignmentOf(COORDINATOR).version();
+
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            coordinator.tick();
+            advance();
+        }
+
+        assertEquals(settled, assignmentOf(COORDINATOR).version(),
+            "nothing changed, so nothing should have been written");
+    }
+
+    @Test
+    void aCoordinatorIsToldEvenWhenThePassSpentItsWorkCeilingPlacingShards() {
+        // Membership rather than placement: nothing is moving, so a coordinator should not have to wait for a
+        // quiet pass to learn what it is for.
+        FakeNode data = node(NODE);
+        FakeNode coordinator = coordinatorNode(COORDINATOR);
+        data.start();
+        coordinator.start();
+        createIndex(6, 0);
+        // A ceiling of one placement per pass, so every pass is exhausted by shard work.
+        Supervisor supervisor = new Supervisor(store, clock, "s1", Set.of(), 1.0, TTL,
+            Balancer.Config.defaults(), new Planner.Policy(1, 1, 2), false);
+
+        for (int pass = 0; pass < 6; pass++) {
+            supervisor.tick();
+            data.tick();
+            coordinator.tick();
+            advance();
+        }
+
+        assertTrue(data.inventory().copyCount() < 6, "the ceiling should still be biting");
+        Assignment assignment = assignmentOf(COORDINATOR);
+        assertNotNull(assignment, "yet the coordinator was told anyway");
+        assertTrue(assignment.tenants().get(ACME).coordinates());
     }
 }

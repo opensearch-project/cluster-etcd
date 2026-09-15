@@ -112,7 +112,7 @@ final class BalanceFixture {
             ));
             Assignment assignment = assigned.isEmpty() ? null : new Assignment(
                 1L, POOL, 1L, id, 1L, Map.of(
-                    ACME, new Assignment.TenantAssignment(NodeRole.DATA, Map.of(
+                    ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
                         UUID, new Assignment.IndexAssignment(indexName, 3041, assigned)
                     ))
                 )

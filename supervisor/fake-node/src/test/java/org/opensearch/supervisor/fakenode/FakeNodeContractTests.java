@@ -24,6 +24,7 @@ import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -136,7 +137,7 @@ class FakeNodeContractTests extends NodeContractTests {
                 indices.forEach(
                     (uuid, builder) -> built.put(uuid, new Assignment.IndexAssignment(builder.name, builder.configRevision, builder.shards))
                 );
-                tenants.put(tenant, new Assignment.TenantAssignment(NodeRole.DATA, built));
+                tenants.put(tenant, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), built));
             });
 
             return new Assignment(++assignmentVersion, PoolId.of("shared-a"), 7, NODE, clock.millis(), tenants);

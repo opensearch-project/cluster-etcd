@@ -26,6 +26,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.EnumSet;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -90,7 +91,7 @@ class FakeNodeTests {
 
     private void assign(Map<Integer, ShardRole> shards, long version) {
         Assignment assignment = new Assignment(version, PoolId.of("shared-a"), 7, NODE, clock.millis(), Map.of(
-            ACME, new Assignment.TenantAssignment(NodeRole.DATA, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
                 INDEX_UUID, new Assignment.IndexAssignment("my-index", 3041, shards)
             ))
         ));
