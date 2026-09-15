@@ -131,6 +131,59 @@ public class PluginNodeContractTests extends OpenSearchTestCase {
         }
 
         /**
+         * What this plugin makes of an assignment the supervisor wrote.
+         *
+         * <p>The half of the contract the suite used to be silent about, and the silence cost a running
+         * coordinator: a {@code roles} array replaced a {@code role} string and this reader knew only the older
+         * spelling. Reported here in terms of what the node <em>concluded</em> rather than as a parsed object,
+         * because that both implementations can call a parser was never the thing in doubt.
+         */
+        @Override
+        public ContractNode.Understood readAssignment(byte[] document) {
+            Assignment assignment = Assignment.read(document);
+
+            Map<org.opensearch.supervisor.model.TenantId, java.util.Set<org.opensearch.supervisor.model.node.NodeRole>> roles =
+                new java.util.LinkedHashMap<>();
+            List<ContractCopy> copies = new ArrayList<>();
+
+            assignment.tenants().forEach((tenant, forTenant) -> {
+                java.util.Set<org.opensearch.supervisor.model.node.NodeRole> understood = new java.util.LinkedHashSet<>();
+                forTenant.roles().forEach(role -> understood.add(nodeRoleOf(role)));
+                roles.put(org.opensearch.supervisor.model.TenantId.of(tenant.value()), understood);
+
+                forTenant.indices().forEach((uuid, index) -> index.shards().forEach((shard, role) -> copies.add(
+                    new ContractCopy(
+                        org.opensearch.supervisor.model.TenantId.of(tenant.value()),
+                        uuid,
+                        index.name(),
+                        index.configRevision(),
+                        shard,
+                        supervisorRoleOf(role)
+                    )
+                )));
+            });
+            return new ContractNode.Understood(roles, copies);
+        }
+
+        /** As with {@link #roleOf}, a switch so that a role added on either side is a compile error. */
+        private static org.opensearch.supervisor.model.node.NodeRole nodeRoleOf(NodeRole role) {
+            return switch (role) {
+                case DATA -> org.opensearch.supervisor.model.node.NodeRole.DATA;
+                case COORDINATOR -> org.opensearch.supervisor.model.node.NodeRole.COORDINATOR;
+                case UNKNOWN -> org.opensearch.supervisor.model.node.NodeRole.UNKNOWN;
+            };
+        }
+
+        private static org.opensearch.supervisor.model.node.ShardRole supervisorRoleOf(ShardRole role) {
+            return switch (role) {
+                case PRIMARY -> org.opensearch.supervisor.model.node.ShardRole.PRIMARY;
+                case REPLICA -> org.opensearch.supervisor.model.node.ShardRole.REPLICA;
+                case SEARCH_REPLICA -> org.opensearch.supervisor.model.node.ShardRole.SEARCH_REPLICA;
+                case UNKNOWN -> org.opensearch.supervisor.model.node.ShardRole.UNKNOWN;
+            };
+        }
+
+        /**
          * The two enums are the same three names in two repositories, which is what the checks are for. A
          * switch rather than {@code valueOf}, so that a role added on one side is a compile error here rather
          * than a runtime surprise in a document.

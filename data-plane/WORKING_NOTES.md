@@ -540,6 +540,29 @@ Same environment the supervisor's `WORKING_NOTES.md` describes, and its notes ho
   sandbox cannot answer, so `git commit` hangs rather than failing. Stage the work, write the message to a
   file, and let a human run `git commit -F`.
 
+## Reuse the store between runs, deliberately
+
+Every bug in this plugin that reached a running deployment came from **state left over from an earlier run**, and
+the reflex to start from a clean store is what hides them:
+
+- an index whose files were retained by a process that has since exited, which nothing was tracking (M6);
+- a primary returning to a node whose data directory had been wiped, over a repository that still held its
+  segments (M7.1);
+- projections for nodes that no longer exist, several of them claiming `127.0.0.1:9301`, because a wiped data
+  directory produces a *new* node id on the same port (M8).
+
+The last of those found a real defect rather than noise: `NodeStatus.isReachable()` and `isAddressable()` existed,
+were tested, and were **called by nothing**, so a coordinator routed to nodes the supervisor had given up on — and
+when two ids claimed one endpoint, the one dropped was whichever `DiscoveryNodes.Builder` happened to see second,
+which could be the live one.
+
+A clean store tests the happy path of a system whose entire design is about disagreeing observations of a fleet
+that changes underneath you. So: **do not wipe `plugin/build/clusterless-store` between runs unless the point of
+the run is a cold start.** The accumulated mess is the interesting input, and it is free.
+
+The same argument does not extend to the *data* directory, which is a different axis: `--preserve-data` tests a
+returning node and wiping tests a replaced one, and both are worth doing on purpose.
+
 ## Verify against something real
 
 `tools/supervisor-sees-me.sh` is the habit that caught the most here: publish with the real publisher, run

@@ -133,25 +133,82 @@ public interface CoordinatorViewSource {
         }
 
         /**
-         * The nodes named by the copies, looked up once each.
+         * The nodes named by the copies that this node can actually route to, looked up once each.
          *
          * <p>A node id can appear in several tenants' projections, and the document is per tenant — so the first
          * tenant that answers for a node is the answer used. The fields a route needs (address, port, ephemeral
          * id) are properties of the node rather than of the tenant, so any tenant's copy of them will do.
+         *
+         * <p><b>Three reasons a peer is dropped here rather than later</b>, each with a line in {@code deferred}:
+         * it is {@code LOST}, so the supervisor has given up on it and is placing its copies elsewhere; it carries
+         * no ephemeral id or address, so no {@code DiscoveryNode} built from it could connect; or another node
+         * already claims its endpoint.
+         *
+         * <p>That last one is not hypothetical and not a misconfiguration. A node whose data directory was wiped
+         * comes back with a <em>new</em> node id on the same port, and until the supervisor reaps the old
+         * projection two ids claim {@code 127.0.0.1:9301}. Left alone that reaches
+         * {@code DiscoveryNodes.Builder}, which refuses the second one — and the one it refuses is whichever
+         * happened to be added later, so the live node's shards could be dropped in favour of a dead node's. Which
+         * makes choosing deliberately the point: reachable beats unreachable, live beats stale, and node id breaks
+         * the tie so that two passes agree.
          */
         private Map<NodeId, NodeStatus> peers(List<TenantId> tenants, Set<NodeId> wanted, List<String> deferred) {
-            Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
+            List<NodeStatus> found = new ArrayList<>();
             for (NodeId node : wanted) {
+                Optional<NodeStatus> status = Optional.empty();
                 for (TenantId tenant : tenants) {
-                    Optional<NodeStatus> status = readPeer(tenant, node, deferred);
+                    status = readPeer(tenant, node, deferred);
                     if (status.isPresent()) {
-                        peers.put(node, status.get());
                         break;
                     }
                 }
-                if (peers.containsKey(node) == false) {
+                if (status.isEmpty()) {
                     deferred.add(node + ": no node projection, so there is no address to route to it with");
+                    continue;
                 }
+                if (status.get().isReachable() == false) {
+                    deferred.add(node + ": the supervisor has given up on this node, so its copies are not routed to");
+                    continue;
+                }
+                if (status.get().isAddressable() == false) {
+                    deferred.add(
+                        node + ": its projection carries no ephemeral id or address, and a peer without one cannot"
+                            + " be connected to -- DiscoveryNode equality is the ephemeral id alone"
+                    );
+                    continue;
+                }
+                found.add(status.get());
+            }
+            return oneNodePerEndpoint(found, deferred);
+        }
+
+        /**
+         * At most one peer per address and port, chosen rather than stumbled upon.
+         *
+         * <p>Sorted so the choice is stable across passes — an unstable one would rebuild the routing table every
+         * pass, which is the mistake {@link CoordinatorState} carries entries forward to avoid.
+         */
+        private static Map<NodeId, NodeStatus> oneNodePerEndpoint(List<NodeStatus> found, List<String> deferred) {
+            List<NodeStatus> ordered = new ArrayList<>(found);
+            ordered.sort(
+                java.util.Comparator.comparing((NodeStatus peer) -> peer.liveness() == NodeStatus.Liveness.LIVE ? 0 : 1)
+                    .thenComparing(peer -> peer.nodeId().value())
+            );
+
+            Map<String, NodeId> byEndpoint = new LinkedHashMap<>();
+            Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
+            for (NodeStatus peer : ordered) {
+                String endpoint = peer.address() + ":" + peer.port();
+                NodeId incumbent = byEndpoint.putIfAbsent(endpoint, peer.nodeId());
+                if (incumbent != null) {
+                    deferred.add(
+                        peer.nodeId() + ": [" + endpoint + "] is already claimed by node [" + incumbent + "], so this"
+                            + " one is not routed to -- usually a projection for a node that was replaced on the"
+                            + " same port and has not been reaped yet"
+                    );
+                    continue;
+                }
+                peers.put(peer.nodeId(), peer);
             }
             return peers;
         }

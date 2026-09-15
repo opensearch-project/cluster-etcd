@@ -302,13 +302,15 @@ public final class CoordinatorState implements NodeState {
             try {
                 nodes.add(built);
             } catch (RuntimeException e) {
-                // DiscoveryNodes.Builder refuses two node ids claiming one address, where an address is host *and*
-                // port -- so this is not about nodes sharing a host, which is ordinary and fine. The case that
-                // reaches it is a stale projection: a node whose data directory was wiped comes back with a new
-                // node id on the same port, and until the supervisor reaps the old projection two ids claim one
-                // endpoint. One peer this node cannot represent must cost that peer's shards rather than every
-                // index in the state.
-                logger.warn("clusterless: could not add peer [{}] to the fabricated state", peer.nodeId(), e);
+                // Belt and braces. The cases that used to reach here -- a lost node, a projection with no ephemeral
+                // id, two ids claiming one endpoint -- are all decided in the pass now, with a reason recorded, so
+                // anything arriving here is something neither this class nor CoordinatorViewSource anticipated.
+                //
+                // At debug rather than warn deliberately: this runs on every pass, so a per-peer warn is a line per
+                // second for as long as the condition lasts, which is exactly what it produced. What an operator
+                // needs to read is in the pass's deferred list, which reaches the status endpoint and the
+                // heartbeat and is logged only when the intended state changes.
+                logger.debug("clusterless: could not add peer [{}] to the fabricated state", peer.nodeId(), e);
             }
         }
         return nodes.build();
