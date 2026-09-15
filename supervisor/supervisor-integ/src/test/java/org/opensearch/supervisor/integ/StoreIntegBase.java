@@ -148,7 +148,7 @@ abstract class StoreIntegBase {
 
     void definePool(PoolId pool) {
         store.put(Keys.poolDefinition(pool),
-            new PoolDefinition(pool, PoolKind.SHARED, false, null, null, List.of()).toBytes());
+            new PoolDefinition(pool, PoolKind.SHARED, false, null, null, List.of(), false).toBytes());
     }
 
     void registerTenant(TenantId tenant, PoolId pool) {

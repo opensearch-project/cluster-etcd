@@ -208,7 +208,7 @@ class MainTests {
             PoolId pool = PoolId.of("shared-a");
             TenantId tenant = TenantId.of("acme");
             store.put(Keys.poolDefinition(pool),
-                new PoolDefinition(pool, PoolKind.SHARED, false, null, null, List.of()).toBytes());
+                new PoolDefinition(pool, PoolKind.SHARED, false, null, null, List.of(), false).toBytes());
             store.put(Keys.poolBinding(tenant), PoolBinding.to(pool).toBytes());
             store.put(Keys.tenantRegistration(tenant),
                 "{\"tenant\":\"acme\"}".getBytes(StandardCharsets.UTF_8));

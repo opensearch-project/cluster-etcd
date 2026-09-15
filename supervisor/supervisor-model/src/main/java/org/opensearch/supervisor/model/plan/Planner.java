@@ -111,6 +111,26 @@ public final class Planner {
         Integer maxCopiesPerNode,
         Rebalancer rebalancer
     ) {
+        return plan(observation, diff, epoch, policy, allocator, awarenessAttributes, maxCopiesPerNode,
+            false, rebalancer);
+    }
+
+    /**
+     * @param refuseCopiesSharingAHost this pool's host rule, from the pool definition. Off by default; see
+     *     {@link org.opensearch.supervisor.model.allocate.SameShardDecider} for why an address is a poor proxy
+     *     for a failure domain.
+     */
+    public static Plan plan(
+        Observation observation,
+        Diff diff,
+        long epoch,
+        Policy policy,
+        Allocator allocator,
+        List<String> awarenessAttributes,
+        Integer maxCopiesPerNode,
+        boolean refuseCopiesSharingAHost,
+        Rebalancer rebalancer
+    ) {
         // Primaries before replicas, always. The ReplicaAfterPrimaryDecider makes a replica placed too early
         // wait rather than fail, but ordering the work means it does not have to: a pass that gets to the
         // primary first converges in one round instead of two.
@@ -166,7 +186,8 @@ public final class Planner {
             // How many copies of this shard already exist or are on their way. The allocator's same-shard rule
             // stops a duplicate landing on one node; this stops planning a copy the shard does not want.
             AllocationContext context = new AllocationContext(
-                tenant, index, shard, role, observation, awarenessAttributes, maxCopiesPerNode, planned
+                tenant, index, shard, role, observation, awarenessAttributes, maxCopiesPerNode,
+                refuseCopiesSharingAHost, planned
             );
             if (context.nodesWithThisShard().size() >= index.copiesAuthorisedFor(shard)) {
                 continue;
@@ -214,7 +235,7 @@ public final class Planner {
         Plan.Balance balance = null;
         if (policy.rebalance() && instructions.isEmpty() && canPlace) {
             Rebalancer.Outcome outcome = rebalancer.propose(
-                observation, loads, awarenessAttributes, maxCopiesPerNode
+                observation, loads, awarenessAttributes, maxCopiesPerNode, refuseCopiesSharingAHost
             );
             if (outcome.moving()) {
                 Rebalancer.Move move = outcome.move();

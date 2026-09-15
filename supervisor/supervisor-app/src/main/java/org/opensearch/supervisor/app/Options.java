@@ -149,7 +149,8 @@ public record Options(
     private static DefinePool.Request definePool(Map<String, String> given, Map<String, String> env) {
         String pool = resolve(given, env, "define-pool", null);
         if (pool == null || pool.isBlank()) {
-            for (String companion : List.of("pool-kind", "pool-default", "pool-awareness", "pool-max-copies-per-node")) {
+            for (String companion : List.of("pool-kind", "pool-default", "pool-awareness", "pool-max-copies-per-node",
+                "pool-refuse-copies-sharing-a-host")) {
                 if (given.containsKey(companion)) {
                     throw new UsageException("[--" + companion + "] only means anything with --define-pool\n\n" + usage(), false);
                 }
@@ -183,7 +184,15 @@ public record Options(
         // Default to being the default pool. A pool that serves nothing is the state somebody running this
         // command is trying to get out of, and requiring a second flag to escape it would be a trap.
         boolean isDefault = flag(resolve(given, env, "pool-default", "true"), "pool-default");
-        return new DefinePool.Request(id, poolKind, isDefault, maxShardCopiesPerNode, awareness);
+
+        // Off by default, matching OpenSearch's cluster.routing.allocation.same_shard.host. Worth a flag
+        // nonetheless: an operator who knows an address really is a machine can say so, and one running several
+        // nodes on a host -- every developer, and anyone testing -- must not have to.
+        boolean refuseCopiesSharingAHost = flag(
+            resolve(given, env, "pool-refuse-copies-sharing-a-host", "false"), "pool-refuse-copies-sharing-a-host"
+        );
+        return new DefinePool.Request(id, poolKind, isDefault, maxShardCopiesPerNode, awareness,
+            refuseCopiesSharingAHost);
     }
 
     private static final Set<String> KNOWN = Set.of(
@@ -191,7 +200,7 @@ public record Options(
         "per-tenant-floor", "minimum-passes", "rebalance", "hysteresis", "release-after-passes",
         "default-pool-weight", "log-level", "max-passes", "shutdown-budget", "liveness-floor",
         "stale-multiplier", "lost-multiplier", "define-pool", "pool-kind", "pool-default", "pool-awareness",
-        "pool-max-copies-per-node"
+        "pool-max-copies-per-node", "pool-refuse-copies-sharing-a-host"
     );
 
     /**
@@ -367,6 +376,11 @@ public record Options(
                                            spreading across an attribute nobody chose would refuse placements
                                            for a reason nobody asked for.
               --pool-max-copies-per-node=<n>  Cap on copies one node may hold. Default unset.
+              --pool-refuse-copies-sharing-a-host  Refuse two copies of a shard on nodes reporting the
+                                           same address. Default false, as in OpenSearch: an address is a
+                                           poor failure domain, and leaving it off is what lets a
+                                           single-machine deployment place a replica at all. Use
+                                           --pool-awareness for real failure domains.
 
             Safety:
               --write                      Actually write assignments. Default is read-only: observe, diff and

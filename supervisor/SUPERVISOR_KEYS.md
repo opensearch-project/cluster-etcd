@@ -300,7 +300,8 @@ reading available:
   "default": true,
   "description": "long tail, us-west-2",
   "max_shard_copies_per_node": 2000,
-  "awareness_attributes": ["zone"]
+  "awareness_attributes": ["zone"],
+  "refuse_copies_sharing_a_host": false
 }
 ```
 
@@ -309,6 +310,15 @@ reading available:
 deployment rather than on anything the supervisor can observe: it can see that nodes carry a `zone` attribute,
 but not that a zone is a thing which fails independently. Empty disables the rule — spreading across an
 attribute nobody chose would refuse placements for a reason nobody asked for.
+
+**`refuse_copies_sharing_a_host`** refuses two copies of one shard on nodes reporting the same address.
+**Defaults to `false`**, matching OpenSearch's `cluster.routing.allocation.same_shard.host`, and absent means
+false. An address is a poor proxy for a failure domain in both directions — too strict for several nodes on
+one host, useless in Kubernetes where pods sharing a machine have different addresses — so
+`awareness_attributes` is the mechanism to reach for, and this one is for deployments where an address really
+is a machine. Note the practical consequence of the default: without it, no replica can ever be placed in a
+single-machine deployment, because every node there reports `127.0.0.1`. `DESIGN.md` §2 has the full
+reasoning.
 
 `kind` is `shared` or `dedicated` and is documentation plus a guard: binding a second tenant to a
 `dedicated` pool is refused and raises a finding rather than silently making it shared. **At most one pool

@@ -82,7 +82,7 @@ class ActingTests {
     void setUp() {
         store = new InMemoryKeyValueStore();
         clock = new MutableClock();
-        store.put(Keys.poolDefinition(POOL), new PoolDefinition(POOL, PoolKind.SHARED, false, null, null, java.util.List.of()).toBytes());
+        store.put(Keys.poolDefinition(POOL), new PoolDefinition(POOL, PoolKind.SHARED, false, null, null, java.util.List.of(), false).toBytes());
         store.put(Keys.poolBinding(ACME), PoolBinding.to(POOL).toBytes());
         store.put(Keys.tenantRegistration(ACME),
             "{\"tenant\":\"acme\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -699,7 +699,7 @@ class ActingTests {
         // The rule that makes redundancy mean anything: three copies in one availability zone survive a disk,
         // not a zone, and the zone is usually why the tenant asked for three.
         store.put(Keys.poolDefinition(POOL), new org.opensearch.supervisor.model.pool.PoolDefinition(
-            POOL, PoolKind.SHARED, false, null, null, java.util.List.of("zone")
+            POOL, PoolKind.SHARED, false, null, null, java.util.List.of("zone"), false
         ).toBytes());
 
         FakeNode z1a = zoned(NODE, "z1");

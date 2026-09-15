@@ -170,16 +170,19 @@ public final class SupervisorLoop {
         lastOutcome = null;
 
         if (stillHoldsLease != null) {
-            // The pool's own rules: which attributes a shard's copies are spread across, and how many copies
-            // one of its nodes may hold. Operator-owned, because both depend on the deployment rather than on
-            // anything the supervisor can observe.
+            // The pool's own rules: which attributes a shard's copies are spread across, how many copies one of
+            // its nodes may hold, and whether two copies may share a host. Operator-owned, because every one of
+            // them depends on the deployment rather than on anything the supervisor can observe.
             var definition = pools.definitionOf(pool);
             Plan plan = Planner.plan(
                 observation, diff, epoch, policy, allocator,
                 definition.map(org.opensearch.supervisor.model.pool.PoolDefinition::awarenessAttributes)
                     .orElse(java.util.List.of()),
                 definition.map(org.opensearch.supervisor.model.pool.PoolDefinition::maxShardCopiesPerNode)
-                    .orElse(null)
+                    .orElse(null),
+                definition.map(org.opensearch.supervisor.model.pool.PoolDefinition::refuseCopiesSharingAHost)
+                    .orElse(false),
+                new org.opensearch.supervisor.model.balance.Rebalancer()
             );
             lastPlan = plan;
             lastOutcome = applier.apply(plan, observation, stillHoldsLease);

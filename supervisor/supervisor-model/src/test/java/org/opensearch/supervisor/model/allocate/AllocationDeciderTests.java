@@ -158,6 +158,19 @@ class AllocationDeciderTests {
         return context(1, Replication.SEGMENT, role, List.of(), null, nodes);
     }
 
+    /** The same, for a pool that has opted into refusing copies that share a host. */
+    private static AllocationContext refusingSharedHosts(ShardRole role, NodeBuilder... nodes) {
+        Map<NodeId, Observation.NodeObservation> observed = new LinkedHashMap<>();
+        for (NodeBuilder node : nodes) {
+            observed.put(node.id(), node.build());
+        }
+        IndexConfig index = new IndexConfig("my-index", UUID, true, 1, 1, Replication.SEGMENT, false,
+            org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
+        Observation observation = new Observation(1, Instant.EPOCH, POOL,
+            Map.of(ACME, new Observation.DesiredState(Map.of(UUID, index), List.of())), observed, List.of());
+        return new AllocationContext(ACME, index, 0, role, observation, List.of(), null, true, List.of());
+    }
+
     // ---------------------------------------------------------------- node role
 
     @Test
@@ -191,14 +204,38 @@ class AllocationDeciderTests {
     }
 
     @Test
-    void twoNodesOnOneAddressAreOneFailureDomain() {
-        var context = simple(ShardRole.SEARCH_REPLICA,
+    void twoNodesOnOneAddressAreOneFailureDomainWhenThePoolSaysSo() {
+        var context = refusingSharedHosts(ShardRole.SEARCH_REPLICA,
             NodeBuilder.of(A).at("10.0.0.7").holding(0, ShardRole.PRIMARY, ShardState.STARTED),
             NodeBuilder.of(B).at("10.0.0.7"));
 
         var decision = new SameShardDecider().canAllocate(context, B);
         assertEquals(Decision.Type.NO, decision.type());
         assertTrue(decision.because().contains("shares address"), decision.because());
+    }
+
+    @Test
+    void sharingAnAddressIsAllowedUnlessThePoolAsks() {
+        // The default, and it matches OpenSearch: cluster.routing.allocation.same_shard.host is false unless
+        // set. It has to be the default here for a blunter reason too -- every node of a single-machine
+        // deployment reports 127.0.0.1, so refusing by address means no replica of anything is ever placed,
+        // which is what a two-node laptop test is.
+        var context = simple(ShardRole.SEARCH_REPLICA,
+            NodeBuilder.of(A).at("127.0.0.1").holding(0, ShardRole.PRIMARY, ShardState.STARTED),
+            NodeBuilder.of(B).at("127.0.0.1"));
+
+        var decision = new SameShardDecider().canAllocate(context, B);
+        assertTrue(decision.isAllowed(), decision.because());
+    }
+
+    @Test
+    void thePoolRuleNeverOverridesTheOneAboutOneNode() {
+        // Opting into the host rule must not be readable as opting out of anything: the node already holding the
+        // copy is still refused, by the rule that is not optional.
+        var context = refusingSharedHosts(ShardRole.SEARCH_REPLICA,
+            NodeBuilder.of(A).at("10.0.0.7").holding(0, ShardRole.PRIMARY, ShardState.STARTED));
+
+        assertEquals(Decision.Type.NO, new SameShardDecider().canAllocate(context, A).type());
     }
 
     @Test

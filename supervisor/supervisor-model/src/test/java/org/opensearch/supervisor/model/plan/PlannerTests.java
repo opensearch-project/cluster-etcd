@@ -394,10 +394,11 @@ class PlannerTests {
     }
 
     @Test
-    void twoNodesOnOneHostCountAsOneFailureDomain() {
+    void twoNodesOnOneHostCountAsOneFailureDomainOnlyWhereThePoolSaysSo() {
         // A replica on the same machine as its primary survives nothing the primary does not, whatever their
-        // node ids say. Deployments running several nodes per host are common enough that finding this out
-        // during an incident would be a poor way to learn it.
+        // node ids say -- but an address is a poor way to know what a machine is, so the rule is the pool's to
+        // ask for. Both directions are asserted below, because the default has teeth of its own: every node of a
+        // single-machine deployment reports one address, so refusing by default means no replica is ever placed.
         Registration sharedHost = new Registration(
             FULL_NODE, "eph", FULL_NODE.value(), POOL, EnumSet.of(NodeRole.DATA),
             "10.0.0.1", 9301, "3.7.0", Map.of(), 5000, 1L
@@ -421,8 +422,17 @@ class PlannerTests {
             Map.of(EMPTY_NODE, primary, FULL_NODE, neighbour)
         );
 
-        assertTrue(Planner.plan(observation, diffAfter(3, observation), 7, POLICY).isEmpty(),
-            "the only other node is on the same host, so there is nowhere useful to put the replica");
+        // Opted in: the only other node shares the primary's address, so there is nowhere to put the replica.
+        assertTrue(
+            Planner.plan(observation, diffAfter(3, observation), 7, POLICY, new Allocator(), List.of(), null,
+                true, new org.opensearch.supervisor.model.balance.Rebalancer()).isEmpty(),
+            "the pool refuses copies sharing a host, and the only other node shares one"
+        );
+
+        // Default: placed, on the node that shares the host, because sharing a host is not by itself a reason.
+        Plan byDefault = Planner.plan(observation, diffAfter(3, observation), 7, POLICY);
+        assertEquals(1, byDefault.instructions().size(), byDefault.toString());
+        assertEquals(FULL_NODE, ((Instruction.PlaceCopy) byDefault.instructions().get(0)).node());
     }
 
     @Test

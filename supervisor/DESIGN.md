@@ -165,6 +165,32 @@ node whose pool does not exist raises `NODE_UNPOOLED`. A pool may declare `"defa
 absorb unbound tenants, which is convenient for a long tail and dangerous for a large tenant that lands in a
 shared pool unnoticed. Off unless configured.
 
+### A failure domain is what an operator says it is, not what an address implies
+
+`refuse_copies_sharing_a_host` refuses two copies of one shard on nodes reporting the same address, and it is
+**off by default**. It was unconditional, which was wrong on all three of the axes that matter:
+
+- **It made us stricter than OpenSearch without saying so.** `cluster.routing.allocation.same_shard.host`
+  defaults to `false` there — "no check is performed by default" — so an operator's expectations, formed on
+  OpenSearch, were quietly violated by a placement engine that never explained the difference.
+- **An address is wrong in both directions.** Too strict for several nodes deliberately run on one host, and
+  far too weak in Kubernetes, where two pods on one physical machine have different addresses and share a
+  failure domain completely. A rule that is wrong in the *dangerous* direction on the most common modern
+  deployment is not a safety net; it is a comfort.
+- **It broke the smallest useful deployment.** Every node of a single-machine deployment reports `127.0.0.1`,
+  so no replica of anything could ever be placed. That is every developer's first two-node test, and it
+  presented as a shard stuck unassigned while the diff insisted two nodes could take it — the exact shape of
+  failure this design spends most of its effort trying not to produce.
+
+`awareness_attributes` is the mechanism that expresses this properly, because only an operator knows which
+node attribute names a thing that fails independently. This rule is a guess standing in for that, so it
+defaults to not guessing, and an operator who knows an address really is a machine can say so.
+
+**Found by the data plane, not by a test.** A search replica sat unplaced through a real three-plane run, and
+the reason needed a code read rather than being visible in the diff — because `unplaceable_because` shows one
+example refusal, and the example it chose was the *other* node's, refused correctly for already holding the
+copy. Worth fixing separately: one refusal per distinct reason would have made this self-explaining.
+
 ## 3. Ownership, membership and balancing — with one lock
 
 **The only mutual-exclusion primitive is one lease per pool**, `supervisor/pools/<pool-id>/lease`, acquired

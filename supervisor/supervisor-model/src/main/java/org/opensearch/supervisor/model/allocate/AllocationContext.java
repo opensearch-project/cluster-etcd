@@ -44,6 +44,7 @@ public final class AllocationContext {
     private final Observation observation;
     private final List<String> awarenessAttributes;
     private final Integer maxCopiesPerNode;
+    private final boolean refuseCopiesSharingAHost;
     private final List<PlannedCopy> planned;
 
     public AllocationContext(
@@ -56,6 +57,25 @@ public final class AllocationContext {
         Integer maxCopiesPerNode,
         List<PlannedCopy> planned
     ) {
+        this(tenant, index, shard, role, observation, awarenessAttributes, maxCopiesPerNode, false, planned);
+    }
+
+    /**
+     * @param refuseCopiesSharingAHost whether two copies of one shard are refused when the nodes holding them
+     *     share an address. Off unless the pool asks for it — see {@link SameShardDecider} for why an address is
+     *     a poor proxy for a failure domain in both directions.
+     */
+    public AllocationContext(
+        TenantId tenant,
+        IndexConfig index,
+        int shard,
+        ShardRole role,
+        Observation observation,
+        List<String> awarenessAttributes,
+        Integer maxCopiesPerNode,
+        boolean refuseCopiesSharingAHost,
+        List<PlannedCopy> planned
+    ) {
         this.tenant = Objects.requireNonNull(tenant, "tenant");
         this.index = Objects.requireNonNull(index, "index");
         this.shard = shard;
@@ -63,6 +83,7 @@ public final class AllocationContext {
         this.observation = Objects.requireNonNull(observation, "observation");
         this.awarenessAttributes = awarenessAttributes == null ? List.of() : List.copyOf(awarenessAttributes);
         this.maxCopiesPerNode = maxCopiesPerNode;
+        this.refuseCopiesSharingAHost = refuseCopiesSharingAHost;
         this.planned = planned == null ? List.of() : List.copyOf(planned);
     }
 
@@ -93,6 +114,11 @@ public final class AllocationContext {
 
     public Optional<Integer> maxCopiesPerNode() {
         return Optional.ofNullable(maxCopiesPerNode);
+    }
+
+    /** Whether this pool refuses two copies of one shard on nodes sharing an address. */
+    public boolean refuseCopiesSharingAHost() {
+        return refuseCopiesSharingAHost;
     }
 
     /**

@@ -102,6 +102,20 @@ public final class Rebalancer {
         List<String> awarenessAttributes,
         Integer maxCopiesPerNode
     ) {
+        return propose(observation, loads, awarenessAttributes, maxCopiesPerNode, false);
+    }
+
+    /**
+     * @param refuseCopiesSharingAHost this pool's host rule, applied to a move's target exactly as it is to any
+     *     other placement -- otherwise a rebalance could quietly undo a constraint a placement respected.
+     */
+    public Outcome propose(
+        Observation observation,
+        LoadModel loads,
+        List<String> awarenessAttributes,
+        Integer maxCopiesPerNode,
+        boolean refuseCopiesSharingAHost
+    ) {
         double spread = loads.spread();
         Map<String, String> byDecider = new LinkedHashMap<>();
         // Whether any candidate move at all would have improved the spread, regardless of what else refused it.
@@ -145,7 +159,8 @@ public final class Rebalancer {
                     // The target has to be somewhere a copy could legally be created, judged by exactly the
                     // rules that judge any other placement.
                     Allocator.Outcome placement = legalTarget(
-                        observation, copy, index, target, awarenessAttributes, maxCopiesPerNode
+                        observation, copy, index, target, awarenessAttributes, maxCopiesPerNode,
+                        refuseCopiesSharingAHost
                     );
                     if (placement.placed() == false) {
                         byDecider.putIfAbsent("allocation", "the lightest nodes are not legal homes for the"
@@ -192,7 +207,8 @@ public final class Rebalancer {
         IndexConfig index,
         NodeId target,
         List<String> awarenessAttributes,
-        Integer maxCopiesPerNode
+        Integer maxCopiesPerNode,
+        boolean refuseCopiesSharingAHost
     ) {
         if (index == null) {
             return new Allocator.Outcome(null, new Allocator.Refusal(Map.of(), false,
@@ -201,7 +217,7 @@ public final class Rebalancer {
         }
         AllocationContext context = new AllocationContext(
             copy.shard().tenant(), index, copy.shard().shard(), copy.role(), observation,
-            awarenessAttributes, maxCopiesPerNode, List.of()
+            awarenessAttributes, maxCopiesPerNode, refuseCopiesSharingAHost, List.of()
         );
         return allocator.choose(context, List.of(target));
     }

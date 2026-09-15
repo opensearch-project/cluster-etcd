@@ -37,10 +37,18 @@ final class DefinePool {
     private static final Log log = Log.of("define-pool");
 
     /** What {@code --define-pool} and its companions add up to. */
-    record Request(PoolId pool, PoolKind kind, boolean isDefault, Integer maxShardCopiesPerNode, List<String> awarenessAttributes) {
+    record Request(
+        PoolId pool,
+        PoolKind kind,
+        boolean isDefault,
+        Integer maxShardCopiesPerNode,
+        List<String> awarenessAttributes,
+        boolean refuseCopiesSharingAHost
+    ) {
 
         PoolDefinition definition() {
-            return new PoolDefinition(pool, kind, isDefault, "defined by --define-pool", maxShardCopiesPerNode, awarenessAttributes);
+            return new PoolDefinition(pool, kind, isDefault, "defined by --define-pool", maxShardCopiesPerNode,
+                awarenessAttributes, refuseCopiesSharingAHost);
         }
     }
 

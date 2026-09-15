@@ -68,7 +68,7 @@ class LeaseAndHousekeepingTests {
     void setUp() {
         store = new InMemoryKeyValueStore();
         clock = new MutableClock();
-        store.put(Keys.poolDefinition(A), new PoolDefinition(A, PoolKind.SHARED, false, null, null, java.util.List.of()).toBytes());
+        store.put(Keys.poolDefinition(A), new PoolDefinition(A, PoolKind.SHARED, false, null, null, java.util.List.of(), false).toBytes());
     }
 
     private LeaseManager manager(String id) {
@@ -264,7 +264,7 @@ class LeaseAndHousekeepingTests {
 
     @Test
     void aPoolNobodyHoldsIsReported() {
-        store.put(Keys.poolDefinition(B), new PoolDefinition(B, PoolKind.SHARED, false, null, null, java.util.List.of()).toBytes());
+        store.put(Keys.poolDefinition(B), new PoolDefinition(B, PoolKind.SHARED, false, null, null, java.util.List.of(), false).toBytes());
 
         Supervisor only = supervisor("s1");
         only.tick();
@@ -283,8 +283,8 @@ class LeaseAndHousekeepingTests {
     @Test
     void twoPoolsClaimingToBeDefaultAreBothIgnoredAndReported() {
         // Choosing between them by scan order is a coin flip dressed up as configuration.
-        store.put(Keys.poolDefinition(A), new PoolDefinition(A, PoolKind.SHARED, true, null, null, java.util.List.of()).toBytes());
-        store.put(Keys.poolDefinition(B), new PoolDefinition(B, PoolKind.SHARED, true, null, null, java.util.List.of()).toBytes());
+        store.put(Keys.poolDefinition(A), new PoolDefinition(A, PoolKind.SHARED, true, null, null, java.util.List.of(), false).toBytes());
+        store.put(Keys.poolDefinition(B), new PoolDefinition(B, PoolKind.SHARED, true, null, null, java.util.List.of(), false).toBytes());
         store.put(Keys.tenantRegistration(ACME), "{\"tenant\":\"acme\"}".getBytes(StandardCharsets.UTF_8));
 
         Supervisor only = supervisor("s1");
@@ -296,7 +296,7 @@ class LeaseAndHousekeepingTests {
 
     @Test
     void aSecondTenantOnADedicatedPoolIsReported() {
-        store.put(Keys.poolDefinition(A), new PoolDefinition(A, PoolKind.DEDICATED, false, null, null, java.util.List.of()).toBytes());
+        store.put(Keys.poolDefinition(A), new PoolDefinition(A, PoolKind.DEDICATED, false, null, null, java.util.List.of(), false).toBytes());
         store.put(Keys.poolBinding(ACME), PoolBinding.to(A).toBytes());
         store.put(Keys.poolBinding(TenantId.of("globex")), PoolBinding.to(A).toBytes());
 

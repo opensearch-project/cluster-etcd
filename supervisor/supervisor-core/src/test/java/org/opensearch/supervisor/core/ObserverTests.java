@@ -115,9 +115,9 @@ class ObserverTests {
         observer = new Observer(store, Clock.fixed(NOW, ZoneOffset.UTC), new LivenessTracker(NOW));
 
         store.put(Keys.poolDefinition(POOL),
-            new PoolDefinition(POOL, PoolKind.SHARED, false, null, null, java.util.List.of()).toBytes());
+            new PoolDefinition(POOL, PoolKind.SHARED, false, null, null, java.util.List.of(), false).toBytes());
         store.put(Keys.poolDefinition(OTHER),
-            new PoolDefinition(OTHER, PoolKind.DEDICATED, false, null, null, java.util.List.of()).toBytes());
+            new PoolDefinition(OTHER, PoolKind.DEDICATED, false, null, null, java.util.List.of(), false).toBytes());
         store.put(Keys.poolBinding(ACME), PoolBinding.to(POOL).toBytes());
     }
 
