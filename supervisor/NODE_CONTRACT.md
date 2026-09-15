@@ -603,13 +603,13 @@ local disk; a store round-trip makes them lossable in a way they otherwise would
 
 `../opensearch-data-plane` is the first implementation of this document inside a running OpenSearch node.
 Its publishing half — registration, heartbeat, inventory — is built and passing, against OpenSearch 3.9, and
-it now also reads an assignment, resolves it against the control plane's index documents and fabricates the
-cluster state it would apply. Applying is the next step; everything up to it is exercised.
+it reads an assignment, resolves it against the control plane's index documents, fabricates the cluster state and
+**applies it**: a real node starts, stops, searches and releases shards this supervisor assigns it.
 The two implementations now share a conformance suite (`fake-node/src/testFixtures`, `NodeContractTests`),
 which is how they stay one format: the plugin re-implements the codec on XContent because the server
 exposes Jackson's streaming API and not databind, so nothing but that suite connects them.
 
-**Six things it found. Five are silences in this document rather than errors.**
+**Seven things it found. Five are silences in this document rather than errors.**
 
 1. **`SPLITTING` is a shard state this document does not enumerate.** OpenSearch 3.x has an in-place shard
    split, so `ShardRoutingState` has five values rather than the four assumed above. The plugin maps it to
@@ -669,6 +669,38 @@ exposes Jackson's streaming API and not databind, so nothing but that suite conn
    answer it. Recorded because it is a real obligation the document places on an implementer without saying so,
    and because the failure is asymmetric in a way worth stating once: guessing "no data" discards a shard, while
    guessing "there is data" fails a recovery visibly. An implementation in doubt should claim data.
+
+7. **A search replica is only buildable on a node that has a remote store, and this document has no way to say
+   which nodes those are — except that it already does.** The plugin declines a `SEARCH_REPLICA` on a node with no
+   remote store configured, with a reason, and the reason is not a limitation of the implementation:
+   OpenSearch picks a replica's segment source from the *node's* attributes
+   (`SegmentReplicationSourceFactory` → `isAssignedOnRemoteNode`), and the other branch resolves the primary
+   through the local routing table, which a data node's fabricated cluster state does not contain. A copy built
+   that way starts, reports itself started, and never receives a segment.
+
+   The supervisor can see this already: `registration` carries the node's `attributes`, and a remote-store node is
+   one whose attributes include `remote_store.segment.repository`. So two placement rules are available with no
+   change to the layout:
+
+   - **do not plan a `SEARCH_REPLICA` onto a node whose attributes name no segment repository** — it will be
+     declined and reported absent, which converges, but only after a round trip that the supervisor could have
+     avoided;
+   - **treat nodes in one pool that name *different* repositories as a finding.** Copies of a shard share one
+     remote path, so every node holding one must be configured with the same repository. A node cannot check that
+     — it sees only its own attributes — and the supervisor sees all of them, which makes it the only party that
+     can. The failure if nobody checks is silent: a search replica reads an empty store and reports itself
+     perfectly healthy.
+
+   **Proposed: state that a search-only copy requires a remote-store node, and that agreement on the repository
+   within a pool is the supervisor's to check.** No format change; both rules read fields that already exist.
+
+   Worth noting what turned out *not* to need a rule. A node given a primary of one shard and a search-only copy of
+   another shard of the same index looked at first like something placement had to avoid, because the setting that
+   lets a primary-less shard exist in a node's routing table is index-level while roles are per shard. It is fine:
+   that setting's write block is only ever materialised by cluster-manager code, which does not run on a
+   clusterless node, so it costs the primary nothing. Recorded because the natural placement — two nodes, a
+   two-shard index, one replica each — *is* that combination, and a contract rule forbidding it would have been
+   both unnecessary and expensive.
 
 **One thing it confirms with a caveat.** `heartbeat_interval_millis` is the node's own declaration and the
 plugin honours it, but a node scheduling at a *fixed delay* — which is what it should do, since a fixed
