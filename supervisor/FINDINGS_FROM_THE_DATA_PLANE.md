@@ -1,6 +1,6 @@
 # Findings from the data plane
 
-Four changes wanted in this repository, all found by running the real data plane
+Five changes wanted in this repository, all found by running the real data plane
 (`../opensearch-data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
@@ -379,6 +379,70 @@ one tenant should get a routing table containing its own copies. A dual-role nod
 - a coordinator entry is written even in a pass whose work ceiling was exhausted by placements;
 - whichever answer item 4's second half gets, a node that both holds copies of an index and coordinates for its
   tenant can be told so, and the data plane's reader agrees about what the document means.
+
+---
+
+## 5. The conformance suite covers only the documents a node writes
+
+### What happened
+
+The `roles` set landed, and the data plane's coordinator immediately stopped understanding its assignment:
+
+```
+"deferred": ["default: role is not one this node understands, so nothing was done for this tenant"]
+```
+
+Its reader knew `role` and the document now said `roles`. That is an ordinary consequence of a format change and
+the fix was three lines. The finding is that **nothing caught it** — not the supervisor's 500-odd tests, not the
+data plane's 250-odd, and not the shared suite whose entire purpose is to stop the two implementations drifting
+apart on a format. It was caught by a node failing to start doing its job, which is the most expensive place to
+find it and the one the suite exists to replace.
+
+### Why it escaped
+
+`ContractNode` — the abstraction both implementations satisfy — is about documents a node **writes**:
+`start()` announces itself, `pass()` writes whatever changed, `holdServing(...)` brings it to a state whose
+inventory can be compared. Every check reads keys out of a `RecordingStore` and asserts on what the node put
+there.
+
+The assignment is the one document flowing the other way: the supervisor writes it and the node reads it. There is
+no shared check that both implementations *read* it the same way, because there is no shared way to ask a node
+what it understood. So the suite is complete about half the contract and silent about the other half, and the
+silent half is the one where a supervisor change can break a node.
+
+Worth noting `fake-node` cannot catch this either, for a structural reason: it writes its own assignment in order
+to converge (`holdServing`'s javadoc says so), so it reads a document produced by the same code that produced its
+expectations. A format change moves both together and the round trip stays green.
+
+### What to do
+
+Give `ContractNode` a way to be asked what it made of an assignment, and add checks that feed it documents built
+by the supervisor's own writer. Sketch:
+
+```java
+/** What this node understood an assignment to be asking of it. */
+record Understood(Map<TenantId, Set<NodeRole>> roles, Map<TenantId, Map<String, Map<Integer, ShardRole>>> copies) {}
+
+Understood readAssignment(byte[] document);
+```
+
+Both sides can answer that: `fake-node` from its own parse, the plugin from `Assignment.read` plus its resolver.
+The checks worth having are the ones a format change breaks:
+
+- a `roles` array with both roles is understood as both;
+- the legacy `role` string is still understood, because the two services are deployed and upgraded separately and
+  for some window one of them is older;
+- an unrecognised role leaves the entry understood by nothing rather than silently empty;
+- shard roles and `config_revision` survive the round trip.
+
+The last of those is the general principle: **the suite should be fed documents written by the writer, not by the
+reader's own fixtures.** Hand-written JSON in either repository tests that repository's opinion of the format. The
+data plane's projection codecs have the same weakness and were mitigated the same way as far as possible — their
+fixtures are bytes copied verbatim out of a real store — but that is a snapshot rather than a check.
+
+**Not urgent, and cheap relative to what it prevents.** This is the second time a cross-repo format detail has cost
+a running deployment (the first being item 3's missing ephemeral id), and both times the format was documented
+correctly and read wrongly.
 
 ---
 
