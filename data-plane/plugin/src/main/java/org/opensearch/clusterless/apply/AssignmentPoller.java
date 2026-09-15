@@ -61,15 +61,22 @@ public final class AssignmentPoller {
     private final ClusterStateApplier applier;
     private final RetainedIndexReaper reaper;
     private final RemoteRecovery remoteRecovery;
+    private final CoordinatorViewSource coordinatedShards;
     private final boolean applyEnabled;
 
     /** What the poller needs of the fabricator: everything a pass decides, and nothing it has to decide itself. */
     @FunctionalInterface
     public interface NodeStateFactory {
-        NodeState create(DesiredState desired, Set<Index> stopRetaining, Map<ShardId, RecoverySource> recoverySources);
+        NodeState create(
+            DesiredState desired,
+            Set<Index> stopRetaining,
+            Map<ShardId, RecoverySource> recoverySources,
+            CoordinatorView coordinated
+        );
     }
 
     private DesiredState lastResolved = DesiredState.nothing();
+    private CoordinatorView lastCoordinated = CoordinatorView.nothing();
     private String lastReport;
     private long assignmentsRead;
     private long statesApplied;
@@ -111,6 +118,28 @@ public final class AssignmentPoller {
         RemoteRecovery remoteRecovery,
         boolean applyEnabled
     ) {
+        this(store, nodeId, resolver, currentState, nodeStates, publisher, applier, reaper, remoteRecovery,
+            CoordinatorViewSource.NONE, applyEnabled);
+    }
+
+    /**
+     * @param coordinated where the shards of coordinated tenants are. Read once per pass, like everything else the
+     *     fabrication is given: it is several reads of the store, and the fabricator runs twice on a pass that
+     *     applies.
+     */
+    public AssignmentPoller(
+        KeyValueStore store,
+        NodeId nodeId,
+        DesiredStateResolver resolver,
+        Supplier<ClusterState> currentState,
+        NodeStateFactory nodeStates,
+        NodePublisher publisher,
+        ClusterStateApplier applier,
+        RetainedIndexReaper reaper,
+        RemoteRecovery remoteRecovery,
+        CoordinatorViewSource coordinatedShards,
+        boolean applyEnabled
+    ) {
         this.store = Objects.requireNonNull(store, "store");
         this.nodeId = Objects.requireNonNull(nodeId, "nodeId");
         this.resolver = Objects.requireNonNull(resolver, "resolver");
@@ -120,6 +149,7 @@ public final class AssignmentPoller {
         this.applier = applier;
         this.reaper = Objects.requireNonNull(reaper, "reaper");
         this.remoteRecovery = remoteRecovery;
+        this.coordinatedShards = coordinatedShards == null ? CoordinatorViewSource.NONE : coordinatedShards;
         this.applyEnabled = applyEnabled;
         if (applyEnabled && applier == null) {
             throw new IllegalArgumentException("applying is enabled but no applier was given");
@@ -174,10 +204,17 @@ public final class AssignmentPoller {
                 : remoteRecovery.planFor(desired, live);
             desired = recovery.desired();
             lastResolved = desired;
+
+            // The other half of a pass for a node with the coordinator role: where its tenants' shards are, on
+            // whichever nodes hold them. Read here for the same reason as everything above -- the fabrication is a
+            // pure function and this is several reads of the store.
+            CoordinatorView coordinated = coordinatedShards.read(desired.coordinatorTenants());
+            lastCoordinated = coordinated;
             // Fabricated against the live state to decide whether anything needs doing, and fabricated again
             // inside the applier against whatever the server hands over. The two can differ -- a shard may have
             // finished recovering in between -- and the applier's copy is the one that counts.
-            ClusterState intended = nodeStates.create(desired, stopRetaining, recovery.sources()).buildClusterState(live);
+            ClusterState intended = nodeStates.create(desired, stopRetaining, recovery.sources(), coordinated)
+                .buildClusterState(live);
 
             if (StateEquivalence.sameContent(live, intended)) {
                 // The fixed point. Applying here would publish a state identical to the running one except for
@@ -192,7 +229,7 @@ public final class AssignmentPoller {
                 if (applyEnabled) {
                     applier.apply(
                         "clusterless assignment version " + desired.assignmentVersion(),
-                        previous -> nodeStates.create(finalDesired, stopRetaining, recovery.sources())
+                        previous -> nodeStates.create(finalDesired, stopRetaining, recovery.sources(), coordinated)
                             .buildClusterState(previous),
                         this::applied
                     );
@@ -306,10 +343,20 @@ public final class AssignmentPoller {
             lastResolved.indices().size(),
             lastResolved.copyCount(),
             lastResolved.coordinatorTenants().stream().map(Object::toString).toList(),
-            lastResolved.deferred(),
+            join(lastResolved.deferred(), lastCoordinated.deferred()),
+            lastCoordinated.indices().size(),
             lastFailure,
             lastApplyFailure
         );
+    }
+
+    private static List<String> join(List<String> first, List<String> second) {
+        if (second.isEmpty()) {
+            return first;
+        }
+        List<String> both = new java.util.ArrayList<>(first);
+        both.addAll(second);
+        return List.copyOf(both);
     }
 
     /**
@@ -328,6 +375,7 @@ public final class AssignmentPoller {
         int copies,
         List<String> coordinatorTenants,
         List<String> deferred,
+        int coordinatedIndices,
         String lastFailure,
         String lastApplyFailure
     ) {}

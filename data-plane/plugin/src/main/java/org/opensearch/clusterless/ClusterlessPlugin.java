@@ -21,7 +21,10 @@ import org.opensearch.clusterless.apply.IndexConfigSource;
 import org.opensearch.clusterless.apply.RetainedIndexReaper;
 import org.opensearch.clusterless.apply.MapperServiceMappingSource;
 import org.opensearch.clusterless.apply.NodeEnvironmentShardStore;
+import org.opensearch.clusterless.apply.CoordinatorState;
+import org.opensearch.clusterless.apply.CoordinatorViewSource;
 import org.opensearch.clusterless.apply.LocalShardStore;
+import org.opensearch.clusterless.apply.MappingSource;
 import org.opensearch.clusterless.apply.RemoteRecovery;
 import org.opensearch.clusterless.apply.RemoteStore;
 import org.opensearch.clusterless.apply.RepositoryRemoteShardData;
@@ -171,20 +174,26 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         // decide what to build and the other to decide what has genuinely gone away.
         IndexConfigSource indexConfigs = new StoreIndexConfigSource(store);
         LocalShardStore localShardStore = new NodeEnvironmentShardStore(nodeEnvironment);
+        MappingSource mappingSource = new MapperServiceMappingSource(this::indicesService);
         poller = new AssignmentPoller(
             store,
             nodeId,
             new DesiredStateResolver(indexConfigs, remoteStore),
             clusterService::state,
-            (desired, stopRetaining, recoverySources) -> new DataNodeState(
-                clusterService.getClusterName(),
+            (desired, stopRetaining, recoverySources, coordinated) -> new CoordinatorState(
+                new DataNodeState(
+                    clusterService.getClusterName(),
+                    localNode,
+                    desired,
+                    mappingSource,
+                    localShardStore,
+                    remoteStore,
+                    stopRetaining,
+                    recoverySources
+                ),
                 localNode,
-                desired,
-                new MapperServiceMappingSource(this::indicesService),
-                localShardStore,
-                remoteStore,
-                stopRetaining,
-                recoverySources
+                coordinated,
+                mappingSource
             ),
             publisher,
             new ClusterApplierServiceStateApplier(clusterService.getClusterApplierService()),
@@ -195,6 +204,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
                 new RepositoryRemoteShardData(repositoriesService, threadPool, settings),
                 localNode.getId()
             ),
+            new CoordinatorViewSource.FromStore(store, indexConfigs),
             apply
         );
 

@@ -387,13 +387,52 @@ Note the asymmetry `LocalShardStore` already documents, one level out — and th
 decided a design here: **when the choice is between failing loudly and starting empty, fail loudly.** What was new
 is that neither available recovery source fails loudly by itself, so the loudness had to be built.
 
-## M8. Coordinators
+## M8. Coordinators — **built, not yet run**
 
 - Route from `tenant/<t>/status/indices/<uuid>`, resolve addresses from `tenant/<t>/status/nodes/<id>`.
 - **Done when:** a search against a coordinator that holds no shards returns results from data nodes.
 
 This is the milestone that makes the system *usable* rather than merely converged, and it is the definition of
 "complete" the supervisor's task model deliberately does not yet use — worth noting when you get here.
+
+**It needed a contract change before a line of it could work.** `DiscoveryNode.equals` compares *only* the
+ephemeral id, and `TransportService.connectionValidator` handshakes a new connection and then refuses it unless the
+node it was given equals the node the remote reports itself to be. So `address` and `port` — all the node
+projection carried — are necessary and not sufficient, and no reader can work around it: a fabricated ephemeral id
+is unequal to the real one by construction. The supervisor now projects `ephemeral_id`, and
+`NODE_CONTRACT.md` finding 8 records that the section promising addresses from that document was true about the
+address and wrong about the outcome. The same wall was waiting for M9's docrep peer resolution.
+
+**`CoordinatorState` is a decorator over `DataNodeState`**, because a node has one cluster state. A node that both
+holds copies of an index and coordinates for its tenant needs a routing table containing its own copies *and* the
+others' — which is what a real cluster state looks like, where two states would be neither. It also keeps the two
+roles uncoupled for when coordinators move to dedicated capacity, which is where they belong: their traffic and
+hardware are not a data node's. A pure coordinator is then the same decorator over a data path that was given
+nothing to hold.
+
+Four things in it are load-bearing, and three were found by a test rather than by thinking:
+
+- **This node's own routing entries are copied across untouched.** The projection reports them too, a pass behind,
+  and rebuilding one restarts a serving shard (D2.2). Copies the projection places *on this node* are skipped
+  outright: the assignment is the authority for what this node holds.
+- **Other nodes' entries are carried forward when node, role and state are unchanged.** Not efficiency:
+  `initialize()` mints an allocation id, so rebuilding them every pass would make the routing table differ from the
+  last one for ever and publish a state every poll interval. That is M5's bug in a new place, and
+  `StateEquivalence` cannot see through it.
+- **The coordinator owns the metadata of an index it holds no copy of, and rebuilds it each pass.** Leaving it
+  alone looked right and was not: `DataNodeState` *retains* the metadata of an index it holds nothing of — that is
+  what stops a closed index being deleted — so a settings change would have reached the routing view never.
+- **`index.number_of_search_replicas` describes the fleet here**, where `DataNodeState` sets the local view. The
+  rule is the same in both — the count must describe the routing table in the same state — and the number is
+  opposite, because the tables are.
+
+`DiscoveryNodes.Builder` refuses two nodes at one address, which two data nodes on one host produce, so one peer
+that cannot be represented costs that peer's shards rather than every index in the state.
+
+**What is not proven.** No coordinator has run. The fabrication is tested as a pure function, including that a
+second pass reproduces the first exactly, but nothing has yet sent a search through one — and the interesting
+failures left are all on the wire: whether the handshake accepts a peer built from a projection, and whether a
+shard-level search request addressed to another node comes back.
 
 ## M9. Document replication
 

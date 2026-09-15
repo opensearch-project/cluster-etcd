@@ -525,7 +525,7 @@ public final class DataNodeState implements NodeState {
      * the fallback is derived from the uuid — which is stable, shared, and meaningless as a date, in that order
      * of importance. {@code cluster-etcd} derives its from the index name for the same reason.
      */
-    private static long creationDate(IndexConfig config) {
+    static long creationDate(IndexConfig config) {
         if (config.creationDate() > 0) {
             return config.creationDate();
         }

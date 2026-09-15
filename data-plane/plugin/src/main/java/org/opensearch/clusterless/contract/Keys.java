@@ -71,6 +71,17 @@ public final class Keys {
     }
 
     /**
+     * Every index projection for a tenant, for a coordinator that has to route to all of them.
+     *
+     * <p>A prefix scan rather than a read per index, because a coordinator is told which tenants it serves and not
+     * which indices they have — the assignment deliberately carries no index list for a coordinated tenant, since
+     * that list is identical for every coordinator of the tenant and changes when any index is created.
+     */
+    public static String indexStatusPrefix(TenantId tenant) {
+        return tenantPrefix(tenant) + "status/indices/";
+    }
+
+    /**
      * Where a peer node is. Addresses come from here and never from another node's heartbeat: names are
      * reused while ids are not, so a peer resolved by name eventually points at a node's successor.
      */
