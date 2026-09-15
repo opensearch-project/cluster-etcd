@@ -296,6 +296,99 @@ The existing-store path is nonetheless **confirmed**: closing an index and reope
 `EXISTING_STORE`, which is `ExistingStoreRecoverySource` paired with a freshly generated allocation id — the one
 piece of the fabrication with no precedent in `cluster-etcd` and no test that could prove it.
 
+### A replica needs a remote store, because the alternative reads a routing table we do not have
+
+`SegmentReplicationSourceFactory.get` is the whole reason M7 is about the remote store:
+
+```java
+if (shard.indexSettings().isAssignedOnRemoteNode()) return new RemoteStoreReplicationSource(shard);
+else return new PrimaryShardReplicationSource(..., getPrimaryNode(shard.shardId()));
+```
+
+`getPrimaryNode` resolves the primary through `clusterService.state().routingTable().shardRoutingTable(shardId)
+.primaryShard()` and then `state().nodes()`. Both come back empty on a node whose state contains only its own
+copies and only itself. So the `else` branch is unreachable-by-design here until peer resolution exists, and a
+replica built on it would start, report itself started, and never receive a segment. That is why the copy is
+declined instead.
+
+`isAssignedOnRemoteNode()` is computed from **node** settings — `node.attr.remote_store.*` — not from index
+settings and not from cluster state. Useful: the repository is local operator configuration, so nothing about it
+has to travel through the key layout.
+
+### Nothing but a cluster manager registers the remote-store repository
+
+`RepositoriesService` is a `ClusterStateApplier` that builds its repositories from
+`Metadata.custom(RepositoriesMetadata.TYPE)`, with no cluster-manager gating — so putting the metadata in the
+fabricated state is all it takes. And it is *necessary*: the only main-code callers of
+`RemoteStoreNodeAttribute(node)` are in `JoinTaskExecutor`, the join path, and a clusterless node never joins.
+`RemoteStoreNodeAttribute` already stamps `system_repository=true` into the metadata it derives, so what the plugin
+puts in the state is what the server itself would have.
+
+Ordering works out: `RepositoriesService` registers its applier in its constructor, before Guice builds
+`IndicesClusterStateService`, and both are high priority — so on the state that first carries an index, the
+repository is created before the shard that needs it.
+
+`DiscoveryNode.isRemoteStoreNode()` requires a **cluster-state** repository as well as a segment one, and
+`RemoteStoreNodeAttribute` throws on a node that names a segment repository without the translog and cluster-state
+ones. All three can name the same repository; remote cluster state stays off, and there is no cluster state here to
+publish anyway.
+
+### `index.blocks.search_only` is a marker here, not a block
+
+Two facts that only make sense together:
+
+- `RoutingNodes` asserts `"Primary shard routing can't be null for non-search-only indices"` for any shard whose
+  routing table has no primary, unless the index sets `index.blocks.search_only`. It is an `assert`, and
+  `IndicesClusterStateService` builds `RoutingNodes` on every applied state, so with `-ea` — which testclusters
+  uses — a search replica without the setting is fatal. `IndexRoutingTable.validate` has the same escape hatch,
+  though it turns out to have **no callers in server main** at all, which is why a node holding only the primary of
+  an index whose config says `number_of_replicas: 1` has never thrown.
+- The setting's block, `INDEX_SEARCH_ONLY_BLOCK` (`ClusterBlockLevel.WRITE`, 403, "index scaled down"), is only ever
+  derived from it by cluster-manager code: `MetadataCreateIndexService`, `RestoreService`,
+  `RemoteStoreRestoreService`, the gateway's `ClusterStateUpdaters`, `LocalAllocateDangledIndices`. None of that
+  runs here. A fabricated state sets no blocks, so the setting costs nothing.
+
+Which is what makes a node holding a primary of shard 0 and a search replica of shard 1 of the same index work —
+and that is the *natural* placement with two nodes and a two-shard index, not an edge case. **This is dependence on
+the absence of a code path, so it is pinned by a test** rather than left to be rediscovered as 403s on writes.
+
+`index.number_of_search_replicas` is a separate decision from the marker, for a separate reason:
+`cluster.routing.search_replica.strict` defaults to **true**, and with it on `OperationRouting` injects
+`Preference.SEARCH_REPLICA` into every search that named no preference, for any index whose metadata says it has
+search replicas. On a node holding a primary that selects from an empty set — a healthy primary answering nothing.
+So the count is 1 only when every copy here is search-only. A started search-only shard is added to
+`IndexShardRoutingTable.activeShards` unconditionally, so the default iterator still reaches it when the count is 0.
+
+### The remote store path must be derived, never stamped
+
+`RemoteStoreUtils.determineRemoteStorePathStrategy` reads the index metadata's `REMOTE_STORE_CUSTOM_KEY` and falls
+back to `PathType.FIXED` when there is none. In a real cluster one cluster manager stamps that custom data once and
+every node reads the same copy. Here every node fabricates its own metadata independently, so anything stamped per
+node is free to differ between a primary and its replica — and two copies of a shard disagreeing about where their
+segments live shows up as a replica that reads an empty store, not as an error. So the fabrication sets **no**
+remote-store custom data, and every node reaches `FIXED` by the same route. Choosing the older, flatter layout over
+one that might disagree with itself.
+
+The same reasoning is why `index.replication.type` is read from the index document rather than from a node-local
+default: a default is the one input that could make two nodes disagree about the same index.
+
+### D5.3 is satisfied by the server, not by us
+
+A search replica placed in the same pass as its primary does not need to be made to wait. Its recovery goes
+`recoverFromStore` → `internalRecoverFromStoreForSearchReplica` → `completeRecovery`, which creates an empty store
+and *then* calls `openEngineAndSkipTranslogRecoveryFromSnapshot` → `openEngineAndSkipTranslogRecovery(syncFromRemote
+= isSearchOnly())`. So it starts empty and catches up through segment replication. That method also asserts its
+recovery source is `EMPTY_STORE` or `EXISTING_STORE`, which is exactly what `LocalShardStore` already produces — so
+the recovery-source decision needed no change for search replicas.
+
+### `cluster.remote_store.fencing.enabled` exists now
+
+Spotted while reading `MetadataCreateIndexService.updateRemoteStoreFencingSetting`, whose comment says the fence
+"is the primary's write witness" and that the per-index setting is final because toggling it on a live index would
+leave a window in which a stale primary is checked against neither the fence nor the replicas. That is D8.2's
+problem — two nodes briefly believing they are primary for a remote-store-backed shard — with server machinery
+attached. Not used yet, and the thing to read first when D8.2 comes up.
+
 ## Tests are JUnit 4, and this is not a preference
 
 The first real `./gradlew build` found a forbidden-APIs failure, and pulling on it found something worse:

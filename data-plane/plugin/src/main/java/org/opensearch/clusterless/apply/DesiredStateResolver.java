@@ -38,9 +38,21 @@ public final class DesiredStateResolver {
     static final int MAX_REASONS = 20;
 
     private final IndexConfigSource indexConfigs;
+    private final RemoteStore remoteStore;
 
     public DesiredStateResolver(IndexConfigSource indexConfigs) {
+        this(indexConfigs, RemoteStore.NONE);
+    }
+
+    /**
+     * @param remoteStore this node's remote store, which decides whether a search replica can work here at all. A
+     *     node with none declines every search replica, which is the honest answer rather than a limitation: see
+     *     {@link RemoteStore} for why a fabricated cluster state leaves peer-based segment replication no peer to
+     *     find.
+     */
+    public DesiredStateResolver(IndexConfigSource indexConfigs, RemoteStore remoteStore) {
         this.indexConfigs = Objects.requireNonNull(indexConfigs, "indexConfigs");
+        this.remoteStore = Objects.requireNonNull(remoteStore, "remoteStore");
     }
 
     public DesiredState resolve(Assignment assignment) {
@@ -145,7 +157,29 @@ public final class DesiredStateResolver {
                 return;
             }
             switch (role) {
-                case PRIMARY, SEARCH_REPLICA -> buildable.put(shard, role);
+                case PRIMARY -> buildable.put(shard, role);
+                case SEARCH_REPLICA -> {
+                    if (remoteStore.backs(config)) {
+                        buildable.put(shard, role);
+                    } else if (remoteStore.configured() == false) {
+                        // Declined rather than built, because a search replica built here would fail in a way that
+                        // points nowhere near the cause. The server would hand it PrimaryShardReplicationSource,
+                        // which resolves the primary through the local routing table -- and this node's fabricated
+                        // state contains only its own copies, so there is no primary in it to find. The copy would
+                        // start, report itself started, and never receive a segment.
+                        defer(
+                            deferred,
+                            key + "/" + shard + ": a search replica reads its segments from a remote store, and this "
+                                + "node has none configured (set the node.attr.remote_store.* attributes)"
+                        );
+                    } else {
+                        defer(
+                            deferred,
+                            key + "/" + shard + ": a search replica needs the index to use segment replication, and ["
+                                + config.name() + "] does not (index.replication.type)"
+                        );
+                    }
+                }
                 case REPLICA -> defer(
                     deferred,
                     key + "/" + shard + ": a document-replication replica needs peer resolution, which this "
@@ -165,6 +199,50 @@ public final class DesiredStateResolver {
             return;
         }
         indices.put(key, new DesiredState.DesiredIndex(key, config, buildable));
+    }
+
+    /**
+     * Drops search replicas of an index this node also holds a writeable copy of.
+     *
+     * <p>Not a scheduling preference — there is no state that describes the combination. The block that lets a
+     * search-only copy exist without a primary in the routing table, {@code index.blocks.search_only}, is an
+     * <em>index-level</em> setting, and so is {@code index.number_of_search_replicas}; but the assignment names a
+     * role per shard. So an index whose shard 0 is a primary here and whose shard 1 is a search replica here has
+     * two shards wanting opposite index settings, and both answers are wrong:
+     *
+     * <ul>
+     *   <li>block off — {@code RoutingNodes} asserts {@code "Primary shard routing can't be null for
+     *       non-search-only indices"} on shard 1, and the server runs with assertions enabled;
+     *   <li>block on — shard 0's primary is on a node that has declared the whole index read-only, so writes to it
+     *       fail.
+     * </ul>
+     *
+     * <p>The search replicas are the ones dropped, because reads survive losing a copy and writes do not survive
+     * losing their primary. Each declined copy is reported absent in the usual way, which is what lets the
+     * supervisor place it on a node that is not also holding a primary of the same index. That is a constraint on
+     * placement the contract does not currently state, and it has been raised with the supervisor rather than
+     * quietly worked around here.
+     */
+    private static void declineSearchReplicasMixedWithOtherRoles(
+        DesiredState.IndexKey key,
+        Map<Integer, ShardRole> buildable,
+        List<String> deferred
+    ) {
+        boolean holdsOther = buildable.values().stream().anyMatch(role -> role != ShardRole.SEARCH_REPLICA);
+        if (holdsOther == false) {
+            return;
+        }
+        buildable.entrySet().removeIf(entry -> {
+            if (entry.getValue() != ShardRole.SEARCH_REPLICA) {
+                return false;
+            }
+            defer(
+                deferred,
+                key + "/" + entry.getKey() + ": this node also holds a writeable copy of this index, and the "
+                    + "search-only block that a search replica needs is index-level, so the two cannot share a node"
+            );
+            return true;
+        });
     }
 
     private static void defer(List<String> deferred, String reason) {

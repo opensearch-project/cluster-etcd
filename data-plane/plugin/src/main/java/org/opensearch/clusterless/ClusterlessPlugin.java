@@ -21,6 +21,7 @@ import org.opensearch.clusterless.apply.IndexConfigSource;
 import org.opensearch.clusterless.apply.RetainedIndexReaper;
 import org.opensearch.clusterless.apply.MapperServiceMappingSource;
 import org.opensearch.clusterless.apply.NodeEnvironmentShardStore;
+import org.opensearch.clusterless.apply.RemoteStore;
 import org.opensearch.clusterless.apply.StoreIndexConfigSource;
 import org.opensearch.clusterless.publish.ClusterStateInventorySource;
 import org.opensearch.clusterless.publish.IndicesServiceShardSizes;
@@ -154,13 +155,17 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         );
 
         boolean apply = ClusterlessSettings.APPLY.get(settings);
+        // Read once, from this node's own attributes: where its segments live, and therefore whether a search
+        // replica can work here at all. Both the resolver and the fabricator need the answer, and they must be
+        // given the same one.
+        RemoteStore remoteStore = RemoteStore.of(localNode);
         // One source shared by the resolver and the reaper: they ask the same question of the same keys, one to
         // decide what to build and the other to decide what has genuinely gone away.
         IndexConfigSource indexConfigs = new StoreIndexConfigSource(store);
         poller = new AssignmentPoller(
             store,
             nodeId,
-            new DesiredStateResolver(indexConfigs),
+            new DesiredStateResolver(indexConfigs, remoteStore),
             clusterService::state,
             (desired, stopRetaining) -> new DataNodeState(
                 clusterService.getClusterName(),
@@ -168,6 +173,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
                 desired,
                 new MapperServiceMappingSource(this::indicesService),
                 new NodeEnvironmentShardStore(nodeEnvironment),
+                remoteStore,
                 stopRetaining
             ),
             publisher,

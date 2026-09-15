@@ -12,6 +12,7 @@ import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.metadata.Metadata;
+import org.opensearch.cluster.metadata.RepositoriesMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.routing.IndexRoutingTable;
@@ -89,6 +90,7 @@ public final class DataNodeState implements NodeState {
     private final DesiredState desired;
     private final MappingSource mappings;
     private final LocalShardStore shardStore;
+    private final RemoteStore remoteStore;
     private final Set<Index> stopRetaining;
 
     /**
@@ -106,7 +108,7 @@ public final class DataNodeState implements NodeState {
         MappingSource mappings,
         LocalShardStore shardStore
     ) {
-        this(clusterName, localNode, desired, mappings, shardStore, Set.of());
+        this(clusterName, localNode, desired, mappings, shardStore, RemoteStore.NONE, Set.of());
     }
 
     /**
@@ -122,11 +124,29 @@ public final class DataNodeState implements NodeState {
         LocalShardStore shardStore,
         Set<Index> stopRetaining
     ) {
+        this(clusterName, localNode, desired, mappings, shardStore, RemoteStore.NONE, stopRetaining);
+    }
+
+    /**
+     * @param remoteStore where this node's segments live, if not only on its own disk. Contributes the repository to
+     *     register and the index settings that point a shard at it; {@link RemoteStore#NONE} for a node with none,
+     *     which changes nothing about the state that is built.
+     */
+    public DataNodeState(
+        ClusterName clusterName,
+        DiscoveryNode localNode,
+        DesiredState desired,
+        MappingSource mappings,
+        LocalShardStore shardStore,
+        RemoteStore remoteStore,
+        Set<Index> stopRetaining
+    ) {
         this.clusterName = Objects.requireNonNull(clusterName, "clusterName");
         this.localNode = Objects.requireNonNull(localNode, "localNode");
         this.desired = Objects.requireNonNull(desired, "desired");
         this.mappings = Objects.requireNonNull(mappings, "mappings");
         this.shardStore = Objects.requireNonNull(shardStore, "shardStore");
+        this.remoteStore = Objects.requireNonNull(remoteStore, "remoteStore");
         this.stopRetaining = Set.copyOf(Objects.requireNonNull(stopRetaining, "stopRetaining"));
     }
 
@@ -139,6 +159,13 @@ public final class DataNodeState implements NodeState {
 
         Metadata.Builder metadata = Metadata.builder();
         RoutingTable.Builder routing = RoutingTable.builder();
+
+        if (remoteStore.repositories() != null) {
+            // What makes the repository exist on this node: RepositoriesService applies cluster state and builds its
+            // repositories from this custom. A real remote-store cluster has its cluster manager write the same
+            // thing when a node joins; the node's own attributes are the same statement, made locally.
+            metadata.putCustom(RepositoriesMetadata.TYPE, remoteStore.repositories());
+        }
 
         Set<Index> stillWanted = new HashSet<>();
         for (DesiredState.DesiredIndex index : desired.indices().values()) {
@@ -279,8 +306,7 @@ public final class DataNodeState implements NodeState {
         IndexMetadata previousMetadata = previous.metadata().index(index);
         IndexRoutingTable previousRouting = previous.routingTable().index(index);
 
-        boolean searchOnly = holdsOnlySearchReplicas(desiredIndex.shards());
-        IndexMetadata.Builder builder = IndexMetadata.builder(indexName).settings(settingsFor(desiredIndex, searchOnly));
+        IndexMetadata.Builder builder = IndexMetadata.builder(indexName).settings(settingsFor(desiredIndex));
 
         MappingMetadata mapping = mappingFor(index, config, previousMetadata);
         if (mapping != null) {
@@ -405,7 +431,9 @@ public final class DataNodeState implements NodeState {
         ).initialize(localNode.getId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
     }
 
-    private Settings settingsFor(DesiredState.DesiredIndex desiredIndex, boolean searchOnly) {
+    private Settings settingsFor(DesiredState.DesiredIndex desiredIndex) {
+        boolean holdsAnySearchReplica = desiredIndex.shards().containsValue(ShardRole.SEARCH_REPLICA);
+        boolean holdsOnlySearchReplicas = holdsOnlySearchReplicas(desiredIndex.shards());
         IndexConfig config = desiredIndex.config();
         Settings.Builder settings = Settings.builder();
 
@@ -422,13 +450,41 @@ public final class DataNodeState implements NodeState {
         settings.put(ClusterlessIndexSettings.TENANT_INDEX_NAME.getKey(), config.name());
         settings.put(ClusterlessIndexSettings.CONFIG_REVISION.getKey(), config.revision());
 
-        if (searchOnly) {
-            // A search replica with no primary in the state is not something RoutingNodes will accept:
-            // "Primary shard routing can't be null for non-search-only indices". This node has no primary to
-            // name -- the primary is on some other node and the contract does not tell a segrep copy where --
-            // so the index has to declare that serving reads is all it does. cluster-etcd reached the same
-            // conclusion by the same assertion.
+        if (holdsAnySearchReplica) {
+            // The marker that lets a shard with no primary exist in this node's routing table. RoutingNodes
+            // asserts "Primary shard routing can't be null for non-search-only indices" for any shard whose
+            // routing table has no primary, and IndicesClusterStateService builds RoutingNodes on every applied
+            // state -- so without this, applying a search replica would trip an assertion on a server that runs
+            // with them enabled. This node has no primary to name: it is on another node, and a segment
+            // replication copy is never told where. cluster-etcd reached the same conclusion by the same assertion.
+            //
+            // It reads like it should cost writes, and here it does not. The setting's cluster block
+            // (INDEX_SEARCH_ONLY_BLOCK, "index scaled down", ClusterBlockLevel.WRITE) is only ever derived from
+            // the setting by cluster-manager code -- MetadataCreateIndexService, RestoreService, the gateway's
+            // ClusterStateUpdaters -- and none of that runs in a clusterless node. This state is fabricated
+            // directly and sets no blocks at all, so the setting is a marker and nothing more. That is exactly the
+            // kind of dependence on an absent code path that stops being true quietly, so
+            // DataNodeStateTests pins it: a fabricated state must carry no write block.
+            //
+            // Which is what makes a node holding a primary of shard 0 and a search replica of shard 1 of the same
+            // index workable, and the alternative was declining half the natural placement: two nodes and a
+            // two-shard index with one replica each is exactly that mix.
             settings.put(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), true);
+        }
+
+        // Independent of the marker above, and for a different reason. cluster.routing.search_replica.strict
+        // defaults to true, and with it on, OperationRouting injects Preference.SEARCH_REPLICA into every search
+        // that named no preference -- for any index whose metadata says it has search replicas. On a node that
+        // holds the primary of shard 0, that preference selects from the search-only copies of shard 0, of which
+        // there are none here, so a healthy primary would quietly answer nothing.
+        //
+        // So the count is one only when every copy this node holds is a search replica, and zero otherwise --
+        // including the mixed case, where zero is right for both shards: a started search-only shard is in
+        // IndexShardRoutingTable.activeShards regardless, so the default iterator still reaches it.
+        settings.put(IndexMetadata.SETTING_NUMBER_OF_SEARCH_REPLICAS, holdsOnlySearchReplicas ? 1 : 0);
+
+        if (remoteStore.backs(config)) {
+            remoteStore.addIndexSettings(settings);
         }
         return settings.build();
     }

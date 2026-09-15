@@ -205,7 +205,10 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
     // ---------------------------------------------------------------- reading a real one
 
     public void testAnAssignmentIsResolvedAndAcknowledged() {
-        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\", \"1\": \"SEARCH_REPLICA\"}"));
+        // Two primaries rather than a primary and a search replica: this poller's node has no remote store
+        // configured, so a search replica would be declined for want of somewhere to read its segments, and this
+        // test is about reading and acking an assignment rather than about that rule.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\", \"1\": \"PRIMARY\"}"));
         AssignmentPoller poller = poller(false);
 
         poller.poll();

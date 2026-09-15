@@ -94,7 +94,15 @@ that is the next milestone.
 ./gradlew run                              # a node with the plugin installed, applying what it is assigned
 ./gradlew run -Pclusterless.apply=false    # the same, read-only
 ./gradlew run -Pclusterless.nodes=2        # two of them, sharing one store
+./gradlew run -Pclusterless.remote_store=false   # no remote store, so search replicas are declined
 ```
+
+The run cluster also configures a remote store by default — an `fs` repository under
+`plugin/build/clusterless-remote-store`, shared by every node in the run, declared through
+`node.attr.remote_store.*`. That is what makes a search replica possible at all: a replica that is not
+remote-backed has nowhere to read from, because the alternative source resolves its primary through a routing
+table that a clusterless node's state does not contain. To see a search replica start, ask the control plane for
+an index with `index.replication.type: SEGMENT` and one replica, and run two nodes.
 
 The run cluster points at `plugin/build/clusterless-store`, and a supervisor pointed at the same directory is
 the other half of the loop:
@@ -144,6 +152,7 @@ it also runs plugin packaging, forbidden-APIs, `testingConventions` and the lice
 | `clusterless.poll.interval` | default: the heartbeat interval. Separate because the costs are different — one is a write by every node in the fleet, the other a read of one small key. |
 | `clusterless.apply` | default **false**. Whether to act on the assignment, or only to log what acting on it would do. `./gradlew run` sets it true. |
 | `clusterless.retention.passes` | default 12. How many consecutive passes an index must be absent from the store before this node releases its data. A node keeps the files of an index it no longer holds a copy of, so that "stop serving this" is not "destroy this"; this is how patient the decision to finally delete them is. |
+| `node.attr.remote_store.*` | not this plugin's settings, and read by it. OpenSearch's own remote-store node attributes say where this node's segments live; the plugin registers the repository they name and points segment-replication indices at it. A node with none declines search replicas, because there would be nothing for them to read. Every node holding a copy of the same shard must name the same repository — the copies share one remote path, and nothing here can check that from one node. |
 
 `GET /_clusterless/status` reports what this node last read, applied and wrote — including
 `assignment.deferred`, the copies it was told to hold and did not build, with a reason for each. That list is

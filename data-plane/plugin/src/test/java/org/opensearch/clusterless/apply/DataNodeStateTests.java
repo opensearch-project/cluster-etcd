@@ -7,7 +7,9 @@ package org.opensearch.clusterless.apply;
 import org.opensearch.Version;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.block.ClusterBlockLevel;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.metadata.RepositoriesMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodeRole;
 import org.opensearch.cluster.routing.RecoverySource;
@@ -16,6 +18,7 @@ import org.opensearch.clusterless.ClusterlessIndexSettings;
 import org.opensearch.clusterless.contract.IndexConfig;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.clusterless.contract.TenantId;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
@@ -236,9 +239,122 @@ public class DataNodeStateTests extends OpenSearchTestCase {
         assertNotNull(state.getRoutingNodes().node(LOCAL));
     }
 
-    public void testAnIndexWithAPrimaryHereIsNotMarkedSearchOnly() {
+    public void testAnIndexWithAPrimaryHereIsStillMarkedSearchOnlyIfItAlsoHoldsASearchReplica() {
+        // The mixed case, which is the natural placement rather than an edge: two nodes and a two-shard index with
+        // one replica each gives each node a primary of one shard and a search replica of the other. Shard 1 has no
+        // primary in this node's routing table, so the marker has to be on -- and the next test is why that does
+        // not cost shard 0 its writes.
         ClusterState state = build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.SEARCH_REPLICA)));
-        assertFalse(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.get(onlyIndex(state).getSettings()));
+
+        assertTrue(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.get(onlyIndex(state).getSettings()));
+        assertTrue(onlyCopy(state, 0).primary());
+        assertTrue(onlyCopy(state, 1).isSearchOnly());
+        // The assertion that would fire on shard 1 if the marker were off. Constructing RoutingNodes is what
+        // IndicesClusterStateService does on every applied state, and these tests run with assertions enabled.
+        assertNotNull(state.getRoutingNodes().node(LOCAL));
+    }
+
+    public void testAFabricatedStateCarriesNoWriteBlock() {
+        // Pins an absence this design depends on. index.blocks.search_only exists to silence an assertion about a
+        // shard with no primary, and its cluster block -- INDEX_SEARCH_ONLY_BLOCK, ClusterBlockLevel.WRITE, 403
+        // "index scaled down" -- would stop writes to any primary of the same index on this node. It never applies,
+        // because a block is only ever derived from that setting by cluster-manager code (MetadataCreateIndexService,
+        // RestoreService, the gateway's ClusterStateUpdaters), none of which runs here: this state is built directly
+        // and sets no blocks. If that ever changes, writes would start failing with 403 on a node that also holds a
+        // search replica, and the cause would be nowhere near the symptom -- so it fails here instead.
+        ClusterState state = build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.SEARCH_REPLICA)));
+        Index index = onlyIndex(state).getIndex();
+
+        assertTrue(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.get(onlyIndex(state).getSettings()));
+        assertFalse(
+            "the search-only setting must stay a marker rather than becoming a write block",
+            state.blocks().indexBlocked(ClusterBlockLevel.WRITE, index.getName())
+        );
+        assertTrue(state.blocks().global().isEmpty());
+    }
+
+    public void testTheSearchReplicaCountDescribesThisNodeRatherThanTheFleet() {
+        // cluster.routing.search_replica.strict defaults to true, and with it on OperationRouting injects
+        // Preference.SEARCH_REPLICA into every search that named no preference -- for any index whose metadata says
+        // it has search replicas. Copying the control plane's count onto a node holding the primary would therefore
+        // route searches to a set of shards that node does not have, and a healthy primary would answer nothing.
+        IndexConfig wantsTwo = new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            Map.of("index.number_of_shards", "2", "index.number_of_replicas", "0", "index.number_of_search_replicas", "2"),
+            mappings(),
+            3041
+        );
+
+        ClusterState holdingThePrimary = build(ClusterState.EMPTY_STATE, desiredWith(wantsTwo, Map.of(0, ShardRole.PRIMARY)));
+        assertEquals(0, onlyIndex(holdingThePrimary).getNumberOfSearchOnlyReplicas());
+
+        ClusterState holdingASearchReplica = build(
+            ClusterState.EMPTY_STATE,
+            desiredWith(wantsTwo, Map.of(0, ShardRole.SEARCH_REPLICA))
+        );
+        assertEquals(1, onlyIndex(holdingASearchReplica).getNumberOfSearchOnlyReplicas());
+
+        // And zero in the mixed case, unlike the marker, because shard 0's searches would otherwise be routed to
+        // search-only copies this node does not have. Shard 1's search replica is still reached: a started
+        // search-only shard is in IndexShardRoutingTable.activeShards, so the default iterator includes it.
+        ClusterState both = build(
+            ClusterState.EMPTY_STATE,
+            desiredWith(wantsTwo, Map.of(0, ShardRole.PRIMARY, 1, ShardRole.SEARCH_REPLICA))
+        );
+        assertEquals(0, onlyIndex(both).getNumberOfSearchOnlyReplicas());
+    }
+
+    // ---------------------------------------------------------------- the remote store
+
+    public void testAnIndexUsingSegmentReplicationIsBackedByThisNodesRemoteStore() {
+        ClusterState state = buildOnARemoteStoreNode(segmentReplicated());
+
+        Settings settings = onlyIndex(state).getSettings();
+        assertTrue(IndexMetadata.INDEX_REMOTE_STORE_ENABLED_SETTING.get(settings));
+        assertEquals("segments", settings.get(IndexMetadata.SETTING_REMOTE_SEGMENT_STORE_REPOSITORY));
+        assertEquals("segments", settings.get(IndexMetadata.SETTING_REMOTE_TRANSLOG_STORE_REPOSITORY));
+    }
+
+    public void testTheRepositoryIsRegisteredThroughTheFabricatedMetadata() {
+        // There is no cluster manager to write RepositoriesMetadata on node join, and RepositoriesService builds its
+        // repositories by applying cluster state -- so without this the index settings would name a repository that
+        // does not exist on the node.
+        ClusterState state = buildOnARemoteStoreNode(segmentReplicated());
+
+        RepositoriesMetadata repositories = state.metadata().custom(RepositoriesMetadata.TYPE);
+        assertNotNull("the repository has to come from somewhere", repositories);
+        assertTrue(repositories.repositories().stream().anyMatch(repository -> repository.name().equals("segments")));
+    }
+
+    public void testADocumentReplicationIndexIsNotBackedByTheRemoteStore() {
+        // index.remote_store.enabled is validated against index.replication.type when the index service is
+        // created, so enabling it here would fail the index on the apply path rather than at some later boundary.
+        ClusterState state = buildOnARemoteStoreNode(
+            new IndexConfig("my-index", UUID, 1788969977933L, true, settings(), mappings(), 3041)
+        );
+
+        assertFalse(IndexMetadata.INDEX_REMOTE_STORE_ENABLED_SETTING.get(onlyIndex(state).getSettings()));
+    }
+
+    public void testNoRemoteStorePathCustomDataIsStamped() {
+        // The subtlest requirement in the milestone. RemoteStoreUtils.determineRemoteStorePathStrategy reads the
+        // index metadata's REMOTE_STORE_CUSTOM_KEY and falls back to PathType.FIXED when there is none. One cluster
+        // manager stamping that once is fine; every node stamping its own copy is not, because a primary and its
+        // replica would then be free to disagree about where in the repository their segments live -- and the
+        // symptom of disagreeing is a replica that reads an empty store, not an error.
+        ClusterState state = buildOnARemoteStoreNode(segmentReplicated());
+
+        assertNull(onlyIndex(state).getCustomData(IndexMetadata.REMOTE_STORE_CUSTOM_KEY));
+    }
+
+    public void testANodeWithNoRemoteStoreRegistersNothingAndBacksNothing() {
+        ClusterState state = build(ClusterState.EMPTY_STATE, desiredWith(segmentReplicated(), Map.of(0, ShardRole.PRIMARY)));
+
+        assertNull(state.metadata().custom(RepositoriesMetadata.TYPE));
+        assertFalse(IndexMetadata.INDEX_REMOTE_STORE_ENABLED_SETTING.get(onlyIndex(state).getSettings()));
     }
 
     // ---------------------------------------------------------------- primary terms and creation dates
@@ -481,6 +597,38 @@ public class DataNodeStateTests extends OpenSearchTestCase {
 
     private static ClusterState build(ClusterState previous, DesiredState desired, LocalShardStore shardStore) {
         return new DataNodeState(CLUSTER, localNode(), desired, MappingSource.WRAPPED, shardStore).buildClusterState(previous);
+    }
+
+    /**
+     * A first application on a node that has a remote store, built from the node attributes an operator would set.
+     *
+     * <p>The primary is the copy used, because that is the one whose settings the remote store has to reach: a
+     * search replica would also carry the search-only block, and the point of these tests is the store rather
+     * than the block.
+     */
+    private static ClusterState buildOnARemoteStoreNode(IndexConfig config) {
+        DiscoveryNode node = TestFixtures.remoteStoreNode(LOCAL, "segments");
+        return new DataNodeState(
+            CLUSTER,
+            node,
+            desiredWith(config, Map.of(0, ShardRole.PRIMARY)),
+            MappingSource.WRAPPED,
+            LocalShardStore.EMPTY,
+            RemoteStore.of(node),
+            Set.of()
+        ).buildClusterState(ClusterState.EMPTY_STATE);
+    }
+
+    private static IndexConfig segmentReplicated() {
+        return new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            Map.of("index.number_of_shards", "2", "index.number_of_replicas", "0", "index.replication.type", "SEGMENT"),
+            mappings(),
+            3041
+        );
     }
 
     private static Map<String, String> settings() {

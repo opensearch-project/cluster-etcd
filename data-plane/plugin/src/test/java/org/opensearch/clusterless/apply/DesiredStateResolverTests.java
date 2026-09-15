@@ -35,6 +35,12 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
         (tenant, name) -> Optional.ofNullable(documents.get(tenant + "/" + name))
     );
 
+    /** The same resolver on a node that has somewhere to keep segments, which is what a search replica needs. */
+    private final DesiredStateResolver onARemoteStoreNode = new DesiredStateResolver(
+        (tenant, name) -> Optional.ofNullable(documents.get(tenant + "/" + name)),
+        RemoteStore.of(TestFixtures.remoteStoreNode("pv1sDMfZRxSTMiW5VrbN9w", "segments"))
+    );
+
     public void testAnAssignedPrimaryIsResolvedAgainstItsIndexDocument() {
         documents.put("acme/my-index", config(UUID, true, 2));
 
@@ -140,13 +146,51 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
 
     public void testASearchReplicaIsBuildable() {
         // Segment replication from the remote store resolves no peers, which is what makes it the role that can
-        // exist before peer resolution does.
-        documents.put("acme/my-index", config(UUID, true, 2));
+        // exist before peer resolution does -- and the remote store is what makes that true, rather than a
+        // property of the role.
+        documents.put("acme/my-index", segmentReplicated(UUID));
+
+        DesiredState desired = onARemoteStoreNode.resolve(assignment(Map.of(0, ShardRole.SEARCH_REPLICA)));
+
+        assertEquals(1, desired.copyCount());
+        assertTrue(desired.deferred().toString(), desired.deferred().isEmpty());
+    }
+
+    public void testASearchReplicaIsDeclinedOnANodeWithNoRemoteStore() {
+        // Where it would otherwise be built and then silently never replicate: the server would give it
+        // PrimaryShardReplicationSource, which resolves the primary through a routing table that -- on a node
+        // holding only this copy -- has no primary in it.
+        documents.put("acme/my-index", segmentReplicated(UUID));
 
         DesiredState desired = resolver.resolve(assignment(Map.of(0, ShardRole.SEARCH_REPLICA)));
 
-        assertEquals(1, desired.copyCount());
-        assertTrue(desired.deferred().isEmpty());
+        assertTrue(desired.indices().isEmpty());
+        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("remote store"));
+        assertTrue("the reason must say what to configure", desired.deferred().get(0).contains("node.attr.remote_store"));
+    }
+
+    public void testASearchReplicaOfADocumentReplicationIndexIsDeclined() {
+        // index.remote_store.enabled carries a validator that rejects it unless the replication type is SEGMENT, so
+        // there is no way to back this index with the store the copy would need to read.
+        documents.put("acme/my-index", config(UUID, true, 2));
+
+        DesiredState desired = onARemoteStoreNode.resolve(assignment(Map.of(0, ShardRole.SEARCH_REPLICA)));
+
+        assertTrue(desired.indices().isEmpty());
+        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("segment replication"));
+    }
+
+    public void testASearchReplicaCanShareANodeWithAPrimaryOfTheSameIndex() {
+        // The natural placement, and the reason this is not declined. Two nodes and a two-shard index with one
+        // replica each gives every node a primary of one shard and a search replica of the other, so a node that
+        // refused the combination would leave every replica of every such index unbuilt. What makes it safe is that
+        // the index-level search-only marker the copy needs costs nothing here: see DataNodeState.
+        documents.put("acme/my-index", segmentReplicated(UUID));
+
+        DesiredState desired = onARemoteStoreNode.resolve(assignment(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.SEARCH_REPLICA)));
+
+        assertEquals(2, desired.copyCount());
+        assertTrue(desired.deferred().toString(), desired.deferred().isEmpty());
     }
 
     public void testARoleThisBuildDoesNotUnderstandIsDeclinedRatherThanGuessed() {
@@ -215,6 +259,19 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
             1788969977933L,
             open,
             Map.of("index.number_of_shards", Integer.toString(shards), "index.number_of_replicas", "0"),
+            Map.of(),
+            3041
+        );
+    }
+
+    /** An open two-shard index that asked for segment replication. */
+    private static IndexConfig segmentReplicated(String uuid) {
+        return new IndexConfig(
+            "my-index",
+            uuid,
+            1788969977933L,
+            true,
+            Map.of("index.number_of_shards", "2", "index.number_of_replicas", "0", "index.replication.type", "SEGMENT"),
             Map.of(),
             3041
         );

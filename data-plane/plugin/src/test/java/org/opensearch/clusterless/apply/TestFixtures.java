@@ -34,6 +34,19 @@ final class TestFixtures {
         );
     }
 
+    /** The same index, asking for segment replication -- which is what makes a search replica of it buildable. */
+    static IndexConfig segmentReplicatedIndexConfig(String uuid) {
+        return new IndexConfig(
+            "my-index",
+            uuid,
+            1788969977933L,
+            true,
+            Map.of("index.number_of_shards", "2", "index.number_of_replicas", "0", "index.replication.type", "SEGMENT"),
+            Map.of("properties", Map.of("host", Map.of("type", "keyword"))),
+            3041
+        );
+    }
+
     static DiscoveryNode localNode(String nodeId) {
         return new DiscoveryNode(
             "data-3",
@@ -43,6 +56,35 @@ final class TestFixtures {
             "127.0.0.1",
             new TransportAddress(InetAddress.getLoopbackAddress(), 9300),
             Map.of(),
+            Set.of(DiscoveryNodeRole.DATA_ROLE),
+            Version.CURRENT
+        );
+    }
+
+    /**
+     * A node configured with a remote store, through the real node attributes an operator would set.
+     *
+     * <p>Built as attributes rather than by handing {@link RemoteStore} the repository names directly, so that the
+     * tests exercise the derivation the server will do: {@code isRemoteStoreNode()} demands a cluster-state
+     * repository as well as a segment one, and {@code RemoteStoreNodeAttribute} throws on a node that names a
+     * segment repository without the other two. Getting that wrong is exactly the kind of thing a test that
+     * bypassed the attributes would not notice.
+     */
+    static DiscoveryNode remoteStoreNode(String nodeId, String repository) {
+        Map<String, String> attributes = new java.util.HashMap<>();
+        attributes.put("remote_store.segment.repository", repository);
+        attributes.put("remote_store.translog.repository", repository);
+        attributes.put("remote_store.state.repository", repository);
+        attributes.put("remote_store.repository." + repository + ".type", "fs");
+        attributes.put("remote_store.repository." + repository + ".settings.location", "/tmp/clusterless-remote-store");
+        return new DiscoveryNode(
+            "data-3",
+            nodeId,
+            "ephemeral",
+            "localhost",
+            "127.0.0.1",
+            new TransportAddress(InetAddress.getLoopbackAddress(), 9300),
+            Map.copyOf(attributes),
             Set.of(DiscoveryNodeRole.DATA_ROLE),
             Version.CURRENT
         );

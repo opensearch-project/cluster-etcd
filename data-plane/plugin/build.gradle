@@ -58,6 +58,22 @@ def clusterlessStore = layout.buildDirectory.dir('clusterless-store').get().asFi
 def clusterlessApply = providers.gradleProperty('clusterless.apply').getOrElse('true')
 def clusterlessNodes = providers.gradleProperty('clusterless.nodes').getOrElse('1') as Integer
 
+// A remote store for the run cluster, shared by every node in it.
+//
+// This is what makes a search replica possible: the server picks its segment replication source from the *node's*
+// attributes (SegmentReplicationSourceFactory -> isAssignedOnRemoteNode), and the alternative branch resolves the
+// primary through the local routing table, which a clusterless node's fabricated state does not contain. So a
+// replica that is not remote-backed has nowhere to read from. See RemoteStore.
+//
+// One directory for all nodes, deliberately: copies of a shard share a remote path, so every node holding one has
+// to be configured with the same repository. `fs` is a repository type and this is the run configuration, which is
+// the dev-wiring exception D6.2 allows -- no source file in the plugin names it.
+//
+// Defaults to on, because remote-store segment replication is the model this data plane is built for. If a node
+// fails to start with these attributes, -Pclusterless.remote_store=false restores a purely local node.
+def clusterlessRemoteStoreDir = layout.buildDirectory.dir('clusterless-remote-store').get().asFile
+def clusterlessRemoteStore = providers.gradleProperty('clusterless.remote_store').getOrElse('true') == 'true'
+
 def runCluster = testClusters.maybeCreate('runTask')
 if (clusterlessNodes != 1) {
   runCluster.numberOfNodes = clusterlessNodes
@@ -73,6 +89,20 @@ testClusters.all {
     // Shorter than the 5s default so that a person watching the log does not have to wait for it.
     setting 'clusterless.heartbeat.interval', '2s'
     setting 'clusterless.poll.interval', '1s'
+
+    if (clusterlessRemoteStore) {
+        // An `fs` repository has to live under path.repo or FsRepository refuses the location.
+        setting 'path.repo', "${clusterlessRemoteStoreDir}"
+        // The three repositories DiscoveryNode.isRemoteStoreNode() and RemoteStoreNodeAttribute demand: naming a
+        // segment repository without a translog and a cluster-state one throws. All three point at one place; the
+        // cluster-state one is never written to, because remote cluster state stays off -- there is no cluster
+        // state here to publish.
+        setting 'node.attr.remote_store.segment.repository', 'segments'
+        setting 'node.attr.remote_store.translog.repository', 'segments'
+        setting 'node.attr.remote_store.state.repository', 'segments'
+        setting 'node.attr.remote_store.repository.segments.type', 'fs'
+        setting 'node.attr.remote_store.repository.segments.settings.location', "${clusterlessRemoteStoreDir}"
+    }
 }
 
 tasks.named('run') {
@@ -81,6 +111,12 @@ tasks.named('run') {
         clusterlessStore.mkdirs()
         logger.lifecycle("clusterless: store at ${clusterlessStore}")
         logger.lifecycle("clusterless: apply=${clusterlessApply}, nodes=${clusterlessNodes}")
+        if (clusterlessRemoteStore) {
+            clusterlessRemoteStoreDir.mkdirs()
+            logger.lifecycle("clusterless: remote store at ${clusterlessRemoteStoreDir} (shared by every node)")
+        } else {
+            logger.lifecycle("clusterless: no remote store, so search replicas will be declined")
+        }
     }
 }
 
