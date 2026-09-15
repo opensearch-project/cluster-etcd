@@ -114,6 +114,37 @@ testClusters.all {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// ./gradlew runCoordinator -- a node that holds no shards and routes to the ones that do.
+//
+// A separate cluster rather than an extra node in the run cluster, for two reasons. testClusters gives every node
+// in a cluster identical settings, and a coordinator needs a different `clusterless.node.roles`; and separate
+// processes are what the deployment will look like anyway, since coordinators belong on their own capacity --
+// their traffic and hardware are not a data node's.
+//
+// Nothing is lost by splitting them, because clusterless nodes do not form a cluster: they never discover each
+// other, the cluster name is not compared during a transport handshake ("We don't validate cluster names to allow
+// for CCS connections"), and everything they share they share through the store. So this cluster's nodes are peers
+// of the run cluster's in the only sense that matters.
+//
+//   ./gradlew run -Pclusterless.nodes=2      # terminal 1: the data nodes
+//   ./gradlew runCoordinator                 # terminal 2: something to query
+//
+// It needs the supervisor to assign the coordinator role, which nothing in that repository does yet --
+// FINDINGS_FROM_THE_DATA_PLANE.md item 4. Until then this node registers as a coordinator, is seen, and is given
+// nothing to serve.
+def coordinatorCluster = testClusters.maybeCreate('runCoordinator')
+coordinatorCluster.setting 'clusterless.node.roles', 'coordinator'
+
+tasks.register('runCoordinator', org.opensearch.gradle.testclusters.RunTask) {
+    useCluster coordinatorCluster
+    description = 'Runs a clusterless coordinator against the same store as ./gradlew run'
+    doFirst {
+        clusterlessStore.mkdirs()
+        logger.lifecycle("clusterless: coordinator, store at ${clusterlessStore}")
+    }
+}
+
 tasks.named('run') {
     useCluster runCluster
     doFirst {

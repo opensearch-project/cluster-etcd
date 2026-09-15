@@ -324,8 +324,9 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
             "data-" + nodeId.substring(0, 4),
             EnumSet.of(org.opensearch.clusterless.contract.NodeRole.DATA),
             "127.0.0.1",
-            // Distinct per node, because DiscoveryNodes.Builder refuses two nodes at one address -- which two data
-            // nodes on one host would otherwise be, and which CoordinatorState now tolerates rather than failing on.
+            // Distinct per node, because an address is host and port together: DiscoveryNodes.Builder refuses two
+            // node ids claiming the same one, and real co-located nodes are on different ports. A fixture that gave
+            // them one port was testing an impossible fleet.
             9300 + Math.abs(nodeId.hashCode() % 100),
             "3.9.0",
             Map.of(),

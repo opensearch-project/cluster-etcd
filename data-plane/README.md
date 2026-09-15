@@ -96,7 +96,14 @@ that is the next milestone.
 ./gradlew run -Pclusterless.nodes=2        # two of them, sharing one store
 ./gradlew run -Pclusterless.remote_store=false   # no remote store, so search replicas are declined
 ./gradlew run -Pclusterless.segments_only=true   # segments in the repository, translog on local disk
+./gradlew runCoordinator                   # a node that holds no shards and routes to the ones that do
 ```
+
+`runCoordinator` is a **separate cluster**, not an extra node, and that is the natural shape rather than a
+workaround: clusterless nodes never discover each other, the transport does not compare cluster names, and
+everything they share they share through the store — so two testClusters clusters are peers in the only sense that
+matters. It also matches where coordinators belong, which is their own capacity. Run it in a second terminal
+alongside `./gradlew run`.
 
 The run cluster also configures a remote store by default — an `fs` repository under
 `plugin/build/clusterless-remote-store`, shared by every node in the run, declared through

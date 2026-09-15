@@ -426,7 +426,9 @@ Four things in it are load-bearing, and three were found by a test rather than b
   rule is the same in both — the count must describe the routing table in the same state — and the number is
   opposite, because the tables are.
 
-`DiscoveryNodes.Builder` refuses two nodes at one address, which two data nodes on one host produce, so one peer
+`DiscoveryNodes.Builder` refuses two node ids claiming one address — host *and* port, so co-located nodes on
+different ports are fine, and the case that reaches it is a stale projection: a node whose data directory was wiped
+returns with a new id on the same port, and until the old projection is reaped two ids claim one endpoint. One peer
 that cannot be represented costs that peer's shards rather than every index in the state.
 
 **What is not proven.** No coordinator has run. The fabrication is tested as a pure function, including that a

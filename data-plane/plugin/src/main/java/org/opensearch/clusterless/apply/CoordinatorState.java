@@ -302,8 +302,12 @@ public final class CoordinatorState implements NodeState {
             try {
                 nodes.add(built);
             } catch (RuntimeException e) {
-                // DiscoveryNodes.Builder refuses two nodes sharing an address, among other things. One peer this
-                // node cannot represent must cost that peer's shards rather than every index in the state.
+                // DiscoveryNodes.Builder refuses two node ids claiming one address, where an address is host *and*
+                // port -- so this is not about nodes sharing a host, which is ordinary and fine. The case that
+                // reaches it is a stale projection: a node whose data directory was wiped comes back with a new
+                // node id on the same port, and until the supervisor reaps the old projection two ids claim one
+                // endpoint. One peer this node cannot represent must cost that peer's shards rather than every
+                // index in the state.
                 logger.warn("clusterless: could not add peer [{}] to the fabricated state", peer.nodeId(), e);
             }
         }
