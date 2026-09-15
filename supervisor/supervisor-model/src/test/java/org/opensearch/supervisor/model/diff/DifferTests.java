@@ -56,6 +56,17 @@ class DifferTests {
         return new Observation.NodeObservation(id, registration(id), null, inventory, liveness, POOL, null, 0);
     }
 
+    /** A node declaring which remote repository it writes segments to. */
+    private static Observation.NodeObservation nodeInRepository(NodeId id, String repository) {
+        Registration registration = new Registration(
+            id, "eph", id.value(), POOL, java.util.EnumSet.of(NodeRole.DATA), "10.0.0.1", 9300, "3.7.0",
+            Map.of(org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE,
+                repository),
+            5000, 1L
+        );
+        return new Observation.NodeObservation(id, registration, null, null, Liveness.LIVE, POOL, null, 0);
+    }
+
     private static ShardInventory holding(NodeId node, Map<Integer, ShardInventory.ShardCopy> shards) {
         return new ShardInventory(node, "eph", 1L, Map.of(
             ACME, new ShardInventory.TenantShards(Map.of(
@@ -400,5 +411,65 @@ class DifferTests {
 
         assertEquals(1, parsed.numberOfSearchReplicas());
         assertEquals(2, parsed.copiesPerShard(), "a primary and the search replica that was asked for");
+    }
+
+    // ------------------------------------------- pool repositories (FINDINGS_FROM_THE_DATA_PLANE 7)
+
+    @Test
+    void nodesWritingToDifferentRepositoriesAreACriticalFinding() {
+        // The only finding here whose failure mode is a lie rather than an absence. Copies of one shard share a
+        // remote path, so a search replica on the odd node out reads an empty store and reports itself healthy.
+        // No node can detect it -- each sees only its own attributes -- so nothing else will report it.
+        Diff diff = Differ.diff(observe(index(1, 1), Map.of(
+            NODE_A, nodeInRepository(NODE_A, "segments-east"),
+            NODE_B, nodeInRepository(NODE_B, "segments-west")
+        )));
+
+        assertEquals(1, diff.of(FindingKind.POOL_REPOSITORY_MISMATCH).size(), diff.findings().toString());
+        Finding finding = diff.of(FindingKind.POOL_REPOSITORY_MISMATCH).get(0);
+        assertEquals(Severity.CRITICAL, finding.severity());
+        assertTrue(finding.because().contains("segments-east"), finding.because());
+        assertTrue(finding.because().contains("segments-west"), finding.because());
+        assertTrue(finding.because().contains("reports itself healthy"), finding.because());
+    }
+
+    @Test
+    void agreeingOnOneRepositoryIsNotAFinding() {
+        Diff diff = Differ.diff(observe(index(1, 1), Map.of(
+            NODE_A, nodeInRepository(NODE_A, "segments"),
+            NODE_B, nodeInRepository(NODE_B, "segments")
+        )));
+
+        assertTrue(diff.of(FindingKind.POOL_REPOSITORY_MISMATCH).isEmpty(), diff.findings().toString());
+    }
+
+    @Test
+    void aNodeDeclaringNoRepositoryIsNotADisagreement() {
+        // Absence is RemoteStoreDecider's finding, with its own reason. A coordinator has no repository, and a
+        // data node without one gets refused a search-only copy rather than being called inconsistent.
+        Diff diff = Differ.diff(observe(index(1, 1), Map.of(
+            NODE_A, nodeInRepository(NODE_A, "segments"),
+            NODE_B, node(NODE_B, Liveness.LIVE, null)
+        )));
+
+        assertTrue(diff.of(FindingKind.POOL_REPOSITORY_MISMATCH).isEmpty(), diff.findings().toString());
+    }
+
+    @Test
+    void theMismatchNamesOneExampleNodePerRepositoryRatherThanAllOfThem() {
+        // Bounded, for the same reason the allocator groups refusals: this is projected into the store and a large
+        // pool must not produce a large document.
+        Map<NodeId, Observation.NodeObservation> nodes = new LinkedHashMap<>();
+        nodes.put(NODE_A, nodeInRepository(NODE_A, "segments-east"));
+        nodes.put(NODE_B, nodeInRepository(NODE_B, "segments-west"));
+        NodeId nodeC = NodeId.of("nodeCCCCCCCCCCCCCCCCCC");
+        nodes.put(nodeC, nodeInRepository(nodeC, "segments-west"));
+
+        Finding finding = Differ.diff(observe(index(1, 2), nodes))
+            .of(FindingKind.POOL_REPOSITORY_MISMATCH).get(0);
+
+        assertTrue(finding.because().contains("2 different remote repositories"), finding.because());
+        assertTrue(finding.because().contains("2 nodes, e.g."), finding.because());
+        assertTrue(finding.because().contains("1 node, e.g."), finding.because());
     }
 }

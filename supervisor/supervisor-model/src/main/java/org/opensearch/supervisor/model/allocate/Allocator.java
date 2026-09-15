@@ -56,6 +56,9 @@ public final class Allocator {
             // First, so that a refusal an operator caused reads before every refusal the cluster caused.
             new EnableAllocationDecider(),
             new NodeRoleDecider(),
+            // Beside NodeRoleDecider, because both answer "this node fundamentally cannot hold this copy" and
+            // both are cheaper to read than any rule about capacity.
+            new RemoteStoreDecider(),
             new ReplicaAfterPrimaryDecider(),
             new SameShardDecider(),
             new AwarenessDecider(),

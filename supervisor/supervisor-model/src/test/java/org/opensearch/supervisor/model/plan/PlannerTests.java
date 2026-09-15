@@ -58,7 +58,12 @@ class PlannerTests {
     private static Registration registration(NodeId node) {
         return new Registration(
             node, "eph", node.value(), POOL, EnumSet.of(NodeRole.DATA),
-            "10.0.0." + (Math.abs(node.value().hashCode()) % 200 + 1), 9300, "3.7.0", Map.of(), 5000, 1L
+            "10.0.0." + (Math.abs(node.value().hashCode()) % 200 + 1), 9300, "3.7.0",
+            // A pool serving segment-replication indices has remote-store nodes; RemoteStoreDecider refuses a
+            // search-only copy without one, and every replica here is a search replica.
+            Map.of(org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE,
+                "segments"),
+            5000, 1L
         );
     }
 
@@ -402,7 +407,7 @@ class PlannerTests {
         // single-machine deployment reports one address, so refusing by default means no replica is ever placed.
         Registration sharedHost = new Registration(
             FULL_NODE, "eph", FULL_NODE.value(), POOL, EnumSet.of(NodeRole.DATA),
-            "10.0.0.1", 9301, "3.7.0", Map.of(), 5000, 1L
+            "10.0.0.1", 9301, "3.7.0", Map.of(org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE, "segments"), 5000, 1L
         );
         Observation.NodeObservation neighbour = new Observation.NodeObservation(
             FULL_NODE, sharedHost, heartbeat(FULL_NODE, 900_000_000), null, Liveness.LIVE, POOL, null, 0

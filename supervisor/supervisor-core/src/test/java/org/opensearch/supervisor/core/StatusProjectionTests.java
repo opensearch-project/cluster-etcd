@@ -92,7 +92,7 @@ class StatusProjectionTests {
     private FakeNode node(NodeId id, String zone) {
         return new FakeNode(store, new Registration(
             id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.DATA),
-            "10.0.0.1", 9300, "3.7.0", Map.of("zone", zone), 5000, 0L
+            "10.0.0.1", 9300, "3.7.0", Map.of("zone", zone, org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE, "segments"), 5000, 0L
         ), clock, "eph-" + id.value());
     }
 

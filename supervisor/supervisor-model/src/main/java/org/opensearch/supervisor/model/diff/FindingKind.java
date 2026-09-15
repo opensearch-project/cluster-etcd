@@ -67,6 +67,21 @@ public enum FindingKind {
     /** A heartbeat with no registration: the node cannot be placed on, but keeps what it has. */
     NODE_UNREGISTERED(WARNING),
 
+    /**
+     * Nodes in one pool write their segments to <em>different</em> remote repositories.
+     *
+     * <p>{@code CRITICAL}, and the only finding here whose failure mode is a lie rather than an absence. Copies of
+     * a shard share one remote path, so every node that might hold one has to be configured with the same
+     * repository. A node cannot check this — it sees only its own attributes — and the supervisor sees all of them,
+     * which makes it the only party in the system that can. If nobody checks, a search replica placed on the odd
+     * node out reads an empty store, finds nothing, and reports itself perfectly healthy.
+     *
+     * <p>Nodes declaring <em>no</em> repository are not a disagreement and are not counted: a coordinator has none,
+     * and a data node without one is refused a search-only copy by {@code RemoteStoreDecider} with its own reason.
+     * Absence is somebody else's finding. Disagreement is this one.
+     */
+    POOL_REPOSITORY_MISMATCH(CRITICAL),
+
     /** A node in no pool, or naming a pool with no definition. */
     NODE_UNPOOLED(WARNING),
 

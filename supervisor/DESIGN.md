@@ -1057,3 +1057,62 @@ omitted is always stated. In practice the reason cap binds first, which is the r
 
 **The throttled-only case is left exactly as it was.** "Every candidate is throttled, so this is paced rather
 than blocked" is already the whole answer, and grouping identical pacing messages would bury it in arithmetic.
+
+---
+
+## 17. A search-only copy needs a store to read from
+
+Two placement rules, both found by the real data plane, and both reading fields that already existed.
+
+### 17.1 The rule
+
+`RemoteStoreDecider` refuses a `SEARCH_REPLICA` on a node whose attributes name no
+`remote_store.segment.repository`. OpenSearch chooses a replica's segment source from the **node's** attributes,
+and the branch it takes for a node without a remote store resolves the primary through the local routing table —
+which a clusterless data node's fabricated cluster state does not contain. So such a copy starts, reports itself
+`STARTED`, and never receives a segment. It looks perfectly healthy and serves nothing.
+
+The plugin already declines this with a reason, so a placement was never *unsafe* — it converged, because the copy
+was reported absent and the diff kept asking. What it wasted was a round trip per pass, for ever, on a placement
+the supervisor had everything it needed to avoid.
+
+**Keyed on the segment repository attribute, not on "is this a remote-store node".** This mirrors the data plane
+exactly, and the reason is specific: OpenSearch's `isRemoteStoreNode()` also requires a *cluster-state*
+repository, which a node running `remote_store.mode=segments_only` does not have — and that mode exists for this
+architecture. Gating on the broader predicate would refuse the very nodes this design expects. **The two sides
+have to ask the same question, or one places what the other declines.**
+
+Only search replicas are judged. A primary's requirements are different and more involved — it may need a translog
+repository to recover at all — and the plugin declines that case itself rather than starting a shard empty over
+its own data. Encoding half of that rule here would be worse than leaving it whole over there.
+
+### 17.2 The check only this service can make
+
+`POOL_REPOSITORY_MISMATCH` is `CRITICAL`, and it is the only finding whose failure mode is **a lie rather than an
+absence**:
+
+```
+nodes in this pool write segments to 2 different remote repositories: [segments-east] on 1 node,
+e.g. [nodeAAA…]; [segments-west] on 1 node, e.g. [nodeBBB…]. Copies of one shard share a remote
+path, so a search-only copy placed on the wrong node reads an empty store and reports itself
+healthy. No node can detect this -- each sees only its own attributes -- so nothing else will
+report it.
+```
+
+That last clause is the justification for the check existing at all. Every other party in the system sees one
+node's configuration. The supervisor sees all of them at once, which makes it the only thing that can notice they
+disagree — and if it does not, nothing does, because the symptom is a healthy-looking empty shard.
+
+Nodes declaring **no** repository are not a disagreement and are not counted. A coordinator has none, and a data
+node without one is refused a search-only copy by §17.1 with its own reason. Absence is somebody else's finding.
+
+### 17.3 What this cost, which is the interesting part
+
+Adding the decider broke fifteen tests, and every one was a fixture whose nodes declared no repository while the
+test asserted about search replicas being placed. They were modelling **a pool that could not actually serve the
+copies they were asserting about** — the decider did not break them, it revealed them. Remote store is now the
+default in every node fixture, and tests about this rule override it.
+
+Worth stating because it generalises: a rule that refuses something nothing had refused before will fail every
+test that assumed the old permissiveness, and the useful question is always whether those tests were describing a
+configuration that could have worked.

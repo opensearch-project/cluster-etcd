@@ -90,10 +90,22 @@ class ActingTests {
             "{\"tenant\":\"acme\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
+    /**
+     * A data node in a pool that serves segment-replication indices, which means it has a remote store.
+     *
+     * <p>Not incidental detail: RemoteStoreDecider refuses a search-only copy on a node declaring no segment
+     * repository, because such a copy starts, reports itself started and never receives a segment. Fixtures that
+     * omitted it were modelling a pool that could not actually serve the replicas they asserted about.
+     */
+    private static Map<String, String> remoteStoreNode(String zone) {
+        return Map.of("zone", zone,
+            org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE, "segments");
+    }
+
     private FakeNode zoned(NodeId id, String zone) {
         return new FakeNode(store, new Registration(
             id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.DATA),
-            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", Map.of("zone", zone), 5000, 0L
+            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", remoteStoreNode(zone), 5000, 0L
         ), clock, "eph-" + id.value());
     }
 
@@ -102,7 +114,7 @@ class ActingTests {
             id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.DATA),
             // Distinct per node: the same-shard decider treats one address as one failure domain, so a fixture
             // sharing addresses would make every second copy unplaceable.
-            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", Map.of("zone", "z1"), 5000, 0L
+            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", remoteStoreNode("z1"), 5000, 0L
         ), clock, "eph-" + id.value());
     }
 

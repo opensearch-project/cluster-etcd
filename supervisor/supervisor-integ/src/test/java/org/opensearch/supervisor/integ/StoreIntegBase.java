@@ -185,7 +185,7 @@ abstract class StoreIntegBase {
         return new FakeNode(against, new Registration(
             id, "placeholder", id.value(), pool, EnumSet.of(NodeRole.DATA),
             "10.0.0." + (Math.abs(id.value().hashCode()) % 250 + 1), 9300, "3.7.0",
-            Map.of("zone", "z1"),
+            Map.of("zone", "z1", org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE, "segments"),
             // Fast heartbeats, so liveness has something to observe within a test's patience. The supervisor
             // derives its thresholds from this, floored, so the effective interval is a little over 3s.
             1000, 0L

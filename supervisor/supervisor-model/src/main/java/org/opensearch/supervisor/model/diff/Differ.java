@@ -1,6 +1,7 @@
 package org.opensearch.supervisor.model.diff;
 
 import org.opensearch.supervisor.model.NodeId;
+import org.opensearch.supervisor.model.allocate.RemoteStoreDecider;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.index.IndexConfig;
 import org.opensearch.supervisor.model.node.ShardInventory;
@@ -38,6 +39,7 @@ public final class Differ {
         List<Finding> findings = new ArrayList<>();
 
         nodeFindings(observation, findings);
+        poolFindings(observation, findings);
         shardFindings(observation, findings);
         taskFindings(observation, findings);
         unreadableFindings(observation, findings);
@@ -299,6 +301,49 @@ public final class Differ {
     }
 
     /** Convenience for a differ with no history, which is what most tests want. */
+    /**
+     * Findings about the pool itself rather than about any node or shard in it.
+     *
+     * <p>Only one so far, and it is here because <b>only the supervisor can see it</b>. Every other party in the
+     * system sees one node's configuration; this sees all of them at once.
+     */
+    private static void poolFindings(Observation observation, List<Finding> findings) {
+        // Only nodes that could hold a copy, and only those declaring a repository. A node with none is
+        // RemoteStoreDecider's business, not a disagreement.
+        java.util.Map<String, java.util.List<NodeId>> byRepository = new java.util.TreeMap<>();
+        observation.placeableNodes().forEach((nodeId, node) -> {
+            if (node.registration() == null) {
+                return;
+            }
+            String repository = node.registration().attributes()
+                .get(RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE);
+            if (repository != null && repository.isBlank() == false) {
+                byRepository.computeIfAbsent(repository, key -> new ArrayList<>()).add(nodeId);
+            }
+        });
+
+        if (byRepository.size() > 1) {
+            StringBuilder detail = new StringBuilder();
+            byRepository.forEach((repository, nodes) -> {
+                if (detail.length() > 0) {
+                    detail.append("; ");
+                }
+                // Bounded: one example node per repository rather than every node, for the same reason the
+                // allocator groups its refusals -- a large pool must not produce a large document.
+                detail.append('[').append(repository).append("] on ").append(nodes.size())
+                    .append(nodes.size() == 1 ? " node, e.g. [" : " nodes, e.g. [")
+                    .append(nodes.get(0)).append(']');
+            });
+            findings.add(Finding.of(
+                FindingKind.POOL_REPOSITORY_MISMATCH, Subject.ofPool(observation.pool()), observation.pass(),
+                "nodes in this pool write segments to " + byRepository.size() + " different remote repositories: "
+                    + detail + ". Copies of one shard share a remote path, so a search-only copy placed on the"
+                    + " wrong node reads an empty store and reports itself healthy. No node can detect this --"
+                    + " each sees only its own attributes -- so nothing else will report it"
+            ));
+        }
+    }
+
     public static Diff diff(Observation observation) {
         return diff(observation, new FindingAges());
     }

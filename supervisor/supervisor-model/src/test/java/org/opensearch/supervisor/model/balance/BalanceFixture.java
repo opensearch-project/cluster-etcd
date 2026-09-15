@@ -43,7 +43,10 @@ final class BalanceFixture {
 
         private final NodeId id;
         private String address;
-        private Map<String, String> attributes = new LinkedHashMap<>();
+        // Remote store by default: a pool serving segment-replication indices has one, and these fixtures place
+        // search replicas throughout.
+        private final Map<String, String> attributes = new LinkedHashMap<>(Map.of(
+            org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE, "segments"));
         private long total = 1000;
         private long free = 900;
         private Liveness liveness = Liveness.LIVE;

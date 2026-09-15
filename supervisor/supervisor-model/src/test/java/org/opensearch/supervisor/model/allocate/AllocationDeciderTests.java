@@ -73,7 +73,10 @@ class AllocationDeciderTests {
         Liveness liveness
     ) {
         static NodeBuilder of(NodeId id) {
-            return new NodeBuilder(id, "10.0.0." + id.value().charAt(4), Set.of(NodeRole.DATA), Map.of(),
+            // Remote store by default: RemoteStoreDecider refuses a search-only copy on a node declaring no
+            // segment repository, and most fixtures here place search replicas. Tests about that rule override it.
+            return new NodeBuilder(id, "10.0.0." + id.value().charAt(4), Set.of(NodeRole.DATA),
+                Map.of(RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE, "segments"),
                 1000, 900, Map.of(), Liveness.LIVE);
         }
 
@@ -83,6 +86,11 @@ class AllocationDeciderTests {
 
         NodeBuilder roles(NodeRole... values) {
             return new NodeBuilder(id, address, Set.of(values), attributes, total, free, shards, liveness);
+        }
+
+        /** Replaces the attributes wholesale, for tests about a node that declares none. */
+        NodeBuilder attributes(Map<String, String> replacement) {
+            return new NodeBuilder(id, address, roles, replacement, total, free, shards, liveness);
         }
 
         NodeBuilder attribute(String key, String value) {
@@ -696,10 +704,14 @@ class AllocationDeciderTests {
             List.of(nodeNumbered(1), nodeNumbered(2), nodeNumbered(3), nodeNumbered(4)));
 
         String because = outcome.refusal().because();
+        assertTrue(because.contains("4 distinct reason(s)"), because);
         assertTrue(because.contains("further distinct reason(s) not shown"), because);
-        assertEquals(Allocator.MAX_DISTINCT_REASONS,
-            because.split("\\(1 node\\)|\\([0-9]+ nodes\\)", -1).length - 1,
-            "exactly the cap is shown: " + because);
+        // At most the cap, and possibly fewer: with clauses this long the character budget bites first, which is
+        // the budget doing its job rather than a surprise. Both bounds drop whole clauses, so either way the
+        // count of omissions is stated and nothing is cut mid-sentence.
+        long clauses = because.split("\\(1 node\\)|\\([0-9]+ nodes\\)", -1).length - 1;
+        assertTrue(clauses >= 1 && clauses <= Allocator.MAX_DISTINCT_REASONS,
+            clauses + " clauses: " + because);
     }
 
     @Test
@@ -748,5 +760,72 @@ class AllocationDeciderTests {
         assertTrue(because.endsWith("node)") || because.endsWith("nodes)")
                 || because.endsWith("not shown"),
             "ends mid-sentence: " + because);
+    }
+
+    // ------------------------------------------- remote store (FINDINGS_FROM_THE_DATA_PLANE 7)
+
+    private static NodeBuilder withoutRemoteStore(NodeId id) {
+        return NodeBuilder.of(id).attributes(Map.of());
+    }
+
+    @Test
+    void aSearchOnlyCopyIsRefusedOnANodeWithNoRemoteStore() {
+        // The silent failure this prevents: OpenSearch picks a replica's segment source from the node's
+        // attributes, and the branch for a node without a remote store resolves the primary through the local
+        // routing table -- which a clusterless node's fabricated state does not contain. The copy starts, reports
+        // itself started, and never receives a segment.
+        var decision = new RemoteStoreDecider()
+            .canAllocate(simple(ShardRole.SEARCH_REPLICA, withoutRemoteStore(A)), A);
+
+        assertEquals(Decision.Type.NO, decision.type());
+        assertTrue(decision.because().contains("never receive a segment"), decision.because());
+        assertEquals("no_remote_store", decision.code());
+    }
+
+    @Test
+    void aSearchOnlyCopyIsAllowedOnARemoteStoreNode() {
+        var decision = new RemoteStoreDecider()
+            .canAllocate(simple(ShardRole.SEARCH_REPLICA, NodeBuilder.of(A)), A);
+
+        assertEquals(Decision.Type.YES, decision.type());
+        assertTrue(decision.because().contains("segments"), decision.because());
+    }
+
+    @Test
+    void aPrimaryIsNotJudgedByThisRule() {
+        // A primary's requirements are different and more involved -- it may need a translog repository to recover
+        // at all -- and the data plane declines that case itself rather than starting a shard empty over its own
+        // data. Encoding half of that rule here would be worse than leaving it there.
+        for (ShardRole role : List.of(ShardRole.PRIMARY, ShardRole.REPLICA)) {
+            assertEquals(Decision.Type.YES,
+                new RemoteStoreDecider().canAllocate(simple(role, withoutRemoteStore(A)), A).type(),
+                role + " should not be judged by the remote-store rule");
+        }
+    }
+
+    @Test
+    void aBlankRepositoryAttributeCountsAsAbsent() {
+        var decision = new RemoteStoreDecider().canAllocate(
+            simple(ShardRole.SEARCH_REPLICA,
+                NodeBuilder.of(A).attributes(Map.of(RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE, "  "))),
+            A
+        );
+
+        assertEquals(Decision.Type.NO, decision.type(), decision.because());
+    }
+
+    @Test
+    void theWholeAllocatorRefusesASearchReplicaWhenNoNodeHasAStore() {
+        // End to end through the decider set, so the refusal an operator reads names this rule.
+        var outcome = new Allocator().choose(
+            simple(ShardRole.SEARCH_REPLICA, withoutRemoteStore(A), withoutRemoteStore(B)),
+            List.of(A, B)
+        );
+
+        assertFalse(outcome.placed());
+        assertTrue(outcome.refusal().because().contains("remote_store"), outcome.refusal().because());
+        // One reason, both nodes: the grouping from finding 2 doing its job on this rule too.
+        assertTrue(outcome.refusal().because().contains("1 distinct reason(s)"), outcome.refusal().because());
+        assertTrue(outcome.refusal().because().contains("(2 nodes)"), outcome.refusal().because());
     }
 }
