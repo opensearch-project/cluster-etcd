@@ -135,11 +135,17 @@ cd - && ./gradlew run -Pclusterless.ingestion=true -Pclusterless.segments_only=t
 Create the index through the control plane with these settings, and it needs no writes at all — the shard pulls:
 
 ```json
-{ "index.number_of_shards": "1", "index.replication.type": "SEGMENT",
-  "index.ingestion_source.type": "file",
-  "index.ingestion_source.pointer.init.reset": "earliest",
-  "index.ingestion_source.param.stream": "my-stream",
-  "index.ingestion_source.param.base_directory": "<repo>/plugin/build/clusterless-ingestion" }
+"settings": { 
+  "index.number_of_shards": "1", 
+  "index.replication.type": "SEGMENT",
+  "ingestion_source": {
+    "type": "file",
+    "param": {
+      "stream": "my-stream",
+      "base_directory": "<repo>/plugin/build/clusterless-ingestion" 
+    }
+  }
+}
 ```
 
 The source reads `${base_directory}/${stream}/${shardId}.ndjson` — one file per shard, **the line number is the
