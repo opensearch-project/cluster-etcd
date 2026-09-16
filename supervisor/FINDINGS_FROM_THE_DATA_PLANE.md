@@ -1,6 +1,6 @@
 # Findings from the data plane
 
-Six changes wanted in this repository, all found by running the real data plane
+Seven changes wanted in this repository, all found by running the real data plane
 (`../opensearch-data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
@@ -540,6 +540,75 @@ Points worth deciding rather than assuming:
 - the projection reports a paused index as green rather than as unhealthy, since it is serving reads and holding its
   copies by instruction;
 - pausing is not a shard movement, so it produces no placement work and does not consume the pass's work ceiling.
+
+---
+
+## 7. A deleted index is never let go of, and a primary cannot displace a replica
+
+Found by deleting an index and recreating it under the same name. The data node stopped picking up the new one
+until it was restarted, and its own report said exactly why:
+
+```
+"applied": { "assignment_version": 1, "outcome": "failed" },
+"deferred": ["default/2bb_-ILTnSIXmxGcZ2reEw: the document at [my-index-2] is index
+              [-u4CHvjHVw70SKHigBad0A], so the assigned index is not present yet"]
+```
+
+The assignment still named the **old** uuid after 615 passes. That is correct behaviour by the data plane — a
+document under a reused name describing a different index is exactly the torn read `NODE_CONTRACT.md` says to
+decline — and it means the loop is stuck on this side. Two separate gaps produce it.
+
+### 7a. `ORPHANED_COPY` is raised and consumed by nothing
+
+`Differ` raises it for every copy a node holds whose index is absent from desired state, with a message that ends
+*"nothing acts on it until it has held"*. Nothing acts on it after it has held either: `grep ORPHANED_COPY` finds
+the enum, the `Differ`, and no planner or applier code at all.
+
+So a copy of a deleted index is held for ever, and the `DELETE_INDEX` task correctly refuses to finish —
+*"given up after 5 attempts; last verdict: node [X] still holds or is assigned a copy of index uuid Y"*. Six
+`TASK_STUCK` findings in the store are that, accumulated across runs.
+
+**Related and separate:** even where a node holds nothing, an **assignment entry** for an index absent from desired
+state is never pruned. The node declines it every pass, the assignment version never moves, and the entry outlives
+the index indefinitely. A stale entry is not a copy, so `ORPHANED_COPY` does not cover it.
+
+Suggested: plan a `RemoveCopy` for an `ORPHANED_COPY` that has held for `minimumPasses`, and prune assignment
+entries whose index uuid is not in the tenant's desired state as a property of writing the assignment — the same
+shape as the coordinator-membership fix, which is not finding-driven either.
+
+### 7b. A primary cannot displace a replica on the last node
+
+`placeable_nodes: 1`, and the one live node holds `pull-based-index`'s **search replica** while the node that held
+its **primary** is among the 23 given up on. So:
+
+```
+UNASSIGNED_PRIMARY :: index [pull-based-index] shard 0 has no primary on any node in this pool
+  unplaceable: [same_shard] node [ENQgP1TR...] already holds, is assigned, or is about to be given a copy
+```
+
+Correct by the rule and a permanent deadlock: the shard's only surviving copy is a read-only one, the only
+candidate is the node holding it, and `SameShardDecider` refuses. Nothing will ever place that primary, and the
+index cannot be written to again.
+
+A primary and a replica competing for the last node is not a tie. Suggested: when the finding is
+`UNASSIGNED_PRIMARY` and the refusal is `same_shard` against a node whose existing copy of that shard is a
+*replica*, the replica should be given up — planned as a `RemoveCopy` in the same pass, or promoted if the
+deployment ever allows a search replica to become a primary (upstream does not). Either beats a shard that can
+never be written to.
+
+### One thing this write-up does not explain
+
+The same pass also refused `my-index-2`'s primary with `same_shard` on that node, and the stored documents do not
+support that: the node neither holds nor is assigned the new uuid, and `heldCopy` correctly keys on
+`index.uuid()`. Ordering is not it either — primaries are added to `actionable` before replicas and search
+replicas. So there is a third thing happening that these artifacts do not show, and it wants instrumenting rather
+than guessing at: the candidate list, `nodesWithThisShard()` and the `planned` list for that finding, in one pass.
+
+### Reproducing it
+
+Delete an index and recreate it with the same name, then watch a data node's `/_clusterless/status`: the deferred
+line names the old uuid against the new document, and `assignment_version` stops moving. It survives restarts of
+the supervisor, which is what makes it a state problem rather than a timing one.
 
 ---
 
