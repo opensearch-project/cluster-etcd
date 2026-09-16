@@ -9,6 +9,7 @@ import org.opensearch.supervisor.model.node.ShardState;
 import org.opensearch.supervisor.model.observe.Observation;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -207,11 +208,18 @@ public final class StatusComputation {
      */
     private static Map<NodeId, NodeStatus> nodeStatuses(TenantId tenant, Observation observation) {
         Map<NodeId, NodeStatus> nodes = new LinkedHashMap<>();
+        Set<NodeId> replaced = supersededOnTheirEndpoint(observation);
         observation.nodes().forEach((nodeId, node) -> {
             if (node.registration() == null || node.copiesCount() == false) {
                 return;
             }
             if (servesTenant(node, tenant) == false) {
+                return;
+            }
+            if (replaced.contains(nodeId)) {
+                // A predecessor on an endpoint another node now answers. Publishing its address would hand a
+                // reader two nodes claiming one socket, and the reader cannot tell which is real -- see
+                // supersededOnTheirEndpoint.
                 return;
             }
             nodes.put(nodeId, new NodeStatus(
@@ -230,6 +238,74 @@ public final class StatusComputation {
             ));
         });
         return nodes;
+    }
+
+    /**
+     * Nodes whose {@code address:port} another node now answers on.
+     *
+     * <p>Nothing reaps a departed node's documents, so a data plane restarted on the same port leaves its
+     * predecessor's registration in the store — and a fresh supervisor process grants every such corpse a full
+     * staleness window before giving up on it, because silence is measured from when <em>this</em> process started
+     * watching. During that window both nodes are projected, both carry the same address and port, and a reader is
+     * handed two nodes claiming one socket with no way to tell which is real. A real coordinator did exactly that
+     * and declined to route to one of them, correctly and confusingly.
+     *
+     * <p>One process owns a port, so two nodes on one endpoint means one of them is history. <b>Only the
+     * supervisor can resolve it</b>: each node sees its own registration and no other, so it cannot know it has a
+     * predecessor, while the supervisor sees every registration at once. Same shape as the repository-mismatch
+     * check — a fact assembled from the whole pool rather than from any one node.
+     *
+     * <p>Freshest wins: liveness first, then the more recent heartbeat, then the node id so that two supervisors
+     * reading one observation publish the same thing. A node with no heartbeat at all ranks last, since it has
+     * never demonstrated it is there.
+     *
+     * <p>This does not fix the accumulation, only its most damaging symptom. Reaping is the real answer and it is
+     * a harder change than it looks — see {@code DESIGN.md} §20.
+     */
+    private static Set<NodeId> supersededOnTheirEndpoint(Observation observation) {
+        Map<String, List<Map.Entry<NodeId, Observation.NodeObservation>>> byEndpoint = new LinkedHashMap<>();
+        observation.nodes().forEach((nodeId, node) -> {
+            if (node.registration() == null || node.copiesCount() == false) {
+                return;
+            }
+            String endpoint = node.registration().address() + ":" + node.registration().port();
+            byEndpoint.computeIfAbsent(endpoint, key -> new ArrayList<>())
+                .add(Map.entry(nodeId, node));
+        });
+
+        Set<NodeId> superseded = new LinkedHashSet<>();
+        byEndpoint.forEach((endpoint, sharing) -> {
+            if (sharing.size() < 2) {
+                return;
+            }
+            NodeId winner = sharing.stream()
+                .max(Comparator
+                    .comparingInt((Map.Entry<NodeId, Observation.NodeObservation> entry)
+                        -> freshness(entry.getValue().liveness()))
+                    .thenComparingLong(entry -> heartbeatAt(entry.getValue()))
+                    .thenComparing(entry -> entry.getKey().value()))
+                .orElseThrow()
+                .getKey();
+            sharing.forEach(entry -> {
+                if (entry.getKey().equals(winner) == false) {
+                    superseded.add(entry.getKey());
+                }
+            });
+        });
+        return superseded;
+    }
+
+    private static int freshness(Liveness liveness) {
+        return switch (liveness) {
+            case LIVE -> 3;
+            case STALE -> 2;
+            case UNKNOWN -> 1;
+            case LOST -> 0;
+        };
+    }
+
+    private static long heartbeatAt(Observation.NodeObservation node) {
+        return node.heartbeat() == null ? Long.MIN_VALUE : node.heartbeat().timestamp();
     }
 
     private static boolean servesTenant(Observation.NodeObservation node, TenantId tenant) {

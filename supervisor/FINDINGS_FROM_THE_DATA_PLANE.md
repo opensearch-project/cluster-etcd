@@ -623,6 +623,22 @@ support that: the node neither holds nor is assigned the new uuid, and `heldCopy
 replicas. So there is a third thing happening that these artifacts do not show, and it wants instrumenting rather
 than guessing at: the candidate list, `nodesWithThisShard()` and the `planned` list for that finding, in one pass.
 
+### The endpoint collision, from the status output
+
+> The second deferred line — `[127.0.0.1:9300] is already claimed by node [...]` — was a supervisor bug and the
+> message's own diagnosis was correct. Two things, both in `DESIGN.md` §20.
+>
+> **Fixed:** the projection now publishes **one node per `address:port`**, the freshest of them. A process owns a
+> socket, so two nodes on one endpoint means one is history, and only the supervisor can tell — a node sees its own
+> registration and no other. Keyed on address *and* port, so several nodes on one laptop keep working.
+>
+> **Not fixed, and the reason is worth knowing:** nothing reaps a departed node's documents, and three of the four
+> are not the supervisor's to delete. A node partitioned for longer than any grace period is indistinguishable from
+> a dead one, and deleting its registration while it is merely unreachable leaves it heartbeating with no
+> registration — `NODE_UNREGISTERED`, placeable for nothing, needing a restart. **The clean fix is a contract rule
+> that a node rewrites its registration when it notices it missing**, which makes reaping safe by construction and
+> is yours as much as mine. §20.2 has the alternative.
+
 ### On 7a and 7b, from this side
 
 **7b is right and worth doing**, and it is the one that definitely stops an index being written to. Not attempted

@@ -11,6 +11,8 @@ import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.index.IndexConfig;
 import org.opensearch.supervisor.model.node.NodeRole;
+import org.opensearch.supervisor.model.node.Assignment;
+import org.opensearch.supervisor.model.node.NodeJson;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.plan.Planner;
 import org.opensearch.supervisor.model.pool.PoolBinding;
@@ -92,8 +94,20 @@ class StatusProjectionTests {
     private FakeNode node(NodeId id, String zone) {
         return new FakeNode(store, new Registration(
             id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.DATA),
-            "10.0.0.1", 9300, "3.7.0", Map.of("zone", zone, org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE, "segments"), 5000, 0L
+            // One port per node. One process owns a socket, so two nodes sharing address:port means one of them
+            // is a corpse -- and the projection now publishes only the freshest of them, which quietly dropped a
+            // node from this fixture until each got its own.
+            "10.0.0.1", portOf(id), "3.7.0",
+            Map.of("zone", zone,
+                org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE,
+                "segments"),
+            5000, 0L
         ), clock, "eph-" + id.value());
+    }
+
+    /** One port per node: one process owns a socket, so a shared endpoint means one of them is a corpse. */
+    private static int portOf(NodeId id) {
+        return 9300 + Math.abs(id.value().hashCode() % 100);
     }
 
     private Supervisor supervisor() {
@@ -200,7 +214,7 @@ class StatusProjectionTests {
 
         NodeStatus status = NodeStatus.from(store.get(Keys.nodeStatus(ACME, NODE)).orElseThrow().value());
         assertEquals("10.0.0.1", status.address());
-        assertEquals(9300, status.port());
+        assertEquals(portOf(NODE), status.port(), "whatever port the fixture gave it, the projection carries it");
         assertEquals(Set.of(NodeRole.DATA), status.roles());
         assertTrue(status.isReachable());
     }
@@ -363,5 +377,65 @@ class StatusProjectionTests {
 
         assertEquals("eph-second-incarnation", after);
         assertNotEquals(before, after, "a restart must not leave the previous incarnation projected");
+    }
+
+    // ------------------------------- a node replaced on the same port (FINDINGS 7, reported from a real pool)
+
+    @Test
+    void onlyOneNodePerEndpointIsProjected() {
+        // What a coordinator actually hit: "[127.0.0.1:9300] is already claimed by node [ENQg...], so this one is
+        // not routed to -- usually a projection for a node that was replaced on the same port and has not been
+        // reaped yet". Nothing reaps a departed node's registration, and a fresh supervisor process grants every
+        // corpse a full staleness window because silence is measured from when *this* process started watching.
+        // So both are projected, both carry one address and port, and the reader cannot tell which is real.
+        NodeId dead = NodeId.of("nodeDeadAAAAAAAAAAAAAA");
+        NodeId live = NodeId.of("nodeLiveBBBBBBBBBBBBBB");
+
+        // Same endpoint, which is the whole point: one process owns a socket.
+        store.put(Keys.nodeRegistration(dead), NodeJson.write(new Registration(
+            dead, "eph-dead", dead.value(), POOL, EnumSet.of(NodeRole.DATA), "127.0.0.1", 9300, "3.7.0",
+            Map.of("zone", "z1"), 5000, 0L
+        )));
+        // And the assignment it was left holding, which is what a replaced node leaves behind and what makes it
+        // still count as serving the tenant. Without this it is not projected at all and the collision cannot
+        // happen -- the first version of this test proved nothing for exactly that reason.
+        store.put(Keys.nodeAssignment(dead), NodeJson.write(new Assignment(
+            4, POOL, 7, dead, 1L, Map.of(ACME, Assignment.TenantAssignment.coordinator())
+        )));
+
+        FakeNode surviving = new FakeNode(store, new Registration(
+            live, "placeholder", live.value(), POOL, EnumSet.of(NodeRole.DATA), "127.0.0.1", 9300, "3.7.0",
+            Map.of("zone", "z1",
+                org.opensearch.supervisor.model.allocate.RemoteStoreDecider.SEGMENT_REPOSITORY_ATTRIBUTE,
+                "segments"),
+            5000, 0L
+        ), clock, "eph-live");
+        surviving.start();
+        createIndex("my-index", UUID, 1, 0);
+
+        run(supervisor(), List.of(surviving), 8);
+
+        // The dead one registered and never heartbeated, so it is UNKNOWN rather than LOST and its registration is
+        // still observed -- which is exactly the window in which both used to be published.
+        assertTrue(store.get(Keys.nodeStatus(ACME, live)).isPresent(), "the node answering the port is projected");
+        assertTrue(store.get(Keys.nodeStatus(ACME, dead)).isEmpty(),
+            "and its predecessor on that port is not, or a reader gets two nodes claiming one socket");
+    }
+
+    @Test
+    void nodesOnDistinctPortsOfOneHostAreBothProjected() {
+        // The case the endpoint rule must not break, and the ordinary shape of a laptop deployment: several nodes
+        // on one machine, each with its own port. Keying on address alone would have published one of them.
+        FakeNode first = node(NODE, "z1");
+        FakeNode second = node(NODE_B, "z1");
+        first.start();
+        second.start();
+        createIndex("my-index", UUID, 2, 0);
+
+        run(supervisor(), List.of(first, second), 10);
+
+        assertTrue(store.get(Keys.nodeStatus(ACME, NODE)).isPresent());
+        assertTrue(store.get(Keys.nodeStatus(ACME, NODE_B)).isPresent(),
+            "distinct ports on one address are distinct endpoints");
     }
 }

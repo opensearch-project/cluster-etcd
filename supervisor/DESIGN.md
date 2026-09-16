@@ -1224,3 +1224,67 @@ together — which is the failure mode a shared helper exists to prevent.
 
 **The general lesson is the same in both halves: two pieces of code answering one question separately will
 eventually answer it differently, and the symptom appears somewhere neither of them is looking.**
+
+---
+
+## 20. Nothing reaps a node that is gone
+
+Reported from a real pool, by a coordinator that declined to route to one of two nodes claiming one socket:
+
+```
+91HTBQFsTkKh3teM0PZlQw: [127.0.0.1:9300] is already claimed by node [ENQgP1TRSr6FelzOfPWL6g],
+so this one is not routed to -- usually a projection for a node that was replaced on the same
+port and has not been reaped yet
+```
+
+The diagnosis in that message is right. **Nothing in this service deletes a departed node's documents.**
+`Housekeeping` reaps *member* records — other supervisors — and `StatusProjector` reaps projections whose key it
+did not write this pass, which does not help: a dead node's `nodes/registration/<id>` is still there, so it is
+still observed, so its projection is still written.
+
+And a fresh supervisor process makes it worse before it makes it better. Liveness is revision silence measured from
+when **this** process started watching, so every restart of the supervisor grants every corpse in the pool a full
+staleness window during which it is `UNKNOWN` rather than `LOST` — and `UNKNOWN` is published, because
+`copiesCount()` only excludes `LOST`. Restart a data plane on the same port a few times and the store accumulates
+one registration per incarnation, all of them claiming the same address and port.
+
+### 20.1 What is fixed: one node per endpoint
+
+A process owns a socket, so two nodes on one `address:port` means one of them is history. The projection now
+publishes only the freshest — liveness first, then the more recent heartbeat, then node id for determinism — and a
+node with no heartbeat at all ranks last, never having demonstrated it is there.
+
+**Only the supervisor can make this call**, which is what makes it belong here: each node sees its own registration
+and no other, so it cannot know it has a predecessor, while the supervisor sees every registration at once. Same
+shape as the repository-mismatch check in §17.2.
+
+Keyed on `address:port` and not on address alone, deliberately: several nodes on one machine with their own ports
+is the ordinary shape of a laptop deployment, and collapsing them would break the case this whole feature exists
+to serve. A test covers it, because the first version of the *other* test proved nothing — a registration with no
+assignment is not projected at all, so the collision could not occur until the fixture also left behind the
+assignment a replaced node really does leave.
+
+### 20.2 What is not fixed: the reaping itself
+
+This treats the symptom. The cause is that a departed node's four documents live for ever, and the honest reason
+it is not fixed here is that **three of them are not the supervisor's to delete**. `nodes/registration/<id>`,
+`nodes/heartbeat/<id>` and `nodes/shards/<id>` are written by the node; the whole key layout rests on every key
+having one writer, and reaping means deleting keys whose writer is presumed gone rather than known to be.
+
+The hazard is specific and not hypothetical. A node partitioned from the store for longer than the grace period is
+indistinguishable from a node that has died — and if its registration is deleted while it is merely unreachable,
+it comes back, resumes heartbeating, and is now a node with a heartbeat and no registration: `NODE_UNREGISTERED`,
+placeable for nothing, needing a restart to recover. Trading a slow leak for a node that strands itself is not an
+improvement.
+
+Two ways out, and both are more than a patch:
+
+- **Give the node contract a rule that a node rewrites its registration when it observes it missing.** Then reaping
+  is safe by construction and self-healing, at the cost of one read per pass on the node side. This is the better
+  answer and it is a change to `NODE_CONTRACT.md`, which means agreeing it with the data plane.
+- **Reap with a compare-and-set on the revision observed**, and only after the `NODE_LOST` finding has aged the way
+  the planner ages everything it acts on. That closes the window to the width of one pass rather than eliminating
+  it, and it needs the observer to carry registration and heartbeat revisions, which it currently does not.
+
+Until then the leak is bounded by operator patience rather than by code, and the symptom that actually hurt — a
+reader handed two nodes on one socket — is gone.
