@@ -122,6 +122,40 @@ remote-backed has nowhere to read from, because the alternative source resolves 
 table that a clusterless node's state does not contain. To see a search replica start, ask the control plane for
 an index with `index.replication.type: SEGMENT` and one replica, and run two nodes.
 
+### Pull-based ingestion, with the file source
+
+Kafka is the production source; `ingestion-fs` is the one a laptop can run. It is an OpenSearch plugin rather than
+part of the server, so build it there and point this build at it:
+
+```
+cd ../OpenSearch && ./gradlew :plugins:ingestion-fs:bundlePlugin
+cd - && ./gradlew run -Pclusterless.ingestion=true -Pclusterless.segments_only=true
+```
+
+Create the index through the control plane with these settings, and it needs no writes at all — the shard pulls:
+
+```json
+{ "index.number_of_shards": "1", "index.replication.type": "SEGMENT",
+  "index.ingestion_source.type": "file",
+  "index.ingestion_source.pointer.init.reset": "earliest",
+  "index.ingestion_source.param.stream": "my-stream",
+  "index.ingestion_source.param.base_directory": "<repo>/plugin/build/clusterless-ingestion" }
+```
+
+The source reads `${base_directory}/${stream}/${shardId}.ndjson` — one file per shard, **the line number is the
+offset** — and each line is a message the default mapper understands:
+
+```
+{"_id": "1", "_op_type": "index", "_source": {"title": "foo"}}
+```
+
+`_source` is required; the others are optional. A missing file is a warning rather than a failure, so the shard
+starts and waits for one to appear.
+
+**`segments_only` belongs with this**, and the two are not independent: an ingestion engine keeps a
+`NoOpTranslogManager`, so a pull-based index has no translog to put in a repository. Its position in the stream
+lives in the Lucene commit instead, which is what makes a remote segment store sufficient on its own.
+
 The run cluster points at `plugin/build/clusterless-store`, and a supervisor pointed at the same directory is
 the other half of the loop:
 

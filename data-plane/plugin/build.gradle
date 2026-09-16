@@ -111,6 +111,10 @@ def clusterlessIngestion = providers.gradleProperty('clusterless.ingestion').get
 def ingestionFsDistributions = providers.gradleProperty('clusterless.ingestion.plugin')
     .getOrElse("${rootDir}/../OpenSearch/plugins/ingestion-fs/build/distributions")
 def ingestionFsZip = file(ingestionFsDistributions).listFiles()?.find { it.name.endsWith('.zip') }
+// OpenSearchCluster.plugin takes a Provider<RegularFile> or a *project path* -- a plain File matches neither, and
+// the failure is a Groovy "could not find method plugin()" that says nothing about why. testClusters turns the
+// file into the file:// URL the opensearch-plugin CLI wants itself, at install time.
+def ingestionFsPlugin = ingestionFsZip == null ? null : project.layout.file(project.provider { ingestionFsZip })
 def clusterlessIngestionDir = layout.buildDirectory.dir('clusterless-ingestion').get().asFile
 
 def runCluster = testClusters.maybeCreate('runTask')
@@ -132,11 +136,11 @@ testClusters.all {
     setting 'clusterless.heartbeat.interval', '2s'
     setting 'clusterless.poll.interval', '1s'
 
-    if (clusterlessIngestion && ingestionFsZip != null) {
+    if (clusterlessIngestion && ingestionFsPlugin != null) {
         // Only the plugin. The directory the source reads from is named per index, in
         // index.ingestion_source.param.base_directory, so there is nothing node-wide to configure -- and nothing
         // that would collide with the remote store's path.repo.
-        plugin(ingestionFsZip)
+        plugin(ingestionFsPlugin)
     }
 
     if (clusterlessRemoteStore) {
