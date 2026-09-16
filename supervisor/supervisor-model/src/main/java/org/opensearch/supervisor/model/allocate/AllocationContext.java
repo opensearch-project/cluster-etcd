@@ -148,7 +148,13 @@ public final class AllocationContext {
             if (node.copiesCount() == false) {
                 return;
             }
-            if (heldCopy(node, shard).isPresent() || node.isAssigned(tenant, index.uuid(), shard)) {
+            // Two different kinds of evidence, and they need different tests. What a node reports holding counts
+            // whenever its copies count at all; what it has merely been told to hold counts only while it is
+            // still reporting, or a node that died before acknowledging an instruction keeps the shard from ever
+            // being placed anywhere. See NodeObservation.actsOnItsAssignment.
+            if (heldCopy(node, shard).isPresent()) {
+                nodes.add(nodeId);
+            } else if (node.actsOnItsAssignment() && node.isAssigned(tenant, index.uuid(), shard)) {
                 nodes.add(nodeId);
             }
         });
@@ -182,7 +188,7 @@ public final class AllocationContext {
                 }
                 continue;
             }
-            if (assignedRole(node) == wanted) {
+            if (node.actsOnItsAssignment() && assignedRole(node) == wanted) {
                 count++;
             }
         }
@@ -230,9 +236,10 @@ public final class AllocationContext {
             ShardInventory inventory = node.inventory();
             if (inventory != null) {
                 count += inventory.copyCount();
-            } else if (node.assignment() != null) {
+            } else if (node.assignment() != null && node.actsOnItsAssignment()) {
                 // No inventory yet: the assignment is the best available statement of what it will hold, and
-                // ignoring it would let a node be filled up before it has reported anything at all.
+                // ignoring it would let a node be filled up before it has reported anything at all. Only while
+                // it is reporting, though -- a silent node is not filling up.
                 count += node.assignment().copyCount();
             }
         }

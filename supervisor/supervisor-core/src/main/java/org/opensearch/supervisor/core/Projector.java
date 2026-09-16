@@ -173,7 +173,7 @@ public final class Projector {
 
             List<ProjectedFinding> shown = findings.stream()
                 .limit(MAX_FINDINGS_SHOWN)
-                .map(finding -> project(finding, refusals.get(finding.subject().key())))
+                .map(finding -> project(finding, refusals.get(finding.refusalKey())))
                 .toList();
 
             // The change check deliberately ignores the pass number and the timestamp. Including them

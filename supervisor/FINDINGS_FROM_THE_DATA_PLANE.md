@@ -596,13 +596,48 @@ A primary and a replica competing for the last node is not a tie. Suggested: whe
 deployment ever allows a search replica to become a primary (upstream does not). Either beats a shard that can
 never be written to.
 
-### One thing this write-up does not explain
+### One thing this write-up does not explain — answered
+
+> **There was no third thing.** The refusal was real and was not about that shard's primary. `Plan.refusals` was
+> keyed by *subject*, and all three unassigned kinds of one shard share a subject — so on a one-node pool the
+> primary is placed, the search replica is then correctly refused because the only node has just been given the
+> primary, and the refusal is rendered against the primary's finding. Reproduced, and the failure message is the
+> same sentence quoted below, attributed to `UNASSIGNED_PRIMARY`. Fixed: `Finding.refusalKey()` includes the kind
+> and `Plan.refusalFor(finding)` is the only way to read one.
+>
+> **A second, separate deadlock was found while looking.** `Differ` counted a copy only when a node reported one;
+> the planner also counted a copy a node had merely been *assigned*. A node handed a primary that died before
+> reporting it satisfied the planner and not the differ, so the shard was announced unassigned every pass and
+> skipped before the allocator ran — no placement and no refusal, which matches "the stored documents do not
+> support that" better than anything in this section. Fixed by `NodeObservation.actsOnItsAssignment()`, which
+> requires a heartbeat: a node that has gone quiet keeps its claim through the stale window, for GC tolerance,
+> but a node that never spoke does not.
+>
+> **7a and 7b are not fixed** — see the notes at the end of this item.
+
+### One thing this write-up does not explain (original text)
 
 The same pass also refused `my-index-2`'s primary with `same_shard` on that node, and the stored documents do not
 support that: the node neither holds nor is assigned the new uuid, and `heldCopy` correctly keys on
 `index.uuid()`. Ordering is not it either — primaries are added to `actionable` before replicas and search
 replicas. So there is a third thing happening that these artifacts do not show, and it wants instrumenting rather
 than guessing at: the candidate list, `nodesWithThisShard()` and the `planned` list for that finding, in one pass.
+
+### On 7a and 7b, from this side
+
+**7b is right and worth doing**, and it is the one that definitely stops an index being written to. Not attempted
+here: displacing a replica to make room for a primary means planning a `RemoveCopy` against a copy that is
+currently serving, which is the first time this service would delete a *working* copy in order to place another,
+and it wants its own thinking about ordering — the primary must be planned in the same pass or the shard has no
+copies at all for a window.
+
+**7a's second half is not safe as suggested.** Pruning assignment entries whose index uuid is absent from desired
+state "as a property of writing the assignment" has no patience in it, and an absent index document is exactly the
+torn read `R2.5` promises will happen — the index may simply not have landed yet. `ORPHANED_COPY` waits
+`minimumPasses` for that reason, and the applier has no finding-age memory to wait with. So this needs either a
+finding that ages (a new kind covering a stale *entry*, which is not a copy) or the applier gaining access to the
+ages. The first half — planning a `RemoveCopy` for an aged `ORPHANED_COPY` — has the patience already and is the
+cheaper start.
 
 ### Reproducing it
 

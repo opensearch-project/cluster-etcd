@@ -9,6 +9,7 @@ import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.diff.Diff;
 import org.opensearch.supervisor.model.diff.Differ;
 import org.opensearch.supervisor.model.diff.FindingAges;
+import org.opensearch.supervisor.model.diff.Finding;
 import org.opensearch.supervisor.model.diff.FindingKind;
 import org.opensearch.supervisor.model.index.IndexConfig;
 import org.opensearch.supervisor.model.node.Assignment;
@@ -29,6 +30,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -488,5 +491,87 @@ class PlannerTests {
 
         assertEquals(2, scaled.copiesPerShard(), "the setting is unchanged");
         assertEquals(3, scaled.copiesAuthorisedFor(0), "but three copies are authorised for shard 0");
+    }
+
+    // ---------------------------------------- the deadlock a fleet of dead nodes produces (FINDINGS 7)
+
+    /** A node that was told to hold a copy and is no longer reporting anything, not yet given up on. */
+    private static Observation.NodeObservation deadButNotYetLost(NodeId id, Liveness liveness) {
+        Assignment assignment = new Assignment(3, POOL, 7, id, 1L, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
+                UUID, new Assignment.IndexAssignment("my-index", 3041, Map.of(0, ShardRole.PRIMARY))
+            ))
+        ));
+        // No inventory at all: it never reported, or its report has been reaped. This is what a node that died
+        // between being assigned a copy and building it looks like.
+        return new Observation.NodeObservation(
+            id, registration(id), null, null, liveness, POOL, assignment, 7
+        );
+    }
+
+    @Test
+    void theDifferAndThePlannerMustAgreeAboutWhatCountsAsACopy() {
+        // Reported as "failure to assign shards to the one available data node", after starting and stopping data
+        // planes enough to accumulate a graveyard of them.
+        //
+        // The differ counts a copy only if a node *reports* one -- actualCopies requires a non-null inventory --
+        // while nodesWithThisShard() also counts a copy a node has merely been *assigned*. A node that was handed
+        // a primary and then died without reporting it therefore satisfies the planner and not the differ. The
+        // shard is announced as unassigned every pass, and the planner skips it before the allocator ever runs,
+        // so there is not even a refusal to read.
+        //
+        // Dead-but-UNKNOWN is the common case rather than a corner: liveness is measured from when *this*
+        // supervisor process first saw the node, so every restart of the supervisor grants every corpse in the
+        // pool a fresh staleness window during which its copies still count.
+        IndexConfig index = new IndexConfig("my-index", UUID, true, 1, 0, Replication.SEGMENT, false,
+            org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
+
+        for (Liveness liveness : List.of(Liveness.UNKNOWN, Liveness.STALE)) {
+            Observation observation = observe(5,
+                Map.of(ACME, Map.of(UUID, index)),
+                Map.of(
+                    EMPTY_NODE, node(EMPTY_NODE, 900),
+                    FULL_NODE, deadButNotYetLost(FULL_NODE, liveness)
+                )
+            );
+
+            Diff diff = diffAfter(3, observation);
+            assertEquals(1, diff.of(FindingKind.UNASSIGNED_PRIMARY).size(),
+                liveness + ": the differ sees no primary, because nothing reports one");
+
+            Plan plan = Planner.plan(observation, diff, 7, POLICY);
+            assertEquals(1, plan.instructions().size(),
+                liveness + ": and the planner must place it on the live node rather than counting a copy nobody"
+                    + " has reported. instructions=" + plan.instructions() + " refusals=" + plan.refusals());
+            assertEquals(EMPTY_NODE, ((Instruction.PlaceCopy) plan.instructions().get(0)).node());
+        }
+    }
+
+    @Test
+    void arefusalIsAttributedToTheFindingItCameFromAndNotToTheShard() {
+        // The data plane reported a same_shard refusal against an UNASSIGNED_PRIMARY on a node that neither held
+        // nor was assigned that index, and said the stored documents did not support it. They did not: the
+        // refusal was never about the primary. One node, one shard wanting a primary and a search replica -- the
+        // primary is placed, the search replica is then correctly refused because the only node has just been
+        // given the primary, and both findings share a subject, so the refusal was filed where the primary's
+        // finding would read it.
+        IndexConfig withSearchReplica = new IndexConfig("my-index", UUID, true, 1, 0, 1, Replication.SEGMENT,
+            false, org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041, Map.of());
+        Observation observation = observe(5,
+            Map.of(ACME, Map.of(UUID, withSearchReplica)),
+            Map.of(EMPTY_NODE, node(EMPTY_NODE, 900))
+        );
+
+        Diff diff = diffAfter(3, observation);
+        Plan plan = Planner.plan(observation, diff, 7, POLICY);
+
+        assertEquals(1, plan.instructions().size(), "the primary is placeable: " + plan.instructions());
+        Finding primary = diff.of(FindingKind.UNASSIGNED_PRIMARY).get(0);
+        Finding searchReplica = diff.of(FindingKind.UNASSIGNED_SEARCH_REPLICA).get(0);
+
+        assertNull(plan.refusalFor(primary),
+            "the primary was placed, so nothing about it was refused: " + plan.refusals());
+        assertNotNull(plan.refusalFor(searchReplica), "and the search replica was: " + plan.refusals());
+        assertTrue(plan.refusalFor(searchReplica).contains("same_shard"), plan.refusalFor(searchReplica));
     }
 }

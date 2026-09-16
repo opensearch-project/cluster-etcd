@@ -166,5 +166,30 @@ public record Observation(
         public boolean copiesCount() {
             return liveness != Liveness.LOST;
         }
+
+        /**
+         * Whether an assignment written for this node is evidence that a copy exists or is on its way.
+         *
+         * <p><b>A distinct question from {@link #copiesCount()}, and conflating them deadlocked a real pool.</b>
+         * An inventory is the node's own statement about what it has; an assignment is the <em>supervisor's</em>
+         * statement about what it should have. The second is only evidence of a copy if the node is in a position
+         * to be acting on it, and a node that is not reporting at all has told us nothing — it may never have seen
+         * the instruction.
+         *
+         * <p>The bug this closes: {@code Differ} counts a copy only when a node reports one, while the planner also
+         * counted a copy a node had merely been assigned. A node handed a primary that died before reporting it
+         * therefore satisfied the planner and not the differ, so the shard was announced unassigned every pass and
+         * skipped before the allocator ran — no placement, and not even a refusal to read. It showed up as a pool
+         * that would not place a shard on its one live node, after enough data planes had been started and stopped
+         * to leave a graveyard of them.
+         *
+         * <p>Requiring a heartbeat rather than {@code LIVE} on purpose. A node that has heartbeated and gone quiet
+         * keeps its claim through the stale window, which is the tolerance for a GC pause that the whole liveness
+         * ladder exists to provide — placing a second primary while the first may still be running is the one
+         * mistake here that costs more than a pass. What does not survive is a node that never spoke at all.
+         */
+        public boolean actsOnItsAssignment() {
+            return copiesCount() && heartbeat != null;
+        }
     }
 }

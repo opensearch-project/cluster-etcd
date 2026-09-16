@@ -34,6 +34,21 @@ public record Finding(
     }
 
     /** A finding seen for the first time on this pass. */
+    /**
+     * The key a refusal about <em>this</em> finding is filed under.
+     *
+     * <p>Includes the kind, and that is the whole point. Three kinds of unassigned copy share one subject — a
+     * shard — so filing a refusal by subject alone attributes it to every finding about that shard. It produced a
+     * genuinely misleading report: on a one-node pool the primary was placed, the search replica was then
+     * correctly refused because the only node had just been given the primary, and the refusal was rendered
+     * against the primary's finding. Whoever read it went looking for a node that "already holds" an index it had
+     * never been assigned, and the stored documents did not support the claim because the claim was about a
+     * different copy.
+     */
+    public String refusalKey() {
+        return kind.name() + "@" + subject.key();
+    }
+
     public static Finding of(FindingKind kind, Subject subject, long pass, String because) {
         return new Finding(kind, subject, because, pass, 1);
     }

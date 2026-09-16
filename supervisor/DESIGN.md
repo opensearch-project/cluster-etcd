@@ -1171,3 +1171,56 @@ The supervisor writes only the plural form and still reads the singular one, bec
 process that wrote them — a supervisor that has just been upgraded reads its predecessor's documents, and
 reporting every node's assignment as unreadable for one pass during an upgrade is when nobody wants novel
 findings. The tolerance costs one pass and then nothing.
+
+---
+
+## 19. Two ways a shard stops being placed, and neither said so
+
+Both found from a real pool that would not place a shard on its one live data node, after enough data planes had
+been started and stopped to leave a graveyard of them.
+
+### 19.1 The differ and the planner disagreed about what a copy is
+
+`Differ.actualCopies` counts a copy only when a node **reports** one — it requires a non-null inventory.
+`AllocationContext.nodesWithThisShard` also counted a copy a node had merely been **assigned**. Those are
+different questions and the difference is load-bearing:
+
+- an *inventory* is the node's own statement about what it has;
+- an *assignment* is the **supervisor's** statement about what it should have, and is only evidence of a copy if
+  the node is in a position to be acting on it.
+
+A node handed a primary that died before reporting it therefore satisfied the planner and not the differ. The
+result was the worst shape a bug can take here: the shard was announced `UNASSIGNED_PRIMARY` every pass, and the
+planner skipped it **before the allocator ran**, so there was no placement and not even a refusal to read. A
+reproduction is in `PlannerTests`; it produces `instructions=[] refusals={}`, which is exactly what the artifacts
+from the real pool showed — nothing.
+
+`NodeObservation.actsOnItsAssignment()` is now the single answer, and it requires a **heartbeat** rather than
+`LIVE`. That distinction matters in the other direction: a node that has heartbeated and gone quiet keeps its
+claim through the stale window, which is the GC-pause tolerance the whole liveness ladder exists to provide —
+placing a second primary while the first may still be running is the one mistake here that costs more than a pass.
+What does not survive is a node that never spoke at all.
+
+### 19.2 A refusal was filed against the shard, so it was reported against the wrong finding
+
+Three kinds of unassigned copy share one subject — the shard — and `Plan.refusals` was keyed by subject. So on a
+one-node pool where a shard wants a primary and a search replica, the primary is placed, the search replica is
+then correctly refused because the only node has just been given the primary, and **the refusal is rendered
+against the primary's finding**:
+
+```
+UNASSIGNED_PRIMARY :: index [x] shard 0 has no primary on any node in this pool
+  unplaceable: [same_shard] node [N] already holds, is assigned, or is about to be given a copy
+```
+
+Whoever reads that goes looking for a node that "already holds" an index it was never assigned, and the stored
+documents do not support the claim — because the claim is about a different copy. That is precisely the
+observation the data plane's write-up could not explain and attributed to "a third thing happening that these
+artifacts do not show". There was no third thing; the evidence was mislabelled.
+
+`Finding.refusalKey()` includes the kind, and `Plan.refusalFor(finding)` is the only way to read one, so nothing
+has to know how the key is built. When the key was the subject, both sides agreed with each other and were wrong
+together — which is the failure mode a shared helper exists to prevent.
+
+**The general lesson is the same in both halves: two pieces of code answering one question separately will
+eventually answer it differently, and the symptom appears somewhere neither of them is looking.**

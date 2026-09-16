@@ -204,7 +204,7 @@ public final class Planner {
                 // Not a finding of its own -- the diff already says the shard is unassigned -- but the reason
                 // is kept and projected alongside that finding. An earlier version computed this sentence and
                 // dropped it, which threw away the entire benefit of having rules that can explain themselves.
-                refusals.put(finding.subject().key(), outcome.refusal().because());
+                refusals.put(finding.refusalKey(), outcome.refusal().because());
                 continue;
             }
 

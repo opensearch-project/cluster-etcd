@@ -83,6 +83,17 @@ public record Plan(
         return instructions.isEmpty();
     }
 
+    /**
+     * Why this finding could not be acted on, or null if it could be.
+     *
+     * <p>Here rather than at the call site so that only {@link org.opensearch.supervisor.model.diff.Finding}
+     * knows how a refusal is keyed. When the key was the subject, both sides agreed with each other and were
+     * wrong together.
+     */
+    public String refusalFor(org.opensearch.supervisor.model.diff.Finding finding) {
+        return refusals.get(finding.refusalKey());
+    }
+
     /** Instructions grouped by the node whose assignment they change, since that is what gets written. */
     public Map<NodeId, List<Instruction>> byNode() {
         Map<NodeId, List<Instruction>> byNode = new LinkedHashMap<>();
