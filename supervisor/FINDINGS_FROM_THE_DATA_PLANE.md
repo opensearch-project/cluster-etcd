@@ -1,6 +1,6 @@
 # Findings from the data plane
 
-Five changes wanted in this repository, all found by running the real data plane
+Six changes wanted in this repository, all found by running the real data plane
 (`../opensearch-data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
@@ -481,6 +481,65 @@ Implement `readAssignment` from `Assignment.read` plus the resolver, returning w
 than what the parser produced — the point is to catch a resolver that understood a document it parsed fine. The
 `UNKNOWN` check is the one most worth getting right there: a role the plugin does not recognise should leave the
 tenant present and unserved, not silently absent.
+
+---
+
+## 6. Pausing an index's ingestion is desired state with nowhere to live
+
+### What is missing
+
+Pull-based ingestion is configured entirely through index settings — `index.ingestion_source.type`,
+`.param.*`, `.pointer.init.reset` and the rest — so the data plane needed no new contract to support it. Whether a
+stream is **paused** is not a setting. It is a first-class field on `IndexMetadata`:
+
+```java
+IngestionStatus(boolean isPaused)     // defaults to not paused
+```
+
+changed upstream by `MetadataStreamingIngestionStateService` through a cluster-manager action, which a clusterless
+node refuses — correctly, because pausing an index's ingestion is a statement about desired state and belongs to the
+control plane.
+
+The consequence is that **a paused index comes back unpaused.** The data plane fabricates index metadata from
+`tenant/<t>/indices/<name>` on every pass; that document has no field for the pause; so every pass restores the
+default and the stream resumes underneath whoever paused it.
+
+### Why the data plane cannot fix it alone
+
+It could invent a place — a setting the control plane happens to write, or its own key — and that would be two
+services holding different opinions about desired state, which is the one failure this architecture is built to
+avoid. The document that says what an index should be is the control plane's, so the field belongs in it.
+
+### What to do
+
+Add the pause to the index document, and say who may write it. Sketch:
+
+```json
+{ "index": "logs", "uuid": "...", "state": "open",
+  "ingestion": { "paused": true },
+  "settings": { "index.ingestion_source.type": "kafka", ... } }
+```
+
+Points worth deciding rather than assuming:
+
+- **Whose statement is it?** Almost certainly the control plane's, on an operator's request — the same path as
+  closing an index, which this contract already models as `state`. If so, the supervisor needs nothing but to keep
+  passing `config_revision` along, and the data plane reads one more field.
+- **Is it per index or per shard?** Upstream is per index. Per shard would let an operator stop one hot partition,
+  and nothing in the current model needs it.
+- **Does it interact with `state: open`/`closed`?** A closed index holds no copies at all, so paused-and-closed is
+  not a state worth having; paused means "hold the copies, keep serving reads, stop consuming".
+- **What should a data node do with a pause it cannot see yet?** Nothing special: the level-triggered rule already
+  covers it, since the pass after the document changes will fabricate the paused metadata. Worth stating that
+  reversing it is equally ordinary, so nobody adds a latch.
+
+### Tests worth having
+
+- an index document with the pause set produces metadata whose `IngestionStatus.isPaused()` is true, and clearing it
+  resumes — both within one pass of the document changing;
+- the projection reports a paused index as green rather than as unhealthy, since it is serving reads and holding its
+  copies by instruction;
+- pausing is not a shard movement, so it produces no placement work and does not consume the pass's work ceiling.
 
 ---
 
