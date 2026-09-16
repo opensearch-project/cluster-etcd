@@ -272,6 +272,20 @@ public final class AssignmentPoller {
             return new Heartbeat.Applied(desired.assignmentVersion(), AppliedOutcome.APPLIED, null);
         }
 
+        List<String> nothingServing = lastCoordinated.indicesWithNothingServing();
+        if (convergence.isComplete() && notBuilt.isEmpty() && nothingServing.isEmpty() == false) {
+            // Every copy this node was told to hold is serving, nothing was declined, and it still cannot answer a
+            // query for an index it coordinates -- because every copy of it is on a node this node cannot reach or
+            // has not started. APPLYING rather than FAILED: the copies exist somewhere and the projection is
+            // catching up, so this is the fleet converging rather than this node refusing. Reported at all because
+            // the alternative is a coordinator that looks perfectly healthy and answers with nothing.
+            return new Heartbeat.Applied(
+                desired.assignmentVersion(),
+                AppliedOutcome.APPLYING,
+                "coordinating " + nothingServing.size() + " index(es) with no serving copy reachable: " + nothingServing.get(0)
+            );
+        }
+
         String detail = convergence.detail();
         if (notBuilt.isEmpty() == false) {
             // Copies this node declined are not something more time will fix, so they are reported as a failure
@@ -345,6 +359,7 @@ public final class AssignmentPoller {
             lastResolved.coordinatorTenants().stream().map(Object::toString).toList(),
             join(lastResolved.deferred(), lastCoordinated.deferred()),
             lastCoordinated.indices().size(),
+            lastCoordinated.servingCopies(),
             lastFailure,
             lastApplyFailure
         );
@@ -376,6 +391,7 @@ public final class AssignmentPoller {
         List<String> coordinatorTenants,
         List<String> deferred,
         int coordinatedIndices,
+        int coordinatedServingCopies,
         String lastFailure,
         String lastApplyFailure
     ) {}

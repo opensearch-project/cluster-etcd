@@ -135,6 +135,48 @@ public class CoordinatorViewSourceTests extends OpenSearchTestCase {
         assertTrue(view.peers().isEmpty());
     }
 
+    // ---------------------------------------------------------------- what it reports about its own reach
+
+    public void testAServingCopyOnAKeptPeerCounts() {
+        placement("AAAAAAAAAAAAAAAAAAAAAA");
+        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
+
+        CoordinatorView view = read();
+
+        assertEquals(1, view.servingCopies());
+        assertTrue(view.indicesWithNothingServing().toString(), view.indicesWithNothingServing().isEmpty());
+    }
+
+    public void testAnIndexWhoseOnlyCopyIsOnALostNodeHasNothingServing() {
+        // The state that otherwise looks like health: assignment applied, routing table built, nothing declined,
+        // and a search returns nothing. It has to be reportable or it is invisible.
+        placement("AAAAAAAAAAAAAAAAAAAAAA");
+        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "lost");
+
+        CoordinatorView view = read();
+
+        assertEquals(0, view.servingCopies());
+        assertEquals(List.of("acme/my-index"), view.indicesWithNothingServing());
+    }
+
+    public void testAnInitializingCopyIsNotYetSomethingToAnswerFrom() {
+        // It belongs in the routing table -- the state should say what the fleet is doing -- and a query cannot be
+        // answered from it, so the two numbers differ on purpose.
+        store.put(
+            Keys.indexStatus(ACME, UUID),
+            ("{\"index\":\"my-index\",\"index_uuid\":\"" + UUID + "\",\"number_of_shards\":1,\"shards\":{\"0\":["
+                + "{\"node_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"role\":\"PRIMARY\",\"state\":\"INITIALIZING\"}]}}")
+                .getBytes(StandardCharsets.UTF_8)
+        );
+        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
+
+        CoordinatorView view = read();
+
+        assertEquals(1, view.peers().size());
+        assertEquals(0, view.servingCopies());
+        assertEquals(List.of("acme/my-index"), view.indicesWithNothingServing());
+    }
+
     // ---------------------------------------------------------------- fixtures
 
     private CoordinatorView read() {

@@ -387,7 +387,7 @@ Note the asymmetry `LocalShardStore` already documents, one level out — and th
 decided a design here: **when the choice is between failing loudly and starting empty, fail loudly.** What was new
 is that neither available recovery source fails loudly by itself, so the loudness had to be built.
 
-## M8. Coordinators — **built, not yet run**
+## M8. Coordinators — **done, and confirmed by a shard fan-out**
 
 - Route from `tenant/<t>/status/indices/<uuid>`, resolve addresses from `tenant/<t>/status/nodes/<id>`.
 - **Done when:** a search against a coordinator that holds no shards returns results from data nodes.
@@ -431,10 +431,40 @@ different ports are fine, and the case that reaches it is a stale projection: a 
 returns with a new id on the same port, and until the old projection is reaped two ids claim one endpoint. One peer
 that cannot be represented costs that peer's shards rather than every index in the state.
 
-**What is not proven.** No coordinator has run. The fabrication is tested as a pure function, including that a
-second pass reproduces the first exactly, but nothing has yet sent a search through one — and the interesting
-failures left are all on the wire: whether the handshake accepts a peer built from a projection, and whether a
-shard-level search request addressed to another node comes back.
+**Confirmed on two nodes, by a profiled search across two indices.** Each shard request was served by a different
+node — one by the node holding that index's primary, the other by the node holding the other index's search
+replica — with `total: 2, successful: 2, failed: 0`. That is the whole path: projections read, peers built from
+`ephemeral_id`, the transport handshake accepted them, and shard-level requests came back. `_cluster/state` on a
+data node shows both nodes in `nodes`, both copies per index in the routing table, and the repository registered
+from node attributes.
+
+**Two defects it exposed, both found by reading the output rather than by a failure.**
+
+The first was mine: `index.number_of_search_replicas` said `0` beside a routing table containing a started search
+replica, because `DataNodeState` sets that count from the local view and this class had left it alone. So
+`cluster.routing.search_replica.strict` had nothing to act on and searches were spread across primaries and search
+replicas rather than preferring the replicas — which is what search replicas are for. The rule was already written
+down; it just was not applied to the state that actually ships.
+
+The second is worth more than the milestone. **The search-only marker disables the timer that keeps a search
+replica current.** `IndexService.AsyncReplicationTask` calls `maybeSyncSegments` for active search-only shards on
+the refresh interval, and `shouldRun()` is `false == INDEX_BLOCKS_SEARCH_ONLY`. Upstream is right about that — an
+index scaled down to read-only has no writer to follow — and the flag means something else here: "this node cannot
+see the primary". So on a node holding nothing but search replicas, replication fell back to checkpoint publishing
+from the primary, and `ReplicationTracker`'s replication group comes from the *primary's own* routing table, which
+in a clusterless deployment does not contain the replica. Hence the `UnavailableShardsException` in a real run:
+`Not enough active copies to meet shard count of [DEFAULT] (have 0, needed DEFAULT). Timeout: [1m]`.
+
+The two together mean a search-replica-only node was refreshed by nothing after its initial recovery sync, and the
+M7 verification did not catch it because a wiped data directory recovers by syncing from the remote store at engine
+open, which looks identical to replication working.
+
+The marker is now dropped as soon as the routing table has a primary for every shard — which coordinating
+provides. **Which makes coordinating on a search-replica node worth more than routing:** it is what lets that
+node's copies stay fresh without depending on a primary that has never heard of them. A pure data node holding
+search replicas still has the problem, and that is the argument for resolving peers of one's *own* shards
+independently of coordinating whole tenants — the mechanism M9 needs anyway, wanted here for freshness rather than
+correctness.
 
 ## M9. Document replication
 

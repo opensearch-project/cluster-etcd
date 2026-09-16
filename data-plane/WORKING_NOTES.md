@@ -540,6 +540,49 @@ Same environment the supervisor's `WORKING_NOTES.md` describes, and its notes ho
   sandbox cannot answer, so `git commit` hangs rather than failing. Stage the work, write the message to a
   file, and let a human run `git commit -F`.
 
+## Two `./gradlew run` invocations collide on ports
+
+`RunTask.beforeStart()` hardcodes them:
+
+```java
+int httpPort = DEFAULT_HTTP_PORT;        // 9200
+int transportPort = DEFAULT_TRANSPORT_PORT;   // 9300
+...
+firstNode.setHttpPort(String.valueOf(httpPort));
+```
+
+and it *overwrites* whatever the build file set, so a second cluster cannot be moved out of the way from this side.
+Which means `./gradlew runCoordinator` alongside `./gradlew run` claims 9200 and 9300 twice.
+
+**Today's answer is `-Pclusterless.coordinating=true`**, which gives the run cluster's nodes both roles. That is a
+real configuration rather than a dodge — OpenSearch's own default is that every node can coordinate, the tenant
+roles in an assignment are a set precisely so a node can be told it does both, and it exercises the union path
+`CoordinatorState` was written for. A dedicated coordinator is still the right production shape; it is just not
+required to test the routing.
+
+**If RunTask is patched**, the shape that matches its existing overrides (`--data-dir`, `--preserve-data`,
+`--keystore-password`) is two more options:
+
+```java
+@Option(option = "http-port", description = "First HTTP port to assign; nodes take consecutive ports from here")
+@Option(option = "transport-port", description = "First transport port to assign")
+```
+
+One detail in that method is easy to miss and would produce a confusing cluster:
+
+```java
+firstNode.setting("discovery.seed_hosts", LOCALHOST_ADDRESS_PREFIX + DEFAULT_TRANSPORT_PORT);
+```
+
+The seed host is built from the **constant**, not from the port the node was just given, so a port-shifted cluster
+would seed discovery at the wrong address. It does not matter for clusterless nodes — they never discover anything
+— and it would matter for everyone else, so a patch should use the base transport port it was configured with.
+
+A per-node settings prefix (`tests.opensearch_node.…`, alongside the existing `tests.opensearch.` that
+`additionalSettings` applies to every node) is a separate and more general capability. Worth keying on the **node
+name** rather than an index, since testClusters already names nodes `<cluster>-<n>` and an index silently changes
+meaning when `numberOfNodes` does.
+
 ## Reuse the store between runs, deliberately
 
 Every bug in this plugin that reached a running deployment came from **state left over from an earlier run**, and

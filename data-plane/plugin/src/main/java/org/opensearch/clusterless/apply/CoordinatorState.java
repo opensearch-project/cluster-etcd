@@ -131,11 +131,15 @@ public final class CoordinatorState implements NodeState {
         // This node's own copies, verbatim from what the data-node fabrication decided. Rebuilding one of these is
         // the mistake D2.2 is about, so they are copied across untouched.
         boolean heldHere = false;
+        Set<Integer> shards = new java.util.HashSet<>();
+        Set<Integer> shardsWithAPrimary = new java.util.HashSet<>();
+        Map<Integer, Integer> searchOnlyPerShard = new java.util.HashMap<>();
         if (existing != null) {
             for (IndexShardRoutingTable shard : existing) {
                 for (ShardRouting copy : shard) {
                     indexRouting.addShard(copy);
                     heldHere |= localNode.getId().equals(copy.currentNodeId());
+                    count(shards, shardsWithAPrimary, searchOnlyPerShard, copy.id(), copy.primary(), copy.isSearchOnly());
                 }
             }
         }
@@ -155,6 +159,7 @@ public final class CoordinatorState implements NodeState {
                 }
                 indexRouting.addShard(elsewhere);
                 reached.add(copy.node());
+                count(shards, shardsWithAPrimary, searchOnlyPerShard, shard.getKey(), elsewhere.primary(), elsewhere.isSearchOnly());
                 if (copy.role() == ShardRole.SEARCH_REPLICA) {
                     searchReplicas++;
                 } else if (copy.role() == ShardRole.REPLICA) {
@@ -170,6 +175,26 @@ public final class CoordinatorState implements NodeState {
         // copy of, so a settings change would otherwise never reach the routing view.
         if (heldHere == false) {
             metadata.put(metadataFor(routed, index, replicas, searchReplicas, held.metadata().index(index)), false);
+        } else {
+            boolean everyShardHasAPrimary = shards.isEmpty() == false && shardsWithAPrimary.containsAll(shards);
+            int searchOnly = searchOnlyPerShard.values().stream().mapToInt(Integer::intValue).max().orElse(0);
+            // Whether the marker is this node's or the tenant's. The control plane can set
+            // index.blocks.search_only deliberately -- a rolled-over daily index has no writer and its search
+            // replicas should stop polling for updates that are not coming -- and that is the flag's real meaning.
+            // Removing it because a primary is in the routing table would overrule the operator and restart the
+            // polling they asked to stop.
+            boolean markerIsTheTenants = Boolean.parseBoolean(
+                routed.config().settings().getOrDefault(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey(), "false")
+            );
+            metadata.put(
+                describingTheWholeTable(
+                    held.metadata().index(index),
+                    previous.metadata().index(index),
+                    searchOnly,
+                    everyShardHasAPrimary && markerIsTheTenants == false
+                ),
+                false
+            );
         }
         routing.add(indexRouting);
     }
@@ -221,6 +246,98 @@ public final class CoordinatorState implements NodeState {
             new UnassignedInfo(UnassignedInfo.Reason.CLUSTER_RECOVERED, "observed by the supervisor on another node")
         ).initialize(copy.node().value(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
         return copy.state() == ShardState.STARTED ? fresh.moveToStarted() : fresh;
+    }
+
+    /**
+     * The data path's metadata, with the one count that has to describe the table it ships in.
+     *
+     * <p>{@link DataNodeState} sets {@code index.number_of_search_replicas} from what <em>it</em> holds, which is
+     * right for the state it builds and wrong for this one: a moment later this class adds every other node's copies
+     * to the same routing table. Leaving it alone was a real defect rather than a tidiness question, and it was
+     * visible in a running deployment — a node holding a primary and coordinating showed
+     * {@code number_of_search_replicas: 0} beside a routing table containing a started search replica, so
+     * {@code cluster.routing.search_replica.strict} had nothing to act on and searches were spread across primaries
+     * and search replicas instead of preferring the replicas. Which is the thing search replicas exist for.
+     *
+     * <h2>And the marker, which turns out to cost freshness</h2>
+     *
+     * <p>{@link DataNodeState} sets {@code index.blocks.search_only} when this node holds nothing but search
+     * replicas of an index, to satisfy {@code RoutingNodes}' assertion that a shard has a primary. That flag means
+     * something else upstream — an index scaled down to read-only — and the rest of its meaning comes along:
+     * {@code IndexService.AsyncReplicationTask.shouldRun()} is {@code false == INDEX_BLOCKS_SEARCH_ONLY}, and that
+     * task is what calls {@code maybeSyncSegments} for active search-only shards on the refresh interval. So the
+     * marker <b>disables the timer that keeps a search replica current</b>, which upstream is right about (a
+     * scaled-down index has no writer to follow) and is wrong for a copy whose primary is merely on another node.
+     *
+     * <p>The marker exists only because the primary was missing from the table, so once the table has one it is
+     * removed — and the periodic sync resumes. <b>Unless the tenant asked for it</b>: the control plane may set
+     * {@code index.blocks.search_only} deliberately, which is the flag's real meaning — a rolled-over daily index
+     * has no writer, and its search replicas should stop polling for updates that are not coming. Removing that
+     * because a primary happens to be in the table would overrule an operator and restart the polling they asked to
+     * stop, so only a marker this plugin added is taken away. Which makes coordinating on a search-replica node worth more than
+     * routing: it is what lets that node's copies stay fresh without depending on a primary that has never heard
+     * of them.
+     *
+     * <p>Nothing else the data path decided is touched — the remote-store settings, the mappings it canonicalised,
+     * the identity — and this has no business restating any of it.
+     */
+    private static void count(
+        Set<Integer> shards,
+        Set<Integer> shardsWithAPrimary,
+        Map<Integer, Integer> searchOnlyPerShard,
+        int shard,
+        boolean primary,
+        boolean searchOnly
+    ) {
+        shards.add(shard);
+        if (primary) {
+            shardsWithAPrimary.add(shard);
+        }
+        if (searchOnly) {
+            searchOnlyPerShard.merge(shard, 1, Integer::sum);
+        }
+    }
+
+    private static IndexMetadata describingTheWholeTable(
+        IndexMetadata held,
+        IndexMetadata applied,
+        int searchOnlyInTable,
+        boolean everyShardHasAPrimary
+    ) {
+        Settings.Builder settings = Settings.builder().put(held.getSettings());
+        settings.put(IndexMetadata.SETTING_NUMBER_OF_SEARCH_REPLICAS, searchOnlyInTable);
+        if (everyShardHasAPrimary) {
+            settings.remove(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey());
+        }
+        Settings shipped = settings.build();
+
+        if (applied == null) {
+            return IndexMetadata.builder(held).settings(shipped).build();
+        }
+        if (org.opensearch.index.IndexSettings.same(shipped, applied.getSettings())) {
+            // The settings this state ships are the ones already applied, so the version must not move. Bumping it
+            // anyway is fatal rather than untidy: IndexService.updateMetadata asserts that a moved settings version
+            // means the settings differ, and an AssertionError inside the applier takes the node down.
+            //
+            // Reached because the two stages disagree by design and then agree: the data path rebuilds this index's
+            // settings from the assignment each pass, without the search-replica count or the dropped marker that
+            // this class adds -- so it sees a difference from the previous state, bumps for it, and this class then
+            // restores exactly what was applied. The net change is nothing and the version had moved twice.
+            //
+            // Compared with the server's own IndexSettings.same rather than Settings.equals, because that is the
+            // predicate deciding whether it will treat this as an update -- approximating it is how the version and
+            // the settings come to disagree again.
+            return IndexMetadata.builder(held)
+                .settings(shipped)
+                .settingsVersion(applied.getSettingsVersion())
+                .version(applied.getVersion())
+                .build();
+        }
+        return IndexMetadata.builder(held)
+            .settings(shipped)
+            .settingsVersion(applied.getSettingsVersion() + 1)
+            .version(Math.max(held.getVersion(), applied.getVersion() + 1))
+            .build();
     }
 
     /**

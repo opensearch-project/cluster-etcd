@@ -146,6 +146,246 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         assertSame("carried across untouched rather than rebuilt", mine, stillMine);
     }
 
+    public void testTheSearchReplicaCountFollowsThePeersCopyEvenOnANodeHoldingThePrimary() {
+        // Found by reading a real node's cluster state: number_of_search_replicas said 0 beside a routing table
+        // containing a started search replica on another node, so cluster.routing.search_replica.strict had nothing
+        // to act on and searches were spread across primaries and search replicas rather than preferring the
+        // replicas -- which is what search replicas are for. The rule is the one DataNodeState follows: the count
+        // must describe the routing table in the state it ships in, and this state's table is the union.
+        ClusterState held = new DataNodeState(
+            CLUSTER,
+            TestFixtures.localNode(LOCAL),
+            desiredHere(Map.of(0, ShardRole.PRIMARY)),
+            MappingSource.WRAPPED,
+            LocalShardStore.EMPTY
+        ).buildClusterState(ClusterState.EMPTY_STATE);
+        assertEquals("the data path describes only what it holds", 0, held.metadata().index(indexName()).getNumberOfSearchOnlyReplicas());
+
+        ClusterState state = coordinate(
+            held,
+            copies(
+                Map.of(
+                    0,
+                    List.of(copy(LOCAL, ShardRole.PRIMARY, ShardState.STARTED), copy(PEER, ShardRole.SEARCH_REPLICA, ShardState.STARTED))
+                )
+            ),
+            desiredHere(Map.of(0, ShardRole.PRIMARY))
+        );
+
+        assertEquals(1, state.metadata().index(indexName()).getNumberOfSearchOnlyReplicas());
+        assertEquals(
+            "and the settings version moves, because the settings did",
+            held.metadata().index(indexName()).getSettingsVersion() + 1,
+            state.metadata().index(indexName()).getSettingsVersion()
+        );
+        // Everything else the data path decided is untouched.
+        assertEquals(
+            org.opensearch.clusterless.ClusterlessIndexSettings.TENANT.get(held.metadata().index(indexName()).getSettings()),
+            org.opensearch.clusterless.ClusterlessIndexSettings.TENANT.get(state.metadata().index(indexName()).getSettings())
+        );
+    }
+
+    public void testWithNoSearchReplicaElsewhereTheDataPathsMetadataIsUntouched() {
+        ClusterState held = new DataNodeState(
+            CLUSTER,
+            TestFixtures.localNode(LOCAL),
+            desiredHere(Map.of(0, ShardRole.PRIMARY)),
+            MappingSource.WRAPPED,
+            LocalShardStore.EMPTY
+        ).buildClusterState(ClusterState.EMPTY_STATE);
+
+        ClusterState state = coordinate(
+            held,
+            copies(Map.of(0, List.of(copy(LOCAL, ShardRole.PRIMARY, ShardState.STARTED)))),
+            desiredHere(Map.of(0, ShardRole.PRIMARY))
+        );
+
+        assertEquals(
+            "the settings version must not move for a state that says the same thing",
+            held.metadata().index(indexName()).getSettingsVersion(),
+            state.metadata().index(indexName()).getSettingsVersion()
+        );
+    }
+
+    public void testTheSearchOnlyMarkerIsDroppedOnceTheTableHasAPrimary() {
+        // The marker exists only to satisfy RoutingNodes' assertion that a shard has a primary, and it costs more
+        // than it looks: IndexService.AsyncReplicationTask.shouldRun() is `false == INDEX_BLOCKS_SEARCH_ONLY`, and
+        // that task is what syncs active search-only shards from the remote store on the refresh interval. So while
+        // the marker is set, this node's search replica is refreshed by nothing except a checkpoint published by a
+        // primary -- which cannot happen unless that primary's own routing table knows the replica exists.
+        //
+        // Coordinating puts the primary in this node's table, so the marker is no longer needed, so the sync
+        // resumes. That is a better reason to coordinate on a search-replica node than routing is.
+        ClusterState held = new DataNodeState(
+            CLUSTER,
+            TestFixtures.localNode(LOCAL),
+            desiredHere(Map.of(0, ShardRole.SEARCH_REPLICA)),
+            MappingSource.WRAPPED,
+            LocalShardStore.EMPTY
+        ).buildClusterState(ClusterState.EMPTY_STATE);
+        assertTrue(
+            "the data path sets it, because on its own this node's table has no primary",
+            IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.get(held.metadata().index(indexName()).getSettings())
+        );
+
+        ClusterState state = coordinate(
+            held,
+            copies(
+                Map.of(
+                    0,
+                    List.of(copy(LOCAL, ShardRole.SEARCH_REPLICA, ShardState.STARTED), copy(PEER, ShardRole.PRIMARY, ShardState.STARTED))
+                )
+            ),
+            desiredHere(Map.of(0, ShardRole.SEARCH_REPLICA))
+        );
+
+        assertFalse(
+            "with the primary in the table the marker is unnecessary, and keeping it would stop replication",
+            IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.get(state.metadata().index(indexName()).getSettings())
+        );
+        // And the assertion the marker was silencing must still not fire, which is the whole reason it can go.
+        assertNotNull(state.getRoutingNodes().node(LOCAL));
+        assertNotNull(state.getRoutingNodes().node(PEER));
+    }
+
+    public void testABlockTheTenantAskedForIsNotRemoved() {
+        // The flag's real meaning, and the reason it exists upstream: a rolled-over daily index has no writer, so
+        // its search replicas should stop polling for updates that are not coming. Dropping it because a primary is
+        // in the routing table would overrule the operator and restart the polling they asked to stop. Only a marker
+        // this plugin added for its own purposes is taken away.
+        IndexConfig readOnly = new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            Map.of(
+                "index.number_of_shards", "1",
+                "index.number_of_replicas", "0",
+                "index.replication.type", "SEGMENT",
+                "index.blocks.search_only", "true"
+            ),
+            Map.of(),
+            3041
+        );
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        DesiredState desired = new DesiredState(
+            42,
+            Map.of(key, new DesiredState.DesiredIndex(key, readOnly, Map.of(0, ShardRole.SEARCH_REPLICA))),
+            List.of(ACME),
+            List.of()
+        );
+
+        CoordinatorView view = new CoordinatorView(
+            List.of(new CoordinatorView.RoutedIndex(ACME, readOnly, placement(Map.of(0, List.of(
+                copy(LOCAL, ShardRole.SEARCH_REPLICA, ShardState.STARTED),
+                copy(PEER, ShardRole.PRIMARY, ShardState.STARTED)
+            ))))),
+            Map.of(NodeId.of(PEER), peer(PEER)),
+            List.of()
+        );
+
+        ClusterState state = new CoordinatorState(
+            new DataNodeState(CLUSTER, TestFixtures.localNode(LOCAL), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+            TestFixtures.localNode(LOCAL),
+            view,
+            MappingSource.WRAPPED
+        ).buildClusterState(ClusterState.EMPTY_STATE);
+
+        assertTrue(
+            "the tenant asked for this one, and a primary in the table is not a reason to overrule them",
+            IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.get(state.metadata().index(indexName()).getSettings())
+        );
+    }
+
+    public void testTheMarkerStaysWhenNoPrimaryCouldBeFound() {
+        // A coordinator that cannot reach the primary's node is back to a table with no primary for that shard, so
+        // the assertion needs silencing again -- and the copy is stale rather than fresh, which is the honest state.
+        ClusterState held = new DataNodeState(
+            CLUSTER,
+            TestFixtures.localNode(LOCAL),
+            desiredHere(Map.of(0, ShardRole.SEARCH_REPLICA)),
+            MappingSource.WRAPPED,
+            LocalShardStore.EMPTY
+        ).buildClusterState(ClusterState.EMPTY_STATE);
+
+        CoordinatorView noPeers = new CoordinatorView(
+            List.of(new CoordinatorView.RoutedIndex(ACME, config(), placement(Map.of(0, List.of(copy(PEER, ShardRole.PRIMARY, ShardState.STARTED)))))),
+            Map.of(),
+            List.of()
+        );
+        ClusterState state = new CoordinatorState(
+            new DataNodeState(
+                CLUSTER,
+                TestFixtures.localNode(LOCAL),
+                desiredHere(Map.of(0, ShardRole.SEARCH_REPLICA)),
+                MappingSource.WRAPPED,
+                LocalShardStore.EMPTY
+            ),
+            TestFixtures.localNode(LOCAL),
+            noPeers,
+            MappingSource.WRAPPED
+        ).buildClusterState(held);
+
+        assertTrue(
+            IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.get(state.metadata().index(indexName()).getSettings())
+        );
+        assertNotNull("and the assertion must not fire", state.getRoutingNodes().node(LOCAL));
+    }
+
+    public void testASecondPassShipsTheSameSettingsAndDoesNotMoveTheVersion() {
+        // The test that was missing, and its absence took a node down. IndexService.updateMetadata asserts that a
+        // moved settings version means the settings actually differ, and an AssertionError inside the applier is
+        // fatal -- so a version bumped for a change that nets to nothing kills the process.
+        //
+        // Netting to nothing is what the two stages do together: the data path rebuilds this index's settings from
+        // the assignment every pass, without the search-replica count or the dropped marker this class adds, so it
+        // sees a difference from the previous state and bumps for it; then this class restores exactly what was
+        // applied. Every bug of this shape in this repository has been about the *second* call.
+        CoordinatorView view = copies(
+            Map.of(
+                0,
+                List.of(copy(LOCAL, ShardRole.SEARCH_REPLICA, ShardState.STARTED), copy(PEER, ShardRole.PRIMARY, ShardState.STARTED))
+            )
+        );
+        DesiredState desired = desiredHere(Map.of(0, ShardRole.SEARCH_REPLICA));
+
+        ClusterState first = coordinate(ClusterState.EMPTY_STATE, view, desired);
+        ClusterState second = coordinate(first, view, desired);
+
+        IndexMetadata before = first.metadata().index(indexName());
+        IndexMetadata after = second.metadata().index(indexName());
+        assertTrue(
+            "the settings must be the ones already applied, by the server's own comparison",
+            org.opensearch.index.IndexSettings.same(before.getSettings(), after.getSettings())
+        );
+        assertEquals("so the settings version must not move", before.getSettingsVersion(), after.getSettingsVersion());
+        assertEquals("nor the metadata version", before.getVersion(), after.getVersion());
+        assertTrue("and the whole state must be a fixed point", StateEquivalence.sameContent(first, second));
+    }
+
+    public void testTheSearchReplicaCountDoesNotGrowEachPass() {
+        // It did, because the count was derived by adding the peers' copies to whatever the metadata already said --
+        // and after one pass the metadata already included them. Deriving it from the routing table instead makes it
+        // idempotent, which is the property that matters: the same table must always produce the same number.
+        CoordinatorView view = copies(
+            Map.of(
+                0,
+                List.of(copy(LOCAL, ShardRole.PRIMARY, ShardState.STARTED), copy(PEER, ShardRole.SEARCH_REPLICA, ShardState.STARTED))
+            )
+        );
+        DesiredState desired = desiredHere(Map.of(0, ShardRole.PRIMARY));
+
+        ClusterState state = coordinate(ClusterState.EMPTY_STATE, view, desired);
+        for (int pass = 0; pass < 5; pass++) {
+            state = coordinate(state, view, desired);
+            assertEquals(
+                "one search replica in the table means one in the metadata, on every pass",
+                1,
+                state.metadata().index(indexName()).getNumberOfSearchOnlyReplicas()
+            );
+        }
+    }
+
     public void testTheMetadataOfAnIndexThisNodeHoldsIsNotReplaced() {
         // The data path decided its settings -- including the local search-replica count and anything the remote
         // store contributed -- and a coordinator has no business overwriting that.

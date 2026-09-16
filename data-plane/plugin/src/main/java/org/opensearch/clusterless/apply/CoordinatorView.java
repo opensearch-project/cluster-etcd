@@ -50,6 +50,48 @@ public record CoordinatorView(List<RoutedIndex> indices, Map<NodeId, NodeStatus>
     }
 
     /**
+     * Copies this node could actually answer a query from: serving, on a peer it kept.
+     *
+     * <p>Deliberately stricter than what reaches the routing table, which also carries {@code INITIALIZING} copies
+     * because the state should say what the fleet is doing. A query cannot be answered from one of those, so the
+     * number worth reporting is this one.
+     */
+    public int servingCopies() {
+        int serving = 0;
+        for (RoutedIndex index : indices) {
+            serving += servingCopiesOf(index);
+        }
+        return serving;
+    }
+
+    /**
+     * Indices this node coordinates and can answer nothing for.
+     *
+     * <p>The state that otherwise looks like health: the assignment was applied, the routing table was built, no
+     * copy was declined, and a search returns an empty result because every copy is somewhere this node cannot
+     * reach or has not started. Worth a line on the heartbeat rather than only in a local endpoint.
+     */
+    public List<String> indicesWithNothingServing() {
+        List<String> nothing = new java.util.ArrayList<>();
+        for (RoutedIndex index : indices) {
+            if (servingCopiesOf(index) == 0) {
+                nothing.add(index.tenant() + "/" + index.config().name());
+            }
+        }
+        return List.copyOf(nothing);
+    }
+
+    private int servingCopiesOf(RoutedIndex index) {
+        int serving = 0;
+        for (org.opensearch.clusterless.contract.IndexStatus.Copy copy : index.placement().allCopies()) {
+            if (peers.containsKey(copy.node()) && copy.state() == org.opensearch.clusterless.contract.ShardState.STARTED) {
+                serving++;
+            }
+        }
+        return serving;
+    }
+
+    /**
      * One index this node routes for.
      *
      * @param config the control plane's document, for the settings and mappings the cluster state needs

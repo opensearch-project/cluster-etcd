@@ -92,6 +92,11 @@ public class RestClusterlessStatusAction extends BaseRestHandler {
         builder.field("copies", status.copies());
         if (status.coordinatorTenants().isEmpty() == false) {
             builder.field("coordinating_for", status.coordinatorTenants());
+            // The two numbers a coordinator is judged by. Indices it routes for, and copies it could actually
+            // answer from -- which is the one that matters, because zero of those with everything else healthy is a
+            // node that returns empty results and looks fine doing it.
+            builder.field("coordinated_indices", status.coordinatedIndices());
+            builder.field("coordinated_serving_copies", status.coordinatedServingCopies());
         }
         builder.field("deferred", status.deferred());
         if (status.lastFailure() != null) {

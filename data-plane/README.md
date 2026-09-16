@@ -96,8 +96,18 @@ that is the next milestone.
 ./gradlew run -Pclusterless.nodes=2        # two of them, sharing one store
 ./gradlew run -Pclusterless.remote_store=false   # no remote store, so search replicas are declined
 ./gradlew run -Pclusterless.segments_only=true   # segments in the repository, translog on local disk
-./gradlew runCoordinator                   # a node that holds no shards and routes to the ones that do
+./gradlew run -Pclusterless.coordinating=true    # every node also coordinates, which is how to test routing today
+./gradlew runCoordinator                   # a dedicated coordinator -- see the caveat below
 ```
+
+**To exercise coordinator routing on one machine, use `-Pclusterless.coordinating=true`.** Each node then holds
+copies *and* routes to every other node's, so a search against any of them returns the whole index. That is a real
+configuration rather than a workaround — OpenSearch's own default is that every node can coordinate, and an
+assignment's tenant roles are a set precisely so a node can be told it does both.
+
+`runCoordinator` is the dedicated-coordinator shape, which is where coordinators belong in production. It cannot
+currently run *alongside* `./gradlew run`: `RunTask.beforeStart()` hardcodes 9200 and 9300 and overwrites whatever
+the build file sets, so two invocations collide. `WORKING_NOTES.md` has the patch that would fix it.
 
 `runCoordinator` is a **separate cluster**, not an extra node, and that is the natural shape rather than a
 workaround: clusterless nodes never discover each other, the transport does not compare cluster names, and
