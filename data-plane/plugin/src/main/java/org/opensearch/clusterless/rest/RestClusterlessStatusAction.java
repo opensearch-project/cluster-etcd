@@ -92,11 +92,16 @@ public class RestClusterlessStatusAction extends BaseRestHandler {
         builder.field("copies", status.copies());
         if (status.coordinatorTenants().isEmpty() == false) {
             builder.field("coordinating_for", status.coordinatorTenants());
-            // The two numbers a coordinator is judged by. Indices it routes for, and copies it could actually
-            // answer from -- which is the one that matters, because zero of those with everything else healthy is a
-            // node that returns empty results and looks fine doing it.
-            builder.field("coordinated_indices", status.coordinatedIndices());
-            builder.field("coordinated_serving_copies", status.coordinatedServingCopies());
+        }
+        if (status.coordinatedIndices() > 0) {
+            // Indices whose other copies this node knows about, for either reason -- coordinating a tenant, or
+            // holding a copy and needing the peers of its own shards. `serving_copies` is the number that matters:
+            // zero of those with everything else healthy is a node that answers with nothing and looks fine doing
+            // it, and for a node holding a copy it means a primary with nobody to publish checkpoints to.
+            builder.startObject("peers");
+            builder.field("indices", status.coordinatedIndices());
+            builder.field("serving_copies", status.coordinatedServingCopies());
+            builder.endObject();
         }
         builder.field("deferred", status.deferred());
         if (status.lastFailure() != null) {

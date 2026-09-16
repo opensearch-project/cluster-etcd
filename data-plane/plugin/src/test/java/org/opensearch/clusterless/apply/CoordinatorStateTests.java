@@ -276,7 +276,7 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         );
 
         CoordinatorView view = new CoordinatorView(
-            List.of(new CoordinatorView.RoutedIndex(ACME, readOnly, placement(Map.of(0, List.of(
+            List.of(CoordinatorView.RoutedIndex.wholeIndex(ACME, readOnly, placement(Map.of(0, List.of(
                 copy(LOCAL, ShardRole.SEARCH_REPLICA, ShardState.STARTED),
                 copy(PEER, ShardRole.PRIMARY, ShardState.STARTED)
             ))))),
@@ -309,7 +309,7 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         ).buildClusterState(ClusterState.EMPTY_STATE);
 
         CoordinatorView noPeers = new CoordinatorView(
-            List.of(new CoordinatorView.RoutedIndex(ACME, config(), placement(Map.of(0, List.of(copy(PEER, ShardRole.PRIMARY, ShardState.STARTED)))))),
+            List.of(CoordinatorView.RoutedIndex.wholeIndex(ACME, config(), placement(Map.of(0, List.of(copy(PEER, ShardRole.PRIMARY, ShardState.STARTED)))))),
             Map.of(),
             List.of()
         );
@@ -445,7 +445,7 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         // There is no address to reach it with, and inventing one would produce a shard the coordinator believes
         // in and cannot use.
         CoordinatorView view = new CoordinatorView(
-            List.of(new CoordinatorView.RoutedIndex(ACME, config(), placement(Map.of(0, List.of(copy(PEER, ShardRole.PRIMARY, ShardState.STARTED)))))),
+            List.of(CoordinatorView.RoutedIndex.wholeIndex(ACME, config(), placement(Map.of(0, List.of(copy(PEER, ShardRole.PRIMARY, ShardState.STARTED)))))),
             Map.of(),
             List.of()
         );
@@ -547,7 +547,7 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
         shards.values().forEach(copies -> copies.forEach(copy -> peers.put(copy.node(), peer(copy.node().value()))));
         return new CoordinatorView(
-            List.of(new CoordinatorView.RoutedIndex(ACME, config(), placement(shards))),
+            List.of(CoordinatorView.RoutedIndex.wholeIndex(ACME, config(), placement(shards))),
             peers,
             List.of()
         );

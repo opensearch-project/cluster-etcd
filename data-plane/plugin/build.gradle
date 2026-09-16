@@ -93,6 +93,26 @@ def clusterlessSegmentsOnly = providers.gradleProperty('clusterless.segments_onl
 // change to how the existing run behaves.
 def clusterlessCoordinating = providers.gradleProperty('clusterless.coordinating').getOrElse('false') == 'true'
 
+// The file ingestion source, for exercising pull-based ingestion without Kafka.
+//
+// Kafka is the production source; `ingestion-fs` reads an ndjson file per shard and uses the line number as the
+// offset, which is everything a test needs and nothing more. It is an OpenSearch plugin rather than part of the
+// server, so the node has to have it installed -- without it a shard fails with "No factory found for ingestion
+// source type [FILE]", which is at least a clear failure.
+//
+// Built in the OpenSearch checkout rather than here:
+//
+//   cd ../OpenSearch && ./gradlew :plugins:ingestion-fs:bundlePlugin
+//   cd - && ./gradlew run -Pclusterless.ingestion=true
+//
+// Installed only when the zip is there, and the task says so if it is not: a missing plugin should not be a
+// mysterious Gradle failure in a build that otherwise works.
+def clusterlessIngestion = providers.gradleProperty('clusterless.ingestion').getOrElse('false') == 'true'
+def ingestionFsDistributions = providers.gradleProperty('clusterless.ingestion.plugin')
+    .getOrElse("${rootDir}/../OpenSearch/plugins/ingestion-fs/build/distributions")
+def ingestionFsZip = file(ingestionFsDistributions).listFiles()?.find { it.name.endsWith('.zip') }
+def clusterlessIngestionDir = layout.buildDirectory.dir('clusterless-ingestion').get().asFile
+
 def runCluster = testClusters.maybeCreate('runTask')
 if (clusterlessNodes != 1) {
   runCluster.numberOfNodes = clusterlessNodes
@@ -112,6 +132,13 @@ testClusters.all {
     setting 'clusterless.heartbeat.interval', '2s'
     setting 'clusterless.poll.interval', '1s'
 
+    if (clusterlessIngestion && ingestionFsZip != null) {
+        // Only the plugin. The directory the source reads from is named per index, in
+        // index.ingestion_source.param.base_directory, so there is nothing node-wide to configure -- and nothing
+        // that would collide with the remote store's path.repo.
+        plugin(ingestionFsZip)
+    }
+
     if (clusterlessRemoteStore) {
         // An `fs` repository has to live under path.repo or FsRepository refuses the location.
         setting 'path.repo', "${clusterlessRemoteStoreDir}"
@@ -128,6 +155,17 @@ testClusters.all {
         }
         setting 'node.attr.remote_store.repository.segments.type', 'fs'
         setting 'node.attr.remote_store.repository.segments.settings.location', "${clusterlessRemoteStoreDir}"
+
+        // One WARN per second per search replica, from BlobContainer's default listBlobsByPrefixInSortedOrder:
+        // "loading all blobs with prefix into memory for sorting". FsBlobContainer does not override it, so the
+        // nudge to implement something better fires on every listing -- and a search replica lists once per refresh
+        // interval, which is exactly what we want it doing. A real blob store is the answer in production and this
+        // is not production.
+        //
+        // Quieted here rather than lived with, because a line per second is how real signals get missed -- the
+        // mistake this repository has made five times with its own logging. If you are ever wondering whether a
+        // search replica is really polling, remove this line and watch: the noise is the evidence.
+        setting 'logger.org.opensearch.common.blobstore.fs.FsBlobContainer', 'ERROR'
     }
 }
 
@@ -171,6 +209,15 @@ tasks.named('run') {
         logger.lifecycle("clusterless: store at ${clusterlessStore}")
         logger.lifecycle("clusterless: apply=${clusterlessApply}, nodes=${clusterlessNodes}"
             + (clusterlessCoordinating ? ", every node also coordinates" : ""))
+        if (clusterlessIngestion) {
+            clusterlessIngestionDir.mkdirs()
+            if (ingestionFsZip == null) {
+                logger.lifecycle("clusterless: -Pclusterless.ingestion asked for the file ingestion source and no zip"
+                    + " was found. Build it with: cd ../OpenSearch && ./gradlew :plugins:ingestion-fs:bundlePlugin")
+            } else {
+                logger.lifecycle("clusterless: file ingestion source installed, reading from ${clusterlessIngestionDir}")
+            }
+        }
         if (clusterlessRemoteStore) {
             clusterlessRemoteStoreDir.mkdirs()
             logger.lifecycle("clusterless: remote store at ${clusterlessRemoteStoreDir} (shared by every node)"

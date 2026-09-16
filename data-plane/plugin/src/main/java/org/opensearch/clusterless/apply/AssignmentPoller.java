@@ -205,10 +205,11 @@ public final class AssignmentPoller {
             desired = recovery.desired();
             lastResolved = desired;
 
-            // The other half of a pass for a node with the coordinator role: where its tenants' shards are, on
-            // whichever nodes hold them. Read here for the same reason as everything above -- the fabrication is a
-            // pure function and this is several reads of the store.
-            CoordinatorView coordinated = coordinatedShards.read(desired.coordinatorTenants());
+            // Where other nodes' copies are: every shard of a coordinated tenant's indices, and the peers of this
+            // node's own shards. Read here for the same reason as everything above -- the fabrication is a pure
+            // function and this is several reads of the store -- and read once for both, since it is one scan per
+            // tenant either way.
+            CoordinatorView coordinated = coordinatedShards.read(desired);
             lastCoordinated = coordinated;
             // Fabricated against the live state to decide whether anything needs doing, and fabricated again
             // inside the applier against whatever the server hands over. The two can differ -- a shard may have

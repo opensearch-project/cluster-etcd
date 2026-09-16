@@ -10,6 +10,7 @@ import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.routing.IndexShardRoutingTable;
 import org.opensearch.cluster.routing.RecoverySource;
 import org.opensearch.cluster.routing.ShardRouting;
+import org.opensearch.clusterless.contract.IndexConfig;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
@@ -136,7 +137,19 @@ public final class RemoteRecovery {
                 }
                 if (alreadyHere(live, shardId) || localData.hasShardData(shardId)) {
                     // Serving already, or there are bytes to resume from. Either way the fabricator's own answer
-                    // is right and better informed than this one.
+                    // is right and better informed than this one -- and for a pull-based index the local commit is
+                    // also where the ingestion pointer is, so resuming from it resumes from exactly where it left.
+                    return;
+                }
+                if (pullsFromAnIngestionSource(index.config())) {
+                    // Nothing to look up, and nothing to decline. An ingestion source is a durable log that this
+                    // shard's position within is recorded in its own Lucene commit (StreamPoller.BATCH_START), so a
+                    // shard with no commit has a well-defined thing to do: start empty and let the poller replay
+                    // from index.ingestion_source.pointer.init.reset. Which is *why* such an index needs no
+                    // translog, local or remote -- IngestionEngine uses a NoOpTranslogManager -- and therefore why
+                    // remote-store recovery has nothing to offer it: that path restores a translog that does not
+                    // exist.
+                    replaying(shardId, index, sources);
                     return;
                 }
                 decide(shardId, index, sources, declined, buildable, shardNumber);
@@ -156,6 +169,43 @@ public final class RemoteRecovery {
             new DesiredState(desired.assignmentVersion(), kept, desired.coordinatorTenants(), deferred),
             sources
         );
+    }
+
+    /**
+     * Whether this index is fed by an ingestion source rather than by writes to a primary.
+     *
+     * <p>Read from the index document's settings, like the replication type and for the same reason: it has to be a
+     * property of the index that every node agrees on, and a node-local default is the one thing that could let two
+     * nodes disagree.
+     */
+    static boolean pullsFromAnIngestionSource(IndexConfig config) {
+        String type = config.settings().get(org.opensearch.cluster.metadata.IndexMetadata.SETTING_INGESTION_SOURCE_TYPE);
+        return type != null
+            && type.isBlank() == false
+            && org.opensearch.cluster.metadata.IndexMetadata.NONE_INGESTION_SOURCE_TYPE.equalsIgnoreCase(type.trim()) == false;
+    }
+
+    /**
+     * Starts the copy empty and says what the poller will do with it, which is the part worth reading in a log.
+     *
+     * <p>Both outcomes are the tenant's declared policy rather than a failure, and they are very different: from
+     * {@code earliest} the shard replays the whole stream and ends up correct at the cost of doing all that work
+     * again, while from {@code latest} it starts at the head and whatever arrived while the shard was gone is not
+     * indexed by this copy. Neither is this node's decision to make, and both deserve to be visible when somebody
+     * is working out why a shard is either busy or short of documents.
+     */
+    private void replaying(ShardId shardId, DesiredState.DesiredIndex index, Map<ShardId, RecoverySource> sources) {
+        String reset = index.config()
+            .settings()
+            .getOrDefault(org.opensearch.cluster.metadata.IndexMetadata.SETTING_INGESTION_SOURCE_POINTER_INIT_RESET, "");
+        logger.info(
+            "clusterless: {} is fed by an ingestion source and has no local commit to resume from, so it starts empty "
+                + "and the poller replays from [{}] -- no remote-store recovery is involved, because an ingestion "
+                + "engine keeps no translog to restore",
+            shardId,
+            reset.isBlank() ? "the source's default reset point" : reset
+        );
+        sources.put(shardId, RecoverySource.EmptyStoreRecoverySource.INSTANCE);
     }
 
     private void decide(

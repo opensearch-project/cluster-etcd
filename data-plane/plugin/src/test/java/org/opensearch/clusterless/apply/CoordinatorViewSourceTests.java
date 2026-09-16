@@ -6,13 +6,16 @@ package org.opensearch.clusterless.apply;
 
 import org.opensearch.clusterless.contract.Keys;
 import org.opensearch.clusterless.contract.NodeId;
+import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.clusterless.contract.TenantId;
 import org.opensearch.controlplane.store.InMemoryKeyValueStore;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Which peers a coordinator will route to, and which it refuses.
@@ -128,11 +131,118 @@ public class CoordinatorViewSourceTests extends OpenSearchTestCase {
         assertTrue(view.deferred().get(0), view.deferred().get(0).contains("no node projection"));
     }
 
-    public void testANodeThatCoordinatesNothingReadsNothing() {
-        CoordinatorView view = new CoordinatorViewSource.FromStore(store, configs).read(List.of());
+    public void testANodeWithNothingToRouteAndNothingToHoldReadsNothing() {
+        CoordinatorView view = new CoordinatorViewSource.FromStore(store, configs).read(DesiredState.nothing());
 
         assertTrue(view.isEmpty());
         assertTrue(view.peers().isEmpty());
+    }
+
+    // ---------------------------------------------------------------- peer resolution, for a node that routes nothing
+
+    public void testANodeHoldingACopyGetsThePeersOfItsOwnShard() {
+        // No coordinator role anywhere in this test. The node holds shard 0 and needs the other copy of it, because
+        // a primary publishes segment-replication checkpoints to the replicas in its own routing table and a search
+        // replica whose primary is missing has to set the marker that disables its own polling.
+        placement("AAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBB");
+        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
+        peer("BBBBBBBBBBBBBBBBBBBBBB", "eph-b", 9302, "live");
+
+        CoordinatorView view = readHolding(Map.of(0, ShardRole.PRIMARY));
+
+        assertEquals(1, view.indices().size());
+        assertEquals(Set.of(0), view.indices().get(0).shards());
+        assertEquals("both copies' nodes are wanted", 2, view.peers().size());
+    }
+
+    public void testItTakesOnlyTheShardsThisNodeHolds() {
+        // The difference from coordinating, and the reason peer resolution is the cheaper mechanism: a node holding
+        // one shard of a large index has no business knowing where the other shards are.
+        store.put(
+            Keys.indexStatus(ACME, UUID),
+            ("{\"index\":\"my-index\",\"index_uuid\":\"" + UUID + "\",\"number_of_shards\":2,\"shards\":{"
+                + "\"0\":[{\"node_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"}],"
+                + "\"1\":[{\"node_id\":\"BBBBBBBBBBBBBBBBBBBBBB\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"}]}}")
+                .getBytes(StandardCharsets.UTF_8)
+        );
+        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
+        peer("BBBBBBBBBBBBBBBBBBBBBB", "eph-b", 9302, "live");
+
+        CoordinatorView view = readHolding(Map.of(0, ShardRole.PRIMARY));
+
+        assertEquals(Set.of(0), view.indices().get(0).shards());
+        assertEquals("only shard 0's node, not shard 1's", 1, view.peers().size());
+        assertTrue(view.peers().containsKey(NodeId.of("AAAAAAAAAAAAAAAAAAAAAA")));
+    }
+
+    public void testAnIndexThisNodeNeitherHoldsNorCoordinatesIsIgnored() {
+        // The property that keeps a data node's state small, and the reason the contract put this table in a
+        // projection rather than in every node's assignment.
+        store.put(
+            Keys.indexStatus(ACME, "someOtherIndex12345678"),
+            ("{\"index\":\"not-mine\",\"index_uuid\":\"someOtherIndex12345678\",\"number_of_shards\":1,\"shards\":{"
+                + "\"0\":[{\"node_id\":\"BBBBBBBBBBBBBBBBBBBBBB\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"}]}}")
+                .getBytes(StandardCharsets.UTF_8)
+        );
+        placement("AAAAAAAAAAAAAAAAAAAAAA");
+        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
+        peer("BBBBBBBBBBBBBBBBBBBBBB", "eph-b", 9302, "live");
+
+        CoordinatorView view = readHolding(Map.of(0, ShardRole.PRIMARY));
+
+        assertEquals(1, view.indices().size());
+        assertEquals(UUID, view.indices().get(0).uuid());
+        assertEquals("and the other index's node is not wanted", 1, view.peers().size());
+    }
+
+    public void testHoldingAnIndexNeedsNoIndexDocumentRead() {
+        // Its configuration was already read to build the copies, so the desired state has it. A reader that went
+        // back to the store would be paying twice and could see a different revision than the copies were built
+        // against.
+        CoordinatorViewSource source = new CoordinatorViewSource.FromStore(store, (tenant, name) -> {
+            throw new AssertionError("the index document must not be read for an index this node already holds");
+        });
+        placement("AAAAAAAAAAAAAAAAAAAAAA");
+        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
+
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        CoordinatorView view = source.read(
+            new DesiredState(
+                42,
+                Map.of(key, new DesiredState.DesiredIndex(key, TestFixtures.segmentReplicatedIndexConfig(UUID), Map.of(0, ShardRole.PRIMARY))),
+                List.of(),
+                List.of()
+            )
+        );
+
+        assertEquals(1, view.indices().size());
+    }
+
+    public void testCoordinatingAndHoldingTheSameTenantIsOneScanAndTheWholeIndex() {
+        // A node that does both takes every shard, because coordinating subsumes peer resolution -- and it should
+        // not read the tenant's projections twice to work that out.
+        store.put(
+            Keys.indexStatus(ACME, UUID),
+            ("{\"index\":\"my-index\",\"index_uuid\":\"" + UUID + "\",\"number_of_shards\":2,\"shards\":{"
+                + "\"0\":[{\"node_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"}],"
+                + "\"1\":[{\"node_id\":\"BBBBBBBBBBBBBBBBBBBBBB\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"}]}}")
+                .getBytes(StandardCharsets.UTF_8)
+        );
+        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
+        peer("BBBBBBBBBBBBBBBBBBBBBB", "eph-b", 9302, "live");
+
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        CoordinatorView view = new CoordinatorViewSource.FromStore(store, configs).read(
+            new DesiredState(
+                42,
+                Map.of(key, new DesiredState.DesiredIndex(key, TestFixtures.segmentReplicatedIndexConfig(UUID), Map.of(0, ShardRole.PRIMARY))),
+                List.of(ACME),
+                List.of()
+            )
+        );
+
+        assertEquals(1, view.indices().size());
+        assertEquals("coordinating takes both shards, not just the held one", Set.of(0, 1), view.indices().get(0).shards());
     }
 
     // ---------------------------------------------------------------- what it reports about its own reach
@@ -179,8 +289,28 @@ public class CoordinatorViewSourceTests extends OpenSearchTestCase {
 
     // ---------------------------------------------------------------- fixtures
 
+    /** A node coordinating the tenant, which takes every shard of every one of its indices. */
     private CoordinatorView read() {
-        return new CoordinatorViewSource.FromStore(store, configs).read(List.of(ACME));
+        return new CoordinatorViewSource.FromStore(store, configs)
+            .read(new DesiredState(42, Map.of(), List.of(ACME), List.of()));
+    }
+
+    /**
+     * A node holding one copy and coordinating nothing, which takes the peers of its own shards and no more.
+     *
+     * <p>The case peer resolution exists for: this node answers no queries and still needs the other copies of its
+     * shard, because a primary publishes checkpoints to the replicas in its own routing table and a search replica
+     * without its primary has to set the marker that stops its own polling.
+     */
+    private CoordinatorView readHolding(Map<Integer, ShardRole> shards) {
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        DesiredState desired = new DesiredState(
+            42,
+            Map.of(key, new DesiredState.DesiredIndex(key, TestFixtures.segmentReplicatedIndexConfig(UUID), shards)),
+            List.of(),
+            List.of()
+        );
+        return new CoordinatorViewSource.FromStore(store, configs).read(desired);
     }
 
     private void placement(String... nodeIds) {

@@ -207,3 +207,14 @@ negotiable**: 200 nodes writing everything at heartbeat rate is the store's domi
 6. **Ingestion.** Pull-based ingestion is the preferred replication story and it changes what a "primary"
    means — multiple copies can pull from one source concurrently. Does the first version support it, or docrep
    push only, or segrep-from-remote-store only? This choice constrains D8.2 more than anything else here.
+7. **Does a coordinator need index mappings?** It has to carry an index's metadata to route to it — a shard count
+   and the identity settings — and nothing on its search path reads the mappings: `QueryRewriteContext` has no
+   `MapperService`, field resolution happens on the shard through `QueryShardContext`, and `_field_caps` is a
+   shard-level action. So the mappings in a coordinator-only index's fabricated metadata are carried and never
+   consulted, which for a coordinator that knows thousands of indices is worth something — bounded by what
+   `MappingMetadata` actually holds, a `CompressedXContent` rather than a parsed field tree.
+
+   What it costs is consistency of an API: `GET <index>/_mapping` is a `ClusterManagerNodeReadRequest`, answered
+   from local state, so the same call would return the mapping from a node holding a copy and nothing from a
+   coordinator. Worth deciding deliberately rather than taking as a one-line saving; `MILESTONES.md` M8.1 has the
+   analysis and the one place the code would change.

@@ -105,6 +105,53 @@ public class RemoteRecoveryTests extends OpenSearchTestCase {
         assertEquals(1, plan.desired().copyCount());
     }
 
+    // ---------------------------------------------------------------- a pull-based index answers for itself
+
+    public void testAPullBasedIndexStartsEmptyAndIsNeverProbed() {
+        // An ingestion source is a durable log, and this shard's position in it lives in its own Lucene commit
+        // (StreamPoller.BATCH_START). So a shard with no commit has a well-defined thing to do -- replay from
+        // pointer.init.reset -- and nothing the repository could say would change it. Which is also why IngestionEngine
+        // keeps a NoOpTranslogManager: there is no translog to restore, local or remote, so remote-store recovery has
+        // nothing to offer such an index.
+        RemoteRecovery recovery = new RemoteRecovery(withTranslog(), LocalShardStore.EMPTY, failIfAsked(), LOCAL);
+
+        RemoteRecovery.Plan plan = recovery.planFor(desiredWith(pullBased("earliest"), Map.of(0, ShardRole.PRIMARY)), ClusterState.EMPTY_STATE);
+
+        assertEquals(RecoverySource.Type.EMPTY_STORE, plan.sources().get(shard(0)).getType());
+        assertEquals("the copy is built, not declined", 1, plan.desired().copyCount());
+        assertTrue(plan.desired().deferred().toString(), plan.desired().deferred().isEmpty());
+    }
+
+    public void testAPullBasedIndexIsNotDeclinedForHavingNoRemoteTranslog() {
+        // The case M7.1 declined, and the one segments_only mode exists for. Declining was right while the only way
+        // to get a shard's data back was a translog; an ingestion source makes the data replayable, so refusing to
+        // start the copy would leave a shard unbuilt for no benefit.
+        RemoteRecovery recovery = new RemoteRecovery(segmentsOnly(), LocalShardStore.EMPTY, failIfAsked(), LOCAL);
+
+        RemoteRecovery.Plan plan = recovery.planFor(desiredWith(pullBased("earliest"), Map.of(0, ShardRole.PRIMARY)), ClusterState.EMPTY_STATE);
+
+        assertEquals(1, plan.desired().copyCount());
+        assertEquals(RecoverySource.Type.EMPTY_STORE, plan.sources().get(shard(0)).getType());
+    }
+
+    public void testLocalDataStillWinsForAPullBasedIndex() {
+        // The commit is where the ingestion pointer is, so resuming from local bytes resumes from exactly where this
+        // copy left off -- the cheapest correct answer and the reason this check comes first.
+        RemoteRecovery recovery = new RemoteRecovery(withTranslog(), shardId -> true, failIfAsked(), LOCAL);
+
+        RemoteRecovery.Plan plan = recovery.planFor(desiredWith(pullBased("earliest"), Map.of(0, ShardRole.PRIMARY)), ClusterState.EMPTY_STATE);
+
+        assertTrue("no opinion is offered, so the fabricator uses the disk", plan.sources().isEmpty());
+        assertEquals(1, plan.desired().copyCount());
+    }
+
+    public void testAnIngestionSourceOfNoneIsNotPullBased() {
+        // The setting's own default, which means "ordinary writes" rather than "a source called none".
+        assertFalse(RemoteRecovery.pullsFromAnIngestionSource(TestFixtures.segmentReplicatedIndexConfig(UUID)));
+        assertFalse(RemoteRecovery.pullsFromAnIngestionSource(pullBased("earliest", "none")));
+        assertTrue(RemoteRecovery.pullsFromAnIngestionSource(pullBased("earliest")));
+    }
+
     // ---------------------------------------------------------------- when the question is not asked at all
 
     public void testANodeWithNoRemoteStoreDecidesNothing() {
@@ -255,6 +302,31 @@ public class RemoteRecoveryTests extends OpenSearchTestCase {
         assertTrue("the node still has a segment repository", store.configured());
         assertFalse("and its indices do not use a remote translog", store.translogConfigured());
         return store;
+    }
+
+    /** An index fed by the file ingestion source, which is the one a test deployment can actually run. */
+    private static IndexConfig pullBased(String reset) {
+        return pullBased(reset, "file");
+    }
+
+    private static IndexConfig pullBased(String reset, String type) {
+        return new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            Map.of(
+                "index.number_of_shards", "1",
+                "index.number_of_replicas", "0",
+                "index.replication.type", "SEGMENT",
+                "index.ingestion_source.type", type,
+                "index.ingestion_source.pointer.init.reset", reset,
+                "index.ingestion_source.param.stream", "my-stream",
+                "index.ingestion_source.param.base_directory", "/tmp/clusterless-ingestion"
+            ),
+            Map.of(),
+            3041
+        );
     }
 
     private static RemoteShardData failIfAsked() {

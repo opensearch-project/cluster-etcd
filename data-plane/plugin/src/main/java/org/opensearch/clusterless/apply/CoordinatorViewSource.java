@@ -23,31 +23,54 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 
 /**
- * Reads the projections for the tenants this node coordinates.
+ * Reads where other nodes' copies are, for the two reasons a node needs to know.
  *
- * <p>An interface for the reason {@link IndexConfigSource} is one: the fabrication downstream is worth testing
- * against a stated view of the fleet rather than against a store that has to be arranged into one.
+ * <p><b>Coordinating</b> is the obvious one: a node serving queries for a tenant needs every shard of every index
+ * that tenant has. <b>Peer resolution</b> is the one that is easy to miss, and it applies to a node that answers no
+ * queries at all — a node holding a copy needs the <em>other copies of its own shards</em>, because:
  *
- * <p>The store-backed implementation makes one prefix scan per coordinated tenant and then one read per index and
- * per node it finds. That is the cost of the design the contract chose, and it is the cheap side of the trade: the
- * alternative was inlining the table into every node's assignment, which stores it once per node and rewrites all
- * of them whenever one shard moves.
+ * <ul>
+ *   <li>a primary publishes segment-replication checkpoints to the replicas in its own routing table, so a primary
+ *       that does not know its replicas publishes to nobody — observed as
+ *       {@code UnavailableShardsException: Not enough active copies ... (have 0, needed DEFAULT)} once a minute;
+ *   <li>a search replica whose primary is missing from the table needs {@code index.blocks.search_only} to satisfy
+ *       {@code RoutingNodes}, and that setting disables {@code IndexService.AsyncReplicationTask} — the timer that
+ *       keeps it current. So a replica that cannot see its primary is refreshed by nothing.
+ * </ul>
+ *
+ * <p>Both are freshness rather than reach, and both are cheaper than coordinating: the shards of one index this node
+ * holds, rather than every shard of every index a tenant has.
+ *
+ * <h2>One scan per tenant, whichever reason applies</h2>
+ *
+ * <p>The reads are the same for both, so they are done once: one {@code scanPrefix} of
+ * {@code tenant/<t>/status/indices/} per tenant this node has <em>anything</em> to do with, and then a decision per
+ * index about which shards to take. That keeps the cost bounded by tenants rather than by indices, which matters —
+ * a node holding a thousand indices would otherwise make a thousand reads per pass, which is the cost the contract
+ * avoided by keeping this table out of the assignment in the first place.
+ *
+ * <p>An index this node holds copies of also needs no {@code tenant/<t>/indices/<name>} read: its configuration is
+ * already in the desired state, having been read to build the copies.
  */
 public interface CoordinatorViewSource {
 
-    CoordinatorView read(List<TenantId> tenants);
+    /**
+     * @param desired what this node holds and which tenants it coordinates — both halves of the question, because
+     *     the answer is one set of reads
+     */
+    CoordinatorView read(DesiredState desired);
 
-    /** For a node that coordinates nothing, which is most of them. */
-    CoordinatorViewSource NONE = tenants -> CoordinatorView.nothing();
+    /** For a node with nothing to route and nothing to hold, which is a node with an empty assignment. */
+    CoordinatorViewSource NONE = desired -> CoordinatorView.nothing();
 
     /**
      * The real one.
      *
-     * <p>Every skip carries a reason, and the reasons are the point. A coordinator with no route to a shard looks
-     * exactly like a coordinator whose tenant has fewer shards than it thinks, and the difference is only visible
-     * if this says so.
+     * <p>Every skip carries a reason, and the reasons are the point. A node with no route to a shard looks exactly
+     * like a node whose tenant has fewer shards than it thinks, and the difference is only visible if this says so.
      */
     final class FromStore implements CoordinatorViewSource {
 
@@ -62,8 +85,13 @@ public interface CoordinatorViewSource {
         }
 
         @Override
-        public CoordinatorView read(List<TenantId> tenants) {
-            if (tenants == null || tenants.isEmpty()) {
+        public CoordinatorView read(DesiredState desired) {
+            Set<TenantId> coordinated = Set.copyOf(desired.coordinatorTenants());
+            Map<TenantId, Map<String, DesiredState.DesiredIndex>> held = heldByTenant(desired);
+
+            Set<TenantId> tenants = new LinkedHashSet<>(coordinated);
+            tenants.addAll(held.keySet());
+            if (tenants.isEmpty()) {
                 return CoordinatorView.nothing();
             }
 
@@ -72,13 +100,31 @@ public interface CoordinatorViewSource {
             Set<NodeId> wanted = new LinkedHashSet<>();
 
             for (TenantId tenant : tenants) {
-                readTenant(tenant, indices, deferred, wanted);
+                readTenant(
+                    tenant,
+                    coordinated.contains(tenant),
+                    held.getOrDefault(tenant, Map.of()),
+                    indices,
+                    deferred,
+                    wanted
+                );
             }
             return new CoordinatorView(indices, peers(tenants, wanted, deferred), deferred);
         }
 
+        /** What this node holds, by tenant and index uuid, so a projection can be matched to it in one lookup. */
+        private static Map<TenantId, Map<String, DesiredState.DesiredIndex>> heldByTenant(DesiredState desired) {
+            Map<TenantId, Map<String, DesiredState.DesiredIndex>> byTenant = new LinkedHashMap<>();
+            desired.indices()
+                .values()
+                .forEach(index -> byTenant.computeIfAbsent(index.tenant(), tenant -> new TreeMap<>()).put(index.uuid(), index));
+            return byTenant;
+        }
+
         private void readTenant(
             TenantId tenant,
+            boolean coordinated,
+            Map<String, DesiredState.DesiredIndex> held,
             List<CoordinatorView.RoutedIndex> indices,
             List<String> deferred,
             Set<NodeId> wanted
@@ -103,33 +149,56 @@ public interface CoordinatorViewSource {
                     return;
                 }
 
-                Optional<IndexConfig> config;
-                try {
-                    config = indexConfigs.read(tenant, placement.name());
-                } catch (MalformedDocumentException e) {
-                    deferred.add(tenant + "/" + placement.uuid() + ": " + e.getMessage());
-                    return;
-                }
-                if (config.isEmpty()) {
-                    // Ordinary and temporary: the supervisor projects an index whose document the control plane
-                    // has since deleted, or the two reads straddled a write.
-                    deferred.add(tenant + "/" + placement.uuid() + ": no index document at [" + placement.name() + "]");
-                    return;
-                }
-                if (config.get().matches(placement.uuid()) == false) {
-                    // The same check every other reader here makes. A name is reused; a uuid is not, so a
-                    // document under this name may describe a different index and routing to it would send a
-                    // tenant's query to another index's shards.
-                    deferred.add(
-                        tenant + "/" + placement.uuid() + ": the document at [" + placement.name() + "] is index ["
-                            + config.get().uuid() + "]"
-                    );
+                DesiredState.DesiredIndex mine = held.get(placement.uuid());
+                if (coordinated == false && mine == null) {
+                    // Neither coordinated nor held: no reason to know anything about it, which is the whole point of
+                    // a data node's state being small.
                     return;
                 }
 
-                indices.add(new CoordinatorView.RoutedIndex(tenant, config.get(), placement));
-                placement.allCopies().forEach(copy -> wanted.add(copy.node()));
+                CoordinatorView.RoutedIndex routed = coordinated
+                    ? wholeIndex(tenant, placement, deferred)
+                    // Only the shards this node holds, and no index-document read: the configuration was already
+                    // read to build the copies, so the desired state has it.
+                    : new CoordinatorView.RoutedIndex(tenant, mine.config(), placement, mine.shards().keySet());
+                if (routed == null) {
+                    return;
+                }
+
+                indices.add(routed);
+                routed.shards().forEach(shard -> placement.copiesOf(shard).forEach(copy -> wanted.add(copy.node())));
             });
+        }
+
+        /**
+         * A coordinated tenant's index, which needs its document read for the settings and mappings a cluster state
+         * cannot describe an index without.
+         */
+        private CoordinatorView.RoutedIndex wholeIndex(TenantId tenant, IndexStatus placement, List<String> deferred) {
+            Optional<IndexConfig> config;
+            try {
+                config = indexConfigs.read(tenant, placement.name());
+            } catch (MalformedDocumentException e) {
+                deferred.add(tenant + "/" + placement.uuid() + ": " + e.getMessage());
+                return null;
+            }
+            if (config.isEmpty()) {
+                // Ordinary and temporary: the supervisor projects an index whose document the control plane has
+                // since deleted, or the two reads straddled a write.
+                deferred.add(tenant + "/" + placement.uuid() + ": no index document at [" + placement.name() + "]");
+                return null;
+            }
+            if (config.get().matches(placement.uuid()) == false) {
+                // The same check every other reader here makes. A name is reused; a uuid is not, so a document
+                // under this name may describe a different index, and routing to it would send a tenant's query to
+                // another index's shards.
+                deferred.add(
+                    tenant + "/" + placement.uuid() + ": the document at [" + placement.name() + "] is index ["
+                        + config.get().uuid() + "]"
+                );
+                return null;
+            }
+            return CoordinatorView.RoutedIndex.wholeIndex(tenant, config.get(), placement);
         }
 
         /**
@@ -152,7 +221,7 @@ public interface CoordinatorViewSource {
          * makes choosing deliberately the point: reachable beats unreachable, live beats stale, and node id breaks
          * the tie so that two passes agree.
          */
-        private Map<NodeId, NodeStatus> peers(List<TenantId> tenants, Set<NodeId> wanted, List<String> deferred) {
+        private Map<NodeId, NodeStatus> peers(Set<TenantId> tenants, Set<NodeId> wanted, List<String> deferred) {
             List<NodeStatus> found = new ArrayList<>();
             for (NodeId node : wanted) {
                 Optional<NodeStatus> status = Optional.empty();

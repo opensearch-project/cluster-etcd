@@ -146,20 +146,20 @@ public final class CoordinatorState implements NodeState {
 
         int searchReplicas = 0;
         int replicas = 0;
-        for (Map.Entry<Integer, List<IndexStatus.Copy>> shard : routed.placement().shards().entrySet()) {
-            for (IndexStatus.Copy copy : shard.getValue()) {
+        for (Integer shardNumber : routed.shards()) {
+            for (IndexStatus.Copy copy : routed.placement().copiesOf(shardNumber)) {
                 if (localNode.getId().equals(copy.node().value())) {
                     // Mine. Already in the table above, from the assignment, which is the authority for this node
                     // -- the projection is the supervisor's observation of it and may be a pass behind.
                     continue;
                 }
-                ShardRouting elsewhere = routingFor(new ShardId(index, shard.getKey()), copy, previous, index);
+                ShardRouting elsewhere = routingFor(new ShardId(index, shardNumber), copy, previous, index);
                 if (elsewhere == null) {
                     continue;
                 }
                 indexRouting.addShard(elsewhere);
                 reached.add(copy.node());
-                count(shards, shardsWithAPrimary, searchOnlyPerShard, shard.getKey(), elsewhere.primary(), elsewhere.isSearchOnly());
+                count(shards, shardsWithAPrimary, searchOnlyPerShard, shardNumber, elsewhere.primary(), elsewhere.isSearchOnly());
                 if (copy.role() == ShardRole.SEARCH_REPLICA) {
                     searchReplicas++;
                 } else if (copy.role() == ShardRole.REPLICA) {
@@ -374,7 +374,7 @@ public final class CoordinatorState implements NodeState {
         if (mapping != null) {
             builder.putMapping(mapping);
         }
-        for (Integer shard : routed.placement().shards().keySet()) {
+        for (Integer shard : routed.shards()) {
             builder.primaryTerm(shard, 1L);
         }
         if (previous != null) {

@@ -459,12 +459,137 @@ The two together mean a search-replica-only node was refreshed by nothing after 
 M7 verification did not catch it because a wiped data directory recovers by syncing from the remote store at engine
 open, which looks identical to replication working.
 
+**Both fixes are confirmed by one run, from two directions.** A document written to the primary — no restart — was
+returned by the search replica, which is ongoing replication working rather than a recovery sync doing it. And a
+profiled search sent to *each* node was served by the search replica's node both times, which is the count fix
+visible in behaviour: `number_of_search_replicas` is now 1 on the primary's node too, so strict routing injects the
+search-replica preference. Before the fix that count was 0 and the search landed on whichever copy the default
+iterator chose.
+
+Worth knowing for next time: the `fs` repository logs `loading all blobs with prefix into memory for sorting` once
+per listing, from `BlobContainer`'s default `listBlobsByPrefixInSortedOrder`, so a polling search replica produces
+one WARN per refresh interval. That noise *is* the evidence replication is live — it is the polling the marker used
+to disable. The run cluster quiets that one logger; remove the setting to watch it again.
+
 The marker is now dropped as soon as the routing table has a primary for every shard — which coordinating
 provides. **Which makes coordinating on a search-replica node worth more than routing:** it is what lets that
 node's copies stay fresh without depending on a primary that has never heard of them. A pure data node holding
 search replicas still has the problem, and that is the argument for resolving peers of one's *own* shards
 independently of coordinating whole tenants — the mechanism M9 needs anyway, wanted here for freshness rather than
 correctness.
+
+## M8.1. Peers of a node's own shards — **done, and confirmed with nothing coordinating**
+
+The loose end M8 exposed, and it is not about routing. A data node that answers no queries still needs the other
+copies of the shards it holds:
+
+- a primary publishes segment-replication checkpoints to the replicas in **its own** routing table, so a primary
+  that does not know its replicas publishes to nobody — seen as `UnavailableShardsException: Not enough active
+  copies ... (have 0, needed DEFAULT). Timeout: [1m]` once per checkpoint;
+- a search replica whose primary is missing from the table needs `index.blocks.search_only` to satisfy
+  `RoutingNodes`, and that setting disables `IndexService.AsyncReplicationTask` — the timer that keeps it current.
+  So a replica that cannot see its primary is refreshed by nothing at all.
+
+Both are freshness rather than reach, and both were invisible until a coordinator happened to supply the missing
+entries. Before this, the only way to keep a search replica current was to give its node the coordinator role,
+which is a much larger statement than the problem needs.
+
+**Same projections, narrower question.** A coordinated tenant contributes every shard of every index it has; an
+index this node merely holds copies of contributes only the shards it holds, and needs no index-document read at
+all, because its configuration was already read to build the copies. `CoordinatorView.RoutedIndex` carries the
+shard set, so both cases go through one reader and one fabricator, differing only in what they ask for.
+
+**Cost is bounded by tenants, not indices**, which is the part worth getting right. It is one
+`scanPrefix(tenant/<t>/status/indices/)` per tenant this node has anything to do with, not one read per index — a
+node holding a thousand indices would otherwise make a thousand reads per pass, which is the cost the contract
+avoided by keeping this table out of the assignment in the first place.
+
+**Done when:** a search replica on a node with no coordinator role stays current — a document written to the
+primary appears in a search of that node's copy, with nothing coordinating anywhere.
+
+**It does.** Two nodes, no coordinator role: a document written to the primary was returned by a search of the
+search replica's node, and neither node's state carries `index.blocks.search_only` — which is what says the polling
+timer is enabled. Both nodes report `peers: {indices: 2, serving_copies: 4}`.
+
+Two readings of that run worth writing down, because both are easy to get backwards:
+
+- **The absence of the `FsBlobContainer` noise proves nothing**, since the run cluster now sets that logger to
+  `ERROR`. The evidence is the missing marker plus a document that arrived. Removing the logger setting is what
+  turns the noise back into a signal.
+- **`PublishCheckpointAction` still failed once, and it now means the opposite of what it used to.** In this run it
+  fired on the primary's node *before the second node had started*, so there genuinely was no replica to publish to:
+  transient, correct, and it resolves when the replica appears. Before M8.1 the same message meant the replica
+  existed and the primary could not see it — permanent, and the reason search replicas were never refreshed. Same
+  exception, opposite meaning, and only the timing distinguishes them.
+
+### A saving not taken: coordinators do not need mappings
+
+Noted rather than done, because it is not urgent and the tradeoff is real. `REQUIREMENTS.md` open question 7
+carries the short version.
+
+A node that holds no copy of an index needs its metadata to route to it — a shard count and the identity settings —
+and it does **not** need its mappings. Nothing on the coordinator's search path reads them: `QueryRewriteContext`
+carries no `MapperService`, and field resolution happens on the shard through `QueryShardContext`. `_field_caps` is
+a shard-level action too. So `CoordinatorState.metadataFor` currently puts mappings in the fabricated metadata that
+nothing on that node will ever consult, and for a coordinator that knows thousands of indices with large mappings
+that is worth something.
+
+Be accurate about how much: `MappingMetadata` holds a `CompressedXContent`, so the cost is the compressed source
+per index rather than a parsed field tree — real at ten thousand indices, and not the order of magnitude a
+`MapperService` would be.
+
+What it costs to omit them: `GET <index>/_mapping` against a coordinator-only node would answer with an empty
+mapping. That request is a `ClusterManagerNodeReadRequest`, so `ClusterManagerActionFilter` answers it from local
+state — meaning the same call would return the mapping from a data node holding a copy and nothing from a
+coordinator, which is the kind of inconsistency that costs somebody an afternoon. Worth doing with a deliberate
+answer to that, rather than as a one-line saving.
+
+The change itself is one line in `metadataFor`, guarded on nothing: that method is only reached for an index this
+node holds no copy of, which is exactly the case where mappings are unused.
+
+## M8.2. Pull-based ingestion — **the settings path works; the pause does not exist**
+
+`index.ingestion_source.*` is entirely index settings, which means the data plane needed **no code to support it**:
+the control plane sets them, the fabrication passes them through, and `IndicesService.getEngineFactory` branches on
+`indexMetadata.useIngestionSource()` to build an `IngestionEngineFactory`. No cluster manager is involved anywhere
+in that path. The node does need the source's plugin installed, and the failure without it is at least legible —
+`No factory found for ingestion source type [FILE]`.
+
+**What did need changing is recovery, and it closes M7.1's remaining hole.** `IngestionEngine` uses a
+`NoOpTranslogManager`: a pull-based index has no translog at all, local or remote. So remote-store recovery — which
+restores segments *and a translog* — has nothing to offer it, and M7.1's decline for "no
+`index.remote_store.translog.repository`" was the wrong answer for exactly the configuration `segments_only` exists
+to serve.
+
+The right answer is in the commit. `IngestionEngine` reads `StreamPoller.BATCH_START` out of the Lucene commit user
+data and resumes from it, falling back to `index.ingestion_source.pointer.init.reset` when there is no commit. So:
+
+- **local bytes** — the commit carries the pointer, so resuming from disk resumes from exactly where this copy left
+  off. Cheapest and most correct, which is why it is still checked first;
+- **no local bytes** — start empty and let the poller replay. `earliest` is correct at the cost of doing all the
+  work again; `latest` starts at the head and whatever arrived while the shard was gone is not indexed by this copy.
+  Both are the tenant's declared policy rather than this node's decision, and the log line says which one is about
+  to happen, because "this shard is very busy" and "this shard is short of documents" are otherwise hard to explain.
+
+A pull-based index is therefore **never probed** — nothing the repository could say would change the answer — which
+also removes a network read per fresh copy.
+
+### The gap: pausing ingestion is desired state with nowhere to live
+
+`IndexMetadata.ingestionStatus` is a **first-class metadata field, not a setting** — `IngestionStatus(isPaused)`,
+defaulting to not-paused, changed upstream by `MetadataStreamingIngestionStateService` through a cluster-manager
+action. In this architecture that action is refused, correctly: pausing an index's ingestion is desired state and
+belongs to the control plane.
+
+But `tenant/<t>/indices/<name>` has no field for it, and it cannot be a setting, so **a paused index would come
+back unpaused** — every fabrication defaults it, and the pass after an operator pauses would resume the stream
+underneath them. That is a contract change rather than something to work around here: the index document needs to
+carry it, and this plugin needs to read it into the fabricated metadata. Raised with the supervisor as a finding
+rather than patched, because a data plane inventing a place for it would be the two services disagreeing about
+desired state, which is the one thing this design cannot tolerate.
+
+Until then, an index with an ingestion source ingests whenever a node holds a copy of it, and `_ingestion/_pause`
+against a data node is refused with the message every cluster-manager action gets.
 
 ## M9. Document replication
 
