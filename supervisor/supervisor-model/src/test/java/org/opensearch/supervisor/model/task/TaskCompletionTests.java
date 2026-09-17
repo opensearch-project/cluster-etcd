@@ -6,9 +6,12 @@ import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.index.IndexConfig;
 import org.opensearch.supervisor.model.node.Assignment;
+import org.opensearch.supervisor.model.node.AppliedOutcome;
+import org.opensearch.supervisor.model.node.Heartbeat;
 import org.opensearch.supervisor.model.node.NodeRole;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
+import org.opensearch.supervisor.model.node.ResetMode;
 import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
 import org.opensearch.supervisor.model.observe.Observation;
@@ -69,6 +72,67 @@ class TaskCompletionTests {
         return new Observation.NodeObservation(
             NODE, registration(), null, inventory, Liveness.LIVE, POOL, null, 0
         );
+    }
+
+    /**
+     * A node holding the primary of shard {@code shard}, told to at assignment version {@code version}, and
+     * reporting that it applied {@code appliedVersion} with {@code outcome}.
+     */
+    private static Observation.NodeObservation primaryReporting(
+        NodeId node,
+        int shard,
+        long version,
+        long appliedVersion,
+        AppliedOutcome outcome
+    ) {
+        return primaryReporting(node, shard, version, appliedVersion, outcome, "task-1");
+    }
+
+    /**
+     * @param resetId the id of the reset the observed assignment carries, or null for one carrying none. The
+     *     acknowledgement asks whether the node applied a document containing <em>this</em> instruction, so the
+     *     document has to contain it.
+     */
+    private static Observation.NodeObservation primaryReporting(
+        NodeId node,
+        int shard,
+        long version,
+        long appliedVersion,
+        AppliedOutcome outcome,
+        String resetId
+    ) {
+        ShardInventory inventory = new ShardInventory(node, "eph", 1L, Map.of(
+            ACME, new ShardInventory.TenantShards(Map.of(
+                UUID, new ShardInventory.IndexShards("my-index", 3041, Map.of(
+                    shard, ShardInventory.ShardCopy.of(ShardRole.PRIMARY, ShardState.STARTED)
+                ))
+            ))
+        ));
+        Assignment.IngestionReset carried = resetId == null ? null : new Assignment.IngestionReset(
+            resetId, Map.of(shard, new Assignment.ShardReset(ResetMode.OFFSET, "1000")));
+        Assignment assignment = new Assignment(version, POOL, 1, node, 1L, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
+                UUID, new Assignment.IndexAssignment("my-index", 3041, Map.of(shard, ShardRole.PRIMARY), carried)
+            ))
+        ));
+        Heartbeat heartbeat = new Heartbeat(node, "eph", 1L,
+            new Heartbeat.Applied(appliedVersion, outcome, null), null, 1,
+            new Heartbeat.Capacity(1000, 900, 10, 10, 0.1));
+        return new Observation.NodeObservation(
+            node, new Registration(node, "eph", "n", POOL, EnumSet.of(NodeRole.DATA), "10.0.0.1", 9300, "3.7.0",
+                Map.of(), 5000, 1L),
+            heartbeat, inventory, Liveness.LIVE, POOL, assignment, 5
+        );
+    }
+
+    private static TaskCompletion.Verdict evaluateResume(
+        TaskRecord task,
+        Map<NodeId, Observation.NodeObservation> nodes
+    ) {
+        Observation observation = new Observation(1, Instant.ofEpochMilli(5000), POOL,
+            Map.of(ACME, new Observation.DesiredState(Map.of(UUID, index(true, 2, 3041)), List.of(task))),
+            nodes, List.of());
+        return TaskCompletion.evaluate(task, ACME, observation);
     }
 
     private static Observation.NodeObservation assignedOnly() {
@@ -304,21 +368,124 @@ class TaskCompletionTests {
     }
 
     @Test
-    void aResumeCarryingAPointerResetStaysOpenAndSaysWhy() {
-        // The messy one, and the point of this test is that the task does NOT complete. A reset is not desired
-        // state -- re-applying "start from offset 1000" for ever is a stream that never advances -- so it cannot
-        // live in metadata, and handing it to a node is not implemented. Completing the task would report a
-        // pointer as moved when nothing moved it, and the lie would be undetectable afterwards: a consumer left
-        // alone looks exactly like one that was reset and then caught up.
-        var verdict = TaskCompletion.evaluate(
-            resumeWithResets(new TaskRecord.IngestionReset(0, TaskRecord.ResetMode.OFFSET, "1000")),
-            ACME,
-            observe(index(true, 1, 3041), holding(3041, ShardState.STARTED))
+    void aResetIsDoneOnlyWhenItsPrimaryHolderAcknowledgesTheVersionCarryingIt() {
+        TaskRecord task = resumeWithResets(new TaskRecord.IngestionReset(0, ResetMode.OFFSET, "1000"));
+
+        // Told at version 9, reporting 8: it has not read the document carrying the reset yet.
+        var behind = evaluateResume(task,
+            Map.of(NODE, primaryReporting(NODE, 0, 9, 8, AppliedOutcome.APPLIED)));
+        assertFalse(behind.satisfied(), behind.because());
+        assertTrue(behind.because().contains("assignment version 8"), behind.because());
+
+        // Current version, but still working: the contract has a node hold `applying` while a reset is outstanding,
+        // so a matching version alone would say only that it had read the document.
+        var applying = evaluateResume(task,
+            Map.of(NODE, primaryReporting(NODE, 0, 9, 9, AppliedOutcome.APPLYING)));
+        assertFalse(applying.satisfied(), applying.because());
+
+        // Refused. Never acknowledged, so the task stays open and visible rather than completing on a lie.
+        var failed = evaluateResume(task,
+            Map.of(NODE, primaryReporting(NODE, 0, 9, 9, AppliedOutcome.FAILED)));
+        assertFalse(failed.satisfied(), failed.because());
+
+        var done = evaluateResume(task,
+            Map.of(NODE, primaryReporting(NODE, 0, 9, 9, AppliedOutcome.APPLIED)));
+        assertTrue(done.satisfied(), done.because());
+        assertTrue(done.because().contains("position cannot distinguish"), done.because());
+    }
+
+    @Test
+    void aNodeUpToDateOnAnAssignmentThatDoesNotCarryTheResetHasNotAcknowledged() {
+        // The bug this rule replaced. The task queue runs after the applier but reads the observation taken before
+        // it, so on the pass a reset is first written the store holds version N+1 while the observation still shows
+        // N -- and a node reporting N looked, by version alone, perfectly acknowledged. It completed the task
+        // before the instruction had been written at all.
+        TaskRecord task = resumeWithResets(new TaskRecord.IngestionReset(0, ResetMode.OFFSET, "1000"));
+
+        var verdict = evaluateResume(task, Map.of(
+            NODE, primaryReporting(NODE, 0, 9, 9, AppliedOutcome.APPLIED, null)
+        ));
+
+        assertFalse(verdict.satisfied(), verdict.because());
+        assertTrue(verdict.because().contains("does not carry this reset yet"), verdict.because());
+    }
+
+    @Test
+    void anAssignmentRewrittenForAnUnrelatedReasonStillAcknowledges() {
+        // Which is why the id is the identity rather than the version: the version moves when an unrelated shard is
+        // placed in the same document, the node skips re-applying by id as the contract requires, and the
+        // acknowledgement still has to hold at the newer version.
+        TaskRecord task = resumeWithResets(new TaskRecord.IngestionReset(0, ResetMode.OFFSET, "1000"));
+
+        var verdict = evaluateResume(task, Map.of(
+            NODE, primaryReporting(NODE, 0, 17, 17, AppliedOutcome.APPLIED, "task-1")
+        ));
+
+        assertTrue(verdict.satisfied(), verdict.because());
+    }
+
+    @Test
+    void everyShardNamedByAResumeHasToAcknowledge() {
+        // A reset is per shard and an assignment is per node, so two shards on two nodes need both. Completing on
+        // the first would report a pointer moved on a shard whose holder had not heard of it.
+        NodeId other = NodeId.of("nodeBBBBBBBBBBBBBBBBBB");
+        TaskRecord task = resumeWithResets(
+            new TaskRecord.IngestionReset(0, ResetMode.OFFSET, "1000"),
+            new TaskRecord.IngestionReset(1, ResetMode.TIMESTAMP, "1789000000000")
         );
 
-        assertFalse(verdict.satisfied(), "the metadata half may have landed; the reset has not");
-        assertTrue(verdict.because().contains("consumer-pointer reset"), verdict.because());
-        assertTrue(verdict.because().contains("indistinguishable"), verdict.because());
+        var oneShort = evaluateResume(task, Map.of(
+            NODE, primaryReporting(NODE, 0, 9, 9, AppliedOutcome.APPLIED),
+            other, primaryReporting(other, 1, 4, 3, AppliedOutcome.APPLIED)
+        ));
+        assertFalse(oneShort.satisfied(), oneShort.because());
+        assertTrue(oneShort.because().contains("shard 1"), oneShort.because());
+        assertFalse(oneShort.because().contains("shard 0 "), "shard 0 is settled: " + oneShort.because());
+
+        var both = evaluateResume(task, Map.of(
+            NODE, primaryReporting(NODE, 0, 9, 9, AppliedOutcome.APPLIED),
+            other, primaryReporting(other, 1, 4, 4, AppliedOutcome.APPLIED)
+        ));
+        assertTrue(both.satisfied(), both.because());
+    }
+
+    @Test
+    void aResetForAShardWithNoPrimaryStaysOpenRatherThanCompletingOrFailing() {
+        // The shard's missing primary is a placement problem the diff already reports; blaming the resume for it
+        // would hide both. Same patience every other kind of work here gets.
+        TaskRecord task = resumeWithResets(new TaskRecord.IngestionReset(1, ResetMode.OFFSET, "1000"));
+
+        var verdict = evaluateResume(task,
+            Map.of(NODE, primaryReporting(NODE, 0, 9, 9, AppliedOutcome.APPLIED)));
+
+        assertFalse(verdict.satisfied(), verdict.because());
+        assertTrue(verdict.because().contains("shard 1 has no primary to reset"), verdict.because());
+    }
+
+    @Test
+    void theUnpauseHasToLandTooBeforeAResumeIsDone() {
+        // A resume is an unpause as well as a reset. A node still on an older index revision has not seen the
+        // unpause, however cleanly it acknowledged the reset -- and the metadata half is reported first because it
+        // is the half an operator can act on.
+        TaskRecord task = resumeWithResets(new TaskRecord.IngestionReset(0, ResetMode.OFFSET, "1000"));
+        Observation.NodeObservation stale = primaryReporting(NODE, 0, 9, 9, AppliedOutcome.APPLIED);
+        // Same node, but its copy was built against an older index document.
+        ShardInventory older = new ShardInventory(NODE, "eph", 1L, Map.of(
+            ACME, new ShardInventory.TenantShards(Map.of(
+                UUID, new ShardInventory.IndexShards("my-index", 3040, Map.of(
+                    0, ShardInventory.ShardCopy.of(ShardRole.PRIMARY, ShardState.STARTED)
+                ))
+            ))
+        ));
+        Observation.NodeObservation behindOnConfig = new Observation.NodeObservation(
+            NODE, stale.registration(), stale.heartbeat(), older, Liveness.LIVE, POOL, stale.assignment(), 5
+        );
+
+        var verdict = evaluateResume(task, Map.of(NODE, behindOnConfig));
+
+        assertFalse(verdict.satisfied(), verdict.because());
+        assertFalse(verdict.because().contains("consumer-pointer reset(s) requested"),
+            "the metadata half is the one to report: " + verdict.because());
     }
 
     @Test
@@ -333,8 +500,8 @@ class TaskCompletionTests {
 
     @Test
     void aResetModeThisBuildDoesNotKnowReadsAsUnknownRatherThanFailing() {
-        assertEquals(TaskRecord.ResetMode.OFFSET, TaskRecord.ResetMode.from("offset"));
-        assertEquals(TaskRecord.ResetMode.TIMESTAMP, TaskRecord.ResetMode.from("timestamp"));
-        assertEquals(TaskRecord.ResetMode.UNKNOWN, TaskRecord.ResetMode.from("sequence-number"));
+        assertEquals(ResetMode.OFFSET, ResetMode.from("offset"));
+        assertEquals(ResetMode.TIMESTAMP, ResetMode.from("timestamp"));
+        assertEquals(ResetMode.UNKNOWN, ResetMode.from("sequence-number"));
     }
 }

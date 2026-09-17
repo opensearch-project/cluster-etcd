@@ -10,6 +10,9 @@ import org.opensearch.supervisor.model.node.NodeJson;
 import org.opensearch.supervisor.model.node.NodeRole;
 import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.observe.Observation;
+import org.opensearch.supervisor.model.task.TaskRecord;
+import org.opensearch.supervisor.model.task.TaskState;
+import org.opensearch.supervisor.model.task.TaskType;
 import org.opensearch.supervisor.model.plan.Instruction;
 import org.opensearch.supervisor.model.plan.Plan;
 
@@ -239,6 +242,7 @@ public final class Applier {
         }
 
         applyCoordinatorMembership(observed, observation, tenants);
+        applyIngestionResets(observation, tenants);
 
         long version = existing == null ? 1 : existing.version() + 1;
         return new Assignment(
@@ -292,6 +296,76 @@ public final class Applier {
             entry.without(NodeRole.COORDINATOR)
                 .ifPresentOrElse(remaining -> tenants.put(tenant, remaining), () -> tenants.remove(tenant));
         }
+    }
+
+    /**
+     * Attaches any outstanding consumer-pointer reset to the index it belongs to.
+     *
+     * <p>Not finding-driven and not an instruction, for the same reason coordinator membership is neither: it comes
+     * from an open task, and a reset has no shard to place so there is nothing for the differ to find missing. It
+     * also must not consume the work ceiling — nothing is moving, and an operator's resume should not queue behind
+     * shard recovery.
+     *
+     * <p><b>Only into the assignment of the node holding that shard's primary</b>, read from the map this pass has
+     * just assembled rather than from the observation, so the reset lands on whichever node this assignment makes
+     * primary. A search replica has no consumer of its own; the data plane refuses a reset for a shard it was not
+     * made primary of rather than trusting this promise, which is the right way round.
+     *
+     * <p>It stops being written the moment the task stops being open, which is what removes it — and that is safe
+     * because a reset force-flushes its new start pointer into the shard's Lucene commit, so the effect outlives the
+     * instruction. {@code DESIGN.md} §21.4.
+     */
+    private void applyIngestionResets(Observation observation, Map<TenantId, Assignment.TenantAssignment> tenants) {
+        observation.tenants().forEach((tenantId, desired) -> {
+            Assignment.TenantAssignment tenant = tenants.get(tenantId);
+            if (tenant == null || tenant.indices().isEmpty()) {
+                return;
+            }
+
+            Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>(tenant.indices());
+            boolean changed = false;
+
+            for (var index : tenant.indices().entrySet()) {
+                Assignment.IngestionReset reset = resetFor(desired, index.getKey(), index.getValue());
+                if (Objects.equals(index.getValue().ingestionReset(), reset) == false) {
+                    indices.put(index.getKey(), index.getValue().withIngestionReset(reset));
+                    changed = true;
+                }
+            }
+            if (changed) {
+                tenants.put(tenantId, tenant.withIndices(indices));
+            }
+        });
+    }
+
+    /** The reset an open resume task wants for the shards of this index that this node is primary for, or null. */
+    private static Assignment.IngestionReset resetFor(
+        Observation.DesiredState desired,
+        String indexUuid,
+        Assignment.IndexAssignment index
+    ) {
+        for (TaskRecord task : desired.tasks()) {
+            if (task.type() != TaskType.RESUME_INGESTION
+                || task.state() != TaskState.PENDING && task.state() != TaskState.CLAIMED
+                || indexUuid.equals(task.indexUuid()) == false
+                || task.details() == null
+                || task.details().hasResets() == false) {
+                continue;
+            }
+
+            Map<Integer, Assignment.ShardReset> mine = new java.util.TreeMap<>();
+            for (TaskRecord.IngestionReset wanted : task.details().resetSettings()) {
+                if (index.shards().get(wanted.shard()) == ShardRole.PRIMARY) {
+                    mine.put(wanted.shard(), new Assignment.ShardReset(wanted.mode(), wanted.value()));
+                }
+            }
+            // One task at a time: two resumes outstanding for one index would be an operator changing their mind,
+            // and the older instruction is the one to drop rather than merge.
+            if (mine.isEmpty() == false) {
+                return new Assignment.IngestionReset(task.taskId(), mine);
+            }
+        }
+        return null;
     }
 
     /**

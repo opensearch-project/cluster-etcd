@@ -3,6 +3,8 @@ package org.opensearch.supervisor.model.task;
 import org.opensearch.supervisor.model.Json;
 
 import java.util.Comparator;
+import org.opensearch.supervisor.model.node.ResetMode;
+
 import java.util.List;
 import java.util.Objects;
 
@@ -69,32 +71,6 @@ public record TaskRecord(
      * never a single index-wide pointer.
      */
     public record IngestionReset(int shard, ResetMode mode, String value) {}
-
-    /** {@code OFFSET} or {@code TIMESTAMP} upstream; anything else is a mode this build cannot honour. */
-    public enum ResetMode implements org.opensearch.supervisor.model.WireEnum {
-        OFFSET,
-        TIMESTAMP,
-        UNKNOWN;
-
-        @Override
-        public String wireName() {
-            if (this == UNKNOWN) {
-                throw new IllegalStateException("UNKNOWN is a read-only sentinel and must never be written");
-            }
-            return name().toLowerCase(java.util.Locale.ROOT);
-        }
-
-        public static ResetMode from(String value) {
-            if (value == null) {
-                return UNKNOWN;
-            }
-            try {
-                return valueOf(value.toUpperCase(java.util.Locale.ROOT));
-            } catch (IllegalArgumentException e) {
-                return UNKNOWN;
-            }
-        }
-    }
 
     public static final int MAX_LAST_ERROR_LENGTH = 512;
 

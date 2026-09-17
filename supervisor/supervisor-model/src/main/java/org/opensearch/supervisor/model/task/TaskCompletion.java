@@ -5,6 +5,11 @@ import org.opensearch.supervisor.model.index.IndexConfig;
 import org.opensearch.supervisor.model.node.ShardInventory;
 import org.opensearch.supervisor.model.observe.Observation;
 
+import org.opensearch.supervisor.model.node.AppliedOutcome;
+import org.opensearch.supervisor.model.node.Heartbeat;
+import org.opensearch.supervisor.model.node.ShardRole;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -129,13 +134,141 @@ public final class TaskCompletion {
         if (task.details() == null || task.details().hasResets() == false) {
             return noCopyIsStale(config, tenant, observation);
         }
+
+        // The metadata half first: a resume is an unpause as well as a reset, and a node still on an older index
+        // revision has not seen the unpause however cleanly it acknowledged the reset.
+        Verdict metadata = noCopyIsStale(config, tenant, observation);
+        if (metadata.satisfied() == false) {
+            return metadata;
+        }
+
+        List<String> waiting = new ArrayList<>();
+        for (TaskRecord.IngestionReset reset : task.details().resetSettings()) {
+            Optional<Observation.NodeObservation> holder =
+                primaryHolder(config, reset.shard(), tenant, observation);
+            if (holder.isEmpty()) {
+                // Not completed and not failed. The shard's missing primary is a placement problem the diff is
+                // already reporting; blaming the resume for it would hide both.
+                waiting.add("shard " + reset.shard() + " has no primary to reset");
+                continue;
+            }
+            if (acknowledged(holder.get(), task, config, tenant) == false) {
+                waiting.add("shard " + reset.shard() + " is held by node [" + holder.get().nodeId()
+                    + "], which reports " + describeApplied(holder.get(), task, config, tenant));
+            }
+        }
+
+        if (waiting.isEmpty()) {
+            return Verdict.done(
+                "every shard named by this resume is held by a node reporting it applied the assignment carrying"
+                    + " the reset, which is the only evidence available: a consumer that was reset starts advancing"
+                    + " immediately, so its position cannot distinguish a reset that happened from one that did not"
+            );
+        }
         return Verdict.notYet(
-            "index [" + config.name() + "] resumes with " + task.details().resetSettings().size()
-                + " consumer-pointer reset(s), and handing a reset to a node is not implemented (DESIGN.md §21)."
-                + " The metadata half may well have landed; this task stays open because completing it would"
-                + " report a pointer as moved when nothing moved it, and a consumer left alone is"
-                + " indistinguishable afterwards from one that was reset and caught up"
+            task.details().resetSettings().size() + " consumer-pointer reset(s) requested; "
+                + waiting.size() + " not yet acknowledged: " + String.join("; ", waiting)
         );
+    }
+
+    /**
+     * The node holding this shard's primary, by what it <em>reports</em> rather than what it was told.
+     *
+     * <p>An assignment naming a primary is the instruction; an inventory reporting one is the fact. A reset is
+     * applied by a running poller, and only a node that has the copy has a poller.
+     */
+    private static Optional<Observation.NodeObservation> primaryHolder(
+        IndexConfig config,
+        int shard,
+        TenantId tenant,
+        Observation observation
+    ) {
+        for (Observation.NodeObservation node : observation.nodes().values()) {
+            if (node.copiesCount() == false || node.inventory() == null) {
+                continue;
+            }
+            var tenantShards = node.inventory().tenants().get(tenant);
+            if (tenantShards == null) {
+                continue;
+            }
+            var index = tenantShards.indices().get(config.uuid());
+            if (index == null) {
+                continue;
+            }
+            var copy = index.shards().get(shard);
+            if (copy != null && copy.role() == ShardRole.PRIMARY) {
+                return Optional.of(node);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Whether this node has applied an assignment that <b>contained this reset</b>.
+     *
+     * <p>Not "is this node up to date", which is what the first version of this compared and which completed the
+     * task before the reset had been written. The task queue runs after the applier but reads the observation taken
+     * before it, so on the pass the reset is first written the store holds version N+1 while the observation still
+     * shows N — and a node reporting N looked, by version alone, perfectly acknowledged.
+     *
+     * <p>The fix is to ask the precise question. The observed assignment either carries a reset with this task's id
+     * or it does not; if it does and the node reports having applied <em>that</em> version, then the node applied a
+     * document containing this instruction. Nothing about it depends on the store and the observation agreeing.
+     *
+     * <p>It also makes the id earn its keep on this side as well as the node's: an assignment rewritten for an
+     * unrelated reason keeps the same reset id, so a node that skipped re-applying it — as the contract requires —
+     * still acknowledges correctly at the newer version.
+     *
+     * <p>{@code APPLIED} is required rather than merely a matching version, because the contract has a node hold
+     * {@code applying} while a reset is outstanding and report {@code failed} when one is refused. Without that the
+     * version alone would say only that the node had read the document.
+     */
+    private static boolean acknowledged(
+        Observation.NodeObservation node,
+        TaskRecord task,
+        IndexConfig config,
+        TenantId tenant
+    ) {
+        if (node.assignment() == null || node.heartbeat() == null) {
+            return false;
+        }
+        var tenantAssignment = node.assignment().tenants().get(tenant);
+        if (tenantAssignment == null) {
+            return false;
+        }
+        var index = tenantAssignment.indices().get(config.uuid());
+        if (index == null
+            || index.ingestionReset() == null
+            || task.taskId().equals(index.ingestionReset().id()) == false) {
+            // The reset this task asked for is not in the document this node was observed holding, so whatever it
+            // has applied, it has not applied this.
+            return false;
+        }
+
+        Heartbeat.Applied applied = node.heartbeat().applied();
+        return applied != null
+            && applied.outcome() == AppliedOutcome.APPLIED
+            && applied.assignmentVersion() == node.assignment().version();
+    }
+
+    private static String describeApplied(
+        Observation.NodeObservation node,
+        TaskRecord task,
+        IndexConfig config,
+        TenantId tenant
+    ) {
+        var tenantAssignment = node.assignment() == null ? null : node.assignment().tenants().get(tenant);
+        var index = tenantAssignment == null ? null : tenantAssignment.indices().get(config.uuid());
+        if (index == null || index.ingestionReset() == null
+            || task.taskId().equals(index.ingestionReset().id()) == false) {
+            return "an assignment that does not carry this reset yet";
+        }
+        if (node.heartbeat() == null || node.heartbeat().applied() == null) {
+            return "no applied state at all";
+        }
+        Heartbeat.Applied applied = node.heartbeat().applied();
+        return "assignment version " + applied.assignmentVersion() + " as " + applied.outcome()
+            + " against the observed version " + node.assignment().version() + " that carries it";
     }
 
     private static Optional<IndexConfig> indexOf(TaskRecord task, TenantId tenant, Observation observation) {

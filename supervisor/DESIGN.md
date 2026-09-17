@@ -1348,9 +1348,18 @@ applied. Proposed:
                            "shards": { "0": { "mode": "offset", "value": "1000" } } } } }
   ```
 
-- The node applies it and reports the ordinary `applied: { assignment_version, outcome }`. When the version it
-  reports equals the version now in the store and the outcome is `applied`, the reset in that store document has
-  been acted on — **no memory on the supervisor's side, and no new field on the node's.**
+- The node applies it and reports the ordinary `applied: { assignment_version, outcome }`. The supervisor asks
+  whether the node applied **a document that contained this instruction**: the assignment it was observed holding
+  carries a reset with this task's id, and the node reports having applied *that* version, with outcome `applied`.
+  **No memory on the supervisor's side, and no new field on the node's.**
+
+  Not "is the node up to date", which is what the first implementation compared — and it completed the task before
+  the reset had been written. The task queue runs after the applier but reads the observation taken *before* it, so
+  on the pass a reset is first written the store holds version N+1 while the observation still shows N, and a node
+  reporting N looked, by version alone, perfectly acknowledged. Asking the precise question removes any dependence
+  on the store and the observation agreeing, and it makes the id earn its keep on this side too: an assignment
+  rewritten for an unrelated reason keeps the same reset id, so a node that skipped re-applying it — as the contract
+  requires — still acknowledges correctly at the newer version.
 - The supervisor then completes the task and stops writing the reset, which is a property of assembling the
   assignment rather than an instruction, exactly like coordinator membership in §18.
 
@@ -1402,6 +1411,18 @@ That is what makes the whole scheme safe rather than merely convenient. The supe
 the instant it is acknowledged, because the reset's effect is durable in the shard rather than in the document that
 asked for it. Nothing has to remember, on either side, which is the property that lets a one-shot instruction live
 in a level-triggered system without a ledger.
+
+**With one bound, which is worth stating precisely because "nothing needs to remember" is true of the shard and not
+quite true of the window.** The node's memory of which reset ids it has applied is in its process. That is safe
+across a shard *move*, for the reason above, and not across a *restart inside the acknowledgement window*: a node
+that applies a reset and restarts before the supervisor observes the acknowledgement will apply it again, rewinding
+the consumer by whatever it consumed in between. The window is one of this service's passes.
+
+It re-consumes rather than loses, because every ingested message must carry an `_id` — the data plane's message
+processor rejects one that does not — so a replay re-indexes the same documents. The exception is a stream of
+`_op_type: create` messages, where a replay is a version conflict per document and the error policy decides whether
+that drops or blocks. Neither side keeps a durable ledger for this, which is a judgement rather than an oversight:
+the cost is bounded and rare, and a ledger would have to be correct across exactly the crash it exists for.
 
 ### 21.5 Completion when a reset spans nodes
 

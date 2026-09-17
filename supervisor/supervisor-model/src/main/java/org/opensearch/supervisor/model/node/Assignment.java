@@ -162,7 +162,56 @@ public record Assignment(
      *     index document and finds a different revision, this assignment is stale by one pass and it should
      *     apply what it read — the supervisor will re-issue.
      */
-    public record IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards) {
+    /**
+     * A one-shot instruction to move consumers, carried on the assignment because it is not desired state.
+     *
+     * <p>"Start from offset 1000" re-applied for ever is a stream that never advances, so this cannot live in the
+     * index document. It rides here instead, identified by the id of the task that asked for it, and is removed once
+     * acknowledged — see {@code DESIGN.md} §21.
+     *
+     * @param id the resume task's id. <b>The identity a node keys idempotence on</b>, never the assignment version:
+     *     the version moves when an unrelated shard is placed in the same document, and re-applying a reset for that
+     *     reason is the rewind-for-ever failure arriving by another route.
+     * @param shards by shard number. Only shards this node holds the <em>primary</em> of ever appear — a search
+     *     replica has no consumer of its own, and the data plane refuses one it was not made primary for rather
+     *     than trusting that promise.
+     */
+    public record IngestionReset(String id, Map<Integer, ShardReset> shards) {
+
+        public IngestionReset {
+            Objects.requireNonNull(id, "id");
+            shards = shards == null ? Map.of() : Map.copyOf(shards);
+        }
+
+        /**
+         * Deliberately not called {@code isEmpty}. Jackson reads an {@code isX()} method on a record as another
+         * property and wrote {@code "empty": false} into the assignment document — a field no contract mentions,
+         * invented by a convenience method. Caught by serialising one and looking at the bytes.
+         */
+        public boolean hasNoShards() {
+            return shards.isEmpty();
+        }
+    }
+
+    /** Where one shard's consumer should be moved to. {@code value} is an offset, or epoch millis for a timestamp. */
+    public record ShardReset(ResetMode mode, String value) {
+
+        public ShardReset {
+            Objects.requireNonNull(mode, "mode");
+        }
+    }
+
+    /**
+     * @param ingestionReset an outstanding consumer-pointer reset, or null. Absent on almost every assignment ever
+     *     written, and a reader must treat it as optional.
+     */
+    public record IndexAssignment(
+        String name,
+        long configRevision,
+        Map<Integer, ShardRole> shards,
+        IngestionReset ingestionReset
+    ) {
+
         public IndexAssignment {
             shards = shards == null ? Map.of() : Map.copyOf(shards);
             shards.forEach((shard, role) -> {
@@ -174,5 +223,15 @@ public record Assignment(
                 }
             });
         }
+
+        /** Without a reset, which is every assignment but the handful that carry one. */
+        public IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards) {
+            this(name, configRevision, shards, null);
+        }
+
+        public IndexAssignment withIngestionReset(IngestionReset reset) {
+            return new IndexAssignment(name, configRevision, shards, reset);
+        }
     }
+
 }

@@ -694,7 +694,23 @@ the supervisor, which is what makes it a state problem rather than a timing one.
 > can all arrive in a task. The supervisor parses tolerantly and writes one canonical lower-case spelling into the
 > assignment, so the contract has exactly one form and the node maps that to the upstream enum.
 >
-> Still not implemented on this side, and now unblocked: everything §21.2 needed agreeing is agreed. Say the word.
+> **Implemented.** The applier attaches an open resume task's resets to the assignment of the node holding each
+> named shard's primary, tagged with the task id; the task completes when every named holder has applied a document
+> carrying that id; and the reset stops being written the moment it does. Your bound on the ack is now §21.4 beside
+> the reason nothing needs a ledger, in your words: true of the shard, not quite true of the window.
+>
+> **Two things driving it end to end found, neither of which review would have.** The first acknowledgement rule
+> compared "has this node applied the current version" and completed the task *before the reset was written* — the
+> task queue runs after the applier but reads the observation taken before it, so the store held N+1 while the
+> observation still showed N and a node reporting N looked acknowledged. It now asks whether the node applied a
+> document containing this instruction, which needs no agreement between store and observation and makes the id do
+> work on both sides. And serialising one showed two contract defects: `mode` went out as `OFFSET` because
+> `ResetMode` was never registered as a wire enum, breaking the one-spelling promise the same commit made, and a
+> convenience method called `isEmpty()` was read by Jackson as a property and put `"empty": false` into the
+> assignment — a field no contract mentions, invented by a getter.
+>
+> Worth knowing for your idempotence tests: with a node that applies faithfully, the whole cycle — hand over,
+> acknowledge, withdraw — takes about three passes.
 
 > **The word: go ahead — the node half is done, and `ingestion_reset` is read and acted on as the contract
 > describes it.** Reading it, planning against the cluster state and reporting are pure functions with tests;

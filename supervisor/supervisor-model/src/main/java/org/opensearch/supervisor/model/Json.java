@@ -72,6 +72,8 @@ public final class Json {
         registerWireEnum(module, PoolKind.class, PoolKind::from);
         registerWireEnum(module, TaskState.class, TaskState::from);
         registerWireEnum(module, TaskType.class, TaskType::from);
+        registerWireEnum(module, org.opensearch.supervisor.model.node.ResetMode.class,
+            org.opensearch.supervisor.model.node.ResetMode::from);
         registerWireEnum(module, AllocationEnable.class, AllocationEnable::from);
 
         return JsonMapper.builder()

@@ -15,6 +15,8 @@ import org.opensearch.supervisor.model.node.Assignment;
 import org.opensearch.supervisor.model.node.NodeJson;
 import org.opensearch.supervisor.model.node.NodeRole;
 import org.opensearch.supervisor.model.node.Registration;
+import org.opensearch.supervisor.model.task.TaskState;
+import org.opensearch.supervisor.model.node.ResetMode;
 import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
 import org.opensearch.supervisor.model.plan.Planner;
@@ -35,6 +37,8 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -1093,4 +1097,173 @@ class ActingTests {
         assertNotNull(assignment, "yet the coordinator was told anyway");
         assertTrue(assignment.tenants().get(ACME).coordinates());
     }
+
+    // ------------------------------- consumer-pointer resets (DESIGN.md §21, data plane findings 6 and 8)
+
+    private void submitResumeTask(String taskId, int shard, String mode, String value) {
+        String json = "{\"task_id\":\"" + taskId + "\",\"type\":\"resume-ingestion\",\"index\":\"my-index\","
+            + "\"index_uuid\":\"" + UUID + "\",\"state\":\"pending\",\"submitted_at\":1000,\"sequence\":1,"
+            + "\"details\":{\"reset_settings\":[{\"shard\":" + shard + ",\"mode\":\"" + mode + "\","
+            + "\"value\":\"" + value + "\"}]}}";
+        store.put(Keys.tasksPrefix(ACME) + taskId, json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private Assignment.IngestionReset resetIn(NodeId node) {
+        Assignment assignment = assignmentOf(node);
+        if (assignment == null) {
+            return null;
+        }
+        var tenant = assignment.tenants().get(ACME);
+        if (tenant == null || tenant.indices().get(UUID) == null) {
+            return null;
+        }
+        return tenant.indices().get(UUID).ingestionReset();
+    }
+
+    @Test
+    void aResetReachesOnlyTheNodeHoldingThatShardsPrimary() {
+        FakeNode a = node(NODE);
+        FakeNode b = node(NODE_B);
+        a.start();
+        b.start();
+        // Two shards, one replica each, so both nodes hold a primary and a search replica.
+        createIndex(2, 1);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        submitResumeTask("resume-1", 0, "OFFSET", "1000");
+        // The nodes stop applying, so the reset stays outstanding long enough to be looked at. With them ticking
+        // the whole cycle -- hand over, acknowledge, withdraw -- finishes in about three passes.
+        for (int pass = 0; pass < 4; pass++) {
+            supervisor.tick();
+            advance();
+        }
+
+        // Exactly one node gets it: whichever holds shard 0's primary. A search replica has no consumer, and the
+        // data plane refuses a reset for a shard it was not made primary of rather than trusting this.
+        Assignment.IngestionReset onA = resetIn(NODE);
+        Assignment.IngestionReset onB = resetIn(NODE_B);
+        assertTrue(onA == null ^ onB == null, "exactly one holder: A=" + onA + " B=" + onB);
+
+        Assignment.IngestionReset reset = onA == null ? onB : onA;
+        assertEquals("resume-1", reset.id(), "the task id is the identity a node keys idempotence on");
+        assertEquals(java.util.Set.of(0), reset.shards().keySet(), "only the shard the task named");
+        assertEquals(ResetMode.OFFSET, reset.shards().get(0).mode());
+        assertEquals("1000", reset.shards().get(0).value());
+    }
+
+    @Test
+    void aResetIsHandedOverAcknowledgedAndThenWithdrawn() {
+        // The whole cycle, which is the thing worth asserting: the reset appears in the assignment, the node
+        // applies it and reports the version carrying it, the task completes on that acknowledgement, and the
+        // instruction is withdrawn. A first version of this test expected the reset to still be there after four
+        // passes and was simply wrong about its own design -- the loop closes, which is the point.
+        FakeNode a = node(NODE);
+        a.start();
+        createIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            advance();
+        }
+        submitResumeTask("resume-cycle", 0, "Offset", "1000");
+
+        boolean seen = false;
+        String modeAsWritten = null;
+        for (int pass = 0; pass < 12; pass++) {
+            supervisor.tick();
+            a.tick();
+            advance();
+            Assignment.IngestionReset reset = resetIn(NODE);
+            if (reset != null) {
+                seen = true;
+                assertEquals("resume-cycle", reset.id());
+                assertEquals(ResetMode.OFFSET, reset.shards().get(0).mode());
+                modeAsWritten = new String(store.get(Keys.nodeAssignment(NODE)).orElseThrow().value(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            }
+        }
+
+        assertTrue(seen, "the reset must reach the node's assignment at some point");
+        // Canonical spelling, whatever the client sent: the control plane stores the string verbatim after a
+        // case-insensitive check, so "Offset" arrives and one form leaves.
+        assertTrue(modeAsWritten.contains("\"mode\":\"offset\""), modeAsWritten);
+        // And no phantom fields: a convenience method called isEmpty() once put "empty": false in here.
+        assertFalse(modeAsWritten.contains("\"empty\""), modeAsWritten);
+
+        assertEquals(TaskState.COMPLETED, taskStateOf("resume-cycle"),
+            "the acknowledgement is what completes it");
+        assertNull(resetIn(NODE), "and the instruction is withdrawn once it has been acted on");
+    }
+
+    @Test
+    void aResetIsNotWithdrawnBeforeItIsAcknowledged() {
+        // The failure the acknowledgement exists to prevent, driven by a node that never applies anything: the
+        // reset must stay in the assignment and the task must stay open, for as long as nobody confirms it.
+        FakeNode a = node(NODE);
+        a.start();
+        createIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            advance();
+        }
+
+        submitResumeTask("resume-silent", 0, "OFFSET", "1000");
+        // The node stops applying: it keeps heartbeating, so it stays live, but never acknowledges a new version.
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            advance();
+        }
+
+        assertNotNull(resetIn(NODE), "still outstanding, so still written");
+        assertNotEquals(TaskState.COMPLETED, taskStateOf("resume-silent"),
+            "and nothing completed it on the strength of a version nobody applied");
+    }
+
+    private TaskState taskStateOf(String taskId) {
+        return store.get(Keys.tasksPrefix(ACME) + taskId)
+            .map(entry -> org.opensearch.supervisor.model.task.TaskRecord.from(entry.value()).state())
+            .orElse(null);
+    }
+
+    @Test
+    void anOutstandingResetIsNotRewrittenEveryPass() {
+        // It is part of the tenants map, so the no-op guard covers it -- but a reset that churned the assignment
+        // every pass would have the node re-read it constantly and look like a change each time.
+        FakeNode a = node(NODE);
+        a.start();
+        createIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            advance();
+        }
+        submitResumeTask("resume-stable", 0, "OFFSET", "1000");
+
+        // Supervisor only: the node never acknowledges, so the reset stays outstanding and its stability is what
+        // is under test rather than the speed of the handover.
+        supervisor.tick();
+        advance();
+        long withReset = assignmentOf(NODE).version();
+        assertNotNull(resetIn(NODE), "written on the first pass that sees the task");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            advance();
+        }
+
+        assertEquals(withReset, assignmentOf(NODE).version(), "an outstanding reset is stable, not rewritten");
+        assertNotNull(resetIn(NODE));
+    }
+
+
 }
