@@ -324,4 +324,38 @@ public class AssignmentTests extends OpenSearchTestCase {
         assertEquals(2, index.shards().size());
         assertEquals(3041L, index.configRevision());
     }
+
+    public void testAFieldNoContractMentionsIsIgnoredRatherThanFatal() {
+        // Not hypothetical. The supervisor briefly wrote {"empty": false} into a reset, from a convenience method
+        // called isEmpty() that Jackson read as a property -- caught on their side by looking at the bytes. A
+        // reader that refused an unknown field would have turned their getter into this node's outage, and the
+        // rolling-upgrade case is the same shape: a supervisor newer than this node writes fields it has never
+        // heard of, routinely.
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"},
+                    "ingestion_reset": {"id": "task-7", "empty": false, "invented_later": {"x": 1},
+                                        "shards": {"0": {"mode": "offset", "value": "1000", "also_new": true}}}}}}}}""");
+
+        IngestionReset reset = assignment.tenants().get(TenantId.of("acme")).indices().get("u").reset();
+        assertNotNull(reset);
+        assertEquals("task-7", reset.id());
+        assertEquals(IngestionReset.Mode.OFFSET, reset.shards().get(0).mode());
+        assertEquals("1000", reset.shards().get(0).value());
+    }
+
+    public void testTheModeIsToleratedInWhateverCaseItArrivesIn() {
+        // The contract pins lower case and the supervisor normalises to it -- but it shipped a version that wrote
+        // OFFSET, because the enum was not registered as a wire enum. Reading case-insensitively meant that bug
+        // could not reach this node as an unknown mode, which would have been a refused reset and a failed
+        // acknowledgement rather than a spelling difference nobody needed to notice.
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"},
+                    "ingestion_reset": {"id": "task-7",
+                                        "shards": {"0": {"mode": "OFFSET", "value": "1000"}}}}}}}}""");
+
+        IngestionReset reset = assignment.tenants().get(TenantId.of("acme")).indices().get("u").reset();
+        assertEquals(IngestionReset.Mode.OFFSET, reset.shards().get(0).mode());
+    }
 }

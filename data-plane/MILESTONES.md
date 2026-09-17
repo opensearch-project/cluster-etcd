@@ -564,8 +564,8 @@ to serve.
 The right answer is in the commit. `IngestionEngine` reads `StreamPoller.BATCH_START` out of the Lucene commit user
 data and resumes from it, falling back to `index.ingestion_source.pointer.init.reset` when there is no commit. So:
 
-- **local bytes** — the commit carries the pointer, so resuming from disk resumes from exactly where this copy left
-  off. Cheapest and most correct, which is why it is still checked first;
+- **local bytes** — the commit carries the pointer, so resuming from disk resumes from where this copy left off.
+  Cheapest and most correct, which is why it is still checked first;
 - **no local bytes** — start empty and let the poller replay. `earliest` is correct at the cost of doing all the
   work again; `latest` starts at the head and whatever arrived while the shard was gone is not indexed by this copy.
   Both are the tenant's declared policy rather than this node's decision, and the log line says which one is about
@@ -573,6 +573,31 @@ data and resumes from it, falling back to `index.ingestion_source.pointer.init.r
 
 A pull-based index is therefore **never probed** — nothing the repository could say would change the answer — which
 also removes a network read per fresh copy.
+
+**Correcting the first bullet, which said "resumes from exactly where this copy left off".** It does not, and the
+word "exactly" was wrong in a way that matters. `innerOpenEngineAndTranslog` calls
+`syncSegmentsFromRemoteSegmentStore` on **every** open of a remote-store-enabled index — the `EXISTING_STORE` path
+included, because `internalRecoverFromStore` uses the no-arg `openEngineAndRecoverFromTranslog()` and that passes
+`syncFromRemote = true` — and that method **deletes every local `segments_N` and commits the downloaded infos in
+its place** (`IndexShard.java:6278-6295`). So the `BATCH_START` the poller resumes from is the **last uploaded**
+commit's, not the last local one. Identical on a shard that refreshes and uploads constantly; different on an idle
+or paused one, which is exactly where a resume gets watched. `WORKING_NOTES.md` has the mechanism.
+
+**And it can fail outright, which is how this was found.** A restart with a surviving data directory produced
+`TranslogCorruptedException[... expected shard UUID ETNX... but got: oSd_8... this translog file belongs to a
+different translog]` from an index that has no translog at all. The chain is upstream's and it is recorded in
+`WORKING_NOTES.md`: `InternalEngine.<init>` calls `trimUnsafeCommits` unconditionally, so an `IngestionEngine` with
+a `NoOpTranslogManager` still validates a translog file against the commit's `TRANSLOG_UUID`; the commit has just
+been replaced by the downloaded one, whose UUID belongs to whichever copy uploaded it; and the fix-up that exists
+for precisely this — recreating the local translog with the downloaded UUID, `IndexShard.java:3404-3421` — is in the
+**replica** branch. A primary takes the other branch, which acts only when `isRemoteTranslogStoreEnabled()`, and
+that is false in `segments_only`. So a `segments_only` primary falls through both branches with nothing rewriting
+its translog.
+
+**That is an upstream gap rather than something this plugin can work around**, and the reason is worth stating: the
+download happens inside `innerOpenEngineAndTranslog`, after the recovery source has been chosen and before the
+engine exists, so no choice available to `RemoteRecovery` sits on either side of it. `recoverFromRemoteStore` calls
+the same no-arg open, so `REMOTE_STORE` is not an escape either.
 
 ### The gap, now closed: pausing ingestion had desired state with nowhere to live
 
@@ -614,13 +639,16 @@ Both directions, no latch, and the test that matters is the one asserting the fl
 `StateEquivalence` — a pause that comparison cannot see would be written, read, fabricated, and never applied to
 anything.
 
-**What is not proven:** none of this has been watched on a running node. The paused metadata is asserted as a pure
-function of the document, and every link after that is read from `../OpenSearch` rather than observed. The run
-worth doing is the obvious one — pause a `ingestion-fs` index, confirm the poller stops with documents still
-arriving in the file, resume, confirm it catches up from the pointer rather than from the start. The second half is
-the interesting one: `earliest` re-indexing everything would look a lot like a working resume.
+**Confirmed on a running node.** Pausing and resuming an index's ingestion both work against a real three-service
+deployment — the chain above is no longer only a reading of the server's source. Note what the run needed first:
+the restart it took to get there is what surfaced the `TranslogCorruptedException` recorded below, so "the pause
+works" and "a pull-based primary can restart" were separate facts that had to be established in that order.
 
-### Consumer-pointer resets — **the node half is done; nothing writes one yet**
+**And the resume catches up from the pointer**, which was the last thing here that a document count could have
+contradicted. See the reset section below for the run that showed it, and for the trick that made it visible at
+all.
+
+### Consumer-pointer resets — **done on both sides, and confirmed on a running node**
 
 `_resume` may carry `reset_settings` — per shard, move the consumer to an offset or timestamp. Those are
 instructions rather than desired state, so the control plane puts them on the task and the supervisor carries them
@@ -665,20 +693,68 @@ Lucene commit, and M8.2's recovery already prefers local bytes and reads `Stream
 commit's user data. A copy that moves after a reset resumes from the reset point with the instruction existing
 nowhere at all.
 
-**The one hole, and it is real rather than theoretical.** The applied-id memory is in this process, so a restart
-between applying a reset and the supervisor observing the acknowledgement re-applies it, rewinding the consumer by
-whatever it consumed in between. Bounded by one supervisor pass, and it re-consumes rather than loses: every
-ingested message must carry `_id` — `MessageProcessorRunnable` rejects one that does not — so a replay re-indexes
-the same documents rather than duplicating them. The exception worth knowing is a stream of `_op_type: create`
-messages, where a replay is a version conflict per document and the error policy decides whether that drops or
-blocks.
+**Two holes, both real rather than theoretical.**
 
-**What is not proven:** no reset has ever been carried out. `IndicesServiceIngestionPollers` is the one part with
-no test behind it — it needs an `IngestionEngine` behind a started primary, which this sandbox cannot produce — and
-nothing writes an `ingestion_reset` yet, since the supervisor's half is agreed and unimplemented. So the seam is
-argued from the server's source and the rules above it are tested. The run worth doing, once something writes one:
-reset an `ingestion-fs` index's shard to line 0 while it is running, and confirm from the document count that it
-re-consumed rather than that the call returned.
+**The landing state was read from the wrong place, and a running node found it.** This plugin logged "left
+ingestion paused" while carrying out a reset that arrived with a resume. Applying a cluster state is asynchronous
+-- `ClusterApplierServiceStateApplier` queues it and returns -- so on the pass an operator's resume arrives, the
+applied state still says paused while the index document says running, and the reset landed the poller on the
+stale value. It is not self-correcting: the pass after fabricates an identical state, `StateEquivalence` sees no
+change, nothing is published, and `updateShardIngestionState` is never called again, so the stream stays stopped
+for ever by the instruction meant to restart it. The pause state now comes from the `IndexConfig` this pass read,
+which is the only authority that cannot be stale, and a test pins the two disagreeing.
+
+**The applied-id memory does not survive a restart.** It lives in this process, so a restart
+between applying a reset and the supervisor observing the acknowledgement re-applies it, rewinding the consumer by
+whatever it consumed in between.
+
+**Correcting what an earlier version of this said:** "bounded by one supervisor pass" was an understatement. The
+supervisor has since measured the hand-over/acknowledge/withdraw cycle at **about three of its passes**, because the
+reset is withdrawn only once the acknowledgement has been observed — so the exposed interval is the part of that
+cycle after this node applies, not one pass. A test now walks four passes with the reset still present rather than
+two, which is the difference between exercising that window and clipping it.
+
+It still re-consumes rather than loses: every ingested message must carry `_id` — `MessageProcessorRunnable` rejects
+one that does not — so a replay re-indexes the same documents rather than duplicating them. The exception worth
+knowing is a stream of `_op_type: create` messages, where a replay is a version conflict per document and the error
+policy decides whether that drops or blocks.
+
+**Left open deliberately, and the reason is worth keeping**, because the obvious fixes are both worse:
+
+- **The pointer cannot be used to detect that a reset happened.** A rewind from 5000 to 1000 looks, before it is
+  applied, exactly like a job already finished — which is the whole reason the design uses an acknowledgement. So
+  "is the consumer already at or past the target" would drop the instruction rather than protect it.
+- **The only durable place that would work is the Lucene commit**, beside `StreamPoller.BATCH_START` where the
+  reset's own effect already lands. That is the engine's to write and not a plugin's, so closing this properly is an
+  upstream change rather than a local one — and a ledger anywhere else would have to be correct across exactly the
+  crash it exists for.
+
+**Confirmed end to end, and the way it was confirmed is the part to remember.** A reset is very nearly
+unobservable: because every ingested message carries its own `_id`, re-consuming a range rewrites the same
+documents with the same content, so a reset that worked and a reset that did nothing produce an identical index.
+A document count does not separate them either — the count is unchanged either way, which is what the earlier
+note here asked for and would not have got.
+
+The run that settled it changed the *payloads* behind the stable ids: the ndjson source was edited so the three
+documents read `foo modified`, `bar modified`, `baz modified`, then the consumer was reset to offset 2. A search
+afterwards returned `foo`, `bar`, `baz modified` — only the third document had been re-indexed. That single result
+pins three separate things: the pointer landed at exactly offset 2 (**offsets are 0-based line numbers for the
+file source**, so offset 2 is the third line), the poller was running afterwards rather than left paused, and it
+consumed from the pointer rather than replaying the file. `DefaultStreamPoller` logged
+`Resetting pointer by seeking to pointer 2` in the same run.
+
+**Worth knowing that the technique does not transfer.** Editing history is a property of a file source; Kafka
+does not let a producer go back and change an earlier message, so on the deployment this is actually built for
+there is no way to make a replay visible from the index alone. Anything that needs to *observe* a reset in
+production has to watch the consumer position as it happens, not the documents afterwards.
+
+**Which cuts the other way on the restart hole above.** The same id-stability that makes a replay harmless makes
+it undetectable: a node that re-applies a reset after a restart rewrites the same documents and leaves no trace in
+the index at all. The bound on that hole is real, but nobody will ever notice it being hit.
+
+**Still not tested rather than not proven:** `IndicesServiceIngestionPollers` has no test behind it, because it
+needs an `IngestionEngine` behind a started primary that this sandbox cannot produce. It now has a confirmed run
+underneath it, which is better than an argument, and still not a regression test.
 
 ## M9. Document replication
 

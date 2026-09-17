@@ -27,7 +27,7 @@ import java.util.function.Supplier;
  *
  * <p>One pass is {@link #publish()}, and it is explicit rather than a background loop for the same reason
  * the supervisor's pass is: a pass that only advances when asked is a pass a test can reason about. The
- * scheduling lives in {@link PublishScheduler}, which does nothing but call this on a timer.
+ * scheduling lives in {@code ScheduledPasses}, which does nothing but call this on a timer.
  *
  * <h2>The write order is the contract's, and it is not incidental</h2>
  *

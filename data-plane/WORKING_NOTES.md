@@ -491,7 +491,64 @@ point with no instruction surviving anywhere. `StreamPoller.ResetState` is `EARL
 `RESET_BY_OFFSET`, `RESET_BY_TIMESTAMP`, `NONE` — the middle two are what a `reset_settings` mode maps onto, and
 the value is a string either way, parsed as millis for a timestamp.
 
-### Every ingested message must carry `_id`, which is what makes a replay survivable
+### An `IngestionEngine` validates a translog it will never use, and `segments_only` has nobody to fix it up
+
+The exception, from a restart with a surviving data directory:
+
+```
+EngineCreationFailureException[failed to create engine]; nested: TranslogCorruptedException[translog from
+source [.../0/translog/translog-1.tlog] is corrupted, expected shard UUID ETNXc9meSvuW2ibmGmrGMA but got:
+oSd_8bYpQHmusojL5h1afQ this translog file belongs to a different translog]
+```
+
+A pull-based index has no translog — `IngestionEngine` uses a `NoOpTranslogManager` — and it is still required to
+have a *consistent* one, because the check happens before any translog manager exists. Four links, each read from
+the server's source:
+
+- **`InternalEngine.<init>` calls `store.trimUnsafeCommits(...)` unconditionally**, then
+  `Objects.requireNonNull(userData.get(Translog.TRANSLOG_UUID_KEY))` — `InternalEngine.java:276-278`. An
+  `IngestionEngine` reaches it through `super(engineConfig)` at `IngestionEngine.java:79`, so "no translog" never
+  gets a chance to be true.
+- **`trimUnsafeCommits` takes the UUID from the last Lucene commit** and validates the local translog file against
+  it — `Store.java:2242-2249`. So the message's "expected" UUID is the *commit's* and the "got" is the *file's*
+  (`TranslogHeader.java:144-158`).
+- **The commit is replaced from the remote store on the way in.** `innerOpenEngineAndTranslog` calls
+  `syncSegmentsFromRemoteSegmentStore(false)` whenever the index is remote-store-enabled and `syncFromRemote`
+  (`IndexShard.java:3390-3392`), and that method **deletes every local `segments_N` and commits the downloaded
+  infos** — `IndexShard.java:6278-6295`, whose user data is copied wholesale by `Store.commitSegmentInfos`
+  (`Store.java:1032-1035`). `overrideLocal=false` does not protect the commit; it only affects segment files. So
+  the `TRANSLOG_UUID` in play belongs to whichever copy uploaded, not to this disk.
+- **The fix-up for exactly this exists, and is replica-only.** `IndexShard.java:3404-3421`, whose own comment says
+  *"when we download segments from remote segment store, we need to make sure that local translog is having the
+  same UUID that is referred by the segments. If they are different, engine open fails with
+  TranslogCorruptedException"* — and recreates the local translog with the downloaded commit's UUID. It sits in the
+  `else` branch of `if (shardRouting.primary())`. A **primary** takes the other branch, which does something only
+  when `isRemoteTranslogStoreEnabled()`.
+
+`isRemoteTranslogStoreEnabled()` is `remoteStoreTranslogRepository != null && !isEmpty()` — `IndexSettings.java:1671`.
+**Which is false in exactly the mode this whole design runs in.** A `segments_only` primary is a copy that downloads
+a foreign commit and then falls through both branches with nothing rewriting its translog.
+
+Worth noting that upstream already knows an ingestion source has no checkpoint worth loading — two lines above the
+call that fails, `openEngineAndRecoverFromTranslog` skips `loadGlobalCheckpointToReplicationTracker()` when
+`useIngestionSource()` (`IndexShard.java:3306-3310`). The engine constructor then reads the same checkpoint out of
+the translog file anyway.
+
+### A remote-store-backed copy does not resume from its own last commit
+
+The correction the exception above forced, and it is worth separating from it because it is true whether or not
+anything throws. `syncSegmentsFromRemoteSegmentStore` runs on **every** engine open of a remote-store-enabled
+index, on the `EXISTING_STORE` path as much as any other — `internalRecoverFromStore` calls the no-arg
+`openEngineAndRecoverFromTranslog()`, which passes `syncFromRemote = true` (`IndexShard.java:3286-3290`).
+
+So "recover from local bytes" does not mean the local commit is what the engine opens on. Every local `segments_N`
+is deleted and the downloaded infos are committed in its place. For a pull-based index that means
+`StreamPoller.BATCH_START` — the consumer position M8.2 resumes from — is the **last uploaded** commit's, not the
+last local one. Those are the same thing on a busy shard that refreshes and uploads constantly. They are not the
+same thing on an idle or paused one, which is where the gap is widest and where a resume is most likely to be
+watched.
+
+### Every ingested message must carry `_id`, which is what makes a replay survivable — and invisible
 
 `MessageProcessorRunnable` rejects a message with no `_id` field outright — `"ID field is missing. Invalid
 message."` — so a pull-based index's documents are always id-addressed rather than auto-generated. That is worth
@@ -506,6 +563,28 @@ in mind before relying on it:
   create-mode stream turns a replay into a stalled shard.
 - **`_version` in the payload** switches the operation to `VersionType.EXTERNAL`, which makes a replay a no-op
   rather than a rewrite — better, and worth knowing it is the tenant's choice rather than the default.
+
+### How to see a consumer reset at all, since id-stability hides it
+
+The other face of the note above, and it cost a real debugging session to notice. Re-consuming a range rewrites
+the same ids with the same content, so **a reset that worked and a reset that did nothing leave an identical
+index** — same documents, same count, same everything. The obvious check, "did the document count change", answers
+neither question.
+
+The way through, for the `ingestion-fs` source: **edit the payloads behind the stable ids, then reset.** Change
+the ndjson so the documents read `foo modified`, `bar modified`, `baz modified`, reset the consumer to offset 2,
+and search. Getting back `foo`, `bar`, `baz modified` says three things at once that nothing else does — the
+pointer landed exactly where it was sent, the poller was running afterwards rather than left paused, and it
+consumed *from* the pointer instead of replaying the file.
+
+Two things to carry away from it:
+
+- **Offsets are 0-based line numbers for the file source.** Offset 2 is the third line. The kind of off-by-one
+  that reads as "the reset went to the wrong place" when it went exactly where it was told.
+- **The technique does not transfer to production.** Rewriting history is a property of a file; Kafka does not
+  let a producer modify an earlier message. On the deployment this is built for there is no way to see a replay
+  from the index afterwards, so anything that needs to observe a reset has to watch the consumer position while
+  it happens.
 
 ## Tests are JUnit 4, and this is not a preference
 
@@ -563,26 +642,39 @@ runs here with nothing edited, which was the only property that mattered.
 
 Same environment the supervisor's `WORKING_NOTES.md` describes, and its notes hold here. In short:
 
-- **Gradle cannot run in here** — it fails creating its file-lock service, because binding a socket is
-  denied. Use `tools/jbuild.sh`, and say plainly which of the two produced a result. The Gradle build does
-  pass on a machine that can run it, and the two now agree test for test; what `jbuild.sh` still cannot tell
-  you is anything about plugin packaging, forbidden-APIs, `testingConventions` or the license checks, and
-  three of those four have already caught something real.
+- **Gradle runs in here now**, as of 2026-09-17 — an allowlist change, not anything about the build. It used
+  to fail creating its file-lock service because binding a socket was denied, and the note that stood here
+  said so. `./gradlew build` passes, and it ran the same 324 tests as `tools/jbuild.sh` across the same 26
+  classes: the two harnesses agree test for test, which is worth knowing when one of them says something
+  surprising.
 
-  **Both of the build's own complaints so far needed a human, and neither was about the code.** The
-  forbidden-APIs failures — `System.out.println` in a `main`, `Files.createTempDirectory` in a test — are in
-  `opensearch-test-signatures.txt` and `jdk-signatures.txt`, which are worth reading up front rather than
-  discovering one task at a time. And `validateNebulaPom` wants publishing configuration that a plugin
-  nobody publishes to Maven does not have; `cluster-etcd` disables it too, in an `afterEvaluate`. Turning it
-  off is the right call until there is somewhere to publish to, and then it is a real `publishing` block
-  rather than a smaller edit.
+  **Prefer Gradle now, and keep `jbuild.sh` for the inner loop.** Gradle is the only one that runs javadoc,
+  forbidden-APIs, `testingConventions`, packaging and the license checks — and the first run after the
+  allowlist change found four things that had been sitting in the tree precisely because nothing could look:
+  a `{@link PublishScheduler}` pointing at a class renamed to `ScheduledPasses`, an `@param coordinated`
+  against a parameter named `coordinatedShards`, and two `String#formatted` calls that forbidden-APIs rejects
+  for using the default locale. None was a bug a test would ever have caught, and all four had survived
+  months of green test runs.
+
+  `jbuild.sh` is still much faster and still compiles against `../OpenSearch`'s built jar rather than a
+  published artifact, which matters when the server change you depend on is local. Say plainly which of the
+  two produced a result.
+
+  **The forbidden-APIs signatures are worth reading up front** — `opensearch-test-signatures.txt` and
+  `jdk-signatures.txt` — rather than discovering them one task at a time. `String#formatted`,
+  `System.out.println` in a `main`, and `Files.createTempDirectory` in a test have all been caught here. And
+  `validateNebulaPom` wants publishing configuration that a plugin nobody publishes to Maven does not have;
+  `cluster-etcd` disables it too, in an `afterEvaluate`.
 - **No listening sockets, no raw TCP, no Unix sockets, no Maven Central, no containers.** So **a real
   OpenSearch node cannot be started here**, which is the sharpest limitation for this repository
   specifically: everything about talking to the store is testable, and nothing about a running node is.
   Put the risk in pure functions and test those exhaustively — `NodeState.buildClusterState` is a pure
   function of (previous state, desired state) and should stay one.
 - **`../OpenSearch` must be built once** (`./gradlew assemble`) for `tools/jbuild.sh` to find jars, and
-  installed to mavenLocal for the Gradle build to resolve.
+  installed to mavenLocal for the Gradle build to resolve. **Do not let a test here depend on an unmerged
+  server change**: `ClusterlessIndexSettingsTests` called `IndexScopedSettings.getRegisteredSettings()`, which
+  lives on an OpenSearch branch, and this whole build went red the day that branch stopped being checked out.
+  A test that can be broken by which branch a sibling repository is on is a test that will be.
 - **Commits are signed**, and signing needs an interactive authorisation the
   sandbox cannot answer, so `git commit` hangs rather than failing. Stage the work, write the message to a
   file, and let a human run `git commit -F`.

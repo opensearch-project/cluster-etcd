@@ -144,11 +144,18 @@ public class ClusterlessIndexSettingsTests extends OpenSearchTestCase {
         // must be spelled the way the control plane matches. Both are asserted rather than assumed, because
         // both are invisible from either side alone.
         IndexScopedSettings registry = registryWith(new ClusterlessPlugin().getSettings());
-        List<String> registered = new ArrayList<>();
-        registry.getRegisteredSettings().forEach(setting -> registered.add(setting.getKey()));
 
         for (Setting<?> identity : ClusterlessIndexSettings.all()) {
-            assertTrue(identity.getKey() + " would not appear in the settings registry", registered.contains(identity.getKey()));
+            // Asked one key at a time rather than by enumerating the registry, and deliberately: the
+            // enumeration this really wants is `getRegisteredSettings()`, which is the endpoint's own accessor
+            // and lives on an OpenSearch branch that has not merged. Depending on it here made this build red
+            // whenever `../OpenSearch` was on anything else, which is not a thing a test should be able to do
+            // to a repository. `get` is equivalent for the keys this loop covers: it resolves through
+            // `getRaw`, which consults `keySettings` then `complexMatchers` -- the same two maps the
+            // enumeration unions -- and the assertion below pins every one of these keys as exact. Worth
+            // moving back to the enumeration once that API is in a released OpenSearch, because it would also
+            // catch a setting registered under a *different* key than the one it reports.
+            assertNotNull(identity.getKey() + " would not appear in the settings registry", registry.get(identity.getKey()));
 
             List<String> propertyNames = new ArrayList<>();
             identity.getProperties().forEach(property -> propertyNames.add(property.name()));

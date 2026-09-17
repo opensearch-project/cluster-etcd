@@ -125,9 +125,9 @@ public final class AssignmentPoller {
     }
 
     /**
-     * @param coordinated where the shards of coordinated tenants are. Read once per pass, like everything else the
-     *     fabrication is given: it is several reads of the store, and the fabricator runs twice on a pass that
-     *     applies.
+     * @param coordinatedShards where the shards of coordinated tenants are. Read once per pass, like everything
+     *     else the fabrication is given: it is several reads of the store, and the fabricator runs twice on a pass
+     *     that applies.
      */
     public AssignmentPoller(
         KeyValueStore store,
@@ -267,9 +267,13 @@ public final class AssignmentPoller {
             // primary with an ingestion engine behind it, which the state applied a moment ago does not yet have
             // -- so the ordinary first pass finds the shard not ready, reports applying, and the pass after does
             // it. Level-triggered, like everything else: the reset stays in the assignment until acknowledged.
+            //
+            // The desired state goes in too, and it is not decoration: applying is asynchronous, so the live
+            // state here can still be the one from before this pass's publication. The pause state a reset lands
+            // on has to come from the document, or a resume carrying a reset leaves the poller stopped.
             lastResets = ingestionResets == null || applyEnabled == false
                 ? IngestionResets.Outcome.NOTHING
-                : ingestionResets.apply(assignment, currentState.get());
+                : ingestionResets.apply(assignment, desired, currentState.get());
 
             publisher.reportApplied(ackFor(desired));
         } catch (Exception e) {

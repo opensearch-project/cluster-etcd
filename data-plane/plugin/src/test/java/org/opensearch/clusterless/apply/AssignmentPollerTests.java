@@ -146,9 +146,18 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
     }
 
     private static String assignmentJson(long version, String shards) {
-        return """
-            {"version": %d, "tenants": {"acme": {"role": "data", "indices": {
-              "%s": {"name": "my-index", "config_revision": 3041, "shards": %s}}}}}""".formatted(version, UUID, shards);
+        // String.format with an explicit locale rather than String#formatted, which forbiddenapis rejects for
+        // using the default one. A %d rendered in a locale with non-ASCII digits would be a JSON document the
+        // node cannot parse, produced only on the machine that has that locale.
+        return String.format(
+            java.util.Locale.ROOT,
+            """
+                {"version": %d, "tenants": {"acme": {"role": "data", "indices": {
+                  "%s": {"name": "my-index", "config_revision": 3041, "shards": %s}}}}}""",
+            version,
+            UUID,
+            shards
+        );
     }
 
     // ---------------------------------------------------------------- absent is not empty
@@ -655,11 +664,17 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
     }
 
     private static String assignmentWithReset(long version, String taskId, String mode) {
-        return """
-            {"version": %d, "tenants": {"acme": {"role": "data", "indices": {
-              "%s": {"name": "my-index", "config_revision": 3041, "shards": {"0": "PRIMARY"},
-                     "ingestion_reset": {"id": "%s",
-                                         "shards": {"0": {"mode": "%s", "value": "1000"}}}}}}}}"""
-            .formatted(version, UUID, taskId, mode);
+        return String.format(
+            java.util.Locale.ROOT,
+            """
+                {"version": %d, "tenants": {"acme": {"role": "data", "indices": {
+                  "%s": {"name": "my-index", "config_revision": 3041, "shards": {"0": "PRIMARY"},
+                         "ingestion_reset": {"id": "%s",
+                                             "shards": {"0": {"mode": "%s", "value": "1000"}}}}}}}}""",
+            version,
+            UUID,
+            taskId,
+            mode
+        );
     }
 }

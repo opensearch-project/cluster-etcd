@@ -59,11 +59,18 @@ import java.util.Objects;
  *
  * <p><b>The one hole, stated because it is real:</b> a restart between applying a reset and the supervisor
  * observing the acknowledgement loses this memory, and the reset would be applied a second time — rewinding the
- * consumer by whatever it had consumed in between. It is bounded by one supervisor pass and it re-consumes rather
- * than loses, because every ingested message must carry {@code _id} ({@code MessageProcessorRunnable} rejects one
- * that does not), so a replay re-indexes the same documents rather than duplicating them. The exception worth
- * knowing is a stream of {@code _op_type: create} messages, where a replay is a version conflict per document and
- * the error policy decides whether that drops or blocks.
+ * consumer by whatever it had consumed in between. The supervisor measured the hand-over/acknowledge/withdraw cycle
+ * at about <b>three of its passes</b>, since a reset is withdrawn only once the acknowledgement has been seen, so
+ * the exposed interval is the tail of that cycle rather than a single pass. It re-consumes rather than loses,
+ * because every ingested message must carry {@code _id} ({@code MessageProcessorRunnable} rejects one that does
+ * not), so a replay re-indexes the same documents rather than duplicating them. The exception worth knowing is a
+ * stream of {@code _op_type: create} messages, where a replay is a version conflict per document and the error
+ * policy decides whether that drops or blocks.
+ *
+ * <p>Left open rather than closed, because both obvious fixes are worse. The consumer's <em>position</em> cannot
+ * detect that a reset happened — a rewind looks exactly like a finished job before it is applied, which is why the
+ * design uses an acknowledgement at all — and the only durable place that would work is the Lucene commit beside
+ * {@code StreamPoller.BATCH_START}, which the engine writes and a plugin cannot.
  */
 public final class IngestionResets {
 
@@ -166,7 +173,7 @@ public final class IngestionResets {
      * <p>Separated from {@link #apply} so that every rule above is testable without a running shard: which resets
      * are outstanding, which are refused, and what the pause state to land on is.
      */
-    public Outcome plan(Assignment assignment, ClusterState state) {
+    public Outcome plan(Assignment assignment, DesiredState desired, ClusterState state) {
         List<Action> actions = new ArrayList<>();
         List<String> outstanding = new ArrayList<>();
         List<String> refused = new ArrayList<>();
@@ -196,6 +203,22 @@ public final class IngestionResets {
                         return;
                     }
 
+                    // The pause state to land on comes from the index document this pass read, never from the
+                    // applied cluster state. Applying a state is asynchronous -- ClusterApplierServiceStateApplier
+                    // queues it and returns -- so on the pass an operator's resume arrives, the applied state
+                    // still says paused while the document says running. Reading the applied one there landed the
+                    // poller paused right after the resume, and the pass after that fabricates an identical state,
+                    // so StateEquivalence sees no change, nothing is published, and nothing ever corrects it: a
+                    // stream stopped for ever by the instruction that was supposed to restart it.
+                    DesiredState.DesiredIndex desiredIndex = desired.indices().get(new DesiredState.IndexKey(tenant, uuid));
+                    if (desiredIndex == null) {
+                        // Declined or not resolved this pass -- the copy itself is not being built, so there is
+                        // nothing to move a consumer on. Outstanding rather than refused: the reason it is absent
+                        // is usually a torn read that the next pass fixes.
+                        outstanding.add(what + ": this node has not resolved that index this pass");
+                        return;
+                    }
+
                     IndexMetadata metadata = metadataOf(state, uuid);
                     if (metadata == null) {
                         outstanding.add(what + ": the index is not in this node's state yet");
@@ -220,9 +243,8 @@ public final class IngestionResets {
                                 reset.id(),
                                 pointer.mode(),
                                 pointer.value(),
-                                // What the index document asks for, not what the poller is doing now. The
-                                // resume very likely arrived several passes ago.
-                                metadata.getIngestionStatus().isPaused()
+                                // The document this pass read, which is the only authority that cannot be stale.
+                                desiredIndex.config().ingestionPaused()
                             )
                         );
                     }
@@ -243,8 +265,8 @@ public final class IngestionResets {
      * unapplied reset holds the supervisor's task open, where a wrongly-recorded one would let it complete
      * having moved nothing.
      */
-    public Outcome apply(Assignment assignment, ClusterState state) {
-        Outcome planned = plan(assignment, state);
+    public Outcome apply(Assignment assignment, DesiredState desired, ClusterState state) {
+        Outcome planned = plan(assignment, desired, state);
         if (planned.actions().isEmpty()) {
             return planned;
         }
