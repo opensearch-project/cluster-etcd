@@ -1,6 +1,6 @@
 # Findings from the data plane
 
-Seven changes wanted in this repository, all found by running the real data plane
+Eight items wanted in this repository, all found by running the real data plane
 (`../opensearch-data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
@@ -8,10 +8,11 @@ design spends most of its effort trying to avoid — so they are worth closing p
 third was a missing field that made a projection unable to serve either of the two readers it was written for; it
 is **done** as of `50ecdf5`, and reading it is still worth it for why an address was not sufficient. The fourth
 blocks the milestone the third unblocked: nothing ever assigns the coordinator role, so the routing this enabled
-cannot be exercised.
+cannot be exercised. The eighth is not a defect at all — it is this side's answer to `DESIGN.md` §21.2, agreeing
+with the acknowledgement design and reporting that the sequencing underneath it cannot work as written.
 
 Each item says what happened, why the current behaviour is wrong, where the code is, what a fix has to be careful
-about, and the tests worth having. All three are self-contained.
+about, and the tests worth having. All of them are self-contained.
 
 ---
 
@@ -674,6 +675,101 @@ cheaper start.
 Delete an index and recreate it with the same name, then watch a data node's `/_clusterless/status`: the deferred
 line names the old uuid against the new document, and `assignment_version` stops moving. It survives restarts of
 the supervisor, which is what makes it a state problem rather than a timing one.
+
+---
+
+## 8. A consumer-pointer reset arrives after the resume that makes it illegal
+
+**Not a defect here — an answer to `DESIGN.md` §21.2, and one thing in it that will not work as sequenced.** The
+pause half (§21.1) is done on this side: `IndexConfig` reads `ingestion_status.is_paused` and both fabricators put
+it into `IndexMetadata` via `IngestionStatus`, so a pause reaches a running poller level-triggered with no new
+plumbing. Verified by reading the server: `IndicesClusterStateService.createOrUpdateShards` calls `updateShard` for
+every shard on the node on **every** applied state with no equality guard, and that calls
+`IndexShard.updateShardIngestionState(IndexMetadata)`. Nothing latches, and `resume` is as ordinary as `pause`.
+
+### The agreement first, because it is the bigger half
+
+**Requiring an acknowledgement rather than detecting the effect is right**, and the argument for it is the one that
+matters: rewinding a consumer from 5000 to 1000 looks, *before* it is applied, exactly like a job already done. Any
+completion rule that reads the pointer drops that instruction before anything acts on it. Both obligations §21.2
+puts on this side are accepted:
+
+- `applied: applied` will mean the reset too, or the acknowledgement means nothing;
+- idempotence keys on the reset's `id`, not on the assignment version, because the version moves for unrelated
+  reasons and re-applying a reset is the rewind-for-ever failure arriving by another route.
+
+### What will not work: the pause and the reset arrive by different channels, and the fast one is the wrong one
+
+Upstream refuses a reset on a poller that is running:
+
+```java
+// IngestionEngine.resetStreamPoller
+if (streamPoller.isPaused() == false) {
+    throw new IllegalStateException("Cannot reset consumer when poller is not paused");
+}
+```
+
+And the control plane writes the resume **before** it records the task carrying the resets —
+`IngestionHandlers.setPaused` sets `ingestion_status.is_paused` to `false`, `indices.replace(...)` it, and only then
+`tasks.submit(TYPE_RESUME_INGESTION, …, details)`. Those two facts compose badly, because the two halves of one
+operator action reach the node down different paths of different lengths:
+
+- `is_paused: false` is **desired state** in a document this node already reads every pass. It converges on the
+  next pass, unconditionally.
+- the reset is an **instruction** that has to be observed by the supervisor, planned into an assignment, written,
+  and read. Several passes, at best.
+
+So the ordinary case is that the node resumes the poller from the index document, and the reset arrives afterwards
+and throws. The window is not a race to be narrowed — it is the normal ordering.
+
+### The fix is on this side, and it is cheap, but the contract has to say so
+
+The node must not depend on the poller's current state. `IngestionSettings` is a partial update — every field
+nullable — and `IngestionEngine.updateIngestionSettings` applies the reset *first* and the pause flag second, so
+one call carrying both cannot help: the reset still runs against a live poller. Two calls to
+`IndexShard.updateShardIngestionState(IngestionSettings)`, which is local and needs no cluster manager:
+
+1. `setIsPaused(true)` — stop the poller whatever it was doing;
+2. `setResetState(...).setResetValue(...).setIsPaused(config.ingestionPaused())` — reset, then land on the pause
+   state the index document actually asks for.
+
+That is correct for a poller that was already paused, one that was resumed a pass ago, and one that was never
+paused at all. It costs a brief stop on a stream that was running, which is inherent to resetting a consumer
+rather than something this sequencing adds.
+
+**So the obligation is mine, and what I need from the contract is only that it be written down** — that a node
+receiving `ingestion_reset` pauses before applying it rather than assuming the document's pause has been applied
+first. A node that trusted the ordering would work in every test where the reset happened to arrive first.
+
+### Two things to pin in the contract while it is open
+
+- **The mode spelling, in one place.** The control plane validates `OFFSET` and `TIMESTAMP` on the wire; upstream's
+  enum is `StreamPoller.ResetState.RESET_BY_OFFSET` and `RESET_BY_TIMESTAMP`; the value is always a string, parsed
+  as millis for a timestamp. Three repositories are currently free to guess at the middle spelling. The sketch's
+  `{"mode": "offset", "value": "1000"}` is fine — say that it is the wire spelling lowercased and that the node
+  maps it.
+- **Completion when the resets span nodes.** A reset is per shard and an assignment is per node, so a task naming
+  shards 0 and 1 whose primaries sit on different nodes needs *both* acknowledgements. And a shard whose primary is
+  unassigned cannot acknowledge at all, so the task must stay incomplete with a reason rather than complete or
+  fail — the same patience as everything else here.
+
+### Why no memory is needed anywhere, which is worth stating in §21.2
+
+`resetStreamPoller` ends with `flush(true, true)` — "force flush to persist the new batch start pointer" — so a
+reset lands in the Lucene commit. This plugin's recovery already prefers local bytes and reads
+`StreamPoller.BATCH_START` out of the commit user data (M8.2), so a shard that moves *after* a reset resumes from
+the reset point without the instruction existing anywhere any more. The reset survives through the commit rather
+than through the assignment, which is exactly why the supervisor can stop writing it the moment it is acknowledged
+and why nothing needs to remember having applied it.
+
+### Tests worth having, on your side
+
+- a `resume-ingestion` task carrying resets writes `ingestion_reset` into the assignment of the node holding each
+  named shard's **primary**, and not into any other node's;
+- the task completes only when every named shard's holder reports `applied` at the assignment version now in the
+  store, and stays incomplete — with a reason — when one of them has no primary;
+- the reset stops being written once the task completes, and re-observing the same state does not re-plan it;
+- an assignment version that moves for an unrelated reason does not change the reset's `id`.
 
 ---
 
