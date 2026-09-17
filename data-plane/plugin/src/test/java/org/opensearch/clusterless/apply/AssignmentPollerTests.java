@@ -564,4 +564,102 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
         assertEquals(1, poller.status().copies());
         assertEquals(List.of(), poller.status().deferred());
     }
+
+    // ---------------------------------------------------------------- an outstanding reset holds the ack open
+
+    public void testAnOutstandingResetKeepsTheAckAtApplyingEvenWhenEveryCopyIsServing() {
+        // The acknowledgement promise, and the whole reason the supervisor can complete a reset task at all: it
+        // completes on the version this node reports, so "applied" has to mean the reset too. Here every copy is
+        // started and the reset has not landed -- the ordinary case on the pass one arrives, since the shard has
+        // to be started before its consumer can be moved.
+        writeAssignment(assignmentWithReset(42, "task-7"));
+        AssignmentPoller poller = pollerWithResets(new IngestionResets(notStartedYet()));
+
+        poller.poll();
+        recordingApplier.finishRecovery();
+        poller.poll();
+        publisher.publish();
+
+        assertEquals("applying", publisher.status().appliedOutcome().wireName());
+        assertTrue(heartbeatJson(), heartbeatJson().contains("reset(s) outstanding"));
+    }
+
+    public void testAResetThatCanNeverBeCarriedOutFailsTheAck() {
+        // An unknown mode, which is the one refusal a node can be handed by a newer supervisor. Reported as a
+        // failure rather than left as "applying" for ever: nothing more time can fix, and the alternative is a
+        // task that waits on a node that has already decided.
+        writeAssignment(assignmentWithReset(42, "task-7", "by_sequence_number"));
+        AssignmentPoller poller = pollerWithResets(new IngestionResets(IngestionResets.Pollers.NONE));
+
+        poller.poll();
+        recordingApplier.finishRecovery();
+        poller.poll();
+        publisher.publish();
+
+        assertEquals("failed", publisher.status().appliedOutcome().wireName());
+        assertTrue(heartbeatJson(), heartbeatJson().contains("not carried out"));
+    }
+
+    public void testWithNoResetsToCarryOutTheAckIsUnchanged() {
+        // The guard on all of the above: an ordinary assignment must still reach "applied". A reset check that
+        // held every node at "applying" would stop every task in the system completing.
+        writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\"}"));
+        AssignmentPoller poller = pollerWithResets(new IngestionResets(notStartedYet()));
+
+        poller.poll();
+        recordingApplier.finishRecovery();
+        poller.poll();
+        publisher.publish();
+
+        assertEquals("applied", publisher.status().appliedOutcome().wireName());
+    }
+
+    /** A node whose shards are never ready, which is what makes a reset outstanding rather than done. */
+    private static IngestionResets.Pollers notStartedYet() {
+        return IngestionResets.Pollers.NONE;
+    }
+
+    /** The heartbeat as the supervisor reads it, which is where an ack's reason actually has to arrive. */
+    private String heartbeatJson() {
+        return store.get(Keys.nodeHeartbeat(NODE))
+            .map(versioned -> new String(versioned.value(), StandardCharsets.UTF_8))
+            .orElse("");
+    }
+
+    private AssignmentPoller pollerWithResets(IngestionResets resets) {
+        return new AssignmentPoller(
+            store,
+            NODE,
+            new DesiredStateResolver(indexConfigs),
+            () -> recordingApplier.state,
+            (desired, stopRetaining, recoverySources, coordinated) -> new DataNodeState(
+                CLUSTER,
+                TestFixtures.localNode(NODE.value()),
+                desired,
+                MappingSource.WRAPPED,
+                LocalShardStore.EMPTY,
+                stopRetaining
+            ),
+            publisher,
+            recordingApplier,
+            new RetainedIndexReaper(indexConfigs, 12),
+            null,
+            CoordinatorViewSource.NONE,
+            resets,
+            true
+        );
+    }
+
+    private static String assignmentWithReset(long version, String taskId) {
+        return assignmentWithReset(version, taskId, "offset");
+    }
+
+    private static String assignmentWithReset(long version, String taskId, String mode) {
+        return """
+            {"version": %d, "tenants": {"acme": {"role": "data", "indices": {
+              "%s": {"name": "my-index", "config_revision": 3041, "shards": {"0": "PRIMARY"},
+                     "ingestion_reset": {"id": "%s",
+                                         "shards": {"0": {"mode": "%s", "value": "1000"}}}}}}}}"""
+            .formatted(version, UUID, taskId, mode);
+    }
 }

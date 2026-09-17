@@ -491,6 +491,22 @@ point with no instruction surviving anywhere. `StreamPoller.ResetState` is `EARL
 `RESET_BY_OFFSET`, `RESET_BY_TIMESTAMP`, `NONE` — the middle two are what a `reset_settings` mode maps onto, and
 the value is a string either way, parsed as millis for a timestamp.
 
+### Every ingested message must carry `_id`, which is what makes a replay survivable
+
+`MessageProcessorRunnable` rejects a message with no `_id` field outright — `"ID field is missing. Invalid
+message."` — so a pull-based index's documents are always id-addressed rather than auto-generated. That is worth
+knowing well beyond ingestion, because it decides what re-consuming a range of the stream costs: **a replay
+re-indexes the same documents rather than duplicating them.**
+
+Which is what makes the in-memory idempotence of `IngestionResets` honest rather than lucky. Two exceptions to keep
+in mind before relying on it:
+
+- **`_op_type: create`** takes the `isCreateMode` path, so a replay is a version conflict per document rather than
+  an overwrite, and `streamPoller.getErrorStrategy()` decides whether that drops or blocks. A blocking policy on a
+  create-mode stream turns a replay into a stalled shard.
+- **`_version` in the payload** switches the operation to `VersionType.EXTERNAL`, which makes a replay a no-op
+  rather than a rewrite — better, and worth knowing it is the tenant's choice rather than the default.
+
 ## Tests are JUnit 4, and this is not a preference
 
 The first real `./gradlew build` found a forbidden-APIs failure, and pulling on it found something worse:

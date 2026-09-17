@@ -620,27 +620,65 @@ worth doing is the obvious one — pause a `ingestion-fs` index, confirm the pol
 arriving in the file, resume, confirm it catches up from the pointer rather than from the start. The second half is
 the interesting one: `earliest` re-indexing everything would look a lot like a working resume.
 
-### What is deliberately not done: consumer-pointer resets
+### Consumer-pointer resets — **the node half is done; nothing writes one yet**
 
 `_resume` may carry `reset_settings` — per shard, move the consumer to an offset or timestamp. Those are
-instructions rather than desired state, so the control plane puts them on the task, and the supervisor's
-`DESIGN.md` §21.2 proposes carrying them into the node's assignment as `ingestion_reset` with a task id, completed
-by the node's ordinary `applied` report. That design is right, and the reason is worth keeping: **a rewind cannot
-be detected by looking at the pointer**, because before it is applied a consumer at 5000 being sent back to 1000
-looks exactly like a job already finished.
+instructions rather than desired state, so the control plane puts them on the task and the supervisor carries them
+into this node's assignment as `ingestion_reset`, tagged with the task id. The design is `DESIGN.md` §21.2–§21.6
+and the obligations on this side are in `NODE_CONTRACT.md`'s assignment section, which is where they belong: **a
+node that trusted the ordering would pass every test in which the reset happened to arrive first.**
 
-Answered as finding 8 rather than implemented, because it needs a contract change first and there is a real defect
-in the sequencing. Upstream's `IngestionEngine.resetStreamPoller` throws `IllegalStateException` on a poller that
-is not paused, and the control plane writes `is_paused: false` **before** it records the task — so the resume
-arrives here down the fast path (a document this node already reads every pass) and the reset down the slow one
-(observe, plan, assign, read). The node therefore resumes first and the reset arrives against a live poller. The
-fix is on this side and is two calls to `IndexShard.updateShardIngestionState` — pause, then reset-and-land-on-the
--desired-state — and what the contract needs to say is that a node must pause before applying a reset rather than
-trusting the ordering. A node that trusted it would pass every test where the reset happened to arrive first.
+Why an acknowledgement rather than reading the pointer back, since it is the part worth not re-deriving: a shard
+reset to offset 1000 starts advancing immediately, so a position read afterwards cannot distinguish a reset that
+worked from one that never happened — and worse, a rewind from 5000 back to 1000 looks, *before* it is applied,
+exactly like a job already finished. Any completion rule that reads the pointer drops that instruction before
+anything acts on it.
 
-Until that lands, `resume-ingestion` carrying resets deliberately does not complete on the supervisor's side, and
-says why in the task's own reason. That is the right failure: completing it would report that a pointer had moved
-when nothing moved it, in the one case where nothing downstream can ever contradict the claim.
+**The sequencing was wrong in the first version of the design, and this side found it.** Upstream's
+`IngestionEngine.resetStreamPoller` throws on a poller that is not paused, and the control plane writes
+`is_paused: false` *before* it records the task — so the two halves of one operator action arrive down paths of very
+different lengths. The resume is desired state in a document already read every pass; the reset is an instruction
+that must be observed, planned, written and read. The fast path is the wrong one, so **the ordinary case is a
+poller that has already resumed**. Not a race to narrow: the normal ordering. Raised as finding 8, accepted, and
+`DESIGN.md` §21.3 now records it as a general hazard of mixing state with instructions about the same object.
+
+What is implemented here:
+
+- `IngestionReset` reads the instruction, keeping an unrecognised **mode** rather than dropping it — the opposite
+  of what an unknown shard role gets, because an unbuilt copy is visible to the supervisor's differ and an
+  unapplied reset is visible only if this node says so;
+- `IngestionResets.plan` is a pure function of (assignment, cluster state, what has already been applied), so
+  every rule is testable without a running shard; `IndicesServiceIngestionPollers` is the only part that touches
+  one;
+- **two calls, and the order is the point.** Pause the poller whatever it was doing, then reset and land on
+  whatever `ingestion_status.is_paused` asks for. One call cannot do it: upstream applies the reset *before* the
+  pause flag within a single call, so the reset would still run against a live poller;
+- **`applied` means the reset too.** An outstanding one holds the ack at `applying`, a refused one makes it
+  `failed`. Without that the supervisor completes the task on this node's report and tells an operator a pointer
+  moved when nothing moved it — in the one case where nothing downstream can ever contradict the claim;
+- **idempotence keys on the reset id**, never on the assignment version, which moves whenever anything else in the
+  document does. A test pins that, because re-applying a reset because an unrelated field changed is the
+  rewind-for-ever failure arriving by another route.
+
+Nothing needs a durable ledger, and §21.4 is why: `resetStreamPoller` force-flushes the new start pointer into the
+Lucene commit, and M8.2's recovery already prefers local bytes and reads `StreamPoller.BATCH_START` out of the
+commit's user data. A copy that moves after a reset resumes from the reset point with the instruction existing
+nowhere at all.
+
+**The one hole, and it is real rather than theoretical.** The applied-id memory is in this process, so a restart
+between applying a reset and the supervisor observing the acknowledgement re-applies it, rewinding the consumer by
+whatever it consumed in between. Bounded by one supervisor pass, and it re-consumes rather than loses: every
+ingested message must carry `_id` — `MessageProcessorRunnable` rejects one that does not — so a replay re-indexes
+the same documents rather than duplicating them. The exception worth knowing is a stream of `_op_type: create`
+messages, where a replay is a version conflict per document and the error policy decides whether that drops or
+blocks.
+
+**What is not proven:** no reset has ever been carried out. `IndicesServiceIngestionPollers` is the one part with
+no test behind it — it needs an `IngestionEngine` behind a started primary, which this sandbox cannot produce — and
+nothing writes an `ingestion_reset` yet, since the supervisor's half is agreed and unimplemented. So the seam is
+argued from the server's source and the rules above it are tested. The run worth doing, once something writes one:
+reset an `ingestion-fs` index's shard to line 0 while it is running, and confirm from the document count that it
+re-consumed rather than that the call returned.
 
 ## M9. Document replication
 

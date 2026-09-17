@@ -62,6 +62,7 @@ public final class AssignmentPoller {
     private final RetainedIndexReaper reaper;
     private final RemoteRecovery remoteRecovery;
     private final CoordinatorViewSource coordinatedShards;
+    private final IngestionResets ingestionResets;
     private final boolean applyEnabled;
 
     /** What the poller needs of the fabricator: everything a pass decides, and nothing it has to decide itself. */
@@ -77,6 +78,7 @@ public final class AssignmentPoller {
 
     private DesiredState lastResolved = DesiredState.nothing();
     private CoordinatorView lastCoordinated = CoordinatorView.nothing();
+    private IngestionResets.Outcome lastResets = IngestionResets.Outcome.NOTHING;
     private String lastReport;
     private long assignmentsRead;
     private long statesApplied;
@@ -140,6 +142,29 @@ public final class AssignmentPoller {
         CoordinatorViewSource coordinatedShards,
         boolean applyEnabled
     ) {
+        this(store, nodeId, resolver, currentState, nodeStates, publisher, applier, reaper, remoteRecovery,
+            coordinatedShards, null, applyEnabled);
+    }
+
+    /**
+     * @param ingestionResets carries out the consumer-pointer resets an assignment asks for. May be {@code null},
+     *     which is a node that acts on none — the right default, since a reset it cannot carry out is one it must
+     *     not report as done.
+     */
+    public AssignmentPoller(
+        KeyValueStore store,
+        NodeId nodeId,
+        DesiredStateResolver resolver,
+        Supplier<ClusterState> currentState,
+        NodeStateFactory nodeStates,
+        NodePublisher publisher,
+        ClusterStateApplier applier,
+        RetainedIndexReaper reaper,
+        RemoteRecovery remoteRecovery,
+        CoordinatorViewSource coordinatedShards,
+        IngestionResets ingestionResets,
+        boolean applyEnabled
+    ) {
         this.store = Objects.requireNonNull(store, "store");
         this.nodeId = Objects.requireNonNull(nodeId, "nodeId");
         this.resolver = Objects.requireNonNull(resolver, "resolver");
@@ -148,6 +173,7 @@ public final class AssignmentPoller {
         this.publisher = Objects.requireNonNull(publisher, "publisher");
         this.applier = applier;
         this.reaper = Objects.requireNonNull(reaper, "reaper");
+        this.ingestionResets = ingestionResets;
         this.remoteRecovery = remoteRecovery;
         this.coordinatedShards = coordinatedShards == null ? CoordinatorViewSource.NONE : coordinatedShards;
         this.applyEnabled = applyEnabled;
@@ -236,6 +262,15 @@ public final class AssignmentPoller {
                     );
                 }
             }
+
+            // After the state, and against the live one rather than the intended one. A reset needs a started
+            // primary with an ingestion engine behind it, which the state applied a moment ago does not yet have
+            // -- so the ordinary first pass finds the shard not ready, reports applying, and the pass after does
+            // it. Level-triggered, like everything else: the reset stays in the assignment until acknowledged.
+            lastResets = ingestionResets == null || applyEnabled == false
+                ? IngestionResets.Outcome.NOTHING
+                : ingestionResets.apply(assignment, currentState.get());
+
             publisher.reportApplied(ackFor(desired));
         } catch (Exception e) {
             lastFailure = e.getClass().getSimpleName() + ": " + e.getMessage();
@@ -269,8 +304,27 @@ public final class AssignmentPoller {
         // told to" are different claims and only the second one is worth making.
         Convergence convergence = Convergence.assess(desired, currentState.get(), nodeId.value());
         List<String> notBuilt = desired.deferred();
-        if (convergence.isComplete() && notBuilt.isEmpty()) {
+
+        // A reset the supervisor is waiting on is part of what "applied" means, and this is where that is
+        // enforced. The supervisor completes the task on the version this node reports, so an outstanding reset
+        // reported as applied would tell it a pointer had moved when nothing had moved it -- and in that one case
+        // nothing downstream can ever contradict the claim. Refusals come first: they are not going to resolve.
+        if (lastResets.refused().isEmpty() == false) {
+            String refused = lastResets.refused().size() + " reset(s) not carried out: " + lastResets.refused().get(0);
+            return new Heartbeat.Applied(desired.assignmentVersion(), AppliedOutcome.FAILED, refused);
+        }
+
+        if (convergence.isComplete() && notBuilt.isEmpty() && lastResets.outstanding().isEmpty()) {
             return new Heartbeat.Applied(desired.assignmentVersion(), AppliedOutcome.APPLIED, null);
+        }
+        if (convergence.isComplete() && notBuilt.isEmpty() && lastResets.outstanding().isEmpty() == false) {
+            // Every copy is where it should be and a reset has not landed yet -- the ordinary case on the pass a
+            // reset arrives, since the shard has to be started before its consumer can be moved.
+            return new Heartbeat.Applied(
+                desired.assignmentVersion(),
+                AppliedOutcome.APPLYING,
+                lastResets.outstanding().size() + " reset(s) outstanding: " + lastResets.outstanding().get(0)
+            );
         }
 
         List<String> nothingServing = lastCoordinated.indicesWithNothingServing();

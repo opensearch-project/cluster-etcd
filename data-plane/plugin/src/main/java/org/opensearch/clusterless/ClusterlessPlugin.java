@@ -18,6 +18,8 @@ import org.opensearch.clusterless.apply.ClusterApplierServiceStateApplier;
 import org.opensearch.clusterless.apply.DataNodeState;
 import org.opensearch.clusterless.apply.DesiredStateResolver;
 import org.opensearch.clusterless.apply.IndexConfigSource;
+import org.opensearch.clusterless.apply.IndicesServiceIngestionPollers;
+import org.opensearch.clusterless.apply.IngestionResets;
 import org.opensearch.clusterless.apply.RetainedIndexReaper;
 import org.opensearch.clusterless.apply.MapperServiceMappingSource;
 import org.opensearch.clusterless.apply.NodeEnvironmentShardStore;
@@ -223,6 +225,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
                 localNode.getId()
             ),
             new CoordinatorViewSource.FromStore(store, indexConfigs),
+            new IngestionResets(new IndicesServiceIngestionPollers(this::indicesService)),
             apply
         );
 

@@ -231,4 +231,97 @@ public class AssignmentTests extends OpenSearchTestCase {
         MalformedDocumentException e = expectThrows(MalformedDocumentException.class, () -> read(padding.toString()));
         assertTrue(e.getMessage(), e.getMessage().contains("over the budget"));
     }
+
+    // ---------------------------------------------------------------- the one instruction in the document
+
+    public void testAnIngestionResetIsReadWithItsTaskId() {
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 3041, "shards": {"0": "PRIMARY"},
+                    "ingestion_reset": {"id": "task-7",
+                                        "shards": {"0": {"mode": "offset", "value": "1000"}}}}}}}}""");
+
+        IngestionReset reset = assignment.tenants().get(TenantId.of("acme")).indices().get("u").reset();
+        assertNotNull(reset);
+        // The id is what idempotence keys on, so losing it would mean re-applying the reset every pass for as
+        // long as the supervisor kept writing it.
+        assertEquals("task-7", reset.id());
+        assertTrue(reset.names(0));
+        assertEquals(IngestionReset.Mode.OFFSET, reset.shards().get(0).mode());
+        assertEquals("1000", reset.shards().get(0).value());
+    }
+
+    public void testTheModeIsReadInTheOneSpellingTheContractPins() {
+        // The supervisor normalises to lower case on the way in, so lower case is what arrives. Read
+        // case-insensitively anyway: the alternative is that a spelling change three repositories away silently
+        // becomes an unknown mode, and the cost of tolerating it here is nothing.
+        assertEquals(IngestionReset.Mode.OFFSET, IngestionReset.Mode.from("offset"));
+        assertEquals(IngestionReset.Mode.OFFSET, IngestionReset.Mode.from("OFFSET"));
+        assertEquals(IngestionReset.Mode.TIMESTAMP, IngestionReset.Mode.from("timestamp"));
+        assertEquals(IngestionReset.Mode.UNKNOWN, IngestionReset.Mode.from("by_sequence_number"));
+        assertEquals(IngestionReset.Mode.UNKNOWN, IngestionReset.Mode.from(null));
+    }
+
+    public void testAnUnknownModeIsKeptRatherThanDroppedAtParseTime() {
+        // The opposite of an unknown shard role, which is a sentinel the resolver then leaves out. This has to
+        // survive parsing so that the node can report it: nothing else would make an unapplied reset visible,
+        // since the supervisor completes the task on this node's own acknowledgement.
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"},
+                    "ingestion_reset": {"id": "task-7",
+                                        "shards": {"0": {"mode": "by_sequence_number", "value": "5"}}}}}}}}""");
+
+        IngestionReset reset = assignment.tenants().get(TenantId.of("acme")).indices().get("u").reset();
+        assertNotNull("an unreadable mode must not lose the reset", reset);
+        assertEquals(IngestionReset.Mode.UNKNOWN, reset.shards().get(0).mode());
+    }
+
+    public void testAnIndexWithNoResetHasNoneRatherThanAnEmptyOne() {
+        // Which is every index almost all of the time, and null rather than an empty reset so that "nothing to
+        // do" cannot be confused with "a reset naming no shards", which would be an instruction nobody can
+        // acknowledge.
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"}}}}}}""");
+
+        assertNull(assignment.tenants().get(TenantId.of("acme")).indices().get("u").reset());
+    }
+
+    public void testAResetWithNothingUsableInItIsDroppedRatherThanFailingTheDocument() {
+        // One malformed field must not cost the node the rest of its desired state -- the rule every other
+        // tolerant read here follows. Not silent: a reset nobody can acknowledge leaves the supervisor's task
+        // incomplete, with its own reason, which is the visible outcome.
+        String noId = """
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"},
+                    "ingestion_reset": {"shards": {"0": {"mode": "offset", "value": "1000"}}}}}}}}""";
+        assertNull(read(noId).tenants().get(TenantId.of("acme")).indices().get("u").reset());
+
+        String noShards = """
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"},
+                    "ingestion_reset": {"id": "task-7", "shards": {}}}}}}}""";
+        assertNull(read(noShards).tenants().get(TenantId.of("acme")).indices().get("u").reset());
+
+        // A pointer with no value is a position nobody asked for, which is worse than no reset at all.
+        String noValue = """
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"},
+                    "ingestion_reset": {"id": "task-7", "shards": {"0": {"mode": "offset"}}}}}}}}""";
+        assertNull(read(noValue).tenants().get(TenantId.of("acme")).indices().get("u").reset());
+    }
+
+    public void testTheRestOfTheAssignmentSurvivesAnUnusableReset() {
+        // The point of dropping it rather than throwing: the shards are still built.
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 3041, "shards": {"0": "PRIMARY", "1": "PRIMARY"},
+                    "ingestion_reset": {"id": ""}}}}}}""");
+
+        Assignment.IndexAssignment index = assignment.tenants().get(TenantId.of("acme")).indices().get("u");
+        assertNull(index.reset());
+        assertEquals(2, index.shards().size());
+        assertEquals(3041L, index.configRevision());
+    }
 }

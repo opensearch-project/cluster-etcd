@@ -98,12 +98,20 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
      * @param configRevision which revision of that document to build against. <b>Opaque</b>: comparable only
      *     for equality. If the node reads a different revision, the assignment is stale by one pass and it
      *     should apply what it read — the supervisor will re-issue.
+     * @param reset a consumer-pointer reset to carry out once, or null. The one instruction in a document that
+     *     is otherwise entirely desired state — see {@link IngestionReset} for why it could not live in the
+     *     index document with the rest of the ingestion configuration.
      */
-    public record IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards) {
+    public record IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards, IngestionReset reset) {
 
         public IndexAssignment {
             Objects.requireNonNull(name, "name");
             shards = shards == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(shards));
+        }
+
+        /** An index with no reset outstanding, which is every index almost all of the time. */
+        public IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards) {
+            this(name, configRevision, shards, null);
         }
     }
 
@@ -254,6 +262,54 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
             shards.put(shardId, ShardRole.from(role == null ? null : String.valueOf(role)));
         });
 
-        return new IndexAssignment(name, configRevision, shards);
+        return new IndexAssignment(name, configRevision, shards, readReset(document, what));
+    }
+
+    /**
+     * The reset an index entry carries, or null.
+     *
+     * <p>A malformed one is dropped rather than failing the document, on the same reasoning as every other
+     * tolerant read here — one bad field must not cost a node the rest of its desired state. It is not
+     * <em>silently</em> dropped: a reset with no shards, or with an unusable id, is a reset nothing can
+     * acknowledge, and the supervisor's task stays incomplete with the reason that it is not being acted on.
+     * That is the visible outcome. An unrecognised <em>mode</em> is different and is kept — see
+     * {@link IngestionReset.Mode#UNKNOWN}, which this node reports rather than skips.
+     */
+    private static IngestionReset readReset(Map<String, Object> document, String what) {
+        Map<String, Object> reset = Documents.object(document, "ingestion_reset");
+        if (reset.isEmpty()) {
+            return null;
+        }
+        String id = Documents.string(reset, "id", null);
+        if (id == null || id.isEmpty()) {
+            return null;
+        }
+
+        Map<Integer, IngestionReset.Pointer> shards = new TreeMap<>();
+        Documents.object(reset, "shards").forEach((shard, value) -> {
+            if (value instanceof Map == false) {
+                return;
+            }
+            int shardId;
+            try {
+                shardId = Integer.parseInt(shard);
+            } catch (NumberFormatException e) {
+                throw new MalformedDocumentException(what, "[" + shard + "] is not a shard number");
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> pointer = (Map<String, Object>) value;
+            String pointerValue = Documents.string(pointer, "value", null);
+            if (pointerValue == null) {
+                // Nothing to move the consumer to. Kept out rather than defaulted, because every default here
+                // is a position, and a position nobody asked for is the one thing worse than no reset at all.
+                return;
+            }
+            shards.put(shardId, new IngestionReset.Pointer(IngestionReset.Mode.from(Documents.string(pointer, "mode", null)), pointerValue));
+        });
+
+        if (shards.isEmpty()) {
+            return null;
+        }
+        return new IngestionReset(id, shards);
     }
 }
