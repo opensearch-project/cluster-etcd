@@ -1354,15 +1354,80 @@ applied. Proposed:
 - The supervisor then completes the task and stops writing the reset, which is a property of assembling the
   assignment rather than an instruction, exactly like coordinator membership in §18.
 
-Two obligations this puts on the data plane, and both need stating in the contract rather than assuming:
+### 21.3 The sequencing that does not work, and why it is not a race
 
-- **`applied: applied` must mean the reset too.** A node that placed its shards but deferred the reset has to
-  report `applying` or a failure, or the acknowledgement means nothing.
-- **The node must key idempotence on the reset's `id`, not on the assignment version.** The version changes for
-  unrelated reasons — a shard placed elsewhere in the same document — and re-applying a reset because an unrelated
-  field moved is the rewind-for-ever failure arriving by another route. A node that has already applied id *R*
-  should treat it as satisfied and still report `applied`.
+The first version of §21.2 said the node "applies it" and left the ordering implicit. It does not work as written,
+and the reason is worth keeping because it is a general hazard rather than a detail of ingestion.
 
-Until both sides agree that, `resume-ingestion` carrying resets deliberately **does not complete**. It says why,
-at length, in the task's own reason. Completing it would be the worst available outcome: a report that a pointer
-had moved when nothing moved it, in the one case where nothing downstream can ever contradict it.
+Upstream **refuses a reset on a poller that is running**:
+
+```java
+// IngestionEngine.resetStreamPoller
+if (streamPoller.isPaused() == false) {
+    throw new IllegalStateException("Cannot reset consumer when poller is not paused");
+}
+```
+
+And the control plane writes `is_paused: false` and *then* submits the task carrying the resets. So the two halves
+of one operator action reach the node down paths of very different lengths:
+
+- `is_paused: false` is **desired state**, in a document the node already reads every pass. It converges on the
+  next one, unconditionally.
+- the reset is an **instruction**: observed by the supervisor, planned into an assignment, written, read. Several
+  passes at best.
+
+**The fast path is the wrong one, so the ordinary case is that the poller resumes and the reset then throws.** This
+is not a window to be narrowed — it is the normal ordering, and narrowing it would only make the failure rarer and
+harder to attribute. Any design that mixes desired state with instructions about the same object inherits this
+shape: the state arrives first because it has less to travel through.
+
+The obligation therefore sits with the node, and the contract has to say so rather than leave it to be discovered:
+**a node applying an `ingestion_reset` pauses the poller first, applies the reset, and only then lands on whatever
+pause state the index document actually asks for.** Two calls, because upstream's own
+`updateIngestionSettings` applies the reset *before* its pause flag, so one call carrying both still runs the reset
+against a live poller. That sequence is correct for a poller that was already paused, one resumed a pass ago, and
+one never paused at all — and it costs a brief stop on a running stream, which is inherent to resetting a consumer
+rather than something this design adds.
+
+A node that trusted the ordering instead would pass every test in which the reset happened to arrive first.
+
+### 21.4 Why nothing needs to remember having applied one
+
+`resetStreamPoller` ends with `flush(true, true)` — a force flush to persist the new batch start pointer — so a
+reset lands in the Lucene commit, and a data plane that prefers local bytes on recovery reads its start pointer
+back out of the commit's user data. **A shard that moves after a reset therefore resumes from the reset point with
+the instruction existing nowhere at all.**
+
+That is what makes the whole scheme safe rather than merely convenient. The supervisor can stop writing the reset
+the instant it is acknowledged, because the reset's effect is durable in the shard rather than in the document that
+asked for it. Nothing has to remember, on either side, which is the property that lets a one-shot instruction live
+in a level-triggered system without a ledger.
+
+### 21.5 Completion when a reset spans nodes
+
+A reset is per **shard**; an assignment is per **node**. So a task naming shards 0 and 1 whose primaries sit on
+different nodes needs *both* acknowledgements, and the task is complete only when every named shard's holder
+reports `applied` at the version now in its own assignment — plus the ordinary metadata condition, since a resume
+is also an unpause.
+
+A shard whose primary is unassigned cannot acknowledge at all. That task stays **incomplete with a reason**, not
+completed and not failed: the same patience every other kind of work here gets, and for the same reason — the
+shard's absence is a placement problem that the diff is already reporting, and blaming the resume for it would
+hide both.
+
+### 21.6 One spelling for the mode
+
+Three repositories could each guess differently, so it is pinned here. Upstream's enum is
+`StreamPoller.ResetState.RESET_BY_OFFSET` and `RESET_BY_TIMESTAMP`. The control plane validates the wire value
+case-insensitively and stores **verbatim** what the client sent, so `"OFFSET"`, `"offset"` and `"Offset"` can all
+arrive in a task.
+
+The supervisor therefore **parses tolerantly and writes one canonical spelling**: lower case, `offset` or
+`timestamp`, in the assignment. A mode it does not recognise reads as `UNKNOWN` rather than failing the task
+record, on the same reasoning as every other wire enum here. `value` is always a string — an offset, or epoch
+milliseconds for a timestamp — and the node maps it to the upstream enum.
+
+Until both sides agree §21.2's obligations and §21.3's sequencing, `resume-ingestion` carrying resets deliberately
+**does not complete**. It says why, at length, in the task's own reason. Completing it would be the worst available
+outcome: a report that a pointer had moved when nothing moved it, in the one case where nothing downstream can ever
+contradict it.

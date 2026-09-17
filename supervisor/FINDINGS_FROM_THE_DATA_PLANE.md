@@ -680,6 +680,22 @@ the supervisor, which is what makes it a state problem rather than a timing one.
 
 ## 8. A consumer-pointer reset arrives after the resume that makes it illegal
 
+> **Accepted, and §21 is corrected.** Every claim verified against the server before changing anything: the throw
+> in `IngestionEngine.resetStreamPoller`, the reset running *before* the pause flag inside
+> `updateIngestionSettings`, and the `flush(true, true)` that puts the new start pointer in the commit.
+>
+> The sequencing is now `DESIGN.md` §21.3 and, more importantly, it is **in the contract** —
+> `NODE_CONTRACT.md`'s assignment section states the pause-first obligation, the `applied` meaning, and the
+> id-keyed idempotence, so a reader does not have to discover any of them. §21.4 records your point about the
+> commit, which is what makes the whole scheme safe rather than lucky, and §21.5 the multi-node completion rule.
+>
+> **The mode spelling is pinned, and it needed pinning more than the write-up suggested:** the control plane
+> validates case-insensitively and stores the client's string *verbatim*, so `"OFFSET"`, `"offset"` and `"Offset"`
+> can all arrive in a task. The supervisor parses tolerantly and writes one canonical lower-case spelling into the
+> assignment, so the contract has exactly one form and the node maps that to the upstream enum.
+>
+> Still not implemented on this side, and now unblocked: everything §21.2 needed agreeing is agreed. Say the word.
+
 **Not a defect here — an answer to `DESIGN.md` §21.2, and one thing in it that will not work as sequenced.** The
 pause half (§21.1) is done on this side: `IndexConfig` reads `ingestion_status.is_paused` and both fabricators put
 it into `IndexMetadata` via `IngestionStatus`, so a pause reaches a running poller level-triggered with no new

@@ -433,6 +433,44 @@ The node's full desired state. Written only when it changes.
   assignment says what it *is* given, and the two are deliberately different questions — a node should be able
   to learn everything it does from the document written for it. Where a coordinator gets the routing table it
   needs is the next section.
+- **`ingestion_reset` is an instruction, not state, and it is the only one in this document.** *(Proposed; nothing
+  writes it yet — see `DESIGN.md` §21.)* A resume of a pull-based consumer may carry per-shard pointer resets, which
+  cannot live in the index document because desired state gets re-applied for ever and "start from offset 1000"
+  re-applied for ever is a stream that never advances. So it rides here, tagged with the id of the task that asked
+  for it:
+
+  ```json
+  "indices": { "<uuid>": { "name": "logs", "config_revision": 3041, "shards": { "0": "PRIMARY" },
+      "ingestion_reset": { "id": "<task-id>",
+                           "shards": { "0": { "mode": "offset", "value": "1000" } } } } }
+  ```
+
+  Written only into the assignment of the node holding that shard's **primary**, and removed once acknowledged.
+  Three obligations, and the first is the one a reader will otherwise get wrong:
+
+  - **Pause the poller before applying the reset, then land on whatever pause state the index document asks for.**
+    Upstream refuses a reset on a running poller, and `is_paused: false` reaches a node *faster* than this does —
+    it is desired state in a document already read every pass, while this has to be observed, planned, written and
+    read. So the ordinary case is a poller that has already resumed, and a node that assumed the document's pause
+    had landed first would work in every test where the reset happened to arrive first. Two calls, because
+    upstream's own `updateIngestionSettings` applies the reset before its pause flag.
+  - **Acknowledge through `applied`, and let it mean the reset too.** A node that placed its shards but deferred
+    the reset must report `applying` or a failure. The supervisor completes the task when the version a node
+    reports equals the version in its assignment, so `applied` is the entire signal.
+  - **Key idempotence on `id`, never on the assignment version.** The version moves for unrelated reasons — a
+    shard placed elsewhere in the same document — and re-applying a reset because an unrelated field changed is the
+    rewind-for-ever failure arriving by another route. A node that has already applied id *R* treats it as
+    satisfied and still reports `applied`.
+
+  `mode` is `offset` or `timestamp`, lower case: the supervisor parses whatever the control plane stored and
+  normalises, so this document has one spelling. `value` is always a string — an offset, or epoch milliseconds for
+  a timestamp. A mode a node does not recognise should leave the reset unapplied *and reported*, not silently
+  skipped.
+
+  Nothing needs to remember having applied one. A reset force-flushes the new start pointer into the Lucene commit,
+  so a shard that moves afterwards resumes from the reset point with the instruction existing nowhere — which is
+  why the supervisor can stop writing it the moment it is acknowledged.
+
 - **Size budget: 512 KiB hard**, same reasoning. If a node's assignment would exceed it the supervisor
   writes nothing and raises a finding; it does not truncate. The escape hatch, if this is ever hit in
   practice, is to split per tenant — `nodes/assignment/<node-id>/<tenant>` — which the layout permits
