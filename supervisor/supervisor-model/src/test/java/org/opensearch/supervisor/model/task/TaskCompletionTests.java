@@ -41,7 +41,12 @@ class TaskCompletionTests {
 
     private static TaskRecord task(TaskType type) {
         return new TaskRecord("task-1", type, "my-index", UUID, TaskState.PENDING,
-            1000, 1, null, 0, 0, 0, null, 0);
+            1000, 1, null, 0, 0, 0, null, 0, null);
+    }
+
+    private static TaskRecord resumeWithResets(TaskRecord.IngestionReset... resets) {
+        return new TaskRecord("task-1", TaskType.RESUME_INGESTION, "my-index", UUID, TaskState.PENDING,
+            1000, 1, null, 0, 0, 0, null, 0, new TaskRecord.Details(java.util.List.of(resets)));
     }
 
     private static IndexConfig index(boolean open, int shards, long configRevision) {
@@ -256,11 +261,80 @@ class TaskCompletionTests {
         // R4.5: sequence restarts per control plane process and submitted_at ties constantly, so neither is a
         // global ordering. This one is arbitrary but stable, which is all fairness needs.
         TaskRecord first = new TaskRecord("aaa", TaskType.CREATE_INDEX, "i", UUID, TaskState.PENDING,
-            1000, 99, null, 0, 0, 0, null, 0);
+            1000, 99, null, 0, 0, 0, null, 0, null);
         TaskRecord second = new TaskRecord("bbb", TaskType.CREATE_INDEX, "i", UUID, TaskState.PENDING,
-            1000, 1, null, 0, 0, 0, null, 0);
+            1000, 1, null, 0, 0, 0, null, 0, null);
 
         assertTrue(TaskRecord.STABLE_ORDER.compare(first, second) < 0,
             "same millisecond, so the id decides -- not the sequence");
+    }
+
+    // ---------------------------------------------------- pausing and resuming ingestion (control plane, new)
+
+    @Test
+    void pausingIsDoneWhenEveryCopyIsRunningTheCurrentConfiguration() {
+        // Whether a stream consumes lives in the index document, so the change reaches a node exactly as a mapping
+        // does. Same condition as UPDATE_SETTINGS, for the same reason -- and before this it parsed as UNKNOWN,
+        // never completed, and turned into a permanent TASK_STUCK finding.
+        var current = TaskCompletion.evaluate(task(TaskType.PAUSE_INGESTION), ACME,
+            observe(index(true, 1, 3041), holding(3041, ShardState.STARTED)));
+        assertTrue(current.satisfied(), current.because());
+
+        var behind = TaskCompletion.evaluate(task(TaskType.PAUSE_INGESTION), ACME,
+            observe(index(true, 1, 3041), holding(3040, ShardState.STARTED)));
+        assertFalse(behind.satisfied(), "a copy still on the previous revision has not seen the pause");
+    }
+
+    @Test
+    void resumingWithNoResetsIsJustAMetadataChange() {
+        var verdict = TaskCompletion.evaluate(task(TaskType.RESUME_INGESTION), ACME,
+            observe(index(true, 1, 3041), holding(3041, ShardState.STARTED)));
+
+        assertTrue(verdict.satisfied(), verdict.because());
+    }
+
+    @Test
+    void aPausedIndexWhoseUuidIsGoneIsDoneRatherThanPending() {
+        // A consumer cannot be running for an index that does not exist. Same shape as every other task type: the
+        // work is not outstanding, it is unwanted.
+        var verdict = TaskCompletion.evaluate(task(TaskType.PAUSE_INGESTION), ACME,
+            observe(null, holding(3041, ShardState.STARTED)));
+
+        assertTrue(verdict.satisfied(), verdict.because());
+    }
+
+    @Test
+    void aResumeCarryingAPointerResetStaysOpenAndSaysWhy() {
+        // The messy one, and the point of this test is that the task does NOT complete. A reset is not desired
+        // state -- re-applying "start from offset 1000" for ever is a stream that never advances -- so it cannot
+        // live in metadata, and handing it to a node is not implemented. Completing the task would report a
+        // pointer as moved when nothing moved it, and the lie would be undetectable afterwards: a consumer left
+        // alone looks exactly like one that was reset and then caught up.
+        var verdict = TaskCompletion.evaluate(
+            resumeWithResets(new TaskRecord.IngestionReset(0, TaskRecord.ResetMode.OFFSET, "1000")),
+            ACME,
+            observe(index(true, 1, 3041), holding(3041, ShardState.STARTED))
+        );
+
+        assertFalse(verdict.satisfied(), "the metadata half may have landed; the reset has not");
+        assertTrue(verdict.because().contains("consumer-pointer reset"), verdict.because());
+        assertTrue(verdict.because().contains("indistinguishable"), verdict.because());
+    }
+
+    @Test
+    void bothIngestionTypesAreRecognisedRatherThanUnknown() {
+        // They used to parse as UNKNOWN, which never completes and becomes TASK_STUCK. The wire names are the
+        // control plane's, kebab-cased.
+        assertEquals(TaskType.PAUSE_INGESTION, TaskType.from("pause-ingestion"));
+        assertEquals(TaskType.RESUME_INGESTION, TaskType.from("resume-ingestion"));
+        assertEquals("pause-ingestion", TaskType.PAUSE_INGESTION.wireName());
+        assertEquals("resume-ingestion", TaskType.RESUME_INGESTION.wireName());
+    }
+
+    @Test
+    void aResetModeThisBuildDoesNotKnowReadsAsUnknownRatherThanFailing() {
+        assertEquals(TaskRecord.ResetMode.OFFSET, TaskRecord.ResetMode.from("offset"));
+        assertEquals(TaskRecord.ResetMode.TIMESTAMP, TaskRecord.ResetMode.from("timestamp"));
+        assertEquals(TaskRecord.ResetMode.UNKNOWN, TaskRecord.ResetMode.from("sequence-number"));
     }
 }

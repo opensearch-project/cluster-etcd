@@ -1288,3 +1288,81 @@ Two ways out, and both are more than a patch:
 
 Until then the leak is bounded by operator patience rather than by code, and the symptom that actually hurt — a
 reader handed two nodes on one socket — is gone.
+
+---
+
+## 21. Pausing ingestion, and the one thing here that is not desired state
+
+Pull-based ingestion is configured through index settings, so it needed no contract at all. Two things about it
+are not settings, and they are as different from each other as anything in this system.
+
+### 21.1 The pause is ordinary, once you know where it lives
+
+Whether a stream is consuming is a first-class field on OpenSearch's `IndexMetadata` — `IngestionStatus.isPaused`
+— and **not** a setting. The obvious guess, `index.ingestion.paused` in the settings block, finds nothing. The
+control plane writes it at the top level of the index document, matching upstream's spelling:
+
+```json
+{ "index": "logs", "uuid": "...", "state": "open",
+  "ingestion_status": { "is_paused": true },
+  "settings": { "index.ingestion_source.type": "kafka", ... } }
+```
+
+From there it is a mapping change wearing a different hat: the data plane fabricates metadata from that document
+every pass, so the change reaches a node level-triggered, and reversing it is equally ordinary — nobody should add
+a latch. `pause-ingestion` and `resume-ingestion` complete on the same condition as `update-settings`: **every copy
+is running the current configuration revision**, which the inventory already reports per index. No new field
+anywhere.
+
+Both types previously parsed as `UNKNOWN`, which never completes, so every pause turned into a permanent
+`TASK_STUCK` finding. That is now fixed, and it is the whole of the easy half.
+
+### 21.2 A consumer-pointer reset is an instruction, and instructions do not belong in desired state
+
+A resume may carry `reset_settings`: per shard, move the consumer to this offset or timestamp. Upstream applies
+these as a transport action to the shards and persists nothing, which is exactly right and exactly unavailable
+here — there is no cluster manager to send it.
+
+**It cannot go in the index document**, and the reason is the design's own principle turned against it. Desired
+state is a value a reconciler re-applies for ever without harm. "Start from offset 1000" re-applied for ever is a
+stream that never advances: every pass would rewind it. So the control plane puts it on the **task**, which is this
+system's existing channel for *do this once, then reap it*.
+
+That leaves the supervisor with the hard part, and it is worth naming precisely. **You cannot detect that a reset
+has been applied by looking at the consumer's position.** A shard reset to offset 1000 immediately starts
+advancing, so by the time anything looks it is at 1200 — indistinguishable from a shard that was never reset and
+happened to be at 1200 already. Worse for the interesting case: rewinding a consumer that is at 5000 back to 1000
+looks, before it is applied, exactly like a job already done, so "is the pointer past the target" would report
+success and drop the instruction *before* anything acted on it.
+
+**So do not detect the effect. Require an acknowledgement.** That is the same move the contract already makes for
+assignments: a node does not report what its assignment contains, it reports which *version* of it the node
+applied. Proposed:
+
+- The reset goes into the assignment of the node holding that shard's primary, carrying the **task id** as its
+  identity:
+
+  ```json
+  "indices": { "<uuid>": { "name": "logs", "config_revision": 3041, "shards": { "0": "PRIMARY" },
+      "ingestion_reset": { "id": "<task-id>",
+                           "shards": { "0": { "mode": "offset", "value": "1000" } } } } }
+  ```
+
+- The node applies it and reports the ordinary `applied: { assignment_version, outcome }`. When the version it
+  reports equals the version now in the store and the outcome is `applied`, the reset in that store document has
+  been acted on — **no memory on the supervisor's side, and no new field on the node's.**
+- The supervisor then completes the task and stops writing the reset, which is a property of assembling the
+  assignment rather than an instruction, exactly like coordinator membership in §18.
+
+Two obligations this puts on the data plane, and both need stating in the contract rather than assuming:
+
+- **`applied: applied` must mean the reset too.** A node that placed its shards but deferred the reset has to
+  report `applying` or a failure, or the acknowledgement means nothing.
+- **The node must key idempotence on the reset's `id`, not on the assignment version.** The version changes for
+  unrelated reasons — a shard placed elsewhere in the same document — and re-applying a reset because an unrelated
+  field moved is the rewind-for-ever failure arriving by another route. A node that has already applied id *R*
+  should treat it as satisfied and still report `applied`.
+
+Until both sides agree that, `resume-ingestion` carrying resets deliberately **does not complete**. It says why,
+at length, in the task's own reason. Completing it would be the worst available outcome: a report that a pointer
+had moved when nothing moved it, in the one case where nothing downstream can ever contradict it.

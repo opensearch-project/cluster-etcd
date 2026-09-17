@@ -101,7 +101,8 @@ public final class StatusComputation {
         if (index.open() == false) {
             return new IndexStatus(
                 index.name(), index.uuid(), index.configRevision(), HealthStatus.GREEN, index.replication(),
-                index.numberOfShards(), index.numberOfReplicas(), index.numberOfSearchReplicas(), Map.of(),
+                index.numberOfShards(), index.numberOfReplicas(), index.numberOfSearchReplicas(),
+                index.ingestionPaused(), Map.of(),
                 observation.observedAt().toEpochMilli(), observation.pass()
             );
         }
@@ -149,7 +150,8 @@ public final class StatusComputation {
 
         return new IndexStatus(
             index.name(), index.uuid(), index.configRevision(), status, index.replication(),
-            index.numberOfShards(), index.numberOfReplicas(), index.numberOfSearchReplicas(), shards,
+            index.numberOfShards(), index.numberOfReplicas(), index.numberOfSearchReplicas(),
+            index.ingestionPaused(), shards,
             observation.observedAt().toEpochMilli(), observation.pass()
         );
     }

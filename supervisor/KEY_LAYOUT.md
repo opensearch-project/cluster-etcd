@@ -89,6 +89,16 @@ Things worth knowing before writing a reconciler against this:
 - **`creation_date` is epoch millis in a string**, matching what OpenSearch stores.
 - **Shard count is desired, not actual.** Nothing here says whether a shard exists anywhere. That is
   precisely the gap the supervisor closes.
+- **`ingestion_status` appears once ingestion has been paused or resumed**, and not before:
+
+  ```json
+  { "…": "…", "ingestion_status": { "is_paused": true } }
+  ```
+
+  A **first-class field, not a setting** — nothing under `index.ingestion.*` in the settings block, so
+  looking there finds nothing. Absent means not paused. This is the *desired* pause state; the *observed*
+  one is per-shard poller state the data plane reports, and closing that gap is the supervisor's job. See
+  the ingestion task types below.
 
 ### `aliases/<name>`
 
@@ -130,7 +140,37 @@ control plane does not implement yet, so today it is always 1.
 ```
 
 `type` is one of `create-index`, `delete-index`, `update-mapping`, `update-settings`, `close-index`,
-`open-index`.
+`open-index`, `pause-ingestion`, `resume-ingestion`.
+
+**A `resume-ingestion` task may carry a `details` payload**, and it is the only task type that carries one
+today — treat the field as optional everywhere:
+
+```json
+{
+  "task_id": "…", "type": "resume-ingestion", "index": "my-index", "index_uuid": "…",
+  "state": "pending", "submitted_at": 1788969977936, "sequence": 4,
+  "details": {
+    "reset_settings": [
+      { "shard": 0, "mode": "OFFSET",    "value": "1234" },
+      { "shard": 1, "mode": "TIMESTAMP", "value": "1788969977933" }
+    ]
+  }
+}
+```
+
+`mode` is `OFFSET` or `TIMESTAMP`, upper case, and all three fields are required on every entry — the
+control plane rejects the request otherwise, so a task that exists has already been validated.
+
+**Why here and not on the index document.** A reset is a one-shot instruction, not desired state. On the
+index document it would either be replayed on every reconciliation pass or need the supervisor to delete it,
+and the supervisor writing into the control plane's key space is what §5.5 of `REQUIREMENTS.md` forbids. A
+task is already the channel for "do this once, then reap it".
+
+**So this is the one place a task is more than a hint.** Everywhere else the desired state is recoverable
+from the `indices/` documents and a lost task costs nothing but latency; a lost `resume-ingestion` payload
+loses the reset instruction, because nothing else records it. Claim it, apply it, then reap it — and prefer
+losing the *reset* over losing the *resume*: the pause flag on the index document is authoritative and will
+be reconciled regardless.
 
 **These records only ever accumulate.** The control plane writes one per index write and never revisits
 it: nothing sets `state` to anything but `pending`, and nothing deletes a record. `cluster.pending_tasks`

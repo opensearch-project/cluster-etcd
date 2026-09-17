@@ -80,12 +80,62 @@ public final class TaskCompletion {
                         + " cannot be out of date"
                 ));
 
+            // Pausing is a metadata change and nothing more: whether a stream is consuming lives in the index
+            // document, so it reaches a node exactly as a mapping does and is done when every copy is running the
+            // current configuration. Same condition as UPDATE_SETTINGS, for the same reason.
+            case PAUSE_INGESTION -> index
+                .map(config -> noCopyIsStale(config, tenant, observation))
+                .orElseGet(() -> Verdict.done(
+                    "index uuid " + task.indexUuid() + " is no longer in desired state, so its consumer cannot"
+                        + " be running"
+                ));
+
+            case RESUME_INGESTION -> index
+                .map(config -> resumeVerdict(task, config, tenant, observation))
+                .orElseGet(() -> Verdict.done(
+                    "index uuid " + task.indexUuid() + " is no longer in desired state, so there is no consumer"
+                        + " to resume"
+                ));
+
             // Not completed and not failed. Completing it would report success for work this build cannot
             // even name; failing it would blame the task for this supervisor's age.
             case UNKNOWN -> Verdict.notYet(
                 "task type is not recognised by this build, so whether it is done cannot be decided here"
             );
         };
+    }
+
+    /**
+     * A resume is a metadata change plus, sometimes, a one-shot instruction — and the second is why this is not
+     * simply {@code noCopyIsStale}.
+     *
+     * <p>A resume may carry <b>consumer-pointer resets</b>: per shard, move the consumer to this offset or
+     * timestamp. That is not desired state. Desired state is a value a reconciler can keep re-applying for ever,
+     * and re-applying "start from offset 1000" for ever means a stream that never advances. So the reset rides on
+     * the task, and the supervisor has to hand it over exactly once and then stop.
+     *
+     * <p>Which is not implemented yet, and the honest thing is to say so rather than complete the task. Completing
+     * it would report that a pointer had been moved when nothing had moved it — and the failure would be silent,
+     * because a consumer left where it was looks exactly like one that was reset and then caught up. That
+     * indistinguishability is the whole difficulty; {@code DESIGN.md} §21 has the design, which turns on
+     * acknowledging the <em>instruction</em> rather than observing the effect.
+     */
+    private static Verdict resumeVerdict(
+        TaskRecord task,
+        IndexConfig config,
+        TenantId tenant,
+        Observation observation
+    ) {
+        if (task.details() == null || task.details().hasResets() == false) {
+            return noCopyIsStale(config, tenant, observation);
+        }
+        return Verdict.notYet(
+            "index [" + config.name() + "] resumes with " + task.details().resetSettings().size()
+                + " consumer-pointer reset(s), and handing a reset to a node is not implemented (DESIGN.md §21)."
+                + " The metadata half may well have landed; this task stays open because completing it would"
+                + " report a pointer as moved when nothing moved it, and a consumer left alone is"
+                + " indistinguishable afterwards from one that was reset and caught up"
+        );
     }
 
     private static Optional<IndexConfig> indexOf(TaskRecord task, TenantId tenant, Observation observation) {

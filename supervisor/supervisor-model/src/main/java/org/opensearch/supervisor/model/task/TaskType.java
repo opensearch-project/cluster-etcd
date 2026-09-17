@@ -18,6 +18,19 @@ public enum TaskType implements WireEnum {
     OPEN_INDEX,
 
     /**
+     * Stop or start an index's pull-based consumer.
+     *
+     * <p>Both are ordinary metadata changes as far as this service is concerned: whether a stream is paused lives
+     * in the index document as {@code ingestion_status.is_paused}, so the change reaches a node the same way a
+     * mapping does and is complete when every copy is running the current configuration.
+     *
+     * <p>{@link #RESUME_INGESTION} is the exception, and it is the messiest thing this system propagates: a resume
+     * may carry <em>consumer-pointer resets</em>, which are not state. See {@code DESIGN.md} §21.
+     */
+    PAUSE_INGESTION,
+    RESUME_INGESTION,
+
+    /**
      * A type this build does not recognise.
      *
      * <p>Deliberately <b>not</b> treated as complete. Completing a task whose meaning is unknown would drop

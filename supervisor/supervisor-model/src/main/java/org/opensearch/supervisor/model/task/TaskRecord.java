@@ -3,6 +3,7 @@ package org.opensearch.supervisor.model.task;
 import org.opensearch.supervisor.model.Json;
 
 import java.util.Comparator;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -38,8 +39,62 @@ public record TaskRecord(
     long leaseExpiresAt,
     int attempts,
     String lastError,
-    int progress
+    int progress,
+    Details details
 ) {
+
+    /**
+     * What a task needs the supervisor to do, beyond what its type says.
+     *
+     * <p>Absent on every type but {@code resume-ingestion}, and a consumer must treat it as optional — the control
+     * plane's own contract says so. Parsed into a shape rather than kept as a tree because the one thing in it so
+     * far decides whether a task is finishable, and a raw tree would put that decision at the call site.
+     */
+    public record Details(List<IngestionReset> resetSettings) {
+
+        public Details {
+            resetSettings = resetSettings == null ? List.of() : List.copyOf(resetSettings);
+        }
+
+        public boolean hasResets() {
+            return resetSettings.isEmpty() == false;
+        }
+    }
+
+    /**
+     * Move one shard's consumer to a position.
+     *
+     * <p>Mirrors OpenSearch's {@code ResumeIngestionRequest.ResetSettings}: per shard, a mode, and a value whose
+     * meaning the mode decides. Per <em>shard</em> matters — each shard consumes its own partition, so a reset is
+     * never a single index-wide pointer.
+     */
+    public record IngestionReset(int shard, ResetMode mode, String value) {}
+
+    /** {@code OFFSET} or {@code TIMESTAMP} upstream; anything else is a mode this build cannot honour. */
+    public enum ResetMode implements org.opensearch.supervisor.model.WireEnum {
+        OFFSET,
+        TIMESTAMP,
+        UNKNOWN;
+
+        @Override
+        public String wireName() {
+            if (this == UNKNOWN) {
+                throw new IllegalStateException("UNKNOWN is a read-only sentinel and must never be written");
+            }
+            return name().toLowerCase(java.util.Locale.ROOT);
+        }
+
+        public static ResetMode from(String value) {
+            if (value == null) {
+                return UNKNOWN;
+            }
+            try {
+                return valueOf(value.toUpperCase(java.util.Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                return UNKNOWN;
+            }
+        }
+    }
 
     public static final int MAX_LAST_ERROR_LENGTH = 512;
 
@@ -73,7 +128,7 @@ public record TaskRecord(
     public TaskRecord claimedBy(String supervisorId, long epoch, long nowMillis, long leaseMillis, int progress) {
         return new TaskRecord(
             taskId, type, index, indexUuid, TaskState.CLAIMED, submittedAt, sequence,
-            supervisorId, epoch, nowMillis + leaseMillis, attempts + 1, lastError, progress
+            supervisorId, epoch, nowMillis + leaseMillis, attempts + 1, lastError, progress, details
         );
     }
 
@@ -86,21 +141,21 @@ public record TaskRecord(
     public TaskRecord renewed(String supervisorId, long epoch, long nowMillis, long leaseMillis, int progress) {
         return new TaskRecord(
             taskId, type, index, indexUuid, TaskState.CLAIMED, submittedAt, sequence,
-            supervisorId, epoch, nowMillis + leaseMillis, attempts, lastError, progress
+            supervisorId, epoch, nowMillis + leaseMillis, attempts, lastError, progress, details
         );
     }
 
     public TaskRecord completed(long nowMillis) {
         return new TaskRecord(
             taskId, type, index, indexUuid, TaskState.COMPLETED, submittedAt, sequence,
-            holder, epoch, nowMillis, attempts, null, progress
+            holder, epoch, nowMillis, attempts, null, progress, details
         );
     }
 
     public TaskRecord failed(String reason, long nowMillis) {
         return new TaskRecord(
             taskId, type, index, indexUuid, TaskState.FAILED, submittedAt, sequence,
-            holder, epoch, nowMillis, attempts, reason, progress
+            holder, epoch, nowMillis, attempts, reason, progress, details
         );
     }
 

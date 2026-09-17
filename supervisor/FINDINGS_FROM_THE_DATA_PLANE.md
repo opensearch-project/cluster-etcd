@@ -486,6 +486,20 @@ tenant present and unserved, not silently absent.
 
 ## 6. Pausing an index's ingestion is desired state with nowhere to live
 
+> **The pause is done**, and the control plane got there first — it writes `ingestion_status.is_paused` at the top
+> level of the index document, matching upstream's `IngestionStatus.isPaused`, **not** the `ingestion.paused`
+> sketched below. The supervisor now reads it, projects it on `IndexStatus`, and completes `pause-ingestion` and
+> `resume-ingestion` on the same condition as `update-settings`. Both previously parsed as `UNKNOWN` and became
+> permanent `TASK_STUCK` findings.
+>
+> **The reset pointers are not done, and they need two things from the data plane.** `DESIGN.md` §21.2 has the
+> design; the short version is that the position cannot be used to detect application — a shard reset to offset
+> 1000 is at 1200 by the time anyone looks, and a rewind from 5000 to 1000 looks *already done* before it is
+> applied — so the reset carries the task id into the assignment and is acknowledged through the existing
+> `applied: {assignment_version, outcome}` handshake. What that needs from you: `applied: applied` must mean the
+> reset landed too, and idempotence must key on the reset's `id` rather than the assignment version, which moves
+> for unrelated reasons. Say the word and I will implement the supervisor half.
+
 ### What is missing
 
 Pull-based ingestion is configured entirely through index settings — `index.ingestion_source.type`,

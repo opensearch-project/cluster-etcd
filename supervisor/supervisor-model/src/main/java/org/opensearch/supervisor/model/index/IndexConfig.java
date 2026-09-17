@@ -38,6 +38,7 @@ public record IndexConfig(
     int numberOfSearchReplicas,
     Replication replication,
     boolean hidden,
+    boolean ingestionPaused,
     AllocationEnable allocationEnable,
     long configRevision,
     Map<Integer, Integer> copyOverrides
@@ -56,8 +57,38 @@ public record IndexConfig(
     public static final String SETTING_REPLICATION = "index.replication.type";
     public static final String SETTING_HIDDEN = "index.hidden";
 
+    /**
+     * Whether the index's pull-based consumer is stopped.
+     *
+     * <p><b>Not a setting</b>, which is the trap: it is a first-class field on OpenSearch's {@code IndexMetadata}
+     * as {@code IngestionStatus.isPaused}, so the obvious guess of {@code index.ingestion.paused} in the settings
+     * block finds nothing. The control plane writes it at the top level of the index document, matching upstream's
+     * spelling exactly.
+     */
+    public static final String FIELD_INGESTION_STATUS = "ingestion_status";
+
+    public static final String FIELD_IS_PAUSED = "is_paused";
+
     /** Overrides the cluster-wide value, so one index can be frozen without freezing the rest. */
     public static final String SETTING_ALLOCATION_ENABLE = "index.routing.allocation.enable";
+
+    /** Everything except the ingestion pause, which only the ingestion tests set. */
+    public IndexConfig(
+        String name,
+        String uuid,
+        boolean open,
+        int numberOfShards,
+        int numberOfReplicas,
+        int numberOfSearchReplicas,
+        Replication replication,
+        boolean hidden,
+        AllocationEnable allocationEnable,
+        long configRevision,
+        Map<Integer, Integer> copyOverrides
+    ) {
+        this(name, uuid, open, numberOfShards, numberOfReplicas, numberOfSearchReplicas, replication, hidden,
+            false, allocationEnable, configRevision, copyOverrides);
+    }
 
     /** Everything except the search-replica count, which most callers do not set. */
     public IndexConfig(
@@ -72,7 +103,7 @@ public record IndexConfig(
         long configRevision,
         Map<Integer, Integer> copyOverrides
     ) {
-        this(name, uuid, open, numberOfShards, numberOfReplicas, 0, replication, hidden, allocationEnable,
+        this(name, uuid, open, numberOfShards, numberOfReplicas, 0, replication, hidden, false, allocationEnable,
             configRevision, copyOverrides);
     }
 
@@ -93,7 +124,7 @@ public record IndexConfig(
         AllocationEnable allocationEnable,
         long configRevision
     ) {
-        this(name, uuid, open, numberOfShards, numberOfReplicas, 0, replication, hidden, allocationEnable,
+        this(name, uuid, open, numberOfShards, numberOfReplicas, 0, replication, hidden, false, allocationEnable,
             configRevision, Map.of());
     }
 
@@ -205,7 +236,7 @@ public record IndexConfig(
     /** Same index, with extra copies authorised for particular shards. */
     public IndexConfig withCopyOverrides(Map<Integer, Integer> overrides) {
         return new IndexConfig(name, uuid, open, numberOfShards, numberOfReplicas, numberOfSearchReplicas,
-            replication, hidden, allocationEnable, configRevision, overrides);
+            replication, hidden, ingestionPaused, allocationEnable, configRevision, overrides);
     }
 
     /** Total copies this index wants across the pool. Zero while closed — a closed index serves nothing. */
@@ -243,6 +274,8 @@ public record IndexConfig(
             intSetting(settings, SETTING_SEARCH_REPLICAS, 0, name),
             Replication.from(stringSetting(settings, SETTING_REPLICATION, "SEGMENT")),
             Boolean.parseBoolean(stringSetting(settings, SETTING_HIDDEN, "false")),
+            // From the document body rather than from settings, and absent means consuming.
+            root.path(FIELD_INGESTION_STATUS).path(FIELD_IS_PAUSED).asBoolean(false),
             AllocationEnable.from(stringSetting(settings, SETTING_ALLOCATION_ENABLE, null)),
             configRevision,
             Map.of()

@@ -32,6 +32,7 @@ public record IndexStatus(
     int numberOfShards,
     int numberOfReplicas,
     int numberOfSearchReplicas,
+    boolean ingestionPaused,
     Map<Integer, List<ShardPlacement>> shards,
     long observedAt,
     long observedPass

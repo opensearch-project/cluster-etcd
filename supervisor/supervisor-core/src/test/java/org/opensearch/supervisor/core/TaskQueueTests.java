@@ -105,7 +105,7 @@ class TaskQueueTests {
     /** Writes what the control plane writes: state pending, no supervisor fields at all. */
     private void submitTask(String taskId, TaskType type) {
         store.put(Keys.tasksPrefix(ACME) + taskId, new TaskRecord(
-            taskId, type, "my-index", UUID, TaskState.PENDING, clock.millis(), 1, null, 0, 0, 0, null, 0
+            taskId, type, "my-index", UUID, TaskState.PENDING, clock.millis(), 1, null, 0, 0, 0, null, 0, null
         ).toBytes());
     }
 
@@ -312,7 +312,7 @@ class TaskQueueTests {
         // A supervisor that claimed and then died, leaving its claim behind.
         store.put(Keys.tasksPrefix(ACME) + "task-1", new TaskRecord(
             "task-1", TaskType.DELETE_INDEX, "my-index", UUID, TaskState.CLAIMED,
-            1000, 1, "dead-supervisor", 1, clock.millis() - 1, 1, null, 0
+            1000, 1, "dead-supervisor", 1, clock.millis() - 1, 1, null, 0, null
         ).toBytes());
 
         Supervisor supervisor = supervisor("s1");
@@ -328,7 +328,7 @@ class TaskQueueTests {
         createIndex(1);
         store.put(Keys.tasksPrefix(ACME) + "task-1", new TaskRecord(
             "task-1", TaskType.DELETE_INDEX, "my-index", UUID, TaskState.CLAIMED,
-            1000, 1, "other-supervisor", 1, clock.millis() + 600_000, 1, null, 0
+            1000, 1, "other-supervisor", 1, clock.millis() + 600_000, 1, null, 0, null
         ).toBytes());
 
         Supervisor supervisor = supervisor("s1");
