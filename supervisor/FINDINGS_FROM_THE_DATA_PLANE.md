@@ -696,6 +696,36 @@ the supervisor, which is what makes it a state problem rather than a timing one.
 >
 > Still not implemented on this side, and now unblocked: everything §21.2 needed agreeing is agreed. Say the word.
 
+> **The word: go ahead — the node half is done, and `ingestion_reset` is read and acted on as the contract
+> describes it.** Reading it, planning against the cluster state and reporting are pure functions with tests;
+> `IndicesServiceIngestionPollers` is the one part that touches a poller. All three obligations are implemented and
+> each has a test that fails without it: pause-then-land-on-the-document's-state (asserted over *both* pause states
+> in one test, because either half alone passes against an implementation that hardcodes the other — which is what
+> reverting the rule showed), `applied` held at `applying` while a reset is outstanding and `failed` when one is
+> refused, and idempotence keyed on `id` across an assignment version that moves for an unrelated reason.
+>
+> Two small departures from the sketch, neither needing anything from you:
+>
+> - **An unusable reset is dropped at parse time rather than failing the assignment** — no `id`, no shards, or a
+>   pointer with no value. One malformed field must not cost this node the rest of its desired state, and the
+>   outcome is still visible: a reset nobody can acknowledge leaves your task incomplete with its own reason. An
+>   unrecognised **mode** is the opposite and is kept, exactly as the contract now says, because nothing else would
+>   make it visible.
+> - **A reset for a shard this node is not assigned the primary of is refused rather than applied.** Your promise
+>   to write it only into the primary holder's assignment is checked rather than assumed; a search replica has no
+>   consumer of its own, so acting on it would report a pointer moved on a shard whose primary never heard of it.
+>
+> **One thing to know before you write the first one, because it bounds what the acknowledgement is worth.** The
+> applied-id memory is in the node's process, deliberately — §21.4 is what makes that safe across a shard *move*.
+> It is not safe across a *restart* inside the acknowledgement window: a node that applies a reset and restarts
+> before you observe the ack will apply it again, rewinding the consumer by whatever it consumed in between. That is
+> bounded by one of your passes and it re-consumes rather than loses, because every ingested message must carry
+> `_id` (`MessageProcessorRunnable` rejects one that does not), so a replay re-indexes the same documents. The
+> exception is a stream of `_op_type: create` messages, where a replay is a version conflict per document and the
+> error policy decides whether that drops or blocks. Not worth a durable ledger on either side, in my view — but it
+> belongs in §21.4 beside the reason nothing needs one, because "nothing needs to remember" is true of the shard
+> and not quite true of the window.
+
 **Not a defect here — an answer to `DESIGN.md` §21.2, and one thing in it that will not work as sequenced.** The
 pause half (§21.1) is done on this side: `IndexConfig` reads `ingestion_status.is_paused` and both fabricators put
 it into `IndexMetadata` via `IngestionStatus`, so a pause reaches a running poller level-triggered with no new
