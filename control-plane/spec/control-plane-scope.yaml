@@ -90,7 +90,6 @@ excluded_namespaces:
   ppl: "ppl plugin; data plane"
   ubi: "user behavior insights plugin; data plane"
   insights: "query insights plugin; runtime query statistics"
-  ingestion: "pull-based ingestion; data plane"
   asynchronous_search: "asynchronous search plugin; data plane"
   replication: "cross-cluster replication plugin; requires the remote cluster data path"
 
@@ -102,6 +101,7 @@ reviewed_namespaces:
   - indices
   - cluster
   - ingest
+  - ingestion
   - snapshot
   - search_pipeline
 
@@ -118,6 +118,13 @@ included_operations:
   - delete_script
   - get_script_context
   - get_script_languages
+
+  # -- ingestion: *controlling* pull-based ingestion, not performing it.
+  #    Ingesting documents is the data plane's. Deciding whether a shard should be consuming, and
+  #    from where, is a metadata write that finishes in its own request -- the same shape as
+  #    indices.close. The data plane picks the change up through the supervisor.
+  - ingestion.pause
+  - ingestion.resume
 
   # -- indices: index and template metadata.
   - indices.create
@@ -288,3 +295,10 @@ excluded_operations:
 
   # -- ingest
   ingest.simulate: "requires the ingest processor execution engine"
+
+  # -- ingestion: pausing and resuming are metadata writes and are in scope. Reading back the state
+  # is not: every field ShardIngestionState carries is per-shard runtime -- poller_state,
+  # poller_paused, batch_start_pointer, error_policy, is_primary, and the node holding the shard --
+  # and the response pages over shards. None of it exists in metadata. Blocked on the same data plane
+  # projection as cluster.health, and listed under "Still unverified" in the README for the same reason.
+  ingestion.get_state: "reports per-shard poller runtime, which metadata does not contain"

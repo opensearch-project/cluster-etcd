@@ -28,6 +28,7 @@ import org.opensearch.controlplane.handler.indices.GetFieldMappingHandler;
 import org.opensearch.controlplane.handler.indices.GetIndexHandler;
 import org.opensearch.controlplane.handler.indices.GetMappingHandler;
 import org.opensearch.controlplane.handler.indices.GetSettingsHandler;
+import org.opensearch.controlplane.handler.indices.IngestionHandlers;
 import org.opensearch.controlplane.handler.indices.ResolveIndexHandler;
 import org.opensearch.controlplane.handler.indices.PutAliasHandler;
 import org.opensearch.controlplane.handler.indices.PutIndexSettingsHandler;
@@ -141,6 +142,11 @@ public final class ControlPlaneHandlers {
             .register(new PutPipelineHandler(PipelineKind.search(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.search()))
             .register(new DeletePipelineHandler(PipelineKind.search()));
+
+        // Controlling pull-based ingestion: a flag on the index document, plus a task carrying any
+        // consumer-pointer resets. Performing the ingestion is the data plane's; deciding whether it happens
+        // is not. See IngestionHandlers.
+        IngestionHandlers.handlers().forEach(registry::register);
 
         // close and open are mirror images, so one implementation serves both.
         ChangeIndexStateHandler.handlers().forEach(registry::register);

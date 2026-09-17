@@ -10,8 +10,8 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-123 routes, 76 operation groups, 53 implemented, 23 stubbed
-(56 / 20 when the capabilities file declares script languages, contexts and grok patterns)
+125 routes, 78 operation groups, 55 implemented, 23 stubbed
+(58 / 20 when the capabilities file declares script languages, contexts and grok patterns)
 ```
 
 | namespace | routes | implemented |
@@ -22,6 +22,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`†, `get_script_context`† |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline`, `processor_grok`† |
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
+| `ingestion` | 2 | `pause`, `resume` — *controlling* pull-based ingestion. `get_state` is out of scope |
 
 **† Three operations are registered only when the capabilities file declares their data**:
 `get_script_languages`, `get_script_context` and `ingest.processor_grok`. Each is a pure passthrough, so
@@ -803,6 +804,8 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | `line` / `col` on a stored-script parse error | reported from the XContent parser's token location | omitted | this service parses with a different parser on a different pass, so any position it produced would be plausible and wrong — worse than absent. The `reason` already names the offending field |
 | mapping key order | reordered by the mapping engine | as declared | the field dictionaries `properties` and `fields` come back sorted, but the other mapping keys follow the mapper's own emission order — `dynamic` before `properties`, neither declared nor alphabetical. Sorting the dictionaries would match a simple mapping and silently diverge on a richer one, while *looking* faithful. Reproducing it means the mapping engine |
 | metadata fields in `get_field_mapping` | `_index`, `_routing`, `_doc_count`, … returned under a wildcard | declared fields only | they come from the mapping engine's field registry, which is version- and plugin-dependent; a hardcoded copy would drift the way a hardcoded settings registry would |
+| `shards_acknowledged` on ingestion pause/resume | reports whether every shard's poller acted | always `false` | the spec marks it required, so it cannot be omitted, and this returns before any poller has seen the change. Same call as `indices.create`: the honest answer is that we did not wait |
+| `failures` on ingestion pause/resume | per-shard failures, grouped by index | never present | a shard failure is not something a metadata write can observe. The field is optional in the spec, so the response stays valid |
 | `include_defaults` on `get_settings` | a sibling `defaults` block, ~2.6 kB per index | accepted and ignored | **the control plane owns the settings a user explicitly set; computed values belong to the layer that computes them.** A data plane node can already answer `/{index}/_settings?local=true` with the fully resolved settings, defaults included, so putting a settings registry here would duplicate that — and a duplicated registry drifts. Same reasoning as [Data plane capabilities](#data-plane-capabilities) |
 | `PUT` weighted routing with no body | **500** `null_pointer_exception`, the reason naming `WeightedRouting.attributeName()` | 400 `parse_exception`, `request body is required` | the body is never parsed, so the request object stays null and `validate()` dereferences it. Reproducing a crash is not compatibility, and the message leaks a server-internal class name at a status that tells the caller to retry. Third place OpenSearch answers 5xx for a plain client error, after `source` without `source_content_type` and an unknown repository type |
 | weight keys in a weighted routing response | `HashMap` order | sorted | same call as nested settings key order, and for the same reasons. It does **not** extend to the two error messages that embed a rendered weights map: those are strings a client may compare, so hash order is reproduced there deliberately |
@@ -849,6 +852,21 @@ character for character against the server's response.
   — `moving-function` takes `(params, values)` and `similarity` takes `(weight, query, field, term, doc)`.
 - **A parameter's fields are `type` then `name`**, the reverse of how the rest of this API reads and of
   how the capabilities file spells it. `ScriptContextInfo.ParameterInfo.toXContent` emits `type` first.
+- **Controlling pull-based ingestion is metadata; performing it is not.** `ingestion` was excluded wholesale
+  as "data plane", which was right about consuming from a stream and wrong about deciding whether a shard
+  should be consuming at all. `pause` and `resume` are now in scope; `get_state` is not — every field it
+  returns is per-shard poller runtime (`poller_state`, `poller_paused`, `batch_start_pointer`,
+  `error_policy`, `is_primary`, the holding node) and the response pages over shards, so it is blocked on the
+  same data plane projection as `cluster.health`.
+- **The pause flag is a first-class index metadata field, not a setting.** Upstream it is
+  `IndexMetadata.builder(...).ingestionStatus(...)` under the key `ingestion_status`, holding a single
+  boolean `is_paused` that defaults to false. The obvious guess is `index.ingestion.paused` in the settings
+  block, where a supervisor would find nothing.
+- **Consumer-pointer resets are instructions, not state.** `_resume` optionally carries `reset_settings`,
+  per-shard commands to move the consumer to an offset or timestamp first. They ride on the task record
+  rather than the index document: recording them as state would mean replaying them on every reconciliation
+  pass, or having the supervisor delete them afterwards — and the supervisor writing into this service's key
+  space is what the plane boundary forbids.
 - **A data stream cannot exist without a composable template that has a `data_stream` block.** Two
   separate errors, both `illegal_argument_exception`: no matching template at all, and a matching
   template that is not a data stream template. The template supplies the timestamp field name, so its
@@ -1162,6 +1180,12 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
+- **The ingestion pause/resume shapes are source-derived, not diffed against a live cluster.** Field names,
+  the stored form and the validation wording come from `IngestionStatus` and
+  `ResumeIngestionRequest.validate`; everything else in this file was checked against a running 3.9.0.
+  Exercising these upstream needs an index with a configured streaming source, which is more than a probe.
+  Worth a diff once the data plane has one running — the likeliest divergence is the exact error for a
+  malformed `reset_settings` entry.
 - Everything about the operation groups that are still stubbed. With a full capabilities file that is
   **20**, and there is no easy CRUD left among them: seven are snapshot data or administration
   operations that belong to another plane, four are the deferred resize family, three are decommission

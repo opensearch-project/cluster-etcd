@@ -49,6 +49,8 @@ public final class IndexManagementTasks {
     static final String TYPE_UPDATE_SETTINGS = "update-settings";
     static final String TYPE_CLOSE_INDEX = "close-index";
     static final String TYPE_OPEN_INDEX = "open-index";
+    public static final String TYPE_PAUSE_INGESTION = "pause-ingestion";
+    public static final String TYPE_RESUME_INGESTION = "resume-ingestion";
 
     static final String STATE_PENDING = "pending";
 
@@ -74,6 +76,19 @@ public final class IndexManagementTasks {
      */
     public static final String SEQUENCE = "sequence";
 
+    /**
+     * Optional per-task payload, present only for the task types that need one.
+     *
+     * <p>Added for {@code resume-ingestion}, whose consumer-pointer resets are per shard and are a
+     * <b>one-shot instruction rather than desired state</b>. Recording them on the index document would mean
+     * either replaying them on every reconciliation or having the supervisor clear them, and the supervisor
+     * writing into this service's key space is exactly what the plane boundary forbids. A task is already the
+     * channel for "do this once, then reap it", so the instruction rides there.
+     *
+     * <p>Absent on every other task type. A consumer must treat it as optional.
+     */
+    public static final String DETAILS = "details";
+
     private static final AtomicLong SEQUENCER = new AtomicLong();
 
     private final KeyValueStore store;
@@ -96,6 +111,16 @@ public final class IndexManagementTasks {
      * @return the task ID
      */
     String submit(String type, String index, String indexUuid, long submittedAtEpochMillis) {
+        return submit(type, index, indexUuid, submittedAtEpochMillis, null);
+    }
+
+    /**
+     * Records a pending task carrying a payload.
+     *
+     * @param details what the supervisor needs in order to act, or null for the types that need nothing.
+     *                See {@link #DETAILS}.
+     */
+    String submit(String type, String index, String indexUuid, long submittedAtEpochMillis, ObjectNode details) {
         String taskId = IndexStore.newUuid();
 
         ObjectNode task = Json.object();
@@ -106,6 +131,9 @@ public final class IndexManagementTasks {
         task.put("state", STATE_PENDING);
         task.put(SUBMITTED_AT, submittedAtEpochMillis);
         task.put(SEQUENCE, SEQUENCER.incrementAndGet());
+        if (details != null) {
+            task.set(DETAILS, details);
+        }
 
         store.put(key(taskId), Json.toBytes(task));
         return taskId;
