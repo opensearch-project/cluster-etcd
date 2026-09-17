@@ -460,6 +460,37 @@ The same machinery is why the empty-primary hole in `MILESTONES.md` M7.1 is wors
 `EMPTY_STORE` primary seals the fence like any other non-peer recovery, so it becomes authoritative in a way the
 copy that still has the data cannot contest.
 
+### A metadata-only change reaches a running shard, which is what makes the ingestion pause free
+
+Worth knowing generally and not just for ingestion: `IndicesClusterStateService.createOrUpdateShards` iterates
+every shard the local routing node holds on **every** applied state and calls `updateShard` for each one, with no
+equality guard on the routing entry — the only skip is `failedShardsCache`. So a published state whose routing
+table is byte-identical and whose *metadata* differs still reaches each shard.
+
+That is the mechanism behind `IngestionStatus.isPaused` costing this plugin three lines. `updateShard` calls
+`shard.updateShardIngestionState(indexMetadata)`, which builds an `IngestionSettings` from the metadata and hands
+it to `IngestionEngine.updateIngestionSettings`, so pausing is a fabrication change and nothing more. Two details
+of that path are load-bearing:
+
+- **it only fires for the primary**, unless `indexMetadata.isAllActiveIngestionEnabled()` — correct here, since the
+  primary is the copy that consumes;
+- **`IngestionStatus` is a record**, so `IngestionStatus(false)` equals `IngestionStatus.getDefaultValue()`. Setting
+  it unconditionally therefore changes nothing for an index with no source, which is why it needs no guard. Had it
+  been a class without `equals`, every index everywhere would have gained a metadata change.
+
+### A consumer-pointer reset refuses to run on a live poller, and persists into the commit
+
+`IngestionEngine.resetStreamPoller` throws `IllegalStateException("Cannot reset consumer when poller is not
+paused")`, and `updateIngestionSettings` applies a reset **before** the pause flag in the same call — so one call
+carrying both a reset and `isPaused: false` cannot work on a running poller, and neither can one carrying a reset
+alone. Resetting always means pause, reset, then set the state you actually want.
+
+It ends with `flush(true, true)` to persist the new batch start pointer, which composes with M8.2's recovery: the
+commit user data carries `StreamPoller.BATCH_START`, so a copy that moves after a reset resumes from the reset
+point with no instruction surviving anywhere. `StreamPoller.ResetState` is `EARLIEST`, `LATEST`,
+`RESET_BY_OFFSET`, `RESET_BY_TIMESTAMP`, `NONE` — the middle two are what a `reset_settings` mode maps onto, and
+the value is a string either way, parsed as millis for a timestamp.
+
 ## Tests are JUnit 4, and this is not a preference
 
 The first real `./gradlew build` found a forbidden-APIs failure, and pulling on it found something worse:

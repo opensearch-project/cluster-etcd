@@ -29,6 +29,11 @@ import java.util.Objects;
  *       copies at all.
  * </ul>
  *
+ * <p>And a fourth trap that is not in the settings block at all: <b>{@code ingestion_status} is a first-class
+ * field</b>, a sibling of {@code state} rather than a setting, because that is what it is upstream —
+ * {@code IngestionStatus.isPaused} on {@code IndexMetadata}. The obvious guess of {@code index.ingestion.paused}
+ * under {@code settings} finds nothing, silently, which is why it is worth naming here.
+ *
  * @param revision the store revision this was read at, which is what the inventory reports as
  *     {@code config_revision}. Not part of the document: the store supplies it, and it is opaque.
  */
@@ -37,16 +42,41 @@ public record IndexConfig(
     String uuid,
     long creationDate,
     boolean open,
+    boolean ingestionPaused,
     Map<String, String> settings,
     Map<String, Object> mappings,
     long revision
 ) {
+
+    /** The index document's field for the pause, matching {@code IndexMetadata}'s own key. */
+    public static final String FIELD_INGESTION_STATUS = "ingestion_status";
+
+    /** Matching {@code IngestionStatus.IS_PAUSED}. Absent means not paused. */
+    public static final String FIELD_IS_PAUSED = "is_paused";
 
     public IndexConfig {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(uuid, "uuid");
         settings = settings == null ? Map.of() : Map.copyOf(settings);
         mappings = mappings == null ? Map.of() : Map.copyOf(mappings);
+    }
+
+    /**
+     * Everything except the ingestion pause, which only an index with a pull-based source can mean anything by.
+     *
+     * <p>Kept so that the pause could be added without touching every construction site, and because a caller
+     * with no opinion about ingestion should not have to express one.
+     */
+    public IndexConfig(
+        String name,
+        String uuid,
+        long creationDate,
+        boolean open,
+        Map<String, String> settings,
+        Map<String, Object> mappings,
+        long revision
+    ) {
+        this(name, uuid, creationDate, open, false, settings, mappings, revision);
     }
 
     /**
@@ -118,12 +148,16 @@ public record IndexConfig(
         // would make the same index look different on every node.
         long creationDate = Documents.number(document, "creation_date", 0, what);
         boolean open = "open".equalsIgnoreCase(Documents.string(document, "state", "open"));
+        // A first-class field beside state, not a setting. Absent means not paused, which is what makes every
+        // index document written before the pause existed still legal.
+        boolean ingestionPaused = Documents.bool(Documents.object(document, FIELD_INGESTION_STATUS), FIELD_IS_PAUSED, false);
 
         return new IndexConfig(
             name,
             uuid,
             creationDate,
             open,
+            ingestionPaused,
             Documents.stringMap(document, "settings"),
             Documents.object(document, "mappings"),
             revision

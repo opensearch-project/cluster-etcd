@@ -547,7 +547,7 @@ answer to that, rather than as a one-line saving.
 The change itself is one line in `metadataFor`, guarded on nothing: that method is only reached for an index this
 node holds no copy of, which is exactly the case where mappings are unused.
 
-## M8.2. Pull-based ingestion — **the settings path works; the pause does not exist**
+## M8.2. Pull-based ingestion — **done, and the pause now has somewhere to live**
 
 `index.ingestion_source.*` is entirely index settings, which means the data plane needed **no code to support it**:
 the control plane sets them, the fabrication passes them through, and `IndicesService.getEngineFactory` branches on
@@ -574,22 +574,73 @@ data and resumes from it, falling back to `index.ingestion_source.pointer.init.r
 A pull-based index is therefore **never probed** — nothing the repository could say would change the answer — which
 also removes a network read per fresh copy.
 
-### The gap: pausing ingestion is desired state with nowhere to live
+### The gap, now closed: pausing ingestion had desired state with nowhere to live
 
 `IndexMetadata.ingestionStatus` is a **first-class metadata field, not a setting** — `IngestionStatus(isPaused)`,
 defaulting to not-paused, changed upstream by `MetadataStreamingIngestionStateService` through a cluster-manager
 action. In this architecture that action is refused, correctly: pausing an index's ingestion is desired state and
 belongs to the control plane.
 
-But `tenant/<t>/indices/<name>` has no field for it, and it cannot be a setting, so **a paused index would come
-back unpaused** — every fabrication defaults it, and the pass after an operator pauses would resume the stream
-underneath them. That is a contract change rather than something to work around here: the index document needs to
-carry it, and this plugin needs to read it into the fabricated metadata. Raised with the supervisor as a finding
-rather than patched, because a data plane inventing a place for it would be the two services disagreeing about
-desired state, which is the one thing this design cannot tolerate.
+But `tenant/<t>/indices/<name>` had no field for it, and it cannot be a setting, so **a paused index came back
+unpaused** — every fabrication defaulted it, and the pass after an operator paused would resume the stream
+underneath them. That was raised with the supervisor as finding 6 rather than patched here, because a data plane
+inventing a place for it would be the two services disagreeing about desired state, which is the one thing this
+design cannot tolerate.
 
-Until then, an index with an ingestion source ingests whenever a node holds a copy of it, and `_ingestion/_pause`
-against a data node is refused with the message every cluster-manager action gets.
+**Both other services have since added it**, and the adopted spelling is upstream's rather than the one this side
+sketched: `ingestion_status: { is_paused: true }` at the top level of the index document, matching
+`IndexMetadata`'s own key and `IngestionStatus.IS_PAUSED`. Worth noting that the sketch here proposed
+`ingestion: { paused: true }` and the better answer was to match the server — a reader of any of the three
+repositories now finds the same two words.
+
+This side is three lines and no new plumbing, which is worth explaining because it is the level-triggered design
+paying off. The chain, read from the server's source rather than watched on a node:
+
+- `IndexConfig` reads the field, absent meaning not paused — which is what makes every index document written
+  before the pause existed still legal;
+- both fabricators put it into the metadata as `IngestionStatus`, unconditionally. That is only safe because
+  `IngestionStatus(false)` is exactly what `IndexMetadata.Builder.build()` would have defaulted to, so an ordinary
+  index fabricates byte-identically and no deployment gains a metadata change on the pass this shipped;
+- `StateEquivalence.sameContent` compares `IndexMetadata` by `equals`, which includes `ingestionStatus`, so
+  flipping the pause is a change and therefore publishes;
+- `IndicesClusterStateService.createOrUpdateShards` calls `updateShard` for every shard on this node on **every**
+  applied state, with no equality guard on the routing entry, and that calls
+  `IndexShard.updateShardIngestionState(IndexMetadata)` → `IngestionEngine.updateIngestionSettings`. So a
+  metadata-only change with an identical routing table reaches a *running* poller;
+- and `IngestionEngine` reads the same field at open for `initialPollerState`, so a copy built while paused starts
+  paused.
+
+Both directions, no latch, and the test that matters is the one asserting the flip is visible to
+`StateEquivalence` — a pause that comparison cannot see would be written, read, fabricated, and never applied to
+anything.
+
+**What is not proven:** none of this has been watched on a running node. The paused metadata is asserted as a pure
+function of the document, and every link after that is read from `../OpenSearch` rather than observed. The run
+worth doing is the obvious one — pause a `ingestion-fs` index, confirm the poller stops with documents still
+arriving in the file, resume, confirm it catches up from the pointer rather than from the start. The second half is
+the interesting one: `earliest` re-indexing everything would look a lot like a working resume.
+
+### What is deliberately not done: consumer-pointer resets
+
+`_resume` may carry `reset_settings` — per shard, move the consumer to an offset or timestamp. Those are
+instructions rather than desired state, so the control plane puts them on the task, and the supervisor's
+`DESIGN.md` §21.2 proposes carrying them into the node's assignment as `ingestion_reset` with a task id, completed
+by the node's ordinary `applied` report. That design is right, and the reason is worth keeping: **a rewind cannot
+be detected by looking at the pointer**, because before it is applied a consumer at 5000 being sent back to 1000
+looks exactly like a job already finished.
+
+Answered as finding 8 rather than implemented, because it needs a contract change first and there is a real defect
+in the sequencing. Upstream's `IngestionEngine.resetStreamPoller` throws `IllegalStateException` on a poller that
+is not paused, and the control plane writes `is_paused: false` **before** it records the task — so the resume
+arrives here down the fast path (a document this node already reads every pass) and the reset down the slow one
+(observe, plan, assign, read). The node therefore resumes first and the reset arrives against a live poller. The
+fix is on this side and is two calls to `IndexShard.updateShardIngestionState` — pause, then reset-and-land-on-the
+-desired-state — and what the contract needs to say is that a node must pause before applying a reset rather than
+trusting the ordering. A node that trusted it would pass every test where the reset happened to arrive first.
+
+Until that lands, `resume-ingestion` carrying resets deliberately does not complete on the supervisor's side, and
+says why in the task's own reason. That is the right failure: completing it would report that a pointer had moved
+when nothing moved it, in the one case where nothing downstream can ever contradict the claim.
 
 ## M9. Document replication
 

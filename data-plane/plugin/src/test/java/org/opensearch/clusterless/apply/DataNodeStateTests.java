@@ -9,6 +9,7 @@ import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.block.ClusterBlockLevel;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.metadata.IngestionStatus;
 import org.opensearch.cluster.metadata.RepositoriesMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodeRole;
@@ -589,7 +590,91 @@ public class DataNodeStateTests extends OpenSearchTestCase {
         assertEquals(1, state.nodes().getSize());
     }
 
+    // ---------------------------------------------------------------- the ingestion pause
+
+    public void testAPausedIndexFabricatesAPausedIngestionStatus() {
+        ClusterState state = build(ClusterState.EMPTY_STATE, desiredWith(pullBased(true), Map.of(0, ShardRole.PRIMARY)));
+
+        assertTrue("the pause is desired state and must reach the metadata", onlyIndex(state).getIngestionStatus().isPaused());
+    }
+
+    public void testAnOrdinaryIndexIsNotPausedAndFabricatesWhatTheBuilderWouldHaveDefaulted() {
+        // Set unconditionally rather than only for an index with a source, which is only safe because
+        // IngestionStatus(false) is exactly the default. If it were not, every index in every deployment would
+        // have gained a metadata change on the pass this shipped.
+        ClusterState state = build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY)));
+
+        assertFalse(onlyIndex(state).getIngestionStatus().isPaused());
+        assertEquals(IngestionStatus.getDefaultValue(), onlyIndex(state).getIngestionStatus());
+    }
+
+    public void testPausingIsSeenByStateEquivalenceOrTheChangeReachesNoPoller() {
+        // The load-bearing assertion in this section, and the one that connects this fabrication to the running
+        // node. A poller learns about the pause only through an applied cluster state
+        // (IndicesClusterStateService.updateShard -> IndexShard.updateShardIngestionState), and this plugin
+        // publishes only when sameContent is false. So a pause that this comparison cannot see is a pause that
+        // is written, read, fabricated -- and never applied to anything.
+        ClusterState running = withShardStarted(build(ClusterState.EMPTY_STATE, desiredWith(pullBased(false), Map.of(0, ShardRole.PRIMARY))));
+        ClusterState paused = build(running, desiredWith(pullBased(true), Map.of(0, ShardRole.PRIMARY)));
+
+        assertFalse("flipping the pause must be a change", StateEquivalence.sameContent(running, paused));
+        assertTrue(onlyIndex(paused).getIngestionStatus().isPaused());
+        // And the copy is left alone: a pause is not a shard movement, so the shard must not be rebuilt into
+        // initializing by it. This is D2.2, and getting it wrong would restart ingestion rather than pause it.
+        assertTrue(onlyCopy(paused, 0).started());
+    }
+
+    public void testAPausedIndexIsAFixedPointAcrossPasses() {
+        // The second pass, which is where every defect that reached a running node has been. A pause that
+        // fabricated differently on the pass after would publish a state every poll interval for ever.
+        ClusterState first = build(ClusterState.EMPTY_STATE, desiredWith(pullBased(true), Map.of(0, ShardRole.PRIMARY)));
+        ClusterState second = build(first, desiredWith(pullBased(true), Map.of(0, ShardRole.PRIMARY)));
+
+        // Asserted first, and it is not decoration: without it this test passes on a fabricator that has never
+        // heard of the pause, because two unpaused states are a fixed point too. Checking that it failed without
+        // the fix is what found that, and it is the second time that step has caught a vacuous test here.
+        assertTrue("the fixed point has to be the paused one", onlyIndex(first).getIngestionStatus().isPaused());
+        assertTrue("a paused index must converge like any other", StateEquivalence.sameContent(first, second));
+        assertEquals(onlyIndex(first).getIngestionStatus(), onlyIndex(second).getIngestionStatus());
+        assertEquals("and its metadata version must not move", onlyIndex(first).getVersion(), onlyIndex(second).getVersion());
+    }
+
+    public void testResumingIsAsOrdinaryAsPausing() {
+        // Nobody should add a latch. The document is the authority in both directions, and the pass after a
+        // resume must say so -- one pass, not two, and no memory of having been paused.
+        ClusterState paused = withShardStarted(build(ClusterState.EMPTY_STATE, desiredWith(pullBased(true), Map.of(0, ShardRole.PRIMARY))));
+        ClusterState resumed = build(paused, desiredWith(pullBased(false), Map.of(0, ShardRole.PRIMARY)));
+
+        assertFalse(onlyIndex(resumed).getIngestionStatus().isPaused());
+        assertFalse("and it must be a change, or the resume reaches no poller either", StateEquivalence.sameContent(paused, resumed));
+        assertTrue(onlyCopy(resumed, 0).started());
+    }
+
+    public void testAPauseOnAnIndexWithNoSourceIsInertRatherThanRefused() {
+        // A contradiction the control plane can write, since it flips the flag without consulting the settings.
+        // Harmless: the server's own path early-returns on useIngestionSource() == false, so the honest
+        // behaviour is to carry the field and let nothing happen -- rather than refuse the document and turn a
+        // control-plane mistake into an index that cannot be built at all.
+        ClusterState state = build(ClusterState.EMPTY_STATE, desiredWith(
+            new IndexConfig("my-index", UUID, 1788969977933L, true, true, settings(), mappings(), 3041),
+            Map.of(0, ShardRole.PRIMARY)
+        ));
+
+        IndexMetadata index = onlyIndex(state);
+        assertTrue(index.getIngestionStatus().isPaused());
+        assertFalse("no ingestion source, so nothing will consult it", index.useIngestionSource());
+        assertTrue(onlyCopy(state, 0).primary());
+    }
+
     // ---------------------------------------------------------------- fixtures
+
+    /** An index fed by a pull-based source, paused or not. The source is what makes the pause mean anything. */
+    private static IndexConfig pullBased(boolean paused) {
+        Map<String, String> withSource = new java.util.LinkedHashMap<>(settings());
+        withSource.put("index.ingestion_source.type", "FILE");
+        withSource.put("index.number_of_shards", "1");
+        return new IndexConfig("my-index", UUID, 1788969977933L, true, paused, withSource, mappings(), 3041);
+    }
 
     private static ClusterState build(ClusterState previous, DesiredState desired) {
         return build(previous, desired, LocalShardStore.EMPTY);

@@ -9,11 +9,12 @@ import org.opensearch.test.OpenSearchTestCase;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Reading an index document, whose shape has three traps in it.
+ * Reading an index document, whose shape has four traps in it.
  *
- * <p>All three are stated in {@code KEY_LAYOUT.md} and all three are silent when got wrong: flat string-valued
- * settings that read as zero, a name-keyed document whose uuid may not match, and a closed index that still has
- * everything an open one does.
+ * <p>All four are stated in {@code KEY_LAYOUT.md} and all four are silent when got wrong: flat string-valued
+ * settings that read as zero, a name-keyed document whose uuid may not match, a closed index that still has
+ * everything an open one does, and an ingestion pause that is not in the settings block where one would look
+ * for it.
  */
 public class IndexConfigTests extends OpenSearchTestCase {
 
@@ -108,5 +109,64 @@ public class IndexConfigTests extends OpenSearchTestCase {
         expectThrows(MalformedDocumentException.class, () -> read("{\"uuid\": \"u\", \"settings\": {}}", 1));
         expectThrows(MalformedDocumentException.class, () -> read("{\"index\": \"i\", \"settings\": {}}", 1));
         expectThrows(MalformedDocumentException.class, () -> read("{ not json", 1));
+    }
+
+    // ---------------------------------------------------------------- the ingestion pause
+
+    public void testTheIngestionPauseIsReadFromTheFirstClassField() {
+        // A sibling of state, not a setting, because that is what it is upstream. The control plane writes a
+        // real JSON boolean here -- only the settings block is all-strings.
+        String paused = """
+            {
+              "index": "logs", "uuid": "u", "state": "open",
+              "ingestion_status": { "is_paused": true },
+              "settings": { "index.ingestion_source.type": "kafka" }
+            }""";
+        assertTrue(read(paused, 1).ingestionPaused());
+    }
+
+    public void testAnAbsentIngestionStatusMeansNotPaused() {
+        // What makes every index document written before the pause existed still legal, and the reason the
+        // control plane needs no migration.
+        assertFalse(read("{\"index\": \"i\", \"uuid\": \"u\", \"settings\": {}}", 1).ingestionPaused());
+        assertFalse(read(EXAMPLE, 1).ingestionPaused());
+    }
+
+    public void testResumingIsWrittenAsAnExplicitFalseRatherThanByRemovingTheField() {
+        // What the control plane actually does: it sets the field on both operations, so a resumed index carries
+        // ingestion_status with is_paused false rather than losing the field. Both must read as not paused, and
+        // this is the case that would be missed by testing only the absent one.
+        String resumed = """
+            {"index": "logs", "uuid": "u", "ingestion_status": { "is_paused": false }, "settings": {}}""";
+        assertFalse(read(resumed, 1).ingestionPaused());
+    }
+
+    public void testThePauseIsNotLookedForInTheSettingsBlock() {
+        // The trap, asserted so that nobody "fixes" the reader by making the obvious guess work. A setting
+        // named this way is not the pause, and treating it as one would let a tenant pause their own ingestion
+        // by writing a setting -- desired state arriving through a channel the control plane does not own.
+        String misplaced = """
+            {"index": "logs", "uuid": "u", "settings": { "index.ingestion.paused": "true" }}""";
+        assertFalse(read(misplaced, 1).ingestionPaused());
+    }
+
+    public void testAStringValuedPauseIsStillRead() {
+        // Not what the control plane writes, and cheap to accept: a hand-edited document during an incident is
+        // the likely source, and "true" meaning false would be a confusing way to discover the difference.
+        String stringly = """
+            {"index": "logs", "uuid": "u", "ingestion_status": { "is_paused": "true" }, "settings": {}}""";
+        assertTrue(read(stringly, 1).ingestionPaused());
+    }
+
+    public void testAnUnreadablePauseLeavesTheStreamAsItWas() {
+        // The opposite choice from the shard count, and deliberate: there is no unparseable boolean worse than
+        // the default. A shard count of zero breaks an index; a pause that reads as "not paused" leaves the
+        // stream doing exactly what it was already doing.
+        String nonsense = """
+            {"index": "logs", "uuid": "u", "ingestion_status": { "is_paused": "sometimes" }, "settings": {}}""";
+        assertFalse(read(nonsense, 1).ingestionPaused());
+        String wrongType = """
+            {"index": "logs", "uuid": "u", "ingestion_status": "paused", "settings": {}}""";
+        assertFalse(read(wrongType, 1).ingestionPaused());
     }
 }

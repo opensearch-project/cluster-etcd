@@ -9,6 +9,7 @@ import org.apache.logging.log4j.Logger;
 import org.opensearch.Version;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.metadata.IngestionStatus;
 import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodeRole;
@@ -370,6 +371,11 @@ public final class CoordinatorState implements NodeState {
         settings.put(IndexMetadata.SETTING_NUMBER_OF_SEARCH_REPLICAS, searchReplicas);
 
         IndexMetadata.Builder builder = IndexMetadata.builder(index.getName()).settings(settings);
+        // Nothing on this node ingests for an index it holds no copy of, so this changes no behaviour here. It is
+        // set because the alternative is a coordinator reporting a paused index as running -- the same class of
+        // inconsistency as number_of_search_replicas being 0 beside a started search replica, which is the M8
+        // defect that was found by reading the output rather than by anything failing.
+        builder.ingestionStatus(new IngestionStatus(routed.config().ingestionPaused()));
         var mapping = mappings.mappingFor(index, routed.config().mappings());
         if (mapping != null) {
             builder.putMapping(mapping);

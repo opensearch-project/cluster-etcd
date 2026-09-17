@@ -10,6 +10,7 @@ import org.opensearch.Version;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.metadata.IngestionStatus;
 import org.opensearch.cluster.metadata.MappingMetadata;
 import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.cluster.metadata.RepositoriesMetadata;
@@ -333,6 +334,14 @@ public final class DataNodeState implements NodeState {
         if (mapping != null) {
             builder.putMapping(mapping);
         }
+
+        // Desired state, applied level-triggered like everything else here. Set unconditionally rather than only
+        // for an index with a source: IngestionStatus(false) is what the builder would have defaulted to, so an
+        // ordinary index fabricates identically and StateEquivalence sees no change. Nothing latches, so a
+        // resume is as ordinary as a pause -- and on a shard that is already running, the flip reaches the
+        // poller through the published state, because IndicesClusterStateService.updateShard calls
+        // updateShardIngestionState for every shard on this node on every applied state.
+        builder.ingestionStatus(new IngestionStatus(config.ingestionPaused()));
 
         if (previousMetadata != null) {
             // Carried forward rather than reset. The server uses these to decide what to reload, so starting

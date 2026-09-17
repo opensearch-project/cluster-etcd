@@ -89,6 +89,27 @@ final class Documents {
     }
 
     /**
+     * A boolean, from either a JSON boolean or a string holding one.
+     *
+     * <p>Both forms are accepted for the reason {@link #number} accepts both: the control plane writes a real
+     * JSON boolean for a top-level field like {@code ingestion_status.is_paused}, while anything that reaches
+     * this document through the settings block is a string. Only {@code "true"} is true, so a stray value reads
+     * as false rather than throwing — the opposite choice from {@code number}, and deliberately, because there
+     * is no unparseable-boolean that is worse than the default. A shard count of zero breaks an index; a pause
+     * that reads as "not paused" leaves the stream doing what it was already doing.
+     */
+    static boolean bool(Map<String, Object> parent, String field, boolean fallback) {
+        Object value = parent.get(field);
+        if (value == null) {
+            return fallback;
+        }
+        if (value instanceof Boolean flag) {
+            return flag;
+        }
+        return Boolean.parseBoolean(String.valueOf(value).trim());
+    }
+
+    /**
      * A map whose values are all strings, which is the shape the control plane's settings block has.
      *
      * <p>Values are stringified rather than rejected when they are not strings. The control plane promises
