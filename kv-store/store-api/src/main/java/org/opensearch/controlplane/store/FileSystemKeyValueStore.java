@@ -71,9 +71,34 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
     private static final int REVISION_HEADER_BYTES = Long.BYTES;
     private static final String TEMP_PREFIX = ".tmp-";
 
+    /**
+     * Where the last issued revision is kept, so that a revision is never reused after a key is deleted.
+     *
+     * <p>Named with a leading dot and skipped when scanning: it is not a key, and percent-encoding means no real
+     * key can ever encode to this name.
+     */
+    private static final String REVISION_COUNTER_FILE = ".revision";
+
     /** Serialises conditional writes. Process-local; see the class javadoc. */
     private final ReentrantLock lock = new ReentrantLock();
     private final Path directory;
+
+    /**
+     * The last revision this store issued, store-wide rather than per key.
+     *
+     * <p>It used to be derived per key, from the file itself — {@code currentRevision(key) + 1} — which needed no
+     * counter to persist, justified on the grounds that the interface makes revisions opaque and comparable only
+     * for equality. That is exactly why it was wrong: <b>equality is how a reader detects change</b>, so a key
+     * deleted and recreated came back at revision 1 having already been seen at revision 1 with different content,
+     * and a reader caching on the revision kept the stale value for ever. It cost a real debugging session — a
+     * supervisor whose desired state froze on a deleted index's uuid, while the node correctly declined to build it.
+     *
+     * <p>Both other backends already satisfied the guarantee: etcd's {@code mod_revision} and ZooKeeper's
+     * {@code mzxid} are cluster-wide transaction ids, and {@code ZooKeeperKeyValueStore} rejects
+     * {@code Stat.getVersion()} for precisely this reason. This was the only backend that reasoned its way to a
+     * per-key counter, and the interface did not say it could not.
+     */
+    private long lastIssuedRevision;
 
     public FileSystemKeyValueStore(Path directory) {
         this.directory = Objects.requireNonNull(directory, "directory").toAbsolutePath();
@@ -82,6 +107,82 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
         } catch (IOException e) {
             throw new UncheckedIOException("could not create store directory " + this.directory, e);
         }
+        this.lastIssuedRevision = recoverLastIssuedRevision();
+    }
+
+    /**
+     * The floor for the next revision after a restart: the counter file, or the highest revision any surviving key
+     * carries, whichever is greater.
+     *
+     * <p>Taking the maximum rather than trusting the counter makes a lost or truncated counter file survivable —
+     * the keys are then the floor, which is the answer the old per-key scheme gave. Taking the maximum rather than
+     * trusting the keys is what closes the case this exists for, where the key carrying the highest revision is
+     * the one that was deleted.
+     */
+    private long recoverLastIssuedRevision() {
+        long recovered = ABSENT;
+        Path counter = directory.resolve(REVISION_COUNTER_FILE);
+        try {
+            if (Files.exists(counter)) {
+                byte[] contents = Files.readAllBytes(counter);
+                if (contents.length >= REVISION_HEADER_BYTES) {
+                    recovered = ByteBuffer.wrap(contents, 0, REVISION_HEADER_BYTES).getLong();
+                }
+            }
+        } catch (IOException e) {
+            // Best effort. The keys below are a safe floor, so an unreadable counter costs only the case it was
+            // added for, and failing construction over it would be worse.
+            recovered = ABSENT;
+        }
+        try (java.util.stream.Stream<Path> entries = Files.list(directory)) {
+            for (Path file : entries.toList()) {
+                String name = file.getFileName().toString();
+                if (name.startsWith(TEMP_PREFIX) || name.equals(REVISION_COUNTER_FILE)) {
+                    continue;
+                }
+                recovered = Math.max(recovered, read(file).map(Versioned::revision).orElse(ABSENT));
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("could not scan " + directory + " to recover the revision counter", e);
+        }
+        return recovered;
+    }
+
+    /**
+     * The next revision, made durable before it is used.
+     *
+     * <p>The ordering matters: the counter is fsynced <em>before</em> the value that will carry the revision, so a
+     * crash between the two leaves the counter ahead rather than behind. Ahead costs a gap in the numbers, which
+     * the interface explicitly permits — revisions are not dense — while behind would reissue one, which is the
+     * whole thing this prevents.
+     */
+    private long nextRevision() {
+        assert lock.isHeldByCurrentThread();
+        long next = lastIssuedRevision + 1;
+        Path counter = directory.resolve(REVISION_COUNTER_FILE);
+        Path temp = null;
+        try {
+            temp = Files.createTempFile(directory, TEMP_PREFIX, null);
+            try (FileChannel channel = FileChannel.open(temp, StandardOpenOption.WRITE)) {
+                channel.write(ByteBuffer.allocate(REVISION_HEADER_BYTES).putLong(next).flip());
+                channel.force(true);
+            }
+            Files.move(temp, counter, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            temp = null;
+            syncDirectory();
+        } catch (IOException e) {
+            throw new UncheckedIOException("could not record the revision counter in " + directory, e);
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException suppressed) {
+                    // Inert, and named so that a scan skips it.
+                }
+            }
+        }
+        lastIssuedRevision = next;
+        return next;
     }
 
     public Path directory() {
@@ -110,7 +211,7 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
         try (DirectoryStream<Path> entries = Files.newDirectoryStream(directory)) {
             for (Path entry : entries) {
                 String fileName = entry.getFileName().toString();
-                if (fileName.startsWith(TEMP_PREFIX)) {
+                if (fileName.startsWith(TEMP_PREFIX) || fileName.equals(REVISION_COUNTER_FILE)) {
                     continue;
                 }
                 String key = decode(fileName);
@@ -153,7 +254,7 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
     public long put(String key, byte[] value) {
         lock.lock();
         try {
-            return write(key, value, currentRevision(key) + 1);
+            return write(key, value, nextRevision());
         } finally {
             lock.unlock();
         }
@@ -167,7 +268,7 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
             if (actual != expectedRevision) {
                 throw new RevisionConflictException(key, expectedRevision, actual);
             }
-            return write(key, value, actual + 1);
+            return write(key, value, nextRevision());
         } finally {
             lock.unlock();
         }
@@ -202,9 +303,11 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
     }
 
     /**
-     * Revisions increment per key rather than globally, which needs no separate counter to persist.
-     * The interface says revisions are opaque and comparable only for equality, so this satisfies it
-     * just as a global sequence would.
+     * What a key is currently at, for the compare in a conditional write, or {@link #ABSENT} if it is not there.
+     *
+     * <p>Read from the key rather than from the counter, because this answers "what is this key at" and not "what
+     * was issued last". The revision it returns is not a basis for the <em>next</em> one — see
+     * {@link #nextRevision()} for why that is store-wide.
      */
     private long currentRevision(String key) {
         return read(pathFor(key)).map(Versioned::revision).orElse(ABSENT);

@@ -29,6 +29,22 @@ import java.util.Optional;
  * <p>Revisions are opaque and only comparable for equality. Do not assume they are dense,
  * global, or meaningful across keys.
  *
+ * <p><b>A revision is never reused for a key, including after that key has been deleted and written
+ * again.</b> This is the guarantee that makes revision equality usable as a change signal — a reader
+ * that parsed a key at revision R and sees R again may skip the parse, and readers here do exactly
+ * that. A backend which restarts a key's revision after deletion breaks them silently: the key comes
+ * back at a revision already seen, carrying different content, and the reader keeps the stale value
+ * for ever with nothing anywhere to indicate it. This went unstated once, and the consequence was a
+ * supervisor whose desired state froze on a deleted index's uuid while the data node correctly
+ * declined to build it.
+ *
+ * <p>Note what that does <em>not</em> require. Revisions need not be dense, so a backend may skip
+ * numbers — recording a counter before using it, and so leaving a gap on a crash, is a legitimate way
+ * to keep the guarantee. They need not be global either, so two keys may sit at the same revision.
+ * Both real backends get this for free from a cluster-wide transaction id — etcd's
+ * {@code mod_revision} and ZooKeeper's {@code mzxid} — and {@code ZooKeeperKeyValueStore} records why
+ * {@code Stat.getVersion()} cannot be used, which is this hazard reached from the other direction.
+ *
  * <h2>Implementations</h2>
  *
  * <p>Expected production backends are etcd or DynamoDB depending on the environment. Payloads are

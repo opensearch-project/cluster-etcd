@@ -33,9 +33,16 @@ class FileSystemKeyValueStoreTests extends KeyValueStoreContractTests {
         return new FileSystemKeyValueStore(tempDir.resolve("store-" + storeCounter++));
     }
 
+    /**
+     * The files that represent keys, which is what every caller of this actually means.
+     *
+     * <p>Dot-prefixed names are the store's own bookkeeping — {@code .revision}, the counter that stops a revision
+     * being reused after a key is deleted, and {@code .tmp-} files mid-write. Percent-encoding means no real key
+     * can produce a leading dot, so filtering them cannot hide one.
+     */
     private static List<String> fileNames(Path directory) throws IOException {
         try (Stream<Path> entries = Files.list(directory)) {
-            return entries.map(p -> p.getFileName().toString()).sorted().toList();
+            return entries.map(p -> p.getFileName().toString()).filter(name -> name.startsWith(".") == false).sorted().toList();
         }
     }
 

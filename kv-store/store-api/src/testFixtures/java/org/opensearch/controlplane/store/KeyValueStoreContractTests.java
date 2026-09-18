@@ -182,6 +182,45 @@ public abstract class KeyValueStoreContractTests {
         assertThrows(RevisionConflictException.class, () -> store.delete("nothing", 1L));
     }
 
+    @Test
+    void aRecreatedKeyNeverReusesARevision() {
+        // The guarantee readers actually depend on, and the one this suite did not check. Every reader in these
+        // services uses revision equality as a change signal -- parsed at R, sees R again, skips the parse -- so a
+        // key that comes back after deletion at a revision it has already been seen at, carrying different
+        // content, reads as unchanged for ever, with nothing anywhere to indicate it.
+        //
+        // That was a real incident in miniature: a supervisor's desired state froze on a deleted index's uuid, the
+        // data node correctly declined to build an index that no longer existed, and the only way out was
+        // restarting the supervisor to clear its cache. The filesystem backend derived the next revision from the
+        // key's own file, so deleting the file restarted the count at 1.
+        KeyValueStore store = newStore();
+
+        long first = store.put("a", bytes("one"));
+        assertTrue(store.delete("a"));
+        long afterRecreate = store.put("a", bytes("two"));
+
+        assertNotEquals(first, afterRecreate, "a recreated key must not come back at a revision it has already had");
+        assertTrue(afterRecreate > first, "and the revision must still move forward");
+        assertEquals(Optional.of("two"), asString(store, "a"));
+    }
+
+    @Test
+    void aDeletedKeysRevisionIsNotHandedToAnotherWrite() {
+        // The subtler half, and the one a per-key counter passes by accident. Deleting whichever key happens to
+        // hold the highest revision must not let a later write reissue it -- which is exactly what a backend that
+        // recovers its counter by scanning the surviving keys would do.
+        KeyValueStore store = newStore();
+
+        store.put("a", bytes("one"));
+        long highest = store.put("b", bytes("two"));
+        assertTrue(store.delete("b"));
+
+        long next = store.put("c", bytes("three"));
+
+        assertNotEquals(highest, next, "the deleted key's revision must not be handed out again");
+        assertTrue(next > highest, "and the store must keep moving forward across a delete");
+    }
+
     // ------------------------------------------------------------------
     // prefix scans
     // ------------------------------------------------------------------
