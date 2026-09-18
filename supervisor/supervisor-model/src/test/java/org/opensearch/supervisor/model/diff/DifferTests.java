@@ -5,6 +5,7 @@ import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.index.IndexConfig;
+import org.opensearch.supervisor.model.node.Assignment;
 import org.opensearch.supervisor.model.node.NodeRole;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
@@ -19,6 +20,7 @@ import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -193,6 +195,52 @@ class DifferTests {
         assertEquals(NODE_A, orphans.get(0).subject().node());
         assertTrue(orphans.get(0).because().contains("has not landed yet"),
             "the reason must name the ambiguity, or someone will act on it");
+    }
+
+    @Test
+    void anAssignmentEntryForAnIndexNobodyWantsIsAnOrphanEvenWhereTheNodeHoldsNothing() {
+        // The half that looks like tidiness and is not. A node defers an entry naming an index it cannot
+        // resolve, and reports a deferred assignment as failed -- so the entry alone stops this node ever
+        // reporting an assignment as applied, which is what a consumer-pointer reset is completed on.
+        Assignment assignment = new Assignment(1, POOL, 1, NODE_A, 1L, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
+                UUID, new Assignment.IndexAssignment("my-index", 3041, Map.of(0, ShardRole.PRIMARY))
+            ))
+        ));
+        Observation.NodeObservation node = new Observation.NodeObservation(
+            NODE_A, registration(NODE_A), null, null, Liveness.LIVE, POOL, assignment, 0
+        );
+
+        Diff diff = Differ.diff(observe(null, Map.of(NODE_A, node)));
+
+        List<Finding> orphans = diff.of(FindingKind.ORPHANED_COPY);
+        assertEquals(1, orphans.size());
+        assertEquals(0, orphans.get(0).subject().shard());
+        assertTrue(orphans.get(0).because().contains("is assigned"),
+            "the reason must say which of the two records this came from: " + orphans.get(0).because());
+    }
+
+    @Test
+    void aCopyBothHeldAndAssignedIsOneOrphanNotTwo() {
+        // Two records of one copy. Two findings would age independently, count twice in the diff, and produce
+        // two removals for one shard.
+        Assignment assignment = new Assignment(1, POOL, 1, NODE_A, 1L, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
+                UUID, new Assignment.IndexAssignment("my-index", 3041, Map.of(0, ShardRole.PRIMARY))
+            ))
+        ));
+        Observation.NodeObservation node = new Observation.NodeObservation(
+            NODE_A, registration(NODE_A), null,
+            holding(NODE_A, Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED))),
+            Liveness.LIVE, POOL, assignment, 0
+        );
+
+        Diff diff = Differ.diff(observe(null, Map.of(NODE_A, node)));
+
+        List<Finding> orphans = diff.of(FindingKind.ORPHANED_COPY);
+        assertEquals(1, orphans.size());
+        assertTrue(orphans.get(0).because().contains("node holds"),
+            "held is the stronger statement and must win: " + orphans.get(0).because());
     }
 
     // ---------------------------------------------------------------- liveness

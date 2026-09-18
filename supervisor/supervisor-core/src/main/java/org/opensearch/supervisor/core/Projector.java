@@ -81,9 +81,13 @@ public final class Projector {
     ) {}
 
     /**
-     * @param unplaceableBecause why the allocator could not act on this finding, when it tried and failed.
+     * @param unplaceableBecause why this finding could not be acted on, when something tried and declined.
      *     Kept beside {@code because} rather than folded into it, because the two answer different questions:
      *     one says what is wrong, the other says what is stopping it being fixed, and an operator needs both.
+     *     <p>The name is narrower than the meaning, and deliberately left alone: {@code unplaceable_because} is a
+     *     published field, and it now also carries {@link org.opensearch.supervisor.model.plan.OrphanReaper}'s
+     *     reasons for declining to <em>remove</em> a copy. Any rule that refuses to act on a finding files its
+     *     sentence here.
      */
     public record ProjectedFinding(
         String kind,

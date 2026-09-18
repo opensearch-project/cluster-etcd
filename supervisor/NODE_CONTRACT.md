@@ -599,11 +599,17 @@ than a retry loop that happens to work.
 | heartbeat and inventory disagree on `ephemeral_id` | the pair straddles a restart | **prefer the inventory** and treat the ack as void. A node writes registration, then inventory, then heartbeat, so within one process the inventory is never the older of the two; across a restart the previous process's heartbeat can outlive it |
 | the assignment's `pool` ≠ the node's current pool | written by the pool's previous owner, or the node has just been moved | the new owner rewrites it; the old owner must stop, and the `epoch` says which is which |
 | a node in my pool holds copies of a tenant bound elsewhere | a rebind in progress, or an abandoned one | `FOREIGN_COPY`; remove only once the binding shows no `moving_to` and the finding has aged |
-| inventory names an index uuid absent from desired state | index deleted — **or** desired state is torn | finding `ORPHANED_COPY`; **do not delete until it has been observed for K consecutive passes** |
+| inventory **or the node's own assignment** names an index uuid absent from desired state | index deleted — **or** desired state is torn | finding `ORPHANED_COPY`; **do not delete until it has held**, and only with evidence — `DESIGN.md` §22 |
 
 The last row is the one that matters. An index document that has not yet landed and an index that was
-deleted look identical, and one of the two readings destroys data. Waiting K passes costs disk on a deleted
+deleted look identical, and one of the two readings destroys data. Waiting costs disk on a deleted
 index and costs nothing else; not waiting costs the shard.
+
+It covers the **assignment entry** as well as the inventory, and that is a fact about this contract rather than an
+implementation detail. A node defers an entry naming an index it cannot resolve and reports the assignment as
+`failed` — both correct — so the entry left behind by a deleted index stops the node ever reporting `applied`
+again, and an `applied` acknowledgement is what the assignment section's `ingestion_reset` obligation is discharged
+by. Withdrawing the entry is the supervisor's job, and the node is entitled to assume it happens.
 
 ## Checked against a real data plane
 

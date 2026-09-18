@@ -120,22 +120,55 @@ public final class Differ {
             }
         }));
 
-        // Actual copies with no desired index behind them.
+        // Copies with no desired index behind them, from both places a copy can be recorded.
+        //
+        // Held and merely assigned are one finding kind on purpose. The data plane defers an assignment entry
+        // naming an index it cannot resolve and -- per the contract -- reports anything deferred as a failed
+        // apply, so an entry left behind by a deleted index is not a harmless leftover: it stops that node ever
+        // reporting an assignment as applied again, which is the acknowledgement a consumer-pointer reset is
+        // completed on. An entry is also the only thing a removal can actually withdraw. Raising it as its own
+        // kind would mean two kinds, two ages and two rules for one question.
+        Map<Subject, String> orphans = new LinkedHashMap<>();
+
         actual.forEach((key, copies) -> {
             if (allIndices.containsKey(key.indexUuid())) {
                 return;
             }
             for (Copy copy : copies) {
-                findings.add(Finding.of(
-                    FindingKind.ORPHANED_COPY,
+                orphans.put(
                     Subject.ofShardCopy(key.tenant(), key.indexUuid(), key.shard(), copy.node()),
-                    observation.pass(),
                     "node holds a copy of index uuid " + key.indexUuid() + " which is absent from desired"
                         + " state; this is a deleted index or an index document that has not landed yet, and"
-                        + " the two are indistinguishable, so nothing acts on it until it has held"
-                ));
+                        + " the two are indistinguishable, so it is left to age before anything is deleted"
+                );
             }
         });
+
+        observation.nodes().forEach((nodeId, node) -> {
+            if (node.assignment() == null) {
+                return;
+            }
+            node.assignment().tenants().forEach((tenant, assigned) ->
+                assigned.indices().forEach((uuid, index) -> {
+                    if (allIndices.containsKey(uuid)) {
+                        return;
+                    }
+                    index.shards().keySet().forEach(shard ->
+                        // Held wins where a node both holds and is assigned the copy: it is the stronger
+                        // statement, and the age must not depend on which of the two the differ saw first.
+                        orphans.putIfAbsent(
+                            Subject.ofShardCopy(tenant, uuid, shard, nodeId),
+                            "node is assigned a copy of index uuid " + uuid + " which is absent from desired"
+                                + " state; this is a deleted index or an index document that has not landed"
+                                + " yet, and while the entry stands the node cannot resolve its assignment"
+                        )
+                    );
+                })
+            );
+        });
+
+        orphans.forEach((subject, because) ->
+            findings.add(Finding.of(FindingKind.ORPHANED_COPY, subject, observation.pass(), because)));
     }
 
     private static void shardFinding(

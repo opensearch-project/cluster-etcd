@@ -223,6 +223,21 @@ public final class Planner {
             ));
         }
 
+        // Orphans before surpluses, of the two kinds of removal. A surplus copy is merely waste, and waiting a
+        // pass costs disk; an orphan is holding up its index's deletion task and stopping its node from ever
+        // reporting an assignment as applied, so it blocks other work rather than just occupying space.
+        OrphanReaper.Outcome orphans = OrphanReaper.reap(observation, diff, policy.minimumPasses());
+        refusals.putAll(orphans.refusals());
+        for (OrphanReaper.Removal removal : orphans.removals()) {
+            if (instructions.size() >= policy.workCeiling()) {
+                ceilingHit = true;
+                break;
+            }
+            instructions.add(new Instruction.RemoveCopy(
+                removal.tenant(), removal.indexUuid(), removal.shard(), removal.node(), removal.because()
+            ));
+        }
+
         // Surplus copies next, computed from observed state alone. This is also how every move finishes; see
         // SurplusReaper for why the two halves are deliberately unaware of each other.
         LoadModel loads = LoadModel.of(observation);

@@ -1,6 +1,6 @@
 # Findings from the data plane
 
-Eight items wanted in this repository, all found by running the real data plane
+Nine items wanted in this repository, all found by running the real data plane
 (`../opensearch-data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
@@ -9,7 +9,9 @@ third was a missing field that made a projection unable to serve either of the t
 is **done** as of `50ecdf5`, and reading it is still worth it for why an address was not sufficient. The fourth
 blocks the milestone the third unblocked: nothing ever assigns the coordinator role, so the routing this enabled
 cannot be exercised. The eighth is not a defect at all — it is this side's answer to `DESIGN.md` §21.2, agreeing
-with the acknowledgement design and reporting that the sequencing underneath it cannot work as written.
+with the acknowledgement design and reporting that the sequencing underneath it cannot work as written. The
+ninth is the other half of an ask this repository made: the node now rewrites its registration when it goes
+missing, so the reaping that `DESIGN.md` §20.2 declined to do is safe to do.
 
 Each item says what happened, why the current behaviour is wrong, where the code is, what a fix has to be careful
 about, and the tests worth having. All of them are self-contained.
@@ -575,6 +577,39 @@ decline — and it means the loop is stuck on this side. Two separate gaps produ
 
 ### 7a. `ORPHANED_COPY` is raised and consumed by nothing
 
+> **Fixed, both halves, and it was worse than this write-up says.** `DESIGN.md` §22.
+>
+> The third symptom is the one neither of us listed: **the leftover entry stops the node ever reporting `applied`
+> again**, because a deferred assignment is correctly reported as failed — and finding 8's consumer-pointer reset
+> is completed only on an `APPLIED` acknowledgement. So one index deleted and recreated under the same name
+> silently disables pointer resets on that node for ever. That makes this a correctness fix, not housekeeping: two
+> features that never mention each other were coupled through a document nobody withdrew.
+>
+> **Your "not safe as suggested" was right**, and the answer was not more patience — it was better evidence. A
+> `delete-index` **task** naming the uuid is the control plane *saying* the index was deleted, rather than the
+> supervisor inferring it from a document it cannot find, so that path acts after the ordinary two passes. Absence
+> alone waits thirty. The task's **state is deliberately ignored**: a task given up on after five attempts is
+> exactly what a pool full of unreapable orphans produces, so requiring a live one would disable the cleanup in
+> precisely the case that needs it.
+>
+> **Two absences are never acted on at all**, and both are the supervisor being wrong about what exists rather
+> than a cluster being unusual: a tenant with *no* index documents (indistinguishable from a failed read of its
+> index prefix), and a tenant not bound to this pool (indistinguishable from a rebind). Each is refused with a
+> reason on `Plan.refusals`, the same channel as a refusal to place — an unexplained finding sitting for ever is
+> how this was noticed in the first place.
+>
+> **The entry half is covered by extending the finding, not the applier.** `ORPHANED_COPY` now covers a bare
+> assignment entry as well as a held copy, as one kind with one age, so the patience you correctly said the
+> applier did not have is the patience it already had. Held wins where both are true, so the age does not depend
+> on which record the differ visited first.
+>
+> **One related defect found while testing it:** `noCopiesRemain` asked `isAssigned(tenant, uuid, 0)` and meant
+> "any shard of this index", so an index whose only surviving entry named shard 1 was read as assigned to nobody
+> — and its deletion reported success while a node was still being told to hold it.
+>
+> Not covered: a copy **held with no assignment entry**. Refused with a reason, because the document already says
+> "do not hold this" and there is nothing left for this service to withdraw.
+
 `Differ` raises it for every copy a node holds whose index is absent from desired state, with a message that ends
 *"nothing acts on it until it has held"*. Nothing acts on it after it has held either: `grep ORPHANED_COPY` finds
 the enum, the `Differ`, and no planner or applier code at all.
@@ -656,11 +691,16 @@ than guessing at: the candidate list, `nodesWithThisShard()` and the `planned` l
 
 ### On 7a and 7b, from this side
 
+**7a is done, both halves — see the note under 7a itself.** The resolution kept your objection and dropped my
+suggestion: the fix is a third case in the finding, not a new kind and not an applier that can see ages.
+
 **7b is right and worth doing**, and it is the one that definitely stops an index being written to. Not attempted
 here: displacing a replica to make room for a primary means planning a `RemoveCopy` against a copy that is
 currently serving, which is the first time this service would delete a *working* copy in order to place another,
 and it wants its own thinking about ordering — the primary must be planned in the same pass or the shard has no
 copies at all for a window.
+
+<details><summary>7a as originally argued, kept because the objection was the useful part</summary>
 
 **7a's second half is not safe as suggested.** Pruning assignment entries whose index uuid is absent from desired
 state "as a property of writing the assignment" has no patience in it, and an absent index document is exactly the
@@ -670,11 +710,18 @@ finding that ages (a new kind covering a stale *entry*, which is not a copy) or 
 ages. The first half — planning a `RemoveCopy` for an aged `ORPHANED_COPY` — has the patience already and is the
 cheaper start.
 
+</details>
+
 ### Reproducing it
 
 Delete an index and recreate it with the same name, then watch a data node's `/_clusterless/status`: the deferred
 line names the old uuid against the new document, and `assignment_version` stops moving. It survives restarts of
 the supervisor, which is what makes it a state problem rather than a timing one.
+
+> **Now a regression test**, end to end with a real node: `ActingTests.aDeletedIndexIsLetGoOfAndItsDeletionTaskFinishes`
+> places a shard, deletes the document, submits the task, and asserts the entry goes, the copy goes and the task
+> completes. Its opposite number, `anIndexDocumentThatHasNotLandedYetDoesNotCostTheShardItsCopy`, deletes the
+> document with *no* task and asserts the copy survives ten passes.
 
 ---
 
@@ -832,6 +879,72 @@ and why nothing needs to remember having applied it.
   store, and stays incomplete — with a reason — when one of them has no primary;
 - the reset stops being written once the task completes, and re-observing the same state does not re-plan it;
 - an assignment version that moves for an unrelated reason does not change the reset's `id`.
+
+---
+
+## 9. The registration-rewrite rule is implemented; §20.2's leak can be closed
+
+**Not a finding — the other half of an ask you made.** `DESIGN.md` §20.2 declined to reap a departed node's
+documents, for a good reason: three of the four belong to the node, and deleting the registration of a node that is
+merely partitioned rather than dead leaves it heartbeating with no registration — `NODE_UNREGISTERED`, placeable for
+nothing, needing a restart. You named the clean fix and said it needed agreeing with this side: **a node rewrites its
+registration when it observes it missing.** It does now.
+
+### What the node does
+
+`NodePublisher.publishRegistration` already wrote on start and when the document's content would change, comparing
+against its own in-memory copy and never reading the store. It now reads the store on a pass where nothing has
+changed, and writes again if the key is gone. One `get` per quiet pass, which is what §20.2 priced it at.
+
+Three properties worth having in the contract rather than inferred from behaviour:
+
+- **`registered_at` does not move.** The document is new; the registration is not, and the node has been up
+  throughout. This also settles `NODE_CONTRACT.md`'s own finding 4, which raised the question for the
+  attribute-change case and left it open — the answer is the same for both, and for the same reason.
+- **`ephemeral_id` does not change**, because the process has not restarted. This is what lets you tell a rewrite
+  from a new incarnation: same ephemeral id means the node you already knew, and `§20.1`'s freshest-per-endpoint
+  rule keeps working unchanged.
+- **A read that fails is not a missing document.** The node reports the failure and decides again next pass, and
+  the heartbeat still goes out — the alternative turns a store hiccup into an eviction.
+
+The node also counts the rewrites and reports them at `/_clusterless/status` as
+`registration.rewrites_after_going_missing`, present only when non-zero. That is deliberate: **self-healing hides
+the thing it heals.** One rewrite is an incident; a steady trickle is something reaping the registrations of live
+nodes, and without the counter the node would quietly paper over it for ever.
+
+### Proposed wording for `NODE_CONTRACT.md`
+
+The write-frequency table's row currently reads *"on start, and if attributes change | once per process lifetime"*,
+which is now wrong. Suggested replacement for that row and a rule beside it:
+
+> | `nodes/registration/<id>` | on start, if attributes change, and if it goes missing | once per process lifetime, plus once per reap |
+>
+> **A node rewrites its registration if it observes the document missing.** It checks once per publishing pass when
+> it has nothing else to write, and writes the same document again if the key is absent — with the **same
+> `ephemeral_id`** and the **same `registered_at`**, because neither the process nor the registration is new. A read
+> that fails is not an absent document: the node reports it and decides again on the next pass.
+>
+> This is what makes reaping safe. A supervisor may delete a node's registration believing it gone; if it was wrong,
+> the node restores it within one pass rather than stranding itself as `NODE_UNREGISTERED`. A node that does *not*
+> implement this rule is still contract-conformant for everything else, so a supervisor cannot assume the rule
+> holds — which is the argument for reaping on an aged `NODE_LOST` rather than eagerly.
+
+### What is not covered, and neither side detects it
+
+Absence only. If something **overwrites** the registration with different content rather than deleting it, this node
+will not notice: the comparison that decides whether to write is against its own in-memory copy, and the store read
+only asks whether the key exists. The layout's one-writer rule says that cannot happen, so this is a gap in
+detection rather than in behaviour — but it is worth knowing it is a gap, because "the node self-heals its
+registration" is easy to read as stronger than it is. Closing it means comparing the stored document to the written
+one, which needs a reader on this side for a document this node otherwise only writes.
+
+### Tests worth having on your side
+
+- a reaped registration is restored by the node within one of its passes, and the supervisor's view of the node
+  goes back to placeable without a restart;
+- a node whose registration is reaped keeps its `ephemeral_id`, so §20.1's freshest-per-`address:port` choice does
+  not treat the rewrite as a second node;
+- reaping a node that really is gone stays reaped — nothing rewrites it, which is the whole point.
 
 ---
 

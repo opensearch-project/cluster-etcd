@@ -352,7 +352,7 @@ public final class TaskCompletion {
             if (node.copiesCount() == false) {
                 continue;
             }
-            if (node.isAssigned(tenant, task.indexUuid(), 0) || holdsAnything(node, tenant, task.indexUuid())) {
+            if (node.isAssignedAnyShardOf(tenant, task.indexUuid()) || holdsAnything(node, tenant, task.indexUuid())) {
                 return Verdict.notYet(
                     "node [" + node.nodeId() + "] still holds or is assigned a copy of index uuid "
                         + task.indexUuid()

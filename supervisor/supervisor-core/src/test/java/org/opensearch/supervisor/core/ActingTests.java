@@ -1265,5 +1265,87 @@ class ActingTests {
         assertNotNull(resetIn(NODE));
     }
 
+    // ---------------------------------------------------------------- letting go of a deleted index
 
+    /** What the control plane writes to delete an index, alongside removing the document. */
+    private void submitDeleteTask(String taskId) {
+        String json = "{\"task_id\":\"" + taskId + "\",\"type\":\"delete-index\",\"index\":\"my-index\","
+            + "\"index_uuid\":\"" + UUID + "\",\"state\":\"pending\",\"submitted_at\":1000,\"sequence\":1}";
+        store.put(Keys.tasksPrefix(ACME) + taskId, json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private org.opensearch.supervisor.model.task.TaskRecord taskOf(String taskId) {
+        return store.get(Keys.tasksPrefix(ACME) + taskId)
+            .map(entry -> org.opensearch.supervisor.model.task.TaskRecord.from(entry.value()))
+            .orElse(null);
+    }
+
+    @Test
+    void aDeletedIndexIsLetGoOfAndItsDeletionTaskFinishes() {
+        // The whole loop, and for a long time none of it closed: the differ raised ORPHANED_COPY, nothing
+        // consumed it, so the copy was held for ever, the deletion task could never finish because a node still
+        // held the index, and the node deferred the leftover entry on every pass -- which under the contract
+        // means it reports every assignment as failed, and an APPLIED acknowledgement is what a
+        // consumer-pointer reset is completed on. One deleted index disabled pointer resets on that node.
+        FakeNode data = node(NODE);
+        data.start();
+        data.tick();
+        createIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 5; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+        assertEquals(1, data.inventory().copyCount(), "the shard has to be placed before it can be let go of");
+
+        store.delete(Keys.indicesPrefix(ACME) + "my-index");
+        submitDeleteTask("t-delete");
+
+        for (int pass = 0; pass < 6; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        Assignment after = assignmentOf(NODE);
+        Assignment.TenantAssignment tenant = after.tenants().get(ACME);
+        assertTrue(tenant == null || tenant.indices().containsKey(UUID) == false,
+            "the entry has to go, not just the copy: a node defers an entry it cannot resolve and then reports"
+                + " every assignment as failed");
+        assertEquals(0, data.inventory().copyCount());
+        assertEquals(TaskState.COMPLETED, taskOf("t-delete").state(),
+            "the deletion task cannot finish while any node holds or is assigned the index");
+        assertTrue(supervisor.lastDiffOf(POOL).isEmpty(),
+            () -> "expected convergence, got " + supervisor.lastDiffOf(POOL).findings());
+    }
+
+    @Test
+    void anIndexDocumentThatHasNotLandedYetDoesNotCostTheShardItsCopy() {
+        // The other reading of the same observation, and the reason none of this fires quickly. A missing index
+        // document with no deletion task behind it is exactly the torn read R2.5 promises, so the copy stays.
+        FakeNode data = node(NODE);
+        data.start();
+        data.tick();
+        createIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 5; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        store.delete(Keys.indicesPrefix(ACME) + "my-index");
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        assertEquals(1, data.inventory().copyCount(),
+            "ten passes is well inside the patience an absence alone buys");
+        assertNotNull(assignmentOf(NODE).tenants().get(ACME).indices().get(UUID));
+    }
 }

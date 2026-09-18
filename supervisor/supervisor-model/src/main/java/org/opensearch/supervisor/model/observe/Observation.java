@@ -137,6 +137,26 @@ public record Observation(
             return index != null && index.shards().containsKey(shard);
         }
 
+        /**
+         * Whether this node has been told to hold <em>any</em> shard of an index.
+         *
+         * <p>Distinct from {@link #isAssigned} because the callers that ask about an index rather than a shard
+         * were asking about shard 0 and meaning this. An index whose only surviving assignment entry named
+         * shard 1 was read as assigned to nobody, which let its deletion task report success while a node was
+         * still being asked to hold it.
+         */
+        public boolean isAssignedAnyShardOf(TenantId tenant, String indexUuid) {
+            if (assignment == null) {
+                return false;
+            }
+            var tenantAssignment = assignment.tenants().get(tenant);
+            if (tenantAssignment == null) {
+                return false;
+            }
+            var index = tenantAssignment.indices().get(indexUuid);
+            return index != null && index.shards().isEmpty() == false;
+        }
+
         public Optional<Registration> registrationIfPresent() {
             return Optional.ofNullable(registration);
         }

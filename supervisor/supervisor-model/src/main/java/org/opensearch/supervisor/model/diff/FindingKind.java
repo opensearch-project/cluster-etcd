@@ -49,7 +49,21 @@ public enum FindingKind {
     /** More copies than desired. */
     SURPLUS_COPY(WARNING),
 
-    /** A copy whose index uuid is absent from desired state. Acts only after K consecutive passes. */
+    /**
+     * A copy whose index uuid is absent from desired state, held or merely assigned.
+     *
+     * <p>The one finding whose action <b>destroys data</b>, and the only one where waiting is part of the rule
+     * rather than a courtesy: a deleted index and an index document that has not landed yet look identical from
+     * here. {@link org.opensearch.supervisor.model.plan.OrphanReaper} is where the waiting is calibrated, and it
+     * wants far more patience when nothing but the absence says the index is gone than when a deletion task says
+     * so.
+     *
+     * <p>Covers an <em>assignment entry</em> as well as a held copy, because the leftover entry is the more
+     * expensive of the two. A node defers an entry it cannot resolve and reports a deferred assignment as failed,
+     * so one deleted index stops that node ever reporting an assignment as applied — and an {@code APPLIED}
+     * acknowledgement is what a consumer-pointer reset is completed on. The entry is also the only part of this a
+     * removal can withdraw.
+     */
     ORPHANED_COPY(WARNING),
 
     /** A copy of a tenant's shard on a node outside that tenant's pool. */

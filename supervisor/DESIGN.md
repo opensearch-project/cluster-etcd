@@ -350,7 +350,7 @@ independently disableable, which matters when one of them turns out to oscillate
 | `UNASSIGNED_PRIMARY` | an open index's shard has no primary anywhere | critical |
 | `UNASSIGNED_REPLICA` | fewer copies than `index.number_of_replicas` | warning |
 | `SURPLUS_COPY` | more copies than desired | warning |
-| `ORPHANED_COPY` | a copy whose index uuid is absent from desired state | warning, **acts only after K passes** |
+| `ORPHANED_COPY` | a copy whose index uuid is absent from desired state, **held or merely assigned** | warning, **acts only after K passes** |
 | `FOREIGN_COPY` | a copy on a node outside the tenant's pool | info during a rebind, critical otherwise |
 | `STALE_CONFIG` | a copy's `config_revision` ≠ the index document's revision | warning |
 | `NODE_STALE` / `NODE_LOST` | heartbeat revision unchanged past the thresholds | warning / critical |
@@ -384,9 +384,9 @@ first and only then its replicas. Segment replication has no such constraint, wh
 per-index rather than global: it follows `index.replication.type`.
 
 **`ORPHANED_COPY` is where data gets destroyed.** A deleted index and an index document that has not landed
-yet are indistinguishable from the store. Never act until the finding has held for K consecutive passes
-(default 3) with an otherwise-consistent view of that tenant. Waiting costs disk on a deleted index; not
-waiting costs the shard.
+yet are indistinguishable from the store. Never act until the finding has held, and §22 is the whole of what
+"until" means — the patience depends on what kind of evidence there is, and the rule has several cases where
+it must never act at all. Waiting costs disk on a deleted index; not waiting costs the shard.
 
 ## 7. Bounded work, and the cache
 
@@ -904,8 +904,8 @@ is *still* the heavier of the two, and "drop the copy on the busiest node holdin
 source. The rule that stops oscillation is the rule that makes the move complete in the intended direction.
 
 `SurplusReaper` deliberately does **not** reap a copy whose index is absent from desired state. That is
-`ORPHANED_COPY`, which the differ already ages over several passes because an absent index may be a torn read
-of the control plane's keys rather than a deletion; reaping it as a surplus would bypass that patience.
+`ORPHANED_COPY`, whose patience is §22 and is calibrated quite differently from anything here; reaping it as a
+surplus would bypass all of it.
 
 ### 14.6 Priority, and the feedback loop it breaks
 
@@ -1452,3 +1452,94 @@ Until both sides agree §21.2's obligations and §21.3's sequencing, `resume-ing
 **does not complete**. It says why, at length, in the task's own reason. Completing it would be the worst available
 outcome: a report that a pointer had moved when nothing moved it, in the one case where nothing downstream can ever
 contradict it.
+
+## 22. Letting go of a deleted index
+
+`ORPHANED_COPY` was raised by the differ from the first version of it and consumed by nothing. That reads like a
+missing feature — disk not reclaimed — and it was three bugs.
+
+### 22.1 One cause, three symptoms, and only one of them looks related
+
+A node holding a copy of an index that no longer exists:
+
+1. **keeps the copy for ever**, which is the obvious cost and the least of them;
+2. **holds its deletion task open for ever.** `TaskCompletion` refuses to complete a `delete-index` while any
+   node still holds or is assigned the index, which is correct — reporting the deletion done while a node serves
+   the data would be a lie the control plane acts on. With nothing dropping the copy, the task retries to its
+   attempt limit and becomes `TASK_STUCK`, one per deleted index, for ever;
+3. **stops that node ever reporting an assignment as applied.** This is the expensive one, and nothing about the
+   finding hints at it. `NODE_CONTRACT.md` has a node *defer* an assignment entry naming an index it cannot
+   resolve, and report anything deferred as `outcome: failed` — the honest answer, and the right one. But §21
+   completes a consumer-pointer reset only on an `APPLIED` acknowledgement. So one index deleted and recreated
+   under the same name silently disables pointer resets on that node, permanently: the reset is handed over, the
+   node applies it correctly, and the task ages out as stuck.
+
+Symptom 3 is why this is a correctness fix rather than housekeeping. Two features that never mention each other
+were coupled through a leftover document.
+
+### 22.2 An assignment entry is a copy, for this purpose
+
+The finding covers both a **held** copy and a bare **assignment entry** naming an absent index, as one kind with
+one age.
+
+Two kinds would have been the obvious split — a copy is data on a disk, an entry is a line in a document — and it
+is wrong twice over. The entry is the more expensive of the two, per symptom 3 above. And the entry is the *only*
+part of this a removal can actually withdraw: an assignment is the complete statement of what a node should hold,
+so there is nothing else for the supervisor to say. Splitting them would mean two ages, two rules and two ways to
+be inconsistent about one question.
+
+Where a node both holds and is assigned the copy, **held wins** as the recorded reason. Not cosmetic: the age
+must not depend on which of the two records the differ happened to visit first.
+
+### 22.3 Positive evidence beats an absence
+
+The question is never *"is this copy wanted?"* — it is *"do I know enough to be sure nobody wants it?"*, and
+absence of evidence answers the first while looking like an answer to the second.
+
+So `OrphanReaper` looks for a `delete-index` **task** naming the uuid. That is the control plane saying the index
+was deleted, rather than the supervisor inferring it from a document it cannot find, and with it the copy is
+withdrawn after the ordinary `minimumPasses`. Without it, the wait is thirty passes.
+
+**The task's state deliberately does not matter.** What is being read is that a deletion was *requested*, which is
+a fact about the control plane; a task's state is bookkeeping about this service's own progress. A task given up on
+after five attempts is exactly what a pool full of unreapable orphans produces, so requiring a live task would
+disable the cleanup in precisely the case that needs it.
+
+This cannot mistake a live index for a deleted one, and the reason is an ordering rather than a check: a task
+naming an index still in desired state raises no `ORPHANED_COPY` for the evidence to be applied to.
+
+### 22.4 Two absences that must never be acted on
+
+Both are cases where the supervisor is wrong about what exists, rather than cases where a cluster is unusual.
+
+**A tenant with no index documents at all.** Indistinguishable from a failed read of that tenant's index prefix —
+a prefix that moved, a layout the control plane changed, a deserialisation that started throwing — and the two want
+opposite actions. So the copies are kept, indefinitely, and the finding is left to age. The cost is stated plainly:
+a tenant whose *last* index was deleted, and whose deletion task the control plane has since pruned, holds that
+copy for ever. Accepted, because only one of the two possible mistakes can be undone. A deletion task naming the
+uuid is the escape hatch, and it covers the ordinary case.
+
+**A tenant not bound to this pool.** A tenant rebound elsewhere looks exactly like a tenant whose indices were
+deleted: its documents are absent because this supervisor no longer reads them. Those copies are that tenant's
+data, being served by whichever pool owns it now.
+
+Both refusals are written to `Plan.refusals` against the finding's own key, the same channel as a refusal to
+*place* a copy (§16). Several of these never resolve on their own, and an unexplained finding sitting for ever is
+how the previous version of this was eventually noticed — by someone reading a status document in confusion.
+
+### 22.5 What the patience is calibrated for
+
+Two passes is calibrated for a **torn read**: R2.5 promises the supervisor will observe an index without its
+alias, and one more pass settles it. Thirty is calibrated for something else — a mistake in *reading* desired
+state, which does not settle on the next pass because it is not a race. That class of mistake makes every index
+look deleted at once, and at two passes of patience the pool's data is gone about ten seconds later.
+
+Thirty passes does not make that safe and nothing here could. What it buys is that the operator who notices a
+control plane behaving oddly has minutes rather than seconds, and that the diff fills with `ORPHANED_COPY`
+findings each carrying a refusal that explains the wait, before anything is destroyed.
+
+### 22.6 Still not covered
+
+A copy **held with no assignment entry** is refused with a reason rather than acted on, because there is nothing
+left for this service to withdraw — the document already says "do not hold this". Dropping it is the node's to do.
+Planning a removal anyway would write no change and report a copy dropped, which is worse than leaving it.

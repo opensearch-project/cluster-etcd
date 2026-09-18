@@ -237,6 +237,26 @@ class TaskCompletionTests {
     }
 
     @Test
+    void deleteIsNotDoneWhileANodeIsStillAssignedAShardOtherThanZero() {
+        // This asked about shard 0 and meant "any shard of this index", so an index whose only surviving entry
+        // named shard 1 was read as assigned to nobody -- and the deletion reported success while a node was
+        // still being told to hold it. Shard 1 rather than 0 is the entire point of the test.
+        Assignment assignment = new Assignment(4, POOL, 1, NODE, 1L, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
+                UUID, new Assignment.IndexAssignment("my-index", 3041, Map.of(1, ShardRole.PRIMARY))
+            ))
+        ));
+        Observation.NodeObservation node = new Observation.NodeObservation(
+            NODE, registration(), null, null, Liveness.LIVE, POOL, assignment, 0
+        );
+
+        var verdict = evaluate(TaskType.DELETE_INDEX, null, node);
+
+        assertFalse(verdict.satisfied());
+        assertTrue(verdict.because().contains("is assigned"), verdict.because());
+    }
+
+    @Test
     void closeIsDoneOnceTheIndexIsClosedAndItsCopiesAreGone() {
         assertFalse(evaluate(TaskType.CLOSE_INDEX, index(true, 1, 3041), empty()).satisfied());
         assertTrue(evaluate(TaskType.CLOSE_INDEX, index(false, 1, 3041), empty()).satisfied());
