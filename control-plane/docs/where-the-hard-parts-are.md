@@ -234,7 +234,9 @@ Worth knowing which these are, because several are near-copies of code that alre
   settings store as configuration. The half of the rule that needs the live node list is deliberately
   not checked; see the README.
 - **decommission awareness** (3 groups) — CRUD-shaped, but `put` initiates a node drain, so it is
-  Tier 4 work in a Tier 0 costume.
+  Tier 4 work in a Tier 0 costume. **Ownership makes the tier moot**: a node drain is the machines and
+  the timing of changes to them, so it is the operator's at any tier, and the right outcome is exclusion
+  rather than implementation. See [`tenants-and-operators.md`](tenants-and-operators.md).
 - **`snapshot.create/get/delete_repository`** — one key per repository. `verify_repository` is not
   Tier 0: it does real I/O against the backend.
 - **`ingest.processor_grok`** — returns OpenSearch's built-in grok pattern list. Trivial logic, but

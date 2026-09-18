@@ -15,6 +15,20 @@
 # "answerable from cluster state / metadata alone" vs "requires shard data or
 # node-local runtime". That distinction is what actually determines whether a
 # standalone service can serve the request.
+#
+# There is a SECOND axis, and this file does not yet encode it: tenant-owned vs
+# operator-owned. The first axis asks "can this service serve the request?"; the
+# second asks "may this caller make it?". An operation can be pure metadata,
+# finish inside its own request, and still not belong here, because what it
+# configures is a fact about the hardware -- `zone` is a rack in a building, which
+# a tenant neither knows nor paid for. Vanilla needs no marker for this, since it
+# assumes one party runs and uses the cluster: one flat `cluster.*` namespace with
+# two owners, so an unclassified setting lands wherever it was first implemented.
+# Classify anything new on BOTH axes before wiring it. The rule is
+# ../opensearch-supervisor/DESIGN.md section 25; the sweep of this surface --
+# including the three cluster.*_decommission_awareness groups below, which are
+# included today for a difficulty reason and look operator-owned -- is in
+# docs/tenants-and-operators.md.
 
 # ---------------------------------------------------------------------------
 # The OpenSearch version this service claims to be.

@@ -97,6 +97,32 @@ monitoring surface, which is closer to what this repo does. Used here it means t
 long-running orchestration layer, which is what the definition above says and what
 matters.
 
+### The second line: tenants own what they want to exist, operators own the machines
+
+The line above asks *can this service serve the request?* There is a second one,
+and it asks *may this caller make it?* **A setting is the tenant's if it describes
+what they want to exist; the operator's if it describes the machines, or the timing
+of changes to them.**
+
+The axes are independent, and the gap between them matters: an operation can be pure
+metadata, finish inside its own request, and still not belong here. Vanilla
+OpenSearch needs no such rule, because it assumes the party that runs a cluster and
+the party that uses it are the same person — one `cluster.*` namespace, one admin
+role. Here they are different parties.
+
+In practice nearly everything this service does is the tenant's. The exceptions are
+worth knowing, because one of them is already wired: **the weighted-routing
+validator's entire input is operator-owned** — `AwarenessConfiguration` reads only
+`cluster.routing.allocation.awareness.attributes` and `…force.<attribute>.values`,
+and `zone` is a fact about a rack in a building. The supervisor has verified that
+nothing there reads those settings, so a tenant setting them changes nothing about
+where copies go.
+
+The rule is `../opensearch-supervisor/DESIGN.md` §25. The sweep of this surface —
+including the three decommission-awareness groups, index-level node filters, and why
+the fix for awareness cannot land as a rejection on its own — is
+[`docs/tenants-and-operators.md`](docs/tenants-and-operators.md).
+
 ## How the API surface is defined
 
 The HTTP surface is not hand-written. It is generated:
@@ -809,8 +835,8 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | `include_defaults` on `get_settings` | a sibling `defaults` block, ~2.6 kB per index | accepted and ignored | **the control plane owns the settings a user explicitly set; computed values belong to the layer that computes them.** A data plane node can already answer `/{index}/_settings?local=true` with the fully resolved settings, defaults included, so putting a settings registry here would duplicate that — and a duplicated registry drifts. Same reasoning as [Data plane capabilities](#data-plane-capabilities) |
 | `PUT` weighted routing with no body | **500** `null_pointer_exception`, the reason naming `WeightedRouting.attributeName()` | 400 `parse_exception`, `request body is required` | the body is never parsed, so the request object stays null and `validate()` dereferences it. Reproducing a crash is not compatibility, and the message leaks a server-internal class name at a status that tells the caller to retry. Third place OpenSearch answers 5xx for a plain client error, after `source` without `source_content_type` and an unknown repository type |
 | weight keys in a weighted routing response | `HashMap` order | sorted | same call as nested settings key order, and for the same reasons. It does **not** extend to the two error messages that embed a rendered weights map: those are strings a client may compare, so hash order is reproduced there deliberately |
-| discovered awareness values on a weighted routing `PUT` | rejects a weight set that leaves any value a routing node actually carries without a weight | not checked; the *forced* half of the same rule is | the value set comes from the live node list, which this service cannot read and should not cache — node attributes change as nodes join and leave, so a generated file would go stale while claiming authority, and the failure mode is rejecting a legitimate update. `cluster.routing.allocation.awareness.force.<attribute>.values` **is** a setting this service owns, so that half is enforced. Becomes a store read once the management plane projects live node state — which it now does, at `tenant/<t>/status/awareness`. Closing the gap needs one decision first: that document is filtered by the *pool's* declared awareness attributes while the attribute name here is validated against the *tenant's* cluster settings, so the two can disagree and a weight on an attribute the pool does not declare would pass vacuously. See `docs/proposed-awareness-attribute-narrowing.md` |
-| awareness attributes set only in `opensearch.yml` | resolved from node settings too | invisible; weighted routing then rejects every attribute | this service knows which settings *exist*, not what a node has them set to. So weighted routing requires the attributes to have been set through this service. Accepting any attribute name instead would trade a visible rejection for weights that are silently never applied |
+| discovered awareness values on a weighted routing `PUT` | rejects a weight set that leaves any value a routing node actually carries without a weight | not checked; the *forced* half of the same rule is | the value set comes from the live node list, which this service cannot read and should not cache — node attributes change as nodes join and leave, so a generated file would go stale while claiming authority, and the failure mode is rejecting a legitimate update. `cluster.routing.allocation.awareness.force.<attribute>.values` **is** a setting this service owns, so that half is enforced. Becomes a store read once the management plane projects live node state — which it now does, at `tenant/<t>/status/awareness`. That document supersedes **both** settings rather than only closing this gap: its values are the ones live nodes carry, and it is filtered by the pool's declared awareness attributes, so the name check moves there too. Settled since: the tenant's setting is read by no allocator, so the pool's declaration wins because it is the only one with an effect. One decision remains — what an absent document means, given the rejection and the read must land together. See [`docs/tenants-and-operators.md`](docs/tenants-and-operators.md) and `docs/proposed-awareness-attribute-narrowing.md` |
+| awareness attributes set only in `opensearch.yml` | resolved from node settings too | invisible; weighted routing then rejects every attribute | this service knows which settings *exist*, not what a node has them set to. So weighted routing requires the attributes to have been set through this service. Accepting any attribute name instead would trade a visible rejection for weights that are silently never applied. **This divergence is on its way out rather than being fixed**: the attributes are the operator's to declare, not a tenant's to set here at all, and the allow-list moves to `tenant/<t>/status/awareness` — which is derived from the nodes, so a `opensearch.yml`-configured deployment stops being invisible. See [`docs/tenants-and-operators.md`](docs/tenants-and-operators.md) |
 
 Two notes on scope rather than behaviour:
 
