@@ -98,6 +98,15 @@ public final class NodePublisher {
      */
     private int registrationRewrites;
 
+    /**
+     * This node's clock at the most recent rewrite, and the reason the count alone is not enough.
+     *
+     * <p>A count is monotonic for the life of the process, so "count above zero" fires once and never clears; with
+     * a timestamp, "a rewrite in the last fifteen minutes" is expressible and self-clearing. See
+     * {@link Heartbeat.RegistrationRewrites}.
+     */
+    private long lastRegistrationRewriteAt;
+
     public NodePublisher(
         KeyValueStore store,
         NodeId nodeId,
@@ -224,6 +233,7 @@ public final class NodePublisher {
             }
             rewriting = true;
             registrationRewrites++;
+            lastRegistrationRewriteAt = now;
         }
         // Keep the moment this process first registered rather than the moment an attribute changed. The
         // field says when this node registered, and a node that had been up for a day should not look as
@@ -317,7 +327,12 @@ public final class NodePublisher {
             toReport,
             writtenInventoryDigest,
             inventory.copyCount(),
-            capacityProbe.capacity()
+            capacityProbe.capacity(),
+            // Null until this process has had to rewrite its registration, so the field is simply absent on the
+            // heartbeats of every node that never has. Asked for by the supervisor, because noticing this is a
+            // monitoring job and its monitoring reads the store rather than a node's HTTP port -- it has to work
+            // when the supervisor is wedged, which is exactly when it matters.
+            registrationRewrites == 0 ? null : new Heartbeat.RegistrationRewrites(registrationRewrites, lastRegistrationRewriteAt)
         );
         store.put(Keys.nodeHeartbeat(nodeId), NodeDocuments.write(heartbeat));
         writtenHeartbeatAt = now;

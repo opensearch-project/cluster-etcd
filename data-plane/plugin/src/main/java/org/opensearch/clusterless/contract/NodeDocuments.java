@@ -101,6 +101,17 @@ public final class NodeDocuments {
             }
             builder.field("shard_copies", heartbeat.shardCopies());
 
+            // Absent when nothing has happened, which is the convention the rest of these documents follow and
+            // the right one here: a field that appears only when it means something is much easier to alert on
+            // than one that is usually zero.
+            Heartbeat.RegistrationRewrites rewrites = heartbeat.registrationRewrites();
+            if (rewrites != null) {
+                builder.startObject("registration_rewrites");
+                builder.field("count", rewrites.count());
+                builder.field("last_at", rewrites.lastAt());
+                builder.endObject();
+            }
+
             Heartbeat.Capacity capacity = heartbeat.capacity();
             builder.startObject("capacity");
             builder.field("disk_total_bytes", capacity.diskTotalBytes());

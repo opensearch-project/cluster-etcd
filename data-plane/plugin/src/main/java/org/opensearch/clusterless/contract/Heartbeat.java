@@ -24,6 +24,9 @@ import java.util.Objects;
  *     {@code null} if this node has never written an inventory
  * @param shardCopies how many copies this node holds <em>now</em>, which is what lets the supervisor spot
  *     a disagreement with the digest without re-reading the inventory
+ * @param registrationRewrites how often this process has had to write its registration again after finding it
+ *     missing, or {@code null} if it never has. Two scalars, so it does not scale with anything and R3.5 is
+ *     satisfied; see {@link RegistrationRewrites} for why it is here and not on the registration.
  */
 public record Heartbeat(
     NodeId nodeId,
@@ -32,7 +35,8 @@ public record Heartbeat(
     Applied applied,
     String shardsDigest,
     int shardCopies,
-    Capacity capacity
+    Capacity capacity,
+    RegistrationRewrites registrationRewrites
 ) {
 
     /** No assignment has been applied yet. Assignment versions start at 1, so 0 cannot collide. */
@@ -45,6 +49,58 @@ public record Heartbeat(
         Objects.requireNonNull(capacity, "capacity");
         if (shardCopies < 0) {
             throw new IllegalArgumentException("shardCopies must not be negative, was " + shardCopies);
+        }
+    }
+
+    /** A heartbeat from a node that has never had to rewrite its registration, which is almost all of them. */
+    public Heartbeat(
+        NodeId nodeId,
+        String ephemeralId,
+        long timestamp,
+        Applied applied,
+        String shardsDigest,
+        int shardCopies,
+        Capacity capacity
+    ) {
+        this(nodeId, ephemeralId, timestamp, applied, shardsDigest, shardCopies, capacity, null);
+    }
+
+    /**
+     * How often this process has found its own registration missing and written it again, and when it last did.
+     *
+     * <p><b>Why this is in the heartbeat and not in the registration</b>, which is where it looks like it belongs:
+     * after a reap the registration is <em>absent</em>, and that is the window where the count matters most. A
+     * reader would get no document at all, and could not tell "this node has never been reaped" from "this node is
+     * being reaped right now and has not rewritten yet" — identical, with the second being the interesting case.
+     * The heartbeat is written every interval, so it is either fresh or the node is itself the story.
+     *
+     * <p><b>Why {@code lastAt} earns its place beside the count.</b> A bare count is monotonic for the life of the
+     * process, so the obvious rule — "count above zero is an incident" — fires on the first event and never clears
+     * until somebody restarts the node. An alert that cannot clear gets suppressed, and a suppressed alert is the
+     * same as no alert. With a timestamp, "a rewrite in the last fifteen minutes" is expressible, self-clearing,
+     * and tells the single historical incident apart from the trickle that is the dangerous case.
+     *
+     * <p>Two semantics that a reader has to know and cannot infer:
+     *
+     * <ul>
+     *   <li><b>Only rewrites caused by absence are counted.</b> An attribute change rewrites the registration too
+     *       and is entirely ordinary; counting both would make the number mean nothing.
+     *   <li><b>The count resets on restart</b>, because it is process-lifetime state and should not pretend to be
+     *       anything else. A monitor differencing samples will see it go <em>backwards</em> across a restart, and
+     *       the correct reading is "new process", not "lost event" — {@code ephemeral_id} in this same document is
+     *       how it tells the two apart.
+     * </ul>
+     *
+     * @param count how many times, always at least one — a zero-valued instance would be written as a field
+     *     meaning "nothing happened", and absence already says that more cheaply
+     * @param lastAt this node's clock at the most recent rewrite, with the same caveat as {@link #timestamp}
+     */
+    public record RegistrationRewrites(int count, long lastAt) {
+
+        public RegistrationRewrites {
+            if (count < 1) {
+                throw new IllegalArgumentException("a registration-rewrite report must count at least one, was " + count);
+            }
         }
     }
 

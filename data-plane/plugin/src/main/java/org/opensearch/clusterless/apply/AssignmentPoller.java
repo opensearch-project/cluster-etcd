@@ -47,6 +47,20 @@ import java.util.function.Supplier;
  * one, because an empty assignment means "drop every shard you hold". A supervisor that has not written one yet,
  * a pool between owners and a lost key all look exactly like that. So an absent key leaves everything alone and
  * does not even touch the applied ack, and an unparseable one is reported as a failure rather than obeyed.
+ *
+ * <h2>An assignment version is not ordered across a deletion</h2>
+ *
+ * <p>Every pass applies what it reads, and <b>nothing here compares an assignment's version with the last one
+ * applied.</b> That is deliberate and worth defending, because "skip an assignment that is not newer than what I
+ * already applied" is an obvious-looking optimisation that would freeze this node for ever.
+ *
+ * <p>An assignment's {@code version} counts up from the document already in the store, so deleting the document
+ * restarts it at 1 — and the supervisor now reaps a departed node's documents, {@code nodes/assignment/<id>}
+ * included. A node reaped while merely unreachable therefore comes back reporting version 11 against a fresh
+ * version 1, which under an ordered reading looks like a stale read or a second supervisor writing, and under this
+ * one is simply the next instruction. It is the same trap as a store revision restarting after a key is deleted
+ * — see {@code WORKING_NOTES.md} — one level up, and the supervisor's own contract had an ordered reading of
+ * {@code applied.assignment_version} until it was corrected for exactly this reason.
  */
 public final class AssignmentPoller {
 

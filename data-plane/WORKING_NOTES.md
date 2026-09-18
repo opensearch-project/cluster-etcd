@@ -804,6 +804,13 @@ Two things to keep in mind here:
   and travels into the inventory, where the supervisor compares it to decide whether a copy is on the current
   configuration. It rested on the same unstated guarantee. Compare it for **equality only** — the contract still
   permits gaps, and the filesystem store now deliberately leaves them after a crash.
+- **The same trap exists one level up, in an assignment's `version`.** It counts up from the document already in
+  the store, so deleting `nodes/assignment/<id>` restarts it at 1 — and the supervisor reaps that document now. A
+  node reaped while merely unreachable comes back reporting version 11 against a fresh version 1. Nothing here
+  compares assignment versions and nothing should: "skip an assignment no newer than the last one applied" is an
+  obvious-looking optimisation that would freeze such a node for ever. `AssignmentPoller`'s javadoc defends it,
+  because the next person to read that loop will think of it. The supervisor found this by checking its own side
+  after finding 10 and corrected an ordered reading of `applied.assignment_version` in `NODE_CONTRACT.md`.
 - **When an index will not come back, read the store before reading the code.** The keys are files:
   `plugin/build/clusterless-store`, percent-encoded, with an 8-byte big-endian revision prefix. Comparing the uuid
   in `tenant/<t>/indices/<name>` against the uuid in `nodes/assignment/<id>` took one command and was the whole

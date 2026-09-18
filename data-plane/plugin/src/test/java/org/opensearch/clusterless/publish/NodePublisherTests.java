@@ -171,6 +171,89 @@ public class NodePublisherTests extends OpenSearchTestCase {
         assertTrue(publisher.status().lastFailure(), publisher.status().lastFailure().contains("registration"));
     }
 
+    public void testARewriteIsReportedOnTheHeartbeatWithWhenItHappened() {
+        // Asked for by the supervisor: noticing this is a monitoring job, and its monitoring reads the store rather
+        // than a node's HTTP port, because it has to work when the supervisor is wedged and without reaching a node.
+        // So the counter has to be in a document, and the heartbeat rather than the registration -- after a reap the
+        // registration is absent, which is exactly the window where the count matters and where a reader would get
+        // nothing at all.
+        publisher.publish();
+        assertFalse("nothing has happened, so the field must not be there", heartbeatJson().contains("registration_rewrites"));
+
+        backing.delete(Keys.nodeRegistration(NODE));
+        now.addAndGet(60_000);
+        long whenRewritten = now.get();
+        publisher.publish();
+
+        String heartbeat = heartbeatJson();
+        assertTrue(heartbeat, heartbeat.contains("\"registration_rewrites\":{\"count\":1,\"last_at\":" + whenRewritten + "}"));
+    }
+
+    public void testTheRewriteTimestampIsWhatMakesTheSignalClearable() {
+        // The reason last_at earns a field of its own. The count is monotonic for the life of the process, so a
+        // rule of "count above zero is an incident" fires once and never clears -- and an alert that cannot clear
+        // gets suppressed. The timestamp has to move with each rewrite for "a rewrite in the last fifteen minutes"
+        // to mean anything.
+        publisher.publish();
+
+        backing.delete(Keys.nodeRegistration(NODE));
+        now.addAndGet(60_000);
+        long first = now.get();
+        publisher.publish();
+        assertTrue(heartbeatJson(), heartbeatJson().contains("\"count\":1,\"last_at\":" + first));
+
+        // Quiet passes must not move it: the field says when a rewrite last happened, not when it was last looked for.
+        now.addAndGet(5_000);
+        publisher.publish();
+        assertTrue(heartbeatJson(), heartbeatJson().contains("\"count\":1,\"last_at\":" + first));
+
+        backing.delete(Keys.nodeRegistration(NODE));
+        now.addAndGet(60_000);
+        long second = now.get();
+        publisher.publish();
+        assertTrue(heartbeatJson(), heartbeatJson().contains("\"count\":2,\"last_at\":" + second));
+    }
+
+    public void testAnAttributeChangeIsNotCountedAsARewrite() {
+        // The semantics the contract has to state: only rewrites caused by absence count. An attribute change
+        // rewrites the registration too and is entirely ordinary -- counting both would make the number mean
+        // nothing, which is worse than not having it.
+        publisher.publish();
+
+        now.addAndGet(60_000);
+        registration.set(registrationWith(Map.of("zone", "z1", "rack", "r7")));
+        publisher.publish();
+
+        assertEquals(0, publisher.status().registrationRewrites());
+        assertFalse(heartbeatJson(), heartbeatJson().contains("registration_rewrites"));
+    }
+
+    public void testTheCountIsProcessLifetimeAndStartsAgainOnRestart() {
+        // Stated as a test because a monitor differencing samples will see the count go backwards, and the correct
+        // reading is "new process" rather than "lost event" -- ephemeral_id in the same document is how it tells.
+        // A durable count would be the wrong answer: it would report an incident that a restart has already ended.
+        publisher.publish();
+        backing.delete(Keys.nodeRegistration(NODE));
+        now.addAndGet(60_000);
+        publisher.publish();
+        assertEquals(1, publisher.status().registrationRewrites());
+
+        NodePublisher restarted = new NodePublisher(
+            store,
+            NODE,
+            "a-new-ephemeral-id",
+            registration::get,
+            () -> held.get(),
+            CapacityProbe.UNKNOWN,
+            now::get
+        );
+        now.addAndGet(5_000);
+        restarted.publish();
+
+        assertEquals("a fresh process has rewritten nothing", 0, restarted.status().registrationRewrites());
+        assertFalse(heartbeatJson(), heartbeatJson().contains("registration_rewrites"));
+    }
+
     // ---------------------------------------------------------------- the inventory that will not fit
 
     public void testAnOversizedInventoryWritesNothingAndReportsFailed() {
@@ -352,6 +435,11 @@ public class NodePublisherTests extends OpenSearchTestCase {
 
     private byte[] bytesAt(String key) {
         return backing.get(key).orElseThrow(() -> new AssertionError("nothing at [" + key + "]")).value();
+    }
+
+    /** The heartbeat as the supervisor reads it, which is the only place a store-reading monitor can look. */
+    private String heartbeatJson() {
+        return new String(bytesAt(Keys.nodeHeartbeat(NODE)), StandardCharsets.UTF_8);
     }
 
     private long revisionOf(String key) {
