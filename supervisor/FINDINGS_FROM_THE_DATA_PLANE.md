@@ -1,6 +1,6 @@
 # Findings from the data plane
 
-Nine items wanted in this repository, all found by running the real data plane
+Ten items wanted in this repository, all found by running the real data plane
 (`../opensearch-data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
@@ -11,7 +11,9 @@ blocks the milestone the third unblocked: nothing ever assigns the coordinator r
 cannot be exercised. The eighth is not a defect at all — it is this side's answer to `DESIGN.md` §21.2, agreeing
 with the acknowledgement design and reporting that the sequencing underneath it cannot work as written. The
 ninth is the other half of an ask this repository made: the node now rewrites its registration when it goes
-missing, so the reaping that `DESIGN.md` §20.2 declined to do is safe to do.
+missing, so the reaping that `DESIGN.md` §20.2 declined to do is safe to do. The tenth is not this repository's bug at
+all — a reused store revision froze its desired state on a deleted index's uuid — and is here because two things
+on this side rested on the guarantee that was missing.
 
 Each item says what happened, why the current behaviour is wrong, where the code is, what a fix has to be careful
 about, and the tests worth having. All of them are self-contained.
@@ -1000,6 +1002,102 @@ one, which needs a reader on this side for a document this node otherwise only w
 - a node whose registration is reaped keeps its `ephemeral_id`, so §20.1's freshest-per-`address:port` choice does
   not treat the rewrite as a second node;
 - reaping a node that really is gone stays reaped — nothing rewrites it, which is the whole point.
+
+---
+
+## 10. Desired state froze on a deleted index's uuid, because a revision was reused
+
+**The root cause is in `../opensearch-kv-store` and is fixed there.** This item exists because it presented as a
+supervisor bug, and because two things on this side rested on the same unstated guarantee.
+
+### What happened
+
+An operator deleted and recreated `my-index-2` several times in quick succession, and it stopped coming back. The
+data node had been saying why on every heartbeat for 143 passes:
+
+```json
+"applied": {"assignment_version": 11, "outcome": "failed",
+  "detail": "1 copy(ies) not built: default/ll33WiI2YL7sK3sxrqcAaw: the document at [my-index-2]
+             is index [EfL8cGPvG0L1ctStO3wmWg], so the assigned index is not present yet"}
+```
+
+The assignment named uuid `ll33WiI2YL7sK3sxrqcAaw`; the index document held `EfL8cGPvG0L1ctStO3wmWg`. The diff still
+carried `UNASSIGNED_SEARCH_REPLICA` for `ll33…` and had **no finding at all** for `EfL8…` — so this was not
+placement, it was desired state. The node was right to decline: a document under a reused name describing a
+different index is the torn read `NODE_CONTRACT.md` tells it to refuse.
+
+### Why
+
+The filesystem store kept revisions **per key, derived from the key's own file**, so deleting the file restarted the
+count. The recreated `my-index-2` came back at **revision 1** — which is what `config_revision: 1` in the assignment
+records, and precisely the revision `RevisionCache` already held for the *previous* incarnation:
+
+```java
+if (entry != null && entry.revision() == revision) {
+    return entry.value();   // the old IndexConfig, with the old uuid, for ever
+}
+```
+
+Its comment — *"revisions compare for equality on the same key, so a changed revision is exactly the signal"* — was
+a fair reading of a contract that promised monotonic-per-key revisions comparable for equality and said nothing
+about a key being deleted and written again. Nothing here was careless: the guarantee it relied on was never
+stated, and one backend of three did not provide it.
+
+### What was fixed, and where
+
+In `../opensearch-kv-store`:
+
+- **`KeyValueStore` now states it** — a revision is never reused for a key, including after deletion, *because*
+  readers use equality as a change signal — and also says what is still not promised: revisions need not be dense
+  or global.
+- **`KeyValueStoreContractTests` has two new cases** that every backend runs: a recreated key must not return to a
+  revision it has already had, and deleting the key holding the highest revision must not let a later write reissue
+  it. Both fail against the old filesystem implementation.
+- **`FileSystemKeyValueStore` issues store-wide revisions** from a counter persisted before use and recovered as
+  `max(counter file, highest surviving key)`.
+
+**etcd and ZooKeeper already satisfied this** — `mod_revision` and `mzxid` are cluster-wide transaction ids — and
+`ZooKeeperKeyValueStore`'s javadoc rejects `Stat.getVersion()` for exactly this hazard. So this could not have
+happened in production; the trap was only in the file-backed store everyone develops against, which is worse in one
+respect, because it is the store all three services are tested against.
+
+### Two things worth checking here
+
+`RevisionCache` is correct as written and needs no change. But the same assumption may appear where no contract
+backs it:
+
+- **Does anything treat a revision as ordered rather than merely unequal?** The contract still says revisions are
+  comparable only for equality and need not be dense — the filesystem store now leaves gaps on a crash by design,
+  so a comparison like `revision > cached` would be a new and unsupported assumption.
+- **`config_revision` travels further than this cache.** The data plane reports it in the inventory and the
+  supervisor compares it to decide whether a copy is on the current configuration. That comparison rested on the
+  same unstated guarantee and was wrong in the same way for the same window. Worth confirming it is an equality
+  check and not something stronger.
+
+No test is proposed here, because the defect was not in this repository. The test that would have caught it now
+lives in the store's own conformance suite, which is where it belongs.
+
+> **Both checks done, and they lead somewhere.**
+>
+> **Ordered comparisons: none.** No revision is compared with anything but equality anywhere in
+> `supervisor-model`, `supervisor-core` or `supervisor-app`. `RevisionCache`, `RevisionSilence`, `LeaseManager`,
+> `Applier` and `NodeReaper`'s compare-and-set all test equality, and the newly-stated guarantee is exactly what
+> each needs.
+>
+> **`config_revision`: equality.** The only comparison is `TaskCompletion`'s `held.configRevision() !=
+> index.configRevision()`, which is correct under the stated contract. Worth adding that `STALE_CONFIG` is declared
+> and raised by nothing, so the *finding* for a copy on an old configuration does not exist — the condition is
+> only ever evaluated as a task's completion test. That is a gap of its own and not this item's.
+>
+> **The same trap one level over, which your question found and I had just made reachable.** An assignment's
+> `version` counts up from the document already in the store, so deleting the document restarts it at 1 — and
+> reaping, committed a few hours before your write-up, deletes `nodes/assignment/<id>`. `NODE_CONTRACT.md`'s
+> reading table said `applied.assignment_version` > assignment `version` means "a stale read or another supervisor
+> is writing", which after a correct reap is wrong: a node reaped while merely unreachable comes back reporting
+> version 11 against a fresh version 1. Nothing implements that row — the only comparison in the code is the
+> equality one — so the fix is to the contract before someone implements the ordered reading and treats a correct
+> reap as a split brain. **A counter that restarts on deletion cannot be compared by ordering across the
+> deletion**, which is your root cause stated generally, and it now says so in the contract.
 
 ---
 
