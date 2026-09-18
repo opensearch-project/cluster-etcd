@@ -80,6 +80,7 @@ line winning.
 | [`SUPERVISOR_KEYS.md`](SUPERVISOR_KEYS.md) | what this service writes: projections, pools, leases, observability |
 | [`WORKING_NOTES.md`](WORKING_NOTES.md) | what this development environment blocks, and how to work in it |
 | [`FINDINGS_FROM_THE_DATA_PLANE.md`](FINDINGS_FROM_THE_DATA_PLANE.md) | two changes wanted here, found by running the real data plane against this service |
+| [`MONITORING.md`](MONITORING.md) | noticing that this service has stopped working, which it cannot do itself |
 
 The three key documents are contracts with two other services. A contract in prose drifts, so
 `supervisor-model`'s `Keys` class is those documents made executable and `KeysTests` pins them: a layout
