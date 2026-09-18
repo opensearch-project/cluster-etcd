@@ -48,6 +48,11 @@ public final class NodeReaper {
      * the strength of an inference, and both are calibrated not for a torn read — which one more pass settles —
      * but for a human noticing that something is systematically wrong before it becomes irreversible. A node is
      * already twenty heartbeat intervals silent before the finding exists at all.
+     *
+     * <p>It is also sized so that an ordinary restart or deployment does not lose a node its documents, which is
+     * the wrong job for it to be doing: a restart is a <em>declared</em> few minutes and being dead is an
+     * undeclared forever, and one number cannot be right for both. {@code DESIGN.md} §24 is what would separate
+     * them, and this figure could drop a long way once it did.
      */
     public static final long REAP_AFTER_LOST_PASSES = 30;
 

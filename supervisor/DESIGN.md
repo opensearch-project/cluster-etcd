@@ -752,6 +752,12 @@ wants the same fix.
     doing when the plugin implements peer resolution — until then the change would buy an inexpressible
     configuration for a broken one.
 
+11. **Announced deployments**, written up as §24 because the interesting part is which decisions it constrains
+    rather than what it would cost. A deployment signal from the control plane carves the "back in a few minutes"
+    case out of the middle of the liveness ladder, which is what would let the thresholds at either end stop being
+    a compromise across three unrelated durations. Not implemented; §24.2 is the part worth reading before
+    anything here is designed around it.
+
 ---
 
 ## 14. Balancing
@@ -1288,9 +1294,10 @@ thing it heals, so one rewrite is an incident and a steady trickle is something 
 **An aged `NODE_LOST`, not a fresh one.** A node that does *not* implement the rewrite rule is still conformant
 with everything else in the contract, so this cannot be built on the assumption that every node self-heals. The
 wait — thirty passes on top of the twenty heartbeat intervals of silence that raised the finding — is the
-protection for the node that does not heal, and it is the same figure as `OrphanReaper`'s for the same reason:
-both delete on the strength of an inference, and the wait is for a human to notice that something is
-systematically wrong before it becomes irreversible.
+protection for the node that does not heal. It is also sized for a restart or a deployment, which is the wrong
+thing for it to be sized for; §24 is what would let it stop being a compromise across three unrelated durations.
+It is the same figure as `OrphanReaper`'s, for the same reason: both delete on the strength of an inference, and
+the wait is for a human to notice that something is systematically wrong before it becomes irreversible.
 
 **The verdict is re-read from the observation**, never trusted from the diff. A finding's age can outlive its
 truth.
@@ -1630,3 +1637,91 @@ Having given up the search replica, the pool is one node holding a primary and o
 which is the mirror image of the state that started this. The rule cannot run in that direction: it fires only for
 `UNASSIGNED_PRIMARY`, so a primary is never given up for a replica. The resulting `UNASSIGNED_SEARCH_REPLICA` is a
 yellow index with an explanation, which is the correct end state for a one-node pool.
+
+## 24. Announced deployments — future work, not implemented
+
+**Nothing here exists.** It is recorded because two or three of the decisions are much cheaper to make now than
+to retrofit, and because one of them changes the value of a change already on the table (§23.2).
+
+OpenSearch 3.x has a `_cluster/deployment` API: an operator — or, better, the deployment system itself — tells
+the cluster that a set of nodes, usually identified by an attribute such as a pod or a zone, is going down and
+will be back. Upstream already demotes primaries on those nodes gracefully; keeping replicas in place is done by
+tuning the "node missing, move shards" timeout rather than directly. The intent is eventually to weight routing
+traffic back up gradually, so a bad deployment has a smaller blast radius. The plan is for the standalone control
+plane to grow the same API and to publish the resulting state for this service to read.
+
+### 24.1 Why this is worth more here than the threshold tuning it replaces
+
+A node is unreachable for one of three durations, and they are not a continuum:
+
+1. **seconds** — a stop-the-world GC or a network glitch, possibly repeating;
+2. **minutes** — a restart or a deployment;
+3. **for ever** — dead, or missing long enough that if it returns it should be treated as a new node.
+
+Every liveness threshold in this service is a compromise across all three. `stale` at 6× the interval is sized
+for (1); `lost` at 20× is sized so that (2) does not trigger a rebuild, which is also why reaping waits thirty
+further passes. **An announcement carves (2) out of the middle**, and the payoff is not only that deployments stop
+causing churn — it is that the ladder gets to be *tighter at both ends* for everything that did not announce
+itself. An unannounced disappearance is a much stronger signal once announced ones are labelled.
+
+That is the argument for reading this signal rather than for continuing to widen timeouts: widening a timeout
+makes the system slower at (3) in order to tolerate (2), and the two want opposite settings.
+
+### 24.2 Three things to get right, and they are the retrofit-expensive ones
+
+**It is a document with a deadline, not a notification.** An event would be edge-triggered, which R2.1 forbids
+outright, and a supervisor that restarted mid-deployment would simply miss it. So it is desired state written by
+the control plane, read every pass, and re-derived from scratch like everything else. This is not a small point:
+a "deployment started / deployment finished" pair of notifications is the obvious API and it is the one shape
+this design cannot consume.
+
+**The deadline is load-bearing, not metadata.** A deployment system that crashes half way through must not leave
+nodes announced for ever — announced nodes are nodes this service will decline to replace, decline to reap and
+decline to place on, so a stale announcement is indistinguishable from a small permanent outage. An announcement
+must therefore say *until when*, and an expired one must read as absent. Same discipline as a lease, for the same
+reason.
+
+**It is not a liveness state.** The temptation is a fifth `Liveness` value between `STALE` and `LOST`. That is the
+same category error as counting an assignment as a copy: `Liveness` is what was *observed* — revision silence,
+nothing else — and an announcement is what somebody *declared*. Keeping them orthogonal means an operator reading
+the diff can still see that a node has genuinely gone quiet, and that the announcement is the reason nothing is
+being done about it. Collapsing them hides exactly the thing worth seeing when a deployment does go wrong.
+
+An attribute selector rather than a list of node ids, for the same reason the awareness rules take one: a
+deployment system replacing pods does not know the node ids it is about to create, and `AllocationContext`
+already resolves nodes by attribute.
+
+### 24.3 Where it would be read, which is mostly in mechanisms that already exist
+
+Recorded at this level of detail because the encouraging part is how little of it is new machinery:
+
+- **`LivenessTracker`** — the `lost` threshold for an announced node becomes its announced window plus slack
+  rather than 20× the interval. `stale` is unaffected and should be: a stale node's copies still count, which is
+  precisely the behaviour wanted here.
+- **A `DeploymentDecider`** refusing placement on an announced node, alongside the other nine. A node about to go
+  away is a bad home for a new copy, and this is the same shape as `EnableAllocationDecider`.
+- **`Differ`** — `NODE_LOST` on an announced node is expected rather than critical. The existing rule generalises:
+  the alarm is that a finding is *old*, and here the alarm is that a disappearance was **unannounced**.
+- **Nothing replaces its copies.** A node under deployment keeps counting toward redundancy, so
+  `UNASSIGNED_REPLICA` is never raised for it — which is the half upstream does by timeout tuning and which falls
+  out here for free, because copy counting already has a "does this count" question in it.
+- **`Rebalancer`** — an announced node is not a move target, and a pool mid-deployment should not be rebalanced at
+  all. Its heat readings are worse than useless during a traffic dial-up, which is the same argument §14 makes for
+  not acting on a spike.
+- **`NodeReaper`** — will not reap an announced node. And the inversion worth noticing: **an announcement that has
+  expired makes reaping more confident, not less.** A node that was expected back in four minutes and is not back
+  in twenty is more certainly dead than one that vanished without notice, so the aged-`NODE_LOST` wait could be
+  shorter in exactly that case.
+- **Weighted routing** lands on the projection rather than on placement: it is per-index routing state that
+  coordinators read out of `tenant/<t>/status/indices/<uuid>`, not a decision about where copies live.
+
+### 24.4 The one thing this changes about a decision already made
+
+**Graceful primary demotion is the in-place role flip**, which §23.2 deferred as needing a coordinated data plane
+change. Demoting a primary before its node goes down means rewriting one shard's role in one assignment —
+`{0: primary}` becoming a read-only copy there, and a peer's copy becoming the primary — with no data movement at
+all. That is the same capability §23's displacement wants in order to stop rebuilding a shard from the remote
+store, and the same capability open question 1's fencing has to make safe.
+
+So the in-place role change has three customers, not one. Worth knowing before anyone prices it as an
+optimisation for a rare deadlock.
