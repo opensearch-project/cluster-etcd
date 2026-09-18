@@ -16,6 +16,7 @@ code to read. Where implementing something changed the design, the section says 
 | **Multi-tenant data model from day one** | single `default` tenant | every structure is tenant-keyed; tenant discovery needs a change to the control plane |
 | **Observability projected into the store** | an HTTP endpoint | every observability document must be bounded, so the diff is truncated |
 | **Read-only first** | act as soon as the diff works | a milestone that ships nothing user-visible, and is worth it |
+| **Tenants and operators are different parties** (§25) | vanilla's one admin role | every `cluster.*` setting has to be classified by owner, and one namespace now has two |
 
 ## 1. Everything is a pure function except two edges
 
@@ -75,6 +76,10 @@ required argument is the only version of that which survives a deadline.
 history of when it last saw a revision change (`NODE_CONTRACT.md`). Keeping it out is what keeps `diff` pure.
 
 ## 2. Partitioning: the pool is the unit of ownership
+
+*A pool is also the **operator's** unit, which §25 argues is a distinct role from the tenant's. Read that first if
+the question is who may write a given setting.*
+
 
 This is the section the rest of the design hangs from.
 
@@ -767,11 +772,15 @@ wants the same fix.
 
     Found by the control plane while acknowledging the `status/awareness` narrowing
     (`../opensearch-control-plane/docs/proposed-awareness-attribute-narrowing.md`): it validates weighted routing
-    against the tenant's setting, so a weight can be accepted for an axis nothing spreads along. The question under
-    it is not the finding but the ownership — **may a tenant declare its own failure domains at all**, when in a
-    shared pool the nodes and their attributes belong to the operator? Leaning no, in which case a finding saying
-    the setting was ignored is the whole answer, and a rejection at the control plane's boundary is better still
-    because the tenant learns at the moment it asks.
+    against the tenant's setting, so a weight can be accepted for an axis nothing spreads along.
+
+    **Answered: no.** `zone` is a fact about a rack in a building — a statement about the machines, which a tenant
+    cannot know and did not pay for — so it is the operator's to declare and the pool definition is the only place
+    it can come from. §25 is the general rule this is an instance of, and it says what to do about it: an
+    operator-owned setting a tenant writes is **rejected at the control plane's boundary**, not reported afterwards
+    as a finding, because the tenant should learn from the request rather than from a traffic split that never
+    happens. What remains here is the rejection, which is the control plane's to implement, and §25.5's prediction
+    that this is the first of these rather than the only one.
 
 ---
 
@@ -1740,3 +1749,84 @@ store, and the same capability open question 1's fencing has to make safe.
 
 So the in-place role change has three customers, not one. Worth knowing before anyone prices it as an
 optimisation for a rare deadlock.
+
+## 25. Two owners, not one
+
+Vanilla OpenSearch assumes the party that **runs** a cluster and the party that **uses** it are the same person.
+Every setting lands in one namespace, every API is available to whoever holds admin, and nothing in the model
+distinguishes "I want this index" from "I own these machines". Here they are different parties, and after the
+three-plane split itself this is the assumption with the widest reach — it decides, for any given setting or
+request, which party owns it and therefore which plane may write it.
+
+- **Tenants own the things they want to exist on OpenSearch**: indices, aliases, templates, data streams, search
+  pipelines, mappings, and the flow of their own ingestion. Written through the control plane.
+- **Operators own the machines and the timing of changes to them**: pools, node attributes and capacity, the
+  remote store, deployment windows (§24), and the supervisor's own configuration.
+
+### 25.1 The classifier
+
+A setting is the **tenant's** if it describes *what they want to exist*. It is the **operator's** if it describes
+*the machines, or the timing of changes to them*.
+
+That is enough to settle open question 12 without appealing to anything else. `cluster.routing.allocation.awareness
+.attributes` reads like a tenant preference and is a statement about where the **hardware** is: `zone` is a fact
+about a rack in a building, which a tenant cannot know and did not pay for. So a tenant cannot declare it, and the
+pool definition is the only place it can come from — which is what the code already does, for reasons that were
+never written down until the control plane found the consequence.
+
+### 25.2 Three categories, and the third is where the work is
+
+1. **Tenant-owned.** The control plane writes it, the supervisor reads it.
+2. **Operator-owned.** It lives in `pools/definitions/<pool-id>`, in a node's registration, or in the supervisor's
+   configuration. No tenant can reach it.
+3. **The intersection: the tenant states an intent, the operator states a capability, and the answer is the
+   overlap.** This is the category that gets decided ad hoc if it is not named, and two instances already exist:
+   - `index.number_of_replicas` against `IndexConfig.copiesAuthorisedFor` — the tenant configures, the operator
+     authorises, and §15 keeps the two numbers separate precisely so per-shard autoscaling remains possible.
+   - `index.replication.type: SEGMENT` against a pool whose nodes declare no segment repository —
+     `RemoteStoreDecider` refuses the copy and says why (§17).
+
+   Both resolve the same way: the tenant's request is honoured up to the operator's capability, and the shortfall
+   is **reported rather than silently clipped**. Anything mixed that arrives later should take that shape.
+
+### 25.3 The two failure directions want different remedies, and that asymmetry is the point
+
+- A **tenant-owned** setting this service ignores is owed **a finding**. The tenant asked for something legitimate;
+  silence is the defect `DESIRED_COPY_IGNORED` exists for, and `index.number_of_search_replicas` — read by nobody
+  for as long as it existed, with a status claiming everything asked for had been delivered — is what it cost.
+- An **operator-owned** setting a tenant writes should be **rejected at the control plane's boundary**. Reporting
+  it later is strictly worse: the tenant finds out from a traffic split that never happens, or a shard that never
+  moves, rather than from the request that asked for it.
+
+Getting this backwards is easy, because a finding feels like the more generous answer in both directions. It is
+not: a finding on a request the tenant was never entitled to make tells them they have a problem to fix, when what
+they have is a request that should have failed.
+
+### 25.4 Only the supervisor can enforce it
+
+Structurally the same argument as §17.2's repository mismatch and §20.1's endpoint collision. The control plane
+sees one tenant's desired state and nothing about the machines. A node sees itself and no other. **Only the
+supervisor holds both the tenant's request and the operator's pool definition in the same pass**, so it is the only
+component that can notice a tenant asking for something the operator has not provided — which is also why the
+rejection in §25.3 needs this service to publish what the operator declared (`status/awareness`), rather than the
+control plane guessing.
+
+### 25.5 `_cluster/settings` is one namespace with two owners, and that predicts more of these
+
+Open question 12 is the **first instance of a class, not a one-off**. Vanilla puts operator concerns and tenant
+concerns in one flat `cluster.*` namespace with no marker separating them, so every such setting this system adopts
+needs classifying — and an unclassified one silently lands wherever it was first implemented, which is what
+happened here.
+
+Two already in the code are worth re-examining against §25.1:
+
+**`cluster.routing.allocation.enable` and `cluster.routing.rebalance.enable` are read from the tenant's settings**
+(`ClusterSettings`, via `AllocationContext.allocationEnable`). Defensible, because the effect is confined to that
+tenant's own indices and "stop moving my shards while I investigate" is a thing a tenant may legitimately want. But
+the reason an operator reaches for these in vanilla is *"I am about to restart nodes"*, which is an operator intent
+about the machines — and §24's announced deployments is where that belongs, not a tenant-scoped brake.
+
+So the tenant-scoped reading is right and **incomplete: there is no operator-scoped equivalent.** An operator
+cannot today say "stop allocating in this pool", and the nearest thing is asking every tenant bound to it to set
+its own flag. Worth having, and it is a pool definition field rather than a cluster setting — which is the whole
+point of this section.
