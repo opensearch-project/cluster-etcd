@@ -1,5 +1,6 @@
 package org.opensearch.supervisor.model.status;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.opensearch.supervisor.model.Json;
 import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.node.NodeRole;
@@ -49,7 +50,15 @@ public record NodeStatus(
         attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
     }
 
-    /** Whether this node is worth trying to reach. A {@code LOST} peer is not a recovery source. */
+    /**
+     * Whether this node is worth trying to reach. A {@code LOST} peer is not a recovery source.
+     *
+     * <p>{@code @JsonIgnore} because it is named the way Jackson detects a property, and it was being written as
+     * {@code "reachable"} — a field no reader asked for, documented nowhere, and derivable from {@code liveness}
+     * by anyone who wanted it. Third time this repository has published a field by accident of a method name; the
+     * difference here is that a test now fails rather than someone noticing.
+     */
+    @JsonIgnore
     public boolean isReachable() {
         return liveness == Liveness.LIVE || liveness == Liveness.STALE;
     }

@@ -96,6 +96,19 @@ public record IndexStatus(
             Objects.requireNonNull(state, "state");
         }
 
+        /**
+         * Whether this copy can serve a request, on the wire as {@code serving}.
+         *
+         * <p><b>Annotated because it is load-bearing, not because it is convenient.</b> It began as an accident —
+         * {@code isServing()} is named the way Jackson detects a property — and by the time anyone noticed, the
+         * data plane's coordinator routing was already reading it. Removing it as an unintended field, which is
+         * the correct fix for two others in this codebase, would have routed queries to nothing in another
+         * repository with no test failing in this one.
+         *
+         * <p>Redundant with {@code state}, and kept anyway: which states serve is this service's rule, and making
+         * every reader reimplement it is how two implementations of that rule come to disagree.
+         */
+        @JsonProperty("serving")
         public boolean isServing() {
             return state.isServing();
         }

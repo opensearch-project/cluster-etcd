@@ -170,7 +170,9 @@ public final class SupervisorLoop {
         projector.project(
             diff, observation, clock.millis() - startedAt, watchPollFailures(), taskFigures(),
             lastPlan == null ? java.util.Map.of() : lastPlan.refusals(),
-            lastPlan == null ? null : lastPlan.balance()
+            lastPlan == null ? null : lastPlan.balance(),
+            epoch,
+            lastPlan != null && lastPlan.ceilingHit()
         );
 
         lastDiff = diff;

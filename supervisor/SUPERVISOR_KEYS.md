@@ -86,15 +86,17 @@ into every assignment, which would store it once per reader and rewrite every co
   "status": "yellow",
   "number_of_shards": 2,
   "number_of_replicas": 1,
+  "number_of_search_replicas": 0,
+  "ingestion_paused": false,
   "active_shards": 3,
   "active_primary_shards": 2,
   "unassigned_shards": 1,
   "initializing_shards": 0,
   "replication": "DOCUMENT",
   "shards": {
-    "0": [ { "node_id": "pv1sDM…", "role": "PRIMARY", "state": "STARTED" },
-           { "node_id": "72ZSKe…", "role": "REPLICA", "state": "INITIALIZING" } ],
-    "1": [ { "node_id": "zF5QLA…", "role": "PRIMARY", "state": "STARTED" } ]
+    "0": [ { "node_id": "pv1sDM…", "role": "PRIMARY", "state": "STARTED", "serving": true },
+           { "node_id": "72ZSKe…", "role": "REPLICA", "state": "INITIALIZING", "serving": false } ],
+    "1": [ { "node_id": "zF5QLA…", "role": "PRIMARY", "state": "STARTED", "serving": true } ]
   },
   "observed_at": 1788969977933,
   "observed_pass": 10432
@@ -118,6 +120,14 @@ into every assignment, which would store it once per reader and rewrite every co
   initializing is a thing that exists, and `active_primary_shards` cannot be computed without saying so.
 - **`replication`** is `DOCUMENT` or `SEGMENT`, copied from the index's `index.replication.type`. It tells a
   reader whether peer resolution applies at all before it goes looking.
+- **`serving`** on each copy is redundant with `state` and is published anyway: which states serve is this
+  service's rule, and making every reader reimplement it is how two implementations of one rule come to
+  disagree. The data plane's coordinator routing reads it. It began as an accident of a method name and was
+  undocumented for a long time — see the note under §4 on how that is now caught.
+- **`number_of_search_replicas`** and **`ingestion_paused`** come straight from the index document's settings,
+  and are here for the same reason as `config_revision`: a reader needs to know whether what it is looking at
+  reflects the settings it just wrote. `ingestion_paused` is the one field here that is a *desired* state rather
+  than an observed one.
 - **Size** is bounded by shard count × copies, at roughly 60 bytes each. An index of 1000 shards with two
   copies is ~120 KiB, under the 512 KiB budget. An index that would exceed it is a finding, not a truncated
   write.
@@ -133,12 +143,18 @@ into every assignment, which would store it once per reader and rewrite every co
   "active_shards": 465,
   "unassigned_shards": 15,
   "initializing_shards": 3,
-  "delayed_unassigned_shards": 0,
   "indices_by_status": { "green": 78, "yellow": 3, "red": 0 },
   "observed_at": 1788969977933,
   "observed_pass": 10432
 }
 ```
+
+**No `delayed_unassigned_shards`**, which this document promised for a long time and nothing ever wrote.
+OpenSearch's figure counts shards whose reallocation is being deliberately delayed after a node left
+(`index.unassigned.node_left.delayed_timeout`), and this service has no such concept: a copy is either wanted
+and unplaced, which is `unassigned_shards`, or its node is still inside its liveness window and its copies
+still count. Publishing a constant zero would have been worse than omitting it — a field that is always zero
+reads as information.
 
 Cluster status is the worst index status. Deliberately **no per-index map here** — `cluster.health?level=indices`
 composes it from the per-index documents, so this stays a small, fixed-size document that can be rewritten
@@ -196,6 +212,14 @@ a prefix scan on the validation path of every weighted-routing request.
 Values are the distinct values across nodes currently serving the tenant. **A value disappears only when no
 live node reports it**, and that is a hazard worth stating: a zone whose nodes are all down would silently
 stop being a valid weighted-routing target. Include values from `stale` nodes, exclude `lost` ones.
+
+**Every attribute, not only the pool's awareness attributes** — which is what the code does and is worth deciding
+rather than inheriting. A node's `remote_store.segment.repository` therefore appears here beside `zone`, and it is
+not a failure domain anybody would route by. Two arguments for narrowing it to `pools/definitions/<id>`'s
+`awareness_attributes`: this document exists to validate weighted routing, and in a shared pool it currently tells
+one tenant the repository name the pool writes to. One argument against: an operator adding a new awareness
+attribute would then have to write the pool definition before the values showed up. Not changed yet, because it
+is a behaviour change visible to the control plane rather than a defect.
 
 ### `tenant/<t>/status/snapshots/<repo>/<snapshot>` — R5.3
 
@@ -425,16 +449,18 @@ not move when it does.
   "pool": "shared-a", "epoch": 7, "holder": "supervisor-a1b2",
   "pass": 10432,
   "pass_started_at": 1788969977800, "pass_duration_millis": 240,
-  "weight": 340.0, "nodes": 40, "indices": 3000,
+  "weight": 340.0, "nodes": 40, "placeable_nodes": 38, "indices": 3000,
   "findings_total": 12,
   "findings_by_kind": { "UNASSIGNED_REPLICA": 9, "NODE_STALE": 1, "ORPHANED_COPY": 2 },
   "last_empty_diff_at": 1788969012000, "passes_since_empty": 300,
   "trend": { "window": 20, "delta": -3 },
   "work_ceiling_hit": false,
-  "tenants": { "acme": { "findings": 11, "passes_since_empty": 300 },
-               "globex": { "findings": 1, "passes_since_empty": 4 } },
+  "tenants": { "acme": { "findings": 11, "oldest_passes": 300 },
+               "globex": { "findings": 1, "oldest_passes": 4 } },
+  "tasks": { "claimed": 2, "completed": 1, "failed": 0, "reaped": 0, "lost": 0 },
+  "unreadable_documents": 0,
   "watch_poll_failures": 0,
-  "etcd_watch_failures": 0
+  "balance": { "spread": 1.25, "because": "moving shard 3 of my-index off node A: …" }
 }
 ```
 
@@ -451,7 +477,21 @@ not move when it does.
   reason: a silently dead watch looks exactly like a quiet keyspace. On the remote backends the poll counter
   stays zero by design, which is itself worth knowing when reading this document.
 - **`tenants`** is capped at the 20 worst by finding count, with the rest summarised — it must not grow with
-  tenant count, and a shared pool is where that matters.
+  tenant count, and a shared pool is where that matters. Each entry carries `oldest_passes`, the age of that
+  tenant's longest-standing finding, which is the per-tenant form of the same alarm: a tenant whose worst finding
+  keeps getting older is not recovering however the total moves.
+- **`placeable_nodes`** against `nodes` is the first thing to read when a shard will not place. A pool with forty
+  nodes and two that may be placed on explains a great deal on its own.
+- **`balance`** is pool-level rather than per-shard, which is why it is not in a diff: "your pool is uneven and
+  here is the rule stopping it being evened out" is not a statement about any one shard, and when nothing at all
+  is wrong there is no finding to hang it on. `DESIGN.md` §14.7.
+- **`tasks`** is what the queue did this pass. A queue that has stopped draining is otherwise invisible: the
+  control plane keeps reporting a growing pile and nothing says why.
+- **`work_ceiling_hit`** pairs with `pass_duration_millis`. A pool always at its ceiling is converging at the rate
+  of the ceiling rather than at the rate of the cluster.
+- **No `etcd_watch_failures`.** Promised here and never written, and it is the store's counter rather than this
+  service's — `watch_poll_failures` is what this process can observe without reaching into a particular backend.
+  A backend-specific counter belongs in whatever the store publishes about itself.
 
 ### `supervisor/status/diff/<tenant-id>` — R7.1
 
@@ -461,12 +501,24 @@ not move when it does.
   "counts": { "UNASSIGNED_REPLICA": 9, "ORPHANED_COPY": 2 },
   "truncated": false, "shown": 11, "total": 11,
   "findings": [
-    { "kind": "UNASSIGNED_REPLICA", "index_uuid": "uzKx…", "index": "my-index", "shard": 1,
+    { "kind": "UNASSIGNED_REPLICA", "severity": "warning", "subject": "acme/uzKx…/1",
       "first_observed_pass": 10132, "passes": 300,
-      "because": "no live node in pool shared-a satisfies awareness attribute zone=z3; z3 has 0 live nodes" }
+      "because": "index [my-index] shard 1 wants one more replica than it has",
+      "unplaceable_because": "no live node in pool shared-a satisfies awareness attribute zone=z3; z3 has 0 live nodes" }
   ]
 }
 ```
+
+**`subject` is one string, not a set of fields.** It is `tenant/index-uuid/shard`, with `@node` appended when the
+finding is about one copy, and it is the same rendering used as the key in the oscillation history — which is the
+point: finding age and oscillation detection both key on the subject, so a subject that had two representations
+would have two ages. A reader wanting the parts splits on `/`. `severity` is the finding's kind escalated by its
+age, so a reader does not have to know which kinds escalate.
+
+**`unplaceable_because` is separate from `because`**, because they answer different questions: one says what is
+wrong, the other says what is stopping it being fixed, and an operator needs both. The name is narrower than the
+meaning — any rule that declines to act on a finding files its sentence there, including the two that decline to
+*delete* something (`DESIGN.md` §22, §23) — and it is left alone because it is a published field.
 
 **`because` is the field this whole document exists for** — R7.4 asks for the decision, not the action.
 *"Moving shard X to node Y because node Z has been silent for 40s"* is debuggable; the same sentence without
@@ -480,6 +532,11 @@ finding at 300 passes is a stuck reconciler. The alarm is on **age**, never on p
 Findings are ordered by severity then age, so truncation drops the least interesting.
 
 ### `supervisor/status/pools/<pool-id>/oscillation` — R7.3
+
+> **Nothing writes this yet.** The detector does not exist; `Keys.poolOscillation` is a key builder with no
+> caller. The shape below is a proposal, and it is kept because the *subject* rendering it depends on is already
+> settled and already used by finding ages. What R7.3 asks for is unimplemented, and until it is, an oscillation
+> shows up only as a diff that never empties — which is the alarm, without the explanation.
 
 A bounded ring of subjects that keep reappearing in the diff while the supervisor keeps acting on them —
 *"the characteristic failure of this kind of service"*. Detection: the same subject receiving ≥ K actions
@@ -505,6 +562,11 @@ oscillating rather than the allocator, and it is recorded in the same document w
 same detector, same shape, because it is the same failure one layer up.
 
 ### `supervisor/status/members/<supervisor-id>` — R3.3
+
+> **Nothing writes this yet.** `Keys.memberStatus` is a key builder with no caller, so R3.3's requirement that the
+> effective liveness threshold be observable is **not met**: the values are real and configurable and nothing
+> publishes them. `supervisor/members/<supervisor-id>` (§3) exists and carries liveness and the held pools, but not
+> the effective configuration this describes.
 
 The **effective** configuration of one supervisor process, published because R3.3 requires the liveness
 threshold's effective value to be observable, and because "what is this process actually running with" is
@@ -543,10 +605,18 @@ of these is a configuration mistake that would otherwise be silent:
   "unpooled_nodes": ["aB3xQ…"],
   "unowned_pools": [],
   "pools_without_definition": ["typo-pool"],
-  "members_live": 3, "members_expired_reaped": 1,
-  "registry_source": "tenants/"
+  "duplicate_defaults": [],
+  "overloaded_dedicated_pools": [],
+  "members_live": 3, "members_reaped": 1,
+  "registry_source": "registry",
+  "unreadable": []
 }
 ```
+
+`registry_source` is `registry` when the tenant list came from `tenants/` and `configuration` when it fell back to
+this process's own settings — §6. `duplicate_defaults` names pools each claiming to be the default, and
+`overloaded_dedicated_pools` dedicated pools holding more than one tenant; both are configuration mistakes that
+are otherwise silent. `unreadable` is every key under a prefix this service owns that could not be parsed at all.
 
 `unpooled_tenants` is the one that matters. A tenant the control plane is serving, with indices, that no
 supervisor is managing, produces no error anywhere else in the system — no shards are placed, no health is

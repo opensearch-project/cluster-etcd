@@ -99,9 +99,19 @@ public final class Projector {
         long passes
     ) {}
 
-    /** Per-pool convergence: the answer to "is this getting better?", which one number cannot give. */
+    /**
+     * Per-pool convergence: the answer to "is this getting better?", which one number cannot give.
+     *
+     * @param epoch the lease epoch this pass ran under. Promised by {@code SUPERVISOR_KEYS.md} from the start and
+     *     absent for as long: a split brain is meant to be diagnosable afterwards from data the system already
+     *     wrote, and the assignments carry it while the document an operator actually reads did not.
+     * @param workCeilingHit whether this pass ran out of its budget before it ran out of work. The capacity
+     *     signal that pairs with {@code pass_duration_millis}: a pool that is always at its ceiling is converging
+     *     at the rate of the ceiling rather than at the rate of the cluster.
+     */
     public record Convergence(
         PoolId pool,
+        long epoch,
         String holder,
         long pass,
         long passStartedAt,
@@ -117,6 +127,7 @@ public final class Projector {
         Trend trend,
         Map<String, TenantSummary> tenants,
         Tasks tasks,
+        boolean workCeilingHit,
         int unreadableDocuments,
         long watchPollFailures,
         Plan.Balance balance
@@ -143,7 +154,7 @@ public final class Projector {
     public record Trend(int window, int delta) {}
 
     public void project(Diff diff, Observation observation, long passDurationMillis, long watchPollFailures) {
-        project(diff, observation, passDurationMillis, watchPollFailures, Tasks.NONE, Map.of(), null);
+        project(diff, observation, passDurationMillis, watchPollFailures, Tasks.NONE, Map.of(), null, 0, false);
     }
 
     public void project(
@@ -153,10 +164,13 @@ public final class Projector {
         long watchPollFailures,
         Tasks tasks,
         Map<String, String> refusals,
-        Plan.Balance balance
+        Plan.Balance balance,
+        long epoch,
+        boolean workCeilingHit
     ) {
         projectTenantDiffs(diff, observation, refusals);
-        projectConvergence(diff, observation, passDurationMillis, watchPollFailures, tasks, balance);
+        projectConvergence(diff, observation, passDurationMillis, watchPollFailures, tasks, balance,
+            epoch, workCeilingHit);
     }
 
     private void projectTenantDiffs(Diff diff, Observation observation, Map<String, String> refusals) {
@@ -213,7 +227,9 @@ public final class Projector {
         long passDurationMillis,
         long watchPollFailures,
         Tasks tasks,
-        Plan.Balance balance
+        Plan.Balance balance,
+        long epoch,
+        boolean workCeilingHit
     ) {
         int total = diff.findings().size();
         recentTotals.addLast(total);
@@ -236,6 +252,7 @@ public final class Projector {
 
         write(Keys.poolConvergence(diff.pool()), new Convergence(
             diff.pool(),
+            epoch,
             supervisorId,
             diff.pass(),
             observation.observedAt().toEpochMilli(),
@@ -251,6 +268,7 @@ public final class Projector {
             new Trend(recentTotals.size(), delta),
             worstTenants(diff),
             tasks,
+            workCeilingHit,
             observation.unreadable().size(),
             watchPollFailures,
             // Published even when nothing is wrong, which is exactly when an operator asks it. A pool whose
