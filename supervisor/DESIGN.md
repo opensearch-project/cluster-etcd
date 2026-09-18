@@ -353,7 +353,7 @@ independently disableable, which matters when one of them turns out to oscillate
 | `ORPHANED_COPY` | a copy whose index uuid is absent from desired state, **held or merely assigned** | warning, **acts only after K passes** |
 | `FOREIGN_COPY` | a copy on a node outside the tenant's pool | info during a rebind, critical otherwise |
 | `STALE_CONFIG` | a copy's `config_revision` ≠ the index document's revision | warning |
-| `NODE_STALE` / `NODE_LOST` | heartbeat revision unchanged past the thresholds | warning / critical |
+| `NODE_STALE` / `NODE_LOST` | heartbeat revision unchanged past the thresholds | warning / critical; `LOST` is reaped once it ages (§20.2) |
 | `NODE_UNREGISTERED` | heartbeat without registration | warning |
 | `NODE_UNPOOLED` | a node in no pool, or naming a pool that does not exist | warning |
 | `TENANT_UNPOOLED` | a registered tenant with no binding | critical — it is entirely unmanaged |
@@ -1227,7 +1227,7 @@ eventually answer it differently, and the symptom appears somewhere neither of t
 
 ---
 
-## 20. Nothing reaps a node that is gone
+## 20. Reaping a node that is gone
 
 Reported from a real pool, by a coordinator that declined to route to one of two nodes claiming one socket:
 
@@ -1237,10 +1237,10 @@ so this one is not routed to -- usually a projection for a node that was replace
 port and has not been reaped yet
 ```
 
-The diagnosis in that message is right. **Nothing in this service deletes a departed node's documents.**
-`Housekeeping` reaps *member* records — other supervisors — and `StatusProjector` reaps projections whose key it
-did not write this pass, which does not help: a dead node's `nodes/registration/<id>` is still there, so it is
-still observed, so its projection is still written.
+The diagnosis in that message was right, and at the time **nothing in this service deleted a departed node's
+documents.** `Housekeeping` reaps *member* records — other supervisors — and `StatusProjector` reaps projections
+whose key it did not write this pass, which did not help: a dead node's `nodes/registration/<id>` was still there,
+so it was still observed, so its projection was still written.
 
 And a fresh supervisor process makes it worse before it makes it better. Liveness is revision silence measured from
 when **this** process started watching, so every restart of the supervisor grants every corpse in the pool a full
@@ -1264,30 +1264,63 @@ to serve. A test covers it, because the first version of the *other* test proved
 assignment is not projected at all, so the collision could not occur until the fixture also left behind the
 assignment a replaced node really does leave.
 
-### 20.2 What is not fixed: the reaping itself
+### 20.2 The reaping itself
 
-This treats the symptom. The cause is that a departed node's four documents live for ever, and the honest reason
-it is not fixed here is that **three of them are not the supervisor's to delete**. `nodes/registration/<id>`,
-`nodes/heartbeat/<id>` and `nodes/shards/<id>` are written by the node; the whole key layout rests on every key
-having one writer, and reaping means deleting keys whose writer is presumed gone rather than known to be.
+A departed node's four documents lived for ever, and the honest reason it went unfixed was that **three of them
+are not the supervisor's to delete**. `nodes/registration/<id>`, `nodes/heartbeat/<id>` and `nodes/shards/<id>`
+are written by the node; the whole key layout rests on every key having one writer, and reaping means deleting
+keys whose writer is *presumed* gone rather than known to be.
 
-The hazard is specific and not hypothetical. A node partitioned from the store for longer than the grace period is
-indistinguishable from a node that has died — and if its registration is deleted while it is merely unreachable,
-it comes back, resumes heartbeating, and is now a node with a heartbeat and no registration: `NODE_UNREGISTERED`,
-placeable for nothing, needing a restart to recover. Trading a slow leak for a node that strands itself is not an
-improvement.
+The hazard was specific and not hypothetical. A node partitioned from the store for longer than the grace period
+is indistinguishable from a node that has died — and if its registration is deleted while it is merely
+unreachable, it comes back, resumes heartbeating, and is now a node with a heartbeat and no registration:
+`NODE_UNREGISTERED`, placeable for nothing, needing a restart. Trading a slow leak for a node that strands itself
+is not an improvement.
 
-Two ways out, and both are more than a patch:
+**What unblocked it was the contract, not this repository.** `NODE_CONTRACT.md` now requires a node to rewrite its
+registration when it observes the document missing, with the same `ephemeral_id` and the same `registered_at`,
+because neither the process nor the registration is new. A wrong reap therefore costs one pass and heals itself.
+The data plane implements it and counts the rewrites, which matters more than it sounds: self-healing hides the
+thing it heals, so one rewrite is an incident and a steady trickle is something reaping live nodes.
 
-- **Give the node contract a rule that a node rewrites its registration when it observes it missing.** Then reaping
-  is safe by construction and self-healing, at the cost of one read per pass on the node side. This is the better
-  answer and it is a change to `NODE_CONTRACT.md`, which means agreeing it with the data plane.
-- **Reap with a compare-and-set on the revision observed**, and only after the `NODE_LOST` finding has aged the way
-  the planner ages everything it acts on. That closes the window to the width of one pass rather than eliminating
-  it, and it needs the observer to carry registration and heartbeat revisions, which it currently does not.
+`NodeReaper` deletes all four keys, and four things decide whether it may.
 
-Until then the leak is bounded by operator patience rather than by code, and the symptom that actually hurt — a
-reader handed two nodes on one socket — is gone.
+**An aged `NODE_LOST`, not a fresh one.** A node that does *not* implement the rewrite rule is still conformant
+with everything else in the contract, so this cannot be built on the assumption that every node self-heals. The
+wait — thirty passes on top of the twenty heartbeat intervals of silence that raised the finding — is the
+protection for the node that does not heal, and it is the same figure as `OrphanReaper`'s for the same reason:
+both delete on the strength of an inference, and the wait is for a human to notice that something is
+systematically wrong before it becomes irreversible.
+
+**The verdict is re-read from the observation**, never trusted from the diff. A finding's age can outlive its
+truth.
+
+**Nothing the pool still needs.** This is what makes reaping destructive rather than tidy: an absent assignment
+means *"hold nothing"*, so reaping a node whose copy the pool never managed to replace would turn the operator
+action of bringing a machine back into the deletion of the last copy of a shard. So a node is kept — with a
+reason — while any copy it holds **or was assigned** is one no other node reports as `STARTED`. Both records are
+read, because a node assigned a copy that died before reporting it has no inventory entry for it. A copy of an
+index that is gone or closed does not count: nobody wants it, and holding a node's documents for ever on account
+of a copy of something that does not exist would make the graveyard permanent.
+
+**A compare-and-set on the heartbeat, as the gate for everything after it.** The witness is the revision the
+*observation* saw, which only `LivenessTracker` remembers — it is the same number the liveness verdict was
+computed from, so deleting under it means "nothing has written here since I concluded this node was gone".
+Re-reading the key first would prove only that nothing happened in the intervening microsecond. A node that wrote
+anything in between fails the exchange and keeps all four documents.
+
+The order is heartbeat, then inventory, then assignment, then **registration last**. A crash part-way through
+leaves a registration with no heartbeat, which the observer already handles as "registered and has never spoken":
+a grace period, then `LOST` again, then another attempt. The reverse order would leave a heartbeat with no
+registration, which is the exact state this whole design is trying not to create.
+
+### 20.3 One thing neither side detects
+
+Absence only. If something *overwrites* a registration with different content rather than deleting it, the node
+does not notice — its decision to rewrite compares against its own in-memory copy, and its store read only asks
+whether the key exists. The layout's one-writer rule says that cannot happen, so this is a gap in detection rather
+than in behaviour. Worth knowing it is a gap, because "the node self-heals its registration" reads as stronger
+than it is.
 
 ---
 

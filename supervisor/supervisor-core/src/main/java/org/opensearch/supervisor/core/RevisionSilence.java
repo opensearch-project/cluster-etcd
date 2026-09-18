@@ -56,6 +56,19 @@ final class RevisionSilence {
         return running.isNegative() ? Duration.ZERO : running;
     }
 
+    /**
+     * The revision this key was last seen at, or null if it has never been seen.
+     *
+     * <p>Exists to be compare-and-set against. A decision to delete a node's documents is made from an
+     * observation, so the only revision worth checking at the moment of deletion is the one that observation
+     * saw: re-reading the key first would prove nothing more than that no write happened in the intervening
+     * microsecond.
+     */
+    Long revisionOf(String key) {
+        Seen previous = seen.get(key);
+        return previous == null ? null : previous.revision();
+    }
+
     void forget(String key) {
         seen.remove(key);
     }

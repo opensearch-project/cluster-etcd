@@ -167,6 +167,18 @@ public final class LivenessTracker {
         return thresholdFor(registration, staleMultiplier);
     }
 
+    /**
+     * The heartbeat revision this process last saw for a node, or null if it has seen none.
+     *
+     * <p>The witness a reap compare-and-sets against. This tracker is the only thing that remembers it, which
+     * is not an accident: it is the same number the liveness verdict was computed from, so deleting the key
+     * under it means "nothing has written here since I concluded this node was gone". A node that came back
+     * between the observation and the delete fails the exchange and keeps every one of its documents.
+     */
+    public Long heartbeatRevisionOf(NodeId nodeId) {
+        return silence.revisionOf(nodeId.value());
+    }
+
     public Duration lostThreshold(Registration registration) {
         return thresholdFor(registration, lostMultiplier);
     }

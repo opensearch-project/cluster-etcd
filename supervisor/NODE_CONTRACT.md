@@ -64,7 +64,7 @@ rewritten at the rate of its fastest-changing field and sized by its largest.
 
 | document | changes | written |
 |---|---|---|
-| `nodes/registration/<id>` | on start, and if attributes change | once per process lifetime |
+| `nodes/registration/<id>` | on start, if attributes change, and if it goes missing | once per process lifetime, plus once per reap |
 | `nodes/heartbeat/<id>` | continuously | every interval, default 5 s |
 | `nodes/shards/<id>` | when a shard copy appears, changes state or goes | on change only |
 | `nodes/heat/<id>` *(proposed)* | slowly, and on its own clock | every minute or slower |
@@ -76,6 +76,27 @@ count — is off that path entirely.
 
 Written once when the node starts, and rewritten only if something in it changes. A new `ephemeral_id`
 means the process restarted.
+
+**A node rewrites its registration if it observes the document missing.** It checks once per publishing pass when
+it has nothing else to write, and writes the same document again if the key is absent — with the **same
+`ephemeral_id`** and the **same `registered_at`**, because neither the process nor the registration is new. A read
+that fails is not an absent document: the node reports it and decides again on the next pass.
+
+This is what makes reaping safe, and it is the rule the supervisor's `NodeReaper` was blocked on. A supervisor may
+delete a node's registration believing it gone; if it was wrong, the node restores it within one pass rather than
+stranding itself as `NODE_UNREGISTERED` — placeable for nothing, and needing a restart to recover. A node that
+does **not** implement this rule is still contract-conformant for everything else, so a supervisor cannot assume
+the rule holds; that is the argument for reaping on an aged `NODE_LOST` rather than eagerly, and `DESIGN.md` §20.2
+is what this repository does about it.
+
+Counting the rewrites and reporting the count is strongly recommended, and the data plane exposes it as
+`registration.rewrites_after_going_missing`, present only when non-zero. **Self-healing hides the thing it
+heals:** one rewrite is an incident, and a steady trickle is something reaping the registrations of live nodes.
+
+It detects **absence only**. Something overwriting the registration with different content is not noticed, since
+the decision to write compares against the node's own in-memory copy. The layout's one-writer rule says that
+cannot happen, so this is a gap in detection rather than in behaviour — worth stating, because "the node
+self-heals its registration" reads as stronger than it is.
 
 ```json
 {

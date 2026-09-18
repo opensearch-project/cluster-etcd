@@ -1401,4 +1401,85 @@ class ActingTests {
             "the survivor has to end up with a primary, or the index is unwritable for ever");
         assertEquals(1, b.inventory().copyCount(), "and only one copy of the shard, not two");
     }
+
+    // ---------------------------------------------------------------- reaping a node that is gone
+
+    @Test
+    void aDepartedNodesDocumentsAreEventuallyDeleted() {
+        // The leak behind DESIGN.md section 20: restart a data plane on the same port a few times and the store
+        // accumulates one registration per incarnation, each claiming the same endpoint. Nothing deleted them,
+        // because three of the four keys belong to the node -- which the contract has since made safe by having a
+        // node rewrite its registration when it sees it missing.
+        FakeNode a = node(NODE);
+        FakeNode b = node(NODE_B);
+        a.start();
+        b.start();
+        a.tick();
+        b.tick();
+        createIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        assertTrue(store.get(Keys.nodeRegistration(NODE)).isPresent());
+
+        // A never speaks again. Its copy, if it had one, is replaced on B; then the finding has to age.
+        for (int pass = 0; pass < 100; pass++) {
+            supervisor.tick();
+            b.tick();
+            advance();
+        }
+
+        assertFalse(store.get(Keys.nodeRegistration(NODE)).isPresent(), "registration");
+        assertFalse(store.get(Keys.nodeHeartbeat(NODE)).isPresent(), "heartbeat");
+        assertFalse(store.get(Keys.nodeShards(NODE)).isPresent(), "inventory");
+        assertFalse(store.get(Keys.nodeAssignment(NODE)).isPresent(), "assignment");
+
+        assertTrue(store.get(Keys.nodeRegistration(NODE_B)).isPresent(), "the survivor is untouched");
+        assertTrue(supervisor.lastDiffOf(POOL).isEmpty(),
+            () -> "and the pool converges once the corpse is gone: " + supervisor.lastDiffOf(POOL).findings());
+    }
+
+    @Test
+    void aNodeThatComesBackBeforeItIsReapedKeepsEverything() {
+        // What the ageing is for. A node partitioned from the store is indistinguishable from a dead one, so the
+        // wait past NODE_LOST is the window in which being wrong costs nothing -- and this is the same silence as
+        // the test above, stopped short of the reap. Paired with it deliberately: that one proves the documents do
+        // go, so this one is not passing because nothing ever reaps anything.
+        //
+        // The tighter guard -- a heartbeat written between the observation and the reap in one pass -- is a
+        // concurrency window that cannot be produced from a single-threaded loop, and is covered by
+        // NodeReaperTests.aNodeThatHasWrittenSinceItWasObservedKeepsEverything.
+        FakeNode data = node(NODE);
+        data.start();
+        data.tick();
+        createIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        // Long enough to be declared lost and for the finding to age most of the way to a reap.
+        for (int pass = 0; pass < 75; pass++) {
+            supervisor.tick();
+            advance();
+        }
+        // ... and then it speaks again.
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        assertTrue(store.get(Keys.nodeRegistration(NODE)).isPresent(), "registration");
+        assertTrue(store.get(Keys.nodeHeartbeat(NODE)).isPresent(), "heartbeat");
+        assertEquals(1, data.inventory().copyCount(), "and it still holds its copy");
+    }
 }

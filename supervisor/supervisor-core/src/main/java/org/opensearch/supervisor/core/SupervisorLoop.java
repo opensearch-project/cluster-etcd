@@ -25,9 +25,11 @@ import java.util.function.BooleanSupplier;
  * through milestones 3 and 4, which is what let leases and failover be shaken out by a fleet that could not
  * touch anything. {@code REQUIREMENTS.md} §10 argues that order better than this class can.
  *
- * <p>Acting is deliberately narrow: {@link Planner} issues one kind of instruction, for one finding, and only
- * ever adds a copy. Nothing removes anything yet, so the worst a wrong decision can do is create a surplus
- * copy — a self-clearing finding rather than lost data.
+ * <p>Acting is no longer narrow, and the ordering within a pass is what keeps it safe. Copies are placed, then
+ * orphans withdrawn, then surpluses trimmed, then at most one move proposed; tasks are drained against the state
+ * this pass has just brought about; and {@link NodeReaper} runs last of all, because every decision above is
+ * better made with a departed node still visible. Four separate rules can now delete something, so each one
+ * carries its own argument for why the thing it deletes is not needed.
  *
  * <p>{@link #pass()} is explicit rather than a thread, for the same reason {@code FakeNode.tick()} is: a
  * pass that only advances when asked is a pass a test can reason about, and the balancer tests at milestone
@@ -54,12 +56,14 @@ public final class SupervisorLoop {
     private final long epoch;
     private final TaskQueue tasks;
     private final StatusProjector status;
+    private final NodeReaper reaper;
 
     private Diff lastDiff;
     private Plan lastPlan;
     private Applier.Outcome lastOutcome;
     private TaskQueue.Outcome lastTaskOutcome;
     private int lastStatusWrites;
+    private NodeReaper.Report lastReaping = NodeReaper.Report.NOTHING;
 
     /** Read-only: observes, diffs and projects, and writes nothing a node will act on. */
     public SupervisorLoop(
@@ -128,7 +132,11 @@ public final class SupervisorLoop {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.pool = Objects.requireNonNull(pool, "pool");
-        this.observer = new Observer(store, clock, new LivenessTracker(clock.instant(), liveness));
+        // One tracker, shared: the reaper compare-and-sets a heartbeat delete against the same revision the
+        // liveness verdict was computed from, so it has to be the same history, not a second copy of it.
+        LivenessTracker tracker = new LivenessTracker(clock.instant(), liveness);
+        this.observer = new Observer(store, clock, tracker);
+        this.reaper = new NodeReaper(store, tracker);
         this.projector = new Projector(store, supervisorId);
         this.tenants = new TenantDiscovery(store, configuredTenants);
         this.applier = new Applier(store, clock);
@@ -197,6 +205,11 @@ public final class SupervisorLoop {
                 // with, so they describe what was seen rather than what has just been asked for -- which is
                 // the invariant docrep peer resolution depends on.
                 lastStatusWrites = status.project(observation);
+
+                // Last of all, and deliberately: reaping is cleanup, and every decision above is better made
+                // with the corpse still visible. A node deleted here is one whose copies this pool has already
+                // replaced, so nothing earlier in the pass was waiting on it.
+                lastReaping = reaper.reap(diff, observation);
             }
         }
         return diff;
@@ -228,6 +241,11 @@ public final class SupervisorLoop {
     }
 
     /** How many projection keys the last pass wrote; zero in steady state. */
+    /** What the last pass deleted, and what it declined to delete. Empty on almost every pass. */
+    public NodeReaper.Report lastReaping() {
+        return lastReaping;
+    }
+
     public int lastStatusWrites() {
         return lastStatusWrites;
     }

@@ -912,6 +912,33 @@ and why nothing needs to remember having applied it.
 
 ## 9. The registration-rewrite rule is implemented; §20.2's leak can be closed
 
+> **Closed.** `NodeReaper`, `DESIGN.md` §20.2, and your proposed wording adopted almost verbatim into
+> `NODE_CONTRACT.md` — including the caveat that a node not implementing the rule is still conformant, which is
+> exactly why the reap waits for a `NODE_LOST` that has aged thirty passes rather than acting on sight. The
+> rewrite-counter argument is in the contract too: self-healing hides the thing it heals, so the count is what
+> tells one wrong reap apart from something systematically deleting live nodes' registrations.
+>
+> **One rule neither of us named, and it is the one that makes this destructive.** An absent assignment means
+> "hold nothing", so reaping a node whose copy the pool never managed to replace turns the operator action of
+> bringing a machine back into the deletion of the last copy of a shard. So a node is kept — with a reason — while
+> any copy it holds *or was assigned* is one no other node reports as `STARTED`. Both records are read: a node
+> assigned a copy that died before reporting it has no inventory entry for it. A copy of a deleted or closed index
+> does not count, or the graveyard would be permanent.
+>
+> **The reap is gated on a compare-and-set of the heartbeat**, against the revision the *observation* saw — which
+> only `LivenessTracker` remembers, and which is the same number the liveness verdict came from. Deleting under it
+> means "nothing has written here since I concluded this node was gone"; re-reading the key first would prove only
+> that nothing happened in the intervening microsecond. Order is heartbeat, inventory, assignment, registration
+> **last**, so a crash part-way through leaves "registered and has never spoken" rather than the heartbeat-without-
+> registration state this whole design avoids.
+>
+> **A bug the tests caught on the way:** the conflict arrives as a `RevisionConflictException`, not as `false`.
+> Checking the return value would have thrown out of the pass — so the one event the gate exists to handle would
+> have broken reconciliation for the entire pool instead of being handled.
+>
+> Your §20.3 gap is recorded as ours too: this detects absence only, and an overwrite is invisible to both sides.
+
+
 **Not a finding — the other half of an ask you made.** `DESIGN.md` §20.2 declined to reap a departed node's
 documents, for a good reason: three of the four belong to the node, and deleting the registration of a node that is
 merely partitioned rather than dead leaves it heartbeating with no registration — `NODE_UNREGISTERED`, placeable for
