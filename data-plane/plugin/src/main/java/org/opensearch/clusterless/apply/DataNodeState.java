@@ -360,14 +360,22 @@ public final class DataNodeState implements NodeState {
             ShardRouting shardRouting = routingFor(shardId, role, previousRouting);
             indexRouting.addShard(shardRouting);
 
-            // The in-sync set has to contain the copy we just described, or the server has a routing entry
-            // whose allocation id it does not believe in.
-            Set<String> inSync = new HashSet<>();
-            if (previousMetadata != null) {
-                inSync.addAll(previousMetadata.inSyncAllocationIds(shardNumber));
-            }
-            inSync.add(shardRouting.allocationId().getId());
-            builder.putInSyncAllocationIds(shardNumber, inSync);
+            // Exactly the copies this pass described, and nothing carried forward. The set says which copies are
+            // in sync *now*, so an allocation id whose routing entry is gone does not belong in it -- and this
+            // used to carry the previous pass's set forward wholesale, which made it grow without bound.
+            //
+            // It killed a node, so the mechanism is worth stating. routingFor mints a fresh allocation id whenever
+            // the previous entry cannot be reused -- a role change, or a copy that was not started or initializing
+            // -- and the old id stayed in the set for ever. ReplicationTracker.updateFromClusterManager then
+            // tracks a CheckpointState for every in-sync id, marking it replicated only when the id is the
+            // primary's, because assignedToRemoteStoreNode is true for a remote-store-backed index
+            // (ReplicationTracker.isReplicated). With no remote translog -- which is what segments_only is -- and
+            // with DiscoveryNode.isRemoteStoreNode() false because a cluster-state repository is not configured
+            // either, every escape in calculateReplicationGroup's assertion fails and the node exits with
+            // "In absence of remote translog store, all tracked shards must have replication mode as
+            // LOGICAL_REPLICATION". One stale id is enough; it just needs a second replication group to be
+            // calculated afterwards.
+            builder.putInSyncAllocationIds(shardNumber, Set.of(shardRouting.allocationId().getId()));
         });
 
         IndexMetadata built = builder.build();

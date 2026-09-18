@@ -55,6 +55,42 @@ plugin can stand in for `fake-node` in `supervisor-integ`.
 
 This is also where a **shared conformance suite** starts paying for itself — see the note at the bottom.
 
+### Added later: a node rewrites its registration when it goes missing
+
+Not part of the original milestone, and it belongs here because this is the component that owns the document. The
+supervisor's `DESIGN.md` §20.2 declined to reap a departed node's four documents, for a reason worth keeping: three
+of them belong to the node, and deleting the registration of a node that is merely *partitioned* rather than dead
+leaves it heartbeating with no registration — `NODE_UNREGISTERED`, placeable for nothing, and needing a restart to
+escape. Trading a slow leak for a node that strands itself is not an improvement.
+
+The fix it named, and asked this side to agree: **a node rewrites its registration if it observes the document
+missing.** `NodePublisher` now reads the key on a pass where it has nothing else to write, and writes the same
+document again when it is gone — same `ephemeral_id`, because the process has not restarted, and the same
+`registered_at`, because the document is new and the registration is not. That last point also settles
+`NODE_CONTRACT.md`'s own finding 4, which had raised the question for the attribute-change case and left it open.
+
+Three things the tests pin, and the middle one is the trap:
+
+- a registration deleted underneath the node is back within one pass, with its identity intact;
+- **a quiet pass checks and does not write.** Rewriting whenever the document is merely present would put the
+  coldest of the three documents back on the hot path — a write per pass per node — and the revision advancing
+  every pass is exactly what the supervisor's liveness check reads as activity. This is the D3.4 mistake in a new
+  place, and the version that makes the rule worse than not having it;
+- a read that *fails* is not an absent document. Same shape as "an absent assignment is not an empty one": the node
+  reports it and decides again next pass, and the heartbeat still goes out, because a node that stopped
+  heartbeating over this would have its shards rebuilt elsewhere.
+
+**Self-healing hides the thing it heals**, so the node counts the rewrites and reports them at
+`/_clusterless/status` as `registration.rewrites_after_going_missing`, rendered only when non-zero. One is an
+incident; a steady trickle is something reaping live nodes' registrations, and without the counter the node would
+paper over that for ever.
+
+**What it does not cover:** absence only. Something that *overwrites* the registration with different content goes
+unnoticed, because the comparison that decides whether to write is against this process's in-memory copy and the
+store read only asks whether the key exists. The layout's one-writer rule says that cannot happen, so it is a gap
+in detection rather than in behaviour — filed as such with the supervisor, because "the node self-heals its
+registration" reads stronger than it is.
+
 ## M3. Read the assignment and say what you would do — **done**
 
 Mirror the supervisor's own read-only mode, and for the same reason: this service can move data, and the safest
@@ -119,6 +155,50 @@ another component's log line, the symptom points anywhere but here.
 
 The one prediction that held: index settings the node has not registered fail the index at creation. Nothing hit
 it, because the control plane's registry came from a node with the same plugins.
+
+### The in-sync set grew without bound, and it killed a node
+
+Found by an operator deleting and recreating an index enough times, and the failure is a fatal `AssertionError` out
+of the cluster applier thread, which exits the node:
+
+```
+In absence of remote translog store, all tracked shards must have replication mode as LOGICAL_REPLICATION
+  at ReplicationTracker.calculateReplicationGroup(ReplicationTracker.java:1114)
+  at ReplicationTracker.updateFromClusterManager(...)
+  at IndexShard.updateShardState(...)
+```
+
+The fabricated `in_sync_allocation_ids` carried the previous pass's set forward wholesale and added the current
+allocation id. `routingFor` mints a fresh allocation id whenever the previous entry cannot be reused — a role
+change, or a copy that was not started or initializing — so **every id a shard had ever used stayed in the set for
+ever**, describing copies that no longer existed in the routing table.
+
+Why that is fatal rather than untidy, read from the server: `ReplicationTracker.updateFromClusterManager` puts a
+`CheckpointState` in for **every** in-sync id, and marks it `replicated` only when the id is the primary's —
+because `assignedToRemoteStoreNode` is true for a remote-store-backed index, and `isReplicated` then returns true
+for the primary and its relocation target only. `calculateReplicationGroup` asserts that, absent a remote translog,
+every *tracked* copy is `replicated`, and its four escapes all fail here:
+
+- the first replication group is exempt, and this is not the first;
+- `isRemoteTranslogStoreEnabled()` is false — that is what `segments_only` means;
+- the migration escape wants a replication target on a node where `DiscoveryNode.isRemoteStoreNode()` holds, and
+  that predicate requires a **cluster-state** repository as well as a segment one, which a `segments_only` node does
+  not have;
+- so it comes down to "every tracked copy is replicated", and one stale id is enough to break it.
+
+**The invariant this deployment has been living inside, unknowingly:** on a `segments_only` node, a
+remote-store-backed shard's in-sync set may contain the primary's allocation id and nothing else. It held by luck
+while nothing churned a copy's role.
+
+The fix is that the set describes this pass's copies and carries nothing forward, which is also what the field
+means. Two tests: the accumulation, reproduced through a role change and failing with two ids where one belongs, and
+the stability property that made the carry-forward look reasonable in the first place — the id must not churn
+either, or the server holds a routing entry whose allocation id its own metadata does not believe in.
+
+**Worth carrying into M9**, because this is the same machinery that milestone needs: document replication puts real
+replicas in the replication group, and a docrep replica has to be both tracked *and* replicated. The assertion above
+is the server telling us what shape the in-sync set has to have, and it will have more to say when the copies are no
+longer all remote-store-backed.
 
 ## M5. Idempotence and the rest of the assignment — **the idempotence half is done**
 
@@ -752,9 +832,23 @@ production has to watch the consumer position as it happens, not the documents a
 it undetectable: a node that re-applies a reset after a restart rewrites the same documents and leaves no trace in
 the index at all. The bound on that hole is real, but nobody will ever notice it being hit.
 
-**Still not tested rather than not proven:** `IndicesServiceIngestionPollers` has no test behind it, because it
-needs an `IngestionEngine` behind a started primary that this sandbox cannot produce. It now has a confirmed run
-underneath it, which is better than an argument, and still not a regression test.
+**And it now has a test, which needed an assumption to be wrong.** Every "what is not proven" note about this seam
+said a started primary with an `IngestionEngine` behind it could not exist in this sandbox. That was true of
+`tools/jbuild.sh` and false of Gradle: `OpenSearchSingleNodeTestCase` starts a real node here.
+`IndicesServiceIngestionPollersTests` uses one, with an in-test `ListIngestionSource` whose payloads can be
+rewritten behind stable ids — the operator's trick, since that is the only way a rewind is visible. It asserts a
+reset on a *running* poller succeeds, lands running, and re-consumes from exactly the offset given and no earlier.
+
+**Removing the pause-first call fails it with upstream's own message** —
+`IllegalStateException: Cannot reset consumer when poller is not paused`. §21.3's argument was read from the
+server's source; it is now executed.
+
+**One upstream behaviour the test found, and it is worth knowing before an operator meets it.** A reset always
+brings the consumer up *running* for a moment, whatever pause state it is landing on: `resetStreamPoller` ends with
+`streamPoller.start()`, and `updateIngestionSettings` applies the pause flag only afterwards. So "reset while
+staying paused" still ingests whatever is available at the new pointer. The first version of that test asserted
+nothing would be consumed and failed for exactly this reason; it now asserts the thing that is true and matters —
+that a poller left paused does not consume what is published *after* the reset.
 
 ## M9. Document replication
 
@@ -762,6 +856,23 @@ underneath it, which is better than an argument, and still not a regression test
 - **Done when:** an index with `index.replication.type: DOCUMENT` indexes and replicates.
 
 Expect D8.2 to be in the way. Read it before starting, and treat what you learn as a finding.
+
+**What was learned, before starting.** D8.2 asks for a mechanism that would let a superseded primary be fenced.
+One exists and **this deployment cannot use it**: the remote store's fence is a CAS token claimed on the *translog*
+repository, which `segments_only` does not have, and both of its call sites are gated on
+`isRemoteTranslogStoreEnabled()`. `WORKING_NOTES.md` has the mechanism and the line numbers, and corrects an
+earlier claim there that the fence improved D8.2's outlook — it would, if it could be claimed. The enforcement side
+already reads fence ownership on the **segment** path, so this is one repository-shaped gap in OpenSearch away from
+being usable, which is the finding worth carrying upstream.
+
+**What that means for this milestone specifically, and it is narrower than it sounds.** A document-replication
+index is not backed by the remote store here at all — `RemoteStore` keys on the segment repository and a docrep
+index does not get one — so M9's exposure is not D8.2's shared-remote-path corruption. It is two primaries
+diverging *locally*, which is a different failure with a different answer, and the mitigation for both remains the
+same: the supervisor never moves or fails over a primary.
+
+**The deferral reason in `DesiredStateResolver` is stale** and should be the first thing fixed: it declines a
+`REPLICA` saying peer resolution is not implemented, and M8.1 implemented it.
 
 ## M10. Cluster-manager actions — **the not-hanging half is done**
 

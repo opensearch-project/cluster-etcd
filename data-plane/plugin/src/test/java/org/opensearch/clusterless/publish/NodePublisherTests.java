@@ -106,6 +106,71 @@ public class NodePublisherTests extends OpenSearchTestCase {
         assertTrue(new String(bytesAt(Keys.nodeRegistration(NODE)), StandardCharsets.UTF_8).contains("\"registered_at\":" + registeredAt));
     }
 
+    public void testARegistrationDeletedUnderneathTheNodeIsWrittenAgain() {
+        // The rule the supervisor asked for in DESIGN.md §20.2, and what makes reaping a departed node's
+        // documents safe for it to do: a node that cannot notice its own registration vanishing ends up
+        // heartbeating with no registration, which is NODE_UNREGISTERED -- placeable for nothing, and until now
+        // needing a restart to get out of.
+        publisher.publish();
+        long registeredAt = publisher.status().registeredAt();
+        assertEquals(0, publisher.status().registrationRewrites());
+
+        backing.delete(Keys.nodeRegistration(NODE));
+        assertTrue(backing.get(Keys.nodeRegistration(NODE)).isEmpty());
+
+        now.addAndGet(60_000);
+        publisher.publish();
+
+        assertTrue("the registration must be back", backing.get(Keys.nodeRegistration(NODE)).isPresent());
+        assertEquals(1, publisher.status().registrationRewrites());
+        // The document is new; the registration is not. Both of these matter to a supervisor reading it: the
+        // ephemeral id is how a restart is distinguished from a rewrite, and registered_at is how long this node
+        // claims to have been here.
+        assertEquals("registered_at must not move", registeredAt, publisher.status().registeredAt());
+        assertEquals(EPHEMERAL, NodeJson.readRegistration(bytesAt(Keys.nodeRegistration(NODE))).ephemeralId());
+        assertEquals("z1", NodeJson.readRegistration(bytesAt(Keys.nodeRegistration(NODE))).attributes().get("zone"));
+    }
+
+    public void testAQuietPassChecksTheRegistrationAndDoesNotRewriteIt() {
+        // The second-pass property, and the one that would make this rule worse than not having it. Rewriting
+        // whenever the document is merely *present* would put the registration back on the hot path -- a write
+        // per pass, per node, of the document the three-document split exists to keep cold (D3.4) -- and the
+        // revision advancing every pass is what the supervisor's liveness check reads as activity.
+        publisher.publish();
+        long revision = revisionOf(Keys.nodeRegistration(NODE));
+
+        for (int pass = 0; pass < 5; pass++) {
+            now.addAndGet(5_000);
+            publisher.publish();
+        }
+
+        assertEquals("no pass may rewrite a registration that is still there", revision, revisionOf(Keys.nodeRegistration(NODE)));
+        assertEquals(0, publisher.status().registrationRewrites());
+    }
+
+    public void testAStoreThatCannotBeReadIsNotTakenAsAMissingRegistration() {
+        // The destructive misreading, in the same shape as "an absent assignment is not an empty one": a read
+        // that failed says nothing about whether the document is there. Reported as a failure, and the next pass
+        // decides again -- and the heartbeat still goes out, because a node that stopped heartbeating over this
+        // would get its shards rebuilt elsewhere.
+        //
+        // Two claims, and it is worth knowing which assertion carries which, because they fail differently.
+        // "Not mistaken for absence" is the rewrite count, and it holds trivially for an implementation that
+        // never looks. "The failure is reported" is lastFailure, and that is the one that fails when the check
+        // is taken out -- so this test also pins that the read happens at all.
+        publisher.publish();
+        long revision = revisionOf(Keys.nodeRegistration(NODE));
+
+        store.failReadsTo(Keys.nodeRegistration(NODE));
+        now.addAndGet(5_000);
+        publisher.publish();
+
+        assertEquals(revision, revisionOf(Keys.nodeRegistration(NODE)));
+        assertEquals("a failed read is not a rewrite", 0, publisher.status().registrationRewrites());
+        assertNotNull(publisher.status().lastFailure());
+        assertTrue(publisher.status().lastFailure(), publisher.status().lastFailure().contains("registration"));
+    }
+
     // ---------------------------------------------------------------- the inventory that will not fit
 
     public void testAnOversizedInventoryWritesNothingAndReportsFailed() {
@@ -328,6 +393,7 @@ public class NodePublisherTests extends OpenSearchTestCase {
         private final KeyValueStore delegate;
         private String failureMessage;
         private String failingKey;
+        private String failingReadKey;
 
         FailableStore(KeyValueStore delegate) {
             this.delegate = delegate;
@@ -343,9 +409,21 @@ public class NodePublisherTests extends OpenSearchTestCase {
             failingKey = key;
         }
 
+        /**
+         * Fails reads of one key and nothing else.
+         *
+         * <p>Narrow on purpose: {@link #failEverything} would also fail the heartbeat, and the heartbeat's
+         * failure overwrites the reported problem — so a test about how a failed *read* is reported would end up
+         * asserting on the heartbeat instead.
+         */
+        void failReadsTo(String key) {
+            failingReadKey = key;
+        }
+
         void recover() {
             failureMessage = null;
             failingKey = null;
+            failingReadKey = null;
         }
 
         private void maybeFail(String key) {
@@ -356,6 +434,9 @@ public class NodePublisherTests extends OpenSearchTestCase {
 
         @Override
         public Optional<Versioned> get(String key) {
+            if (failingReadKey != null && failingReadKey.equals(key)) {
+                throw new IllegalStateException("read of " + key + " failed");
+            }
             maybeFail(key);
             return delegate.get(key);
         }

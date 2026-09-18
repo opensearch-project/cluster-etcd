@@ -441,7 +441,7 @@ and *then* calls `openEngineAndSkipTranslogRecoveryFromSnapshot` → `openEngine
 recovery source is `EMPTY_STORE` or `EXISTING_STORE`, which is exactly what `LocalShardStore` already produces — so
 the recovery-source decision needed no change for search replicas.
 
-### The remote store has a real fence, and it is not the primary term
+### The remote store has a real fence, and `segments_only` cannot claim it
 
 `cluster.remote_store.fencing.enabled` and `index.remote_store.fencing.enabled` exist in 3.9, and the machinery
 behind them is more than a flag. `IndexShard.sealRemoteStoreFence` claims the fence for a copy through a **CAS
@@ -450,15 +450,39 @@ token on the remote translog** (`RemoteFsTranslog.sealFence`), and `sealRemoteSt
 recovers while the source is still serving at the same primary term, and sealing there would fence a healthy
 primary mid-handoff.
 
-**This materially improves D8.2's outlook.** That gap is recorded here as "every fabricated primary term is 1, so
-nothing can fence a superseded primary", and the fence turns out not to be keyed on the term at all: it is a
-compare-and-set, so two writers are ordered by who claims it, not by who has the larger number. A primary term
-stuck at 1 does not defeat it. Read `sealRemoteStoreFence` and `RemoteFsTranslog.sealFence` before doing anything
-else about D8.2 — the honest position now is "unverified", not "known broken".
+**Correcting what this note used to say.** It claimed the fence "materially improves D8.2's outlook" because it is
+a compare-and-set rather than a comparison of primary terms, so a term stuck at 1 does not defeat it. The second
+half is true and the conclusion does not follow, because **this deployment cannot claim the fence at all**:
+
+- `sealRemoteStoreFence` casts the translog factory to `RemoteBlobStoreInternalTranslogFactory` and asks it for
+  **the translog repository** to put the token in (`IndexShard.java:6113-6131`). With
+  `node.attr.remote_store.mode=segments_only` there is no translog repository, so there is nowhere to claim it;
+- both call sites are gated on `indexSettings.isRemoteTranslogStoreEnabled()` — recovery at `IndexShard.java:3386`,
+  replica-to-primary promotion at `:5958` — which is false in this mode, so neither runs;
+- and `SETTING_REMOTE_STORE_FENCING_ENABLED` defaults to `false` (`IndexSettings.java:1213`), so it would be off
+  even where the repository existed.
+
+**What makes this worth more than a correction: the enforcement side already reaches segments.**
+`RemoteStoreRefreshListener` consults fence ownership twice on every sync — gating segment *publication*, failing
+open, and stale-segment *collection*, failing closed, on deliberately separate checks with opposite failure
+directions (`RemoteStoreRefreshListener.java:249` and `:281`, with a `FenceSegmentFlow.tla` model cited for why one
+shared check would be unsafe). Both are inert here only because they test `isRemoteStoreFencingEnabled()` first.
+
+So the mechanism that would fence a superseded primary on the **segment** path exists and is one repository-shaped
+gap away from being usable: the token is claimed on the translog repository, and `segments_only` has only a segment
+one. **That is the finding D8.2 asks for** — it says to report a mechanism that would let a superseded primary be
+fenced — and it is an upstream change rather than anything this plugin can do.
+
+The honest position for D8.2 in this deployment is therefore **"no fencing, mitigated only by the supervisor never
+moving or failing over a primary"**, which is worse than what this note previously said and is what M9 has to be
+designed against. Note also that a document-replication index is not backed by the remote store here at all, so
+M9's exposure is two primaries diverging locally rather than corrupting a shared remote path — a different problem
+from the one D8.2 describes.
 
 The same machinery is why the empty-primary hole in `MILESTONES.md` M7.1 is worse than it first looks: an empty
-`EMPTY_STORE` primary seals the fence like any other non-peer recovery, so it becomes authoritative in a way the
-copy that still has the data cannot contest.
+`EMPTY_STORE` primary would seal the fence like any other non-peer recovery **if the fence were reachable**, so
+that copy becomes authoritative in a way the copy that still has the data cannot contest — and in `segments_only`
+there is no fence to contest with either.
 
 ### A metadata-only change reaches a running shard, which is what makes the ingestion pause free
 
@@ -477,6 +501,17 @@ of that path are load-bearing:
 - **`IngestionStatus` is a record**, so `IngestionStatus(false)` equals `IngestionStatus.getDefaultValue()`. Setting
   it unconditionally therefore changes nothing for an index with no source, which is why it needs no guard. Had it
   been a class without `equals`, every index everywhere would have gained a metadata change.
+
+### A consumer reset transiently starts the poller, whatever pause state it lands on
+
+`resetStreamPoller` ends with `initializeStreamPoller(...)`, which ends with `streamPoller.start()` — and
+`updateIngestionSettings` applies the settings' pause flag only *after* the reset has run. So a reset always brings
+the consumer up running for a moment, and documents at the new pointer can be ingested even when the reset is
+landing paused.
+
+Found by an integration test asserting the opposite. It matters for an operator who pauses deliberately and then
+resets while staying paused: they get a batch they did not ask for. "Landed paused" means the poller is stopped
+once the reset has finished, not that nothing was consumed while it ran.
 
 ### A consumer-pointer reset refuses to run on a live poller, and persists into the commit
 
@@ -665,11 +700,32 @@ Same environment the supervisor's `WORKING_NOTES.md` describes, and its notes ho
   `System.out.println` in a `main`, and `Files.createTempDirectory` in a test have all been caught here. And
   `validateNebulaPom` wants publishing configuration that a plugin nobody publishes to Maven does not have;
   `cluster-etcd` disables it too, in an `afterEvaluate`.
-- **No listening sockets, no raw TCP, no Unix sockets, no Maven Central, no containers.** So **a real
-  OpenSearch node cannot be started here**, which is the sharpest limitation for this repository
-  specifically: everything about talking to the store is testable, and nothing about a running node is.
-  Put the risk in pure functions and test those exhaustively — `NodeState.buildClusterState` is a pure
-  function of (previous state, desired state) and should stay one.
+- **A real node CAN be started in here, and this note said otherwise for months.** `OpenSearchSingleNodeTestCase`
+  starts one under Gradle — index creation, search, shard recovery, pull-based ingestion, all of it. What was
+  actually true is narrower: **`tools/jbuild.sh` cannot start a node**, and while it was the only harness available
+  the two were indistinguishable. Correcting it is worth more than it looks, because "nothing about a running node
+  is testable" is the premise behind every *what is not proven* paragraph in `MILESTONES.md`, and the first thing
+  tried against it — `IndicesServiceIngestionPollersTests`, a reset against a real `IngestionEngine` — worked
+  first time and then failed correctly when its fix was reverted.
+
+  Still true: no listening sockets, no raw TCP, no Unix sockets, no Maven Central, no containers. A single-node
+  test needs none of them. **Put the risk in pure functions anyway** — `NodeState.buildClusterState` is a pure
+  function of (previous state, desired state) and should stay one — but reach for a node when a seam genuinely
+  needs one, rather than writing another paragraph about why it cannot be tested.
+
+  Three things that cost a cycle each when writing the first one:
+
+  - **The test task only includes `**/*Tests.class`.** A class named `*IT` is compiled and never run, and Gradle
+    reports `No tests found for given includes` rather than anything about naming. `OpenSearchSingleNodeTestCase`
+    subclasses are conventionally `*Tests` in OpenSearch anyway; `*IT` belongs to an `integTest` task this
+    repository does not have.
+  - **A pull-based index must be `index.replication.type: SEGMENT`.** `IndexMetadata` refuses it with document
+    replication unless `index.ingestion_source.all_active` is set, because an `IngestionEngine` keeps no translog
+    for a docrep replica to follow — the same reason `segments_only` exists.
+  - **An ingestion source needs a `Plugin` implementing `IngestionConsumerPlugin`**, returning a factory keyed by
+    an upper-case type name. The server's own `FakeIngestionSource` lives in OpenSearch's test sources and is not
+    published, so it cannot be depended on from here; `ListIngestionSource` is the local equivalent, and its
+    payloads are rewritable on purpose.
 - **`../OpenSearch` must be built once** (`./gradlew assemble`) for `tools/jbuild.sh` to find jars, and
   installed to mavenLocal for the Gradle build to resolve. **Do not let a test here depend on an unmerged
   server change**: `ClusterlessIndexSettingsTests` called `IndexScopedSettings.getRegisteredSettings()`, which
@@ -722,8 +778,38 @@ A per-node settings prefix (`tests.opensearch_node.…`, alongside the existing 
 name** rather than an index, since testClusters already names nodes `<cluster>-<n>` and an index silently changes
 meaning when `numberOfNodes` does.
 
-## Reuse the store between runs, deliberately
+## A store revision is only a change signal if it is never reused
 
+The file-backed store used to number revisions **per key, derived from the key's own file**, so deleting a key
+restarted its count at 1. That is invisible until something caches on revision equality — which every reader in
+these three services does, because the `KeyValueStore` contract said revisions are "monotonically increasing" per
+key and comparable for equality, and said nothing about a key being deleted and written again.
+
+What it cost: an operator deleted and recreated `my-index-2` a few times, the recreated document came back at
+revision 1, the supervisor's `RevisionCache` already had revision 1 for the *previous* incarnation, and its desired
+state froze on the dead index's uuid for ever. This node was right and said so on every heartbeat for 143 passes —
+`outcome: failed`, *"the document at [my-index-2] is index [EfL8…], so the assigned index is not present yet"* —
+which is exactly what `IndexConfig.matches` is for. **The node's refusal was correct and the diagnosis still took
+reading three repositories**, because nothing in the store or the supervisor pointed at a reused revision.
+
+Fixed in `../opensearch-kv-store`: the contract now states that a revision is never reused for a key including
+after deletion and says why, the conformance suite has two cases for it, and `FileSystemKeyValueStore` issues
+store-wide revisions from a persisted counter. etcd's `mod_revision` and ZooKeeper's `mzxid` already satisfied it —
+`ZooKeeperKeyValueStore` rejects `Stat.getVersion()` in its javadoc for this very hazard — so **the trap existed
+only in the backend all three services are developed against**, which is worse than it sounds.
+
+Two things to keep in mind here:
+
+- **`config_revision` is this comparison, wearing a different hat.** `IndexConfig.revision` comes from the store
+  and travels into the inventory, where the supervisor compares it to decide whether a copy is on the current
+  configuration. It rested on the same unstated guarantee. Compare it for **equality only** — the contract still
+  permits gaps, and the filesystem store now deliberately leaves them after a crash.
+- **When an index will not come back, read the store before reading the code.** The keys are files:
+  `plugin/build/clusterless-store`, percent-encoded, with an 8-byte big-endian revision prefix. Comparing the uuid
+  in `tenant/<t>/indices/<name>` against the uuid in `nodes/assignment/<id>` took one command and was the whole
+  diagnosis.
+
+## Reuse the store between runs, deliberately
 Every bug in this plugin that reached a running deployment came from **state left over from an earlier run**, and
 the reflex to start from a clean store is what hides them:
 

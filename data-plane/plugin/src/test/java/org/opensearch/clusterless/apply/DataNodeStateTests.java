@@ -590,6 +590,47 @@ public class DataNodeStateTests extends OpenSearchTestCase {
         assertEquals(1, state.nodes().getSize());
     }
 
+    // ---------------------------------------------------------------- the in-sync set
+
+    public void testTheInSyncSetDescribesThisPassAndDoesNotAccumulate() {
+        // This killed a node. The set used to carry the previous pass's contents forward and add the current
+        // allocation id, so every id ever used for a shard stayed in it -- and routingFor mints a fresh one
+        // whenever the previous entry cannot be reused, which a role change does.
+        //
+        // What it costs: ReplicationTracker tracks a CheckpointState per in-sync id and marks it replicated only
+        // when the id is the primary's, because a remote-store-backed index makes assignedToRemoteStoreNode true.
+        // With no remote translog -- segments_only -- and DiscoveryNode.isRemoteStoreNode() false without a
+        // cluster-state repository, every escape in calculateReplicationGroup's assertion fails and the node exits
+        // with "In absence of remote translog store, all tracked shards must have replication mode as
+        // LOGICAL_REPLICATION".
+        ClusterState first = withShardStarted(build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY))));
+        String firstId = onlyCopy(first, 0).allocationId().getId();
+        assertEquals(Set.of(firstId), onlyIndex(first).inSyncAllocationIds(0));
+
+        // A role change is the cheapest way to make routingFor mint a new id: it reuses an entry only when the
+        // node, liveness and role all match.
+        ClusterState second = build(first, desired(Map.of(0, ShardRole.SEARCH_REPLICA)));
+        String secondId = onlyCopy(second, 0).allocationId().getId();
+
+        assertNotEquals("the premise of this test: a role change mints a new allocation id", firstId, secondId);
+        assertEquals(
+            "the in-sync set must describe this pass's copies, not every copy there has ever been",
+            Set.of(secondId),
+            onlyIndex(second).inSyncAllocationIds(0)
+        );
+    }
+
+    public void testTheInSyncSetIsStableWhileNothingChanges() {
+        // The other half, and the reason the carry-forward looked reasonable: the id must not churn either, or the
+        // server has a routing entry whose allocation id its metadata does not believe in.
+        ClusterState first = withShardStarted(build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY))));
+        ClusterState second = build(first, desired(Map.of(0, ShardRole.PRIMARY)));
+
+        assertEquals(onlyIndex(first).inSyncAllocationIds(0), onlyIndex(second).inSyncAllocationIds(0));
+        assertEquals(Set.of(onlyCopy(second, 0).allocationId().getId()), onlyIndex(second).inSyncAllocationIds(0));
+        assertTrue("and the pass must still be a fixed point", StateEquivalence.sameContent(first, second));
+    }
+
     // ---------------------------------------------------------------- the ingestion pause
 
     public void testAPausedIndexFabricatesAPausedIngestionStatus() {

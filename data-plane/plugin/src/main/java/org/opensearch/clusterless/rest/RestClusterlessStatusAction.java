@@ -119,6 +119,11 @@ public class RestClusterlessStatusAction extends BaseRestHandler {
         if (status.registered()) {
             builder.field("registered_at", status.registeredAt());
         }
+        // Rendered only when it has happened, so its presence is the signal. Something removing a live node's
+        // registration is not ordinary, and a node that healed itself every pass would otherwise leave no trace.
+        if (status.registrationRewrites() > 0) {
+            builder.field("rewrites_after_going_missing", status.registrationRewrites());
+        }
         builder.endObject();
 
         builder.startObject("inventory");

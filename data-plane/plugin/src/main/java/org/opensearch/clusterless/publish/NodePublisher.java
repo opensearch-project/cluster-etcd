@@ -40,8 +40,10 @@ import java.util.function.Supplier;
  * <h2>What is written when</h2>
  *
  * <ul>
- *   <li><b>Registration</b> on start, and afterwards only if it would say something different. The
- *       comparison deliberately excludes {@code registered_at}, or it would differ every pass.
+ *   <li><b>Registration</b> on start, afterwards only if it would say something different, and again if the
+ *       store stops holding it. The comparison deliberately excludes {@code registered_at}, or it would differ
+ *       every pass. The missing-document check is one read per quiet pass and is what lets the supervisor reap
+ *       a departed node's documents at all — see {@link #publishRegistration}.
  *   <li><b>Inventory</b> only when the copies change. Not "when the bytes change" — when the
  *       <em>copies</em> change: a node that recomputed and re-stamped {@code generated_at} every pass
  *       would produce a new digest every pass, and the document that grows with shard count would be back
@@ -86,6 +88,15 @@ public final class NodePublisher {
 
     private String lastFailure;
     private int consecutiveFailures;
+
+    /**
+     * How many times this process has found its own registration missing and written it again.
+     *
+     * <p>Reported because the number is the diagnosis. One is an incident worth looking into; a steady trickle is
+     * something reaping the registrations of nodes that are still here, and the node healing itself every pass is
+     * exactly what would otherwise hide that.
+     */
+    private int registrationRewrites;
 
     public NodePublisher(
         KeyValueStore store,
@@ -195,12 +206,29 @@ public final class NodePublisher {
 
     private void publishRegistration(long now) {
         Registration current = registrationSource.get();
+        boolean rewriting = false;
         if (current.sameAs(writtenRegistration)) {
-            return;
+            // Nothing has changed, so the only reason to write is that the store no longer holds what this
+            // process already wrote. Checked rather than assumed, and it is the one read this pass makes when
+            // everything is quiet.
+            //
+            // Why it is worth that read: a node cannot see its own registration disappear any other way, and the
+            // state it lands in is bad and sticky. A heartbeat with no registration is NODE_UNREGISTERED --
+            // placeable for nothing, and until now needing a restart to recover. It also is not hypothetical.
+            // The supervisor declines to reap a departed node's documents *because* of this, and says so in
+            // DESIGN.md §20.2: three of the four belong to the node, and deleting the registration of a node that
+            // is merely partitioned rather than dead would strand it. This rule is what makes reaping safe by
+            // construction, so the leak it is holding back can be closed on that side.
+            if (store.get(Keys.nodeRegistration(nodeId)).isPresent()) {
+                return;
+            }
+            rewriting = true;
+            registrationRewrites++;
         }
         // Keep the moment this process first registered rather than the moment an attribute changed. The
         // field says when this node registered, and a node that had been up for a day should not look as
-        // though it had just arrived because somebody relabelled its rack.
+        // though it had just arrived because somebody relabelled its rack. A rewrite is the sharper case for
+        // the same rule: the document is new, the registration is not, and the node has been up throughout.
         long registeredAt = writtenRegistration == null ? now : writtenRegistration.registeredAt();
         Registration stamped = new Registration(
             current.nodeId(),
@@ -217,6 +245,19 @@ public final class NodePublisher {
         );
         store.put(Keys.nodeRegistration(nodeId), NodeDocuments.write(stamped));
         writtenRegistration = stamped;
+        if (rewriting) {
+            // WARN, not INFO: nothing in this system should be deleting a live node's registration, so an
+            // operator wants to know it happened even though the node healed itself. Rewrite number included
+            // because one is an incident and a steady trickle is a supervisor reaping nodes that are still here.
+            logger.warn(
+                "clusterless: this node's registration was missing from the store and has been rewritten "
+                    + "(rewrite {}); the node kept its ephemeral id [{}] and its original registered_at [{}]",
+                registrationRewrites,
+                ephemeralId,
+                registeredAt
+            );
+            return;
+        }
         logger.info(
             "clusterless: registered node [{}] ephemeral [{}] pool [{}] roles {} heartbeat every {}ms",
             nodeId,
@@ -302,6 +343,7 @@ public final class NodePublisher {
             writtenHeartbeatAt,
             applied.assignmentVersion(),
             applied.outcome(),
+            registrationRewrites,
             consecutiveFailures,
             lastFailure
         );
@@ -326,6 +368,7 @@ public final class NodePublisher {
         long heartbeatWrittenAt,
         long appliedAssignmentVersion,
         AppliedOutcome appliedOutcome,
+        int registrationRewrites,
         int consecutiveFailures,
         String lastFailure
     ) {}
