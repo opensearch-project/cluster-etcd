@@ -19,6 +19,7 @@ import org.opensearch.controlplane.store.KeyValueStore;
 import java.io.IOException;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -64,10 +65,10 @@ import java.util.Set;
  *
  * <h2>Verified, and not</h2>
  *
- * <p>The stored shape, the field names and the validation wording are transcribed from OpenSearch's own
- * sources — {@code IngestionStatus}, {@code ResumeIngestionRequest.validate} — rather than diffed against a
- * live cluster. Exercising these upstream needs an index with a configured streaming source, which is more
- * than a probe. Treated as unverified in the README and worth a diff once the data plane has a source running.
+ * <p>Verified end to end through all three planes: a pull-based index created here, documents consumed from
+ * a file stream by the data plane, ingestion paused here, the stream rewritten, then resumed here with a
+ * reset to offset 2 — after which only the document at offset 2 had changed. So both halves of this reach
+ * the data plane: the flag through the index document, the reset through the task record.
  *
  * <h2>Considered divergences</h2>
  *
@@ -150,33 +151,72 @@ public final class IngestionHandlers {
                     if (declared.isArray() == false) {
                         return ErrorResponses.illegalArgument(request, RESET_SETTINGS + " must be an array");
                     }
-                    RestResponse rejection = validateResets(request, declared);
-                    if (rejection != null) {
-                        return rejection;
+                    try {
+                        resets = normalise(declared);
+                    } catch (IllegalArgumentException rejected) {
+                        return ErrorResponses.illegalArgument(request, rejected.getMessage());
                     }
-                    resets = (ArrayNode) declared;
                 }
             }
             return setPaused(request, context, false, resets);
         }
 
         /**
-         * {@code ResumeIngestionRequest.validate}: one message for all three fields, raised if <em>any</em>
-         * entry is missing any of them. A negative shard counts as missing, since the server's parser
-         * defaults it to -1.
+         * Reproduces {@code ResetSettings.fromXContent}, and normalises {@code mode} to upper case.
+         *
+         * <p><b>Not</b> {@code ResumeIngestionRequest.validate}, which an earlier version of this used. That
+         * method's single "ResetSettings is missing either shard, mode or value" is unreachable over REST:
+         * {@code fromXContent} rejects the same conditions first, with three more specific messages, so
+         * {@code validate} only fires for a request built programmatically through the transport client. Same
+         * shape as weighted routing's "Weight is not a number", which its own parser also pre-empts.
+         *
+         * <p>All three messages are byte-exact against a live 3.9.0 cluster, including that
+         * {@code Missing required fields} renders the <em>parsed</em> mode — so a lower-case {@code offset}
+         * appears in the error as {@code OFFSET}, and an absent shard as {@code -1}.
+         *
+         * <p>Fields are walked in document order, because the first offending one wins: an unknown field
+         * before a bad mode reports the unknown field.
+         *
+         * @return the resets with {@code mode} upper-cased, so the task payload is canonical whatever the
+         *         client sent
+         * @throws IllegalArgumentException carrying the message a real cluster would return
          */
-        private static RestResponse validateResets(RestRequest request, JsonNode resets) {
+        private static ArrayNode normalise(JsonNode resets) {
+            ArrayNode normalised = Json.array();
             for (JsonNode reset : resets) {
-                boolean shardOk = reset.path(SHARD).isIntegralNumber() && reset.path(SHARD).asInt() >= 0;
-                boolean modeOk = reset.path(MODE).isTextual()
-                    && RESET_MODES.contains(reset.path(MODE).asText().toUpperCase(Locale.ROOT));
-                boolean valueOk = reset.path(VALUE).isTextual();
-                if (shardOk == false || modeOk == false || valueOk == false) {
-                    return ErrorResponses.validationFailed(
-                        request, "ResetSettings is missing either shard, mode or value");
+                if (reset.isObject() == false) {
+                    throw new IllegalArgumentException(
+                        "Expected START_OBJECT for ResetSettings but got: " + reset.getNodeType());
                 }
+                int shard = -1;
+                String mode = null;
+                String value = null;
+                for (Map.Entry<String, JsonNode> field : reset.properties()) {
+                    JsonNode declared = field.getValue();
+                    switch (field.getKey()) {
+                        case SHARD -> shard = declared.asInt(-1);
+                        case MODE -> {
+                            String raw = declared.asText();
+                            if (RESET_MODES.contains(raw.toUpperCase(Locale.ROOT)) == false) {
+                                throw new IllegalArgumentException("Invalid value for 'mode': " + raw);
+                            }
+                            mode = raw.toUpperCase(Locale.ROOT);
+                        }
+                        case VALUE -> value = declared.asText();
+                        default -> throw new IllegalArgumentException(
+                            "Unexpected field in ResetSettings: " + field.getKey());
+                    }
+                }
+                if (shard < 0 || mode == null || value == null) {
+                    throw new IllegalArgumentException("Missing required fields in ResetSettings: shard="
+                        + shard + ", mode=" + mode + ", value=" + value);
+                }
+                ObjectNode entry = normalised.addObject();
+                entry.put(SHARD, shard);
+                entry.put(MODE, mode);
+                entry.put(VALUE, value);
             }
-            return null;
+            return normalised;
         }
     }
 

@@ -27,9 +27,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Pausing and resuming pull-based ingestion.
  *
- * <p>Shapes and wording are transcribed from OpenSearch's sources rather than diffed against a live cluster:
- * exercising these upstream needs an index with a configured streaming source. What these tests pin down is
- * the part this service is responsible for — which field is written, where, and what reaches the supervisor.
+ * <p>Verified end to end on 2026-09-18, through all three planes: a pull-based index created here, documents
+ * picked up from a file stream by the data plane, ingestion paused here, the stream rewritten, then resumed
+ * here with a reset to offset 2 — after which only the third document had changed, because offsets 0 and 1
+ * were not reprocessed. So the flag and the reset payload both reach the data plane and both take effect.
+ *
+ * <p>The error messages below are byte-identical to the strings in
+ * {@code ResumeIngestionRequest.ResetSettings.fromXContent}, and were also observed coming back from a
+ * running data plane node. Note that node is OpenSearch <em>plus a plugin</em> and rejects control plane
+ * operations, so what it confirms is the shared request-parsing code rather than vanilla behaviour — which
+ * for these three strings is the same code either way.
  */
 class IngestionHandlerTests {
 
@@ -213,6 +220,9 @@ class IngestionHandlerTests {
         assertEquals(2, resets.size());
         assertEquals(0, resets.get(0).get("shard").asInt());
         assertEquals("OFFSET", resets.get(0).get("mode").asText());
+        assertEquals(List.of("shard", "mode", "value"),
+            resets.get(0).propertyStream().map(Map.Entry::getKey).toList(),
+            "rebuilt in a canonical field order rather than copied verbatim");
         assertEquals("1234", resets.get(0).get("value").asText());
         assertEquals(1, resets.get(1).get("shard").asInt());
         assertEquals("TIMESTAMP", resets.get(1).get("mode").asText());
@@ -234,24 +244,82 @@ class IngestionHandlerTests {
     // validating resets
     // ------------------------------------------------------------------
 
-    /** One message covers all three fields, matching ResumeIngestionRequest.validate. */
+    /**
+     * Each way a reset entry can be malformed has its own message, taken from
+     * {@code ResetSettings.fromXContent} and observed from a running node.
+     *
+     * <p>An earlier version asserted {@code ResumeIngestionRequest.validate}'s single "ResetSettings is
+     * missing either shard, mode or value" for every case. That message is unreachable over REST:
+     * {@code ResetSettings.fromXContent} rejects the same conditions first and more precisely, so
+     * {@code validate} only fires for a request built through the transport client.
+     *
+     * <p>Note that {@code Missing required fields} reports the <em>parsed</em> mode, so a lower-case
+     * {@code offset} comes back as {@code OFFSET}, and an omitted shard as {@code -1}. That detail came from
+     * a real response rather than from reading the format string, which is the sort of thing a transcription
+     * gets wrong.
+     */
     @Test
-    void aResetMissingAnyFieldIsRejected() throws Exception {
+    void eachMalformedResetHasItsOwnMessage() throws Exception {
         createIndex();
 
-        for (String reset : List.of(
-            "{\"mode\":\"OFFSET\",\"value\":\"1\"}",                  // no shard
-            "{\"shard\":0,\"value\":\"1\"}",                          // no mode
-            "{\"shard\":0,\"mode\":\"OFFSET\"}",                       // no value
-            "{\"shard\":-1,\"mode\":\"OFFSET\",\"value\":\"1\"}",      // negative shard
-            "{\"shard\":0,\"mode\":\"NONSENSE\",\"value\":\"1\"}"      // unknown mode
-        )) {
-            RestResponse response =
-                dispatch("POST", "/my-index/ingestion/_resume", "{\"reset_settings\":[" + reset + "]}");
-            assertEquals(RestStatus.BAD_REQUEST, response.status(), reset);
-            assertEquals("Validation Failed: 1: ResetSettings is missing either shard, mode or value;",
-                body(response).get("error").get("reason").asText(), reset);
+        Map<String, String> expected = Map.of(
+            "{\"mode\":\"OFFSET\",\"value\":\"1\"}",
+            "Missing required fields in ResetSettings: shard=-1, mode=OFFSET, value=1",
+            "{\"shard\":0,\"value\":\"1\"}",
+            "Missing required fields in ResetSettings: shard=0, mode=null, value=1",
+            "{\"shard\":0,\"mode\":\"offset\"}",
+            "Missing required fields in ResetSettings: shard=0, mode=OFFSET, value=null",
+            "{\"shard\":-1,\"mode\":\"OFFSET\",\"value\":\"1\"}",
+            "Missing required fields in ResetSettings: shard=-1, mode=OFFSET, value=1",
+            "{\"shard\":0,\"mode\":\"NONSENSE\",\"value\":\"1\"}",
+            "Invalid value for 'mode': NONSENSE",
+            "{\"shard\":0,\"mode\":\"OFFSET\",\"value\":\"1\",\"typo\":1}",
+            "Unexpected field in ResetSettings: typo"
+        );
+
+        for (Map.Entry<String, String> reset : expected.entrySet()) {
+            RestResponse response = dispatch(
+                "POST", "/my-index/ingestion/_resume", "{\"reset_settings\":[" + reset.getKey() + "]}");
+            assertEquals(RestStatus.BAD_REQUEST, response.status(), reset.getKey());
+            assertEquals("illegal_argument_exception",
+                body(response).get("error").get("type").asText(), reset.getKey());
+            assertEquals(reset.getValue(), body(response).get("error").get("reason").asText(), reset.getKey());
         }
+    }
+
+    /**
+     * {@code mode} is accepted in any case — {@code ResetMode.valueOf(text.toUpperCase())} upstream — and
+     * stored upper case, so the task payload is canonical whatever the client sent.
+     *
+     * <p>Worth normalising here rather than downstream: otherwise the supervisor and the data plane each
+     * have to remember to upper-case it, which is two places doing defensive work because this one passed
+     * through whatever arrived.
+     */
+    @Test
+    void aLowerCaseModeIsAcceptedAndStoredUpperCase() throws Exception {
+        createIndex();
+
+        assertEquals(RestStatus.OK, dispatch("POST", "/my-index/ingestion/_resume",
+            "{\"reset_settings\":[{\"shard\":0,\"mode\":\"offset\",\"value\":\"2\"}]}").status());
+
+        assertEquals("OFFSET", ingestionTask().get("details").get("reset_settings").get(0).get("mode").asText());
+    }
+
+    /**
+     * A malformed body is rejected before the index is looked up.
+     *
+     * <p>Observed against a running data plane node: a bad reset naming an index that did not exist still
+     * answered 400 with the parse error rather than 404. Structurally the same upstream — parsing happens in
+     * the REST handler and index resolution in the transport action — but that ordering is inference, not
+     * something this observation proves for vanilla OpenSearch.
+     */
+    @Test
+    void aMalformedResetIsRejectedBeforeTheIndexIsResolved() throws Exception {
+        RestResponse response = dispatch("POST", "/nonesuch/ingestion/_resume",
+            "{\"reset_settings\":[{\"shard\":0,\"mode\":\"NONSENSE\",\"value\":\"1\"}]}");
+
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        assertEquals("Invalid value for 'mode': NONSENSE", body(response).get("error").get("reason").asText());
     }
 
     /** A rejected request must not have written the flag or a task. */

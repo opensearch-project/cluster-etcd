@@ -852,6 +852,24 @@ character for character against the server's response.
   — `moving-function` takes `(params, values)` and `similarity` takes `(weight, query, field, term, doc)`.
 - **A parameter's fields are `type` then `name`**, the reverse of how the rest of this API reads and of
   how the capabilities file spells it. `ScriptContextInfo.ParameterInfo.toXContent` emits `type` first.
+- **Ingestion pause and resume are verified end to end, across all three planes.** The recipe, worth keeping
+  because it is the first test to exercise the whole system rather than one service: create a pull-based
+  index through the control plane with an `ingestion_source` pointing at a file stream; write documents into
+  the stream and confirm the data plane indexed them; `POST /{index}/ingestion/_pause` on the control plane;
+  rewrite every document in the stream; `POST /{index}/ingestion/_resume` with
+  `{"reset_settings":[{"shard":0,"mode":"offset","value":"2"}]}`. Only the document at offset 2 changes,
+  because 0 and 1 are not reprocessed. So the pause flag reaches the data plane through the index document
+  and the reset reaches it through the task record, both via the supervisor.
+- **`mode` is accepted in any case and stored upper case.** Upstream parses it as
+  `ResetMode.valueOf(text.toUpperCase(...))`, so both work, and normalising here means the supervisor and the
+  data plane do not each need their own defensive upper-casing.
+- **A malformed `reset_settings` entry has three distinct errors, not one.** `Invalid value for 'mode': x`,
+  `Unexpected field in ResetSettings: x`, and `Missing required fields in ResetSettings: shard=0, mode=OFFSET,
+  value=null` — note the last renders the *parsed* mode, so a lower-case `offset` appears upper-cased in its
+  own error message. All from `ResetSettings.fromXContent`, which means
+  `ResumeIngestionRequest.validate`'s single "ResetSettings is missing either shard, mode or value" is
+  **unreachable over REST** — the parser rejects the same conditions first. Same shape as weighted routing's
+  "Weight is not a number".
 - **Controlling pull-based ingestion is metadata; performing it is not.** `ingestion` was excluded wholesale
   as "data plane", which was right about consuming from a stream and wrong about deciding whether a shard
   should be consuming at all. `pause` and `resume` are now in scope; `get_state` is not — every field it
@@ -1180,12 +1198,6 @@ request would normally get. Verified, and reproduced.
 - Whether the 404-on-no-match behaviour of `GET /_ingest/pipeline` differs for an
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
-- **The ingestion pause/resume shapes are source-derived, not diffed against a live cluster.** Field names,
-  the stored form and the validation wording come from `IngestionStatus` and
-  `ResumeIngestionRequest.validate`; everything else in this file was checked against a running 3.9.0.
-  Exercising these upstream needs an index with a configured streaming source, which is more than a probe.
-  Worth a diff once the data plane has one running — the likeliest divergence is the exact error for a
-  malformed `reset_settings` entry.
 - Everything about the operation groups that are still stubbed. With a full capabilities file that is
   **20**, and there is no easy CRUD left among them: seven are snapshot data or administration
   operations that belong to another plane, four are the deferred resize family, three are decommission
