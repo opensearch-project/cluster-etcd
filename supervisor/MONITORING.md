@@ -108,8 +108,12 @@ Being fair to the alternative, because two of these are real arguments for the o
   planes silently disagree.
 - **Some checks are only possible from inside.** `DESIGN.md` §20.1 and §17.2 both turn on the supervisor
   seeing every node's documents at once, which no node and no reader of a projection can.
-- **Detection is already good.** Findings with severities, ages, `because`, convergence `trend`, the
-  oscillation ring, `unpooled_tenants`. Very little is missing. §7 lists what is.
+- **Detection is already good.** Findings with severities, ages, `because`, convergence `trend`,
+  `unpooled_tenants`. Very little is missing. §7 lists what is.
+
+  **Not the oscillation ring, which does not exist.** `Keys.poolOscillation` is a key builder with no caller, so
+  R7.3's detector is unimplemented and the document `SUPERVISOR_KEYS.md` §4 describes in detail is never written.
+  An oscillation shows up today only as a diff that never empties — the alarm without the explanation.
 
 One consequence of §20.1 deserves to be called out, because it is the cleanest example of why this document
 exists. The node projection publishes only the freshest registration per `address:port`, which was the right
@@ -153,23 +157,36 @@ stand in the way, both small and both worth doing regardless:
    `Tasks`, `TenantSummary` and `Housekeeping.Report` are nested in `supervisor-core` classes that hold a
    store. They are pure data and belong in `supervisor-model` beside `model/status/*`, which already holds
    the tenant-facing projections. Moving them is a rename, and it puts them in the module that owns `Json`.
-2. **Nothing has ever read these documents back**, so no round-trip test pins them.
+2. ~~**Nothing has ever read these documents back**, so no round-trip test pins them.~~ **Done, differently.**
+   `SupervisorKeysDocumentTests` runs a real pass, extracts the JSON examples from `SUPERVISOR_KEYS.md` and
+   compares field *paths* both ways. It does not round-trip through the records — it pins the schema against its
+   only specification, which is the part that had rotted. A ninth test asserts every documented section in §1 and
+   §4 is either checked or explicitly marked as unwritten, so a section cannot drift back into describing
+   something imaginary.
 
-And the first thing writing a reader finds is that **the convergence document's documented shape and its
-actual shape have drifted apart in both directions**:
+The prediction this section made — that **the convergence document's documented shape and its actual shape have
+drifted apart in both directions** — was right in all five rows, and the audit found three more. All resolved:
 
-| field | `SUPERVISOR_KEYS.md` §4 | `Projector.Convergence` |
+| field | was | now |
 |---|---|---|
-| `epoch` | documented | absent |
-| `work_ceiling_hit` | documented | absent — `Plan.ceilingHit` is computed and dropped |
-| `etcd_watch_failures` | documented | absent — only `watchPollFailures` is published |
-| per-tenant `passes_since_empty` | documented | published as `oldestPasses` |
-| `placeable_nodes`, `unreadable_documents`, `tasks`, `balance` | absent | published |
+| `epoch` | documented, absent | **published.** A split brain is meant to be diagnosable from what the system already wrote, and the assignments carried it while the document an operator reads did not |
+| `work_ceiling_hit` | documented, absent (`Plan.ceilingHit` computed and dropped) | **published** |
+| `etcd_watch_failures` | documented, absent | **dropped from the spec.** It is the store's counter, not this process's; `watch_poll_failures` is what the supervisor can observe without reaching into a backend |
+| per-tenant `passes_since_empty` | documented, published as `oldestPasses` | **spec corrected** to `oldest_passes` |
+| `placeable_nodes`, `unreadable_documents`, `tasks`, `balance` | published, undocumented | **documented** |
+| `serving` on a shard placement | published, undocumented | **documented and made deliberate** — see below |
+| `reachable` on a node status | published, undocumented | **removed** (`@JsonIgnore`); nothing read it and it is derivable from `liveness` |
+| `delayed_unassigned_shards` | documented, absent | **dropped from the spec**; it counts OpenSearch's deliberate post-node-left delay, which this service does not model |
 
-This is exactly what `README.md` says about the three contract documents — *"A contract in prose drifts"* —
-happening to the one family of documents that had no reader to keep it honest. A projection nobody parses is
-a projection whose schema is a comment. **Fixing this is part of stage 1, not a digression from it**, and the
-round-trip test is the fix. Verify the list above when implementing; the verification is the point.
+**The `serving` row is the one worth reading.** It existed only because `isServing()` is named the way Jackson
+detects a property — and the data plane's coordinator routing was already reading it. Deleting it as an
+unintended field, which is the correct fix this repository has made twice for that exact pattern, would have
+routed queries to nothing in another repository with nothing failing in this one. That is the strongest argument
+in this document for the schema test existing: the dangerous direction of drift is not the missing field, it is
+the accidental one that somebody has started depending on.
+
+This was exactly what `README.md` says about the three contract documents — *"A contract in prose drifts"* —
+happening to the one family of documents that had no reader to keep it honest.
 
 ---
 
@@ -266,22 +283,24 @@ which is oscillation and already has its own document (§5.2).
 
 ### 5.2 The supervisor itself — what a pass cannot see about itself
 
-These are the rules that justify the component, and **every one of them is computable from the store today**,
-with no supervisor change at all.
+These are the rules that justify the component. **Six of the eleven are computable from the store today**; the
+claim that all of them were did not survive checking the keys, and the gap is marked in the table rather than
+discovered during implementation. Every blocked rule is blocked on a document that is *described* in
+`SUPERVISOR_KEYS.md` and written by nothing — which is the same defect §3.1 is about, one level further on.
 
-| id | condition | severity |
-|---|---|---|
-| `POOL_UNSUPERVISED` | a key under `pools/definitions/` with no live holder of `supervisor/pools/<p>/lease` | CRITICAL |
-| `POOL_NOT_ADVANCING` | lease held, but `convergence.pass` unchanged across samples spanning ≫ the pass interval | CRITICAL |
-| `NO_SUPERVISOR_MEMBERS` | `supervisor/members/` is empty | CRITICAL |
-| `REGISTRATION_REWRITTEN` | any node reporting `registration.rewrites_after_going_missing` > 0 | CRITICAL |
-| `NODE_REAP_BLOCKED` | a `NodeReaper` `kept` entry persisting across samples | WARNING |
-| `HOUSEKEEPING_ABSENT` | no holder of `supervisor/leases/housekeeping`, or `housekeeping.observedAt` stale | WARNING |
-| `PASS_SATURATED` | `convergence.passDurationMillis` ≥ 50% of the member document's `passIntervalMillis` | WARNING |
-| `WATCH_DEAD` | `watchPollFailures` rising, read against `store_backend` from the member document | WARNING |
-| `OSCILLATING` | anything in `supervisor/status/pools/<p>/oscillation` | WARNING |
-| `DIFF_STABLE_NON_EMPTY` | `findingsTotal > 0` and `trend.delta ≥ 0` and `passesSinceEmpty` large | WARNING |
-| `REGISTRY_IS_FALLBACK` | `housekeeping.registrySource != "tenants/"` | INFO |
+| id | condition | severity | computable |
+|---|---|---|---|
+| `POOL_UNSUPERVISED` | a key under `pools/definitions/` with no live holder of `supervisor/pools/<p>/lease` | CRITICAL | today |
+| `POOL_NOT_ADVANCING` | lease held, but `convergence.pass` unchanged across samples spanning ≫ the pass interval | CRITICAL | today |
+| `NO_SUPERVISOR_MEMBERS` | `supervisor/members/` is empty | CRITICAL | today |
+| `REGISTRATION_REWRITTEN` | any node reporting `registration.rewrites_after_going_missing` > 0 | CRITICAL | **blocked** — the counter is on the node's `/_clusterless/status` endpoint only, and this reader reads the store |
+| `NODE_REAP_BLOCKED` | a `NodeReaper` `kept` entry persisting across samples | WARNING | **blocked** — §7.5; the report is held in a field and never projected |
+| `HOUSEKEEPING_ABSENT` | no holder of `supervisor/leases/housekeeping`, or `housekeeping.observedAt` stale | WARNING | today |
+| `PASS_SATURATED` | `convergence.passDurationMillis` ≥ 50% of the member document's `passIntervalMillis` | WARNING | **blocked** — `supervisor/status/members/<id>` is written by nothing |
+| `WATCH_DEAD` | `watchPollFailures` rising, read against `store_backend` from the member document | WARNING | **partly** — the counter is in `convergence`; the backend name is in the unwritten member document |
+| `OSCILLATING` | anything in `supervisor/status/pools/<p>/oscillation` | WARNING | **blocked** — no detector, no document |
+| `DIFF_STABLE_NON_EMPTY` | `findingsTotal > 0` and `trend.delta ≥ 0` and `passesSinceEmpty` large | WARNING | today |
+| `REGISTRY_IS_FALLBACK` | `housekeeping.registrySource` is not `registry` | INFO | today |
 
 Notes on the ones that are not obvious:
 
@@ -298,6 +317,20 @@ Notes on the ones that are not obvious:
   the control plane writes `tenants/<id>` the tenant list comes from configuration, so `TENANT_UNPOOLED` can
   only ever be as complete as a config file. An operator reading a clean `unpooled_tenants` deserves to know
   which list produced it. This is open question 4 surfacing as an operational fact.
+
+  Its condition was written against `!= "tenants/"`, taken from an example in `SUPERVISOR_KEYS.md` that was also
+  wrong: the field is `registry` or `configuration`, never `tenants/`. As written the rule fires on every healthy
+  cluster for ever. A worked example of why a rule against a documented value, rather than against the value, is
+  not worth the confidence it reads with.
+
+- **Five rules are blocked on documents that do not exist**, and it is worth being precise about the shape of
+  that. Each is described in `SUPERVISOR_KEYS.md` in the present tense, so each was written here in good faith,
+  and none of them can be evaluated. Two consequences for sequencing: `PASS_SATURATED` and `WATCH_DEAD` want
+  `supervisor/status/members/<id>`, which is also R3.3's requirement that the effective liveness threshold be
+  observable — so implementing it discharges a requirement and unblocks two rules at once, and it is the cheapest
+  item in §7. And `REGISTRATION_REWRITTEN` needs a change in the *data plane*: the rewrite counter is on its HTTP
+  endpoint, and a store-only reader cannot see it. Asking for it in the heartbeat is the natural request, since
+  "self-healing hides the thing it heals" is the whole reason the counter exists.
 - **`WATCH_DEAD` must be read against the backend.** `SUPERVISOR_KEYS.md` §4 notes the poll counter stays
   zero by design on remote backends — so a *non-zero* count on etcd or ZooKeeper does not mean polling is
   failing, it means an assumption about which code path is running is wrong. Both readings are worth an
@@ -373,11 +406,25 @@ every one of those looks like idleness."*
 
 ### 5.5 The cluster is unhealthy — deliberately last
 
-Red indices from `tenant/<t>/status/cluster`, violations from `tenant/<t>/status/awareness`. This tier is
-last on purpose: it is the only part of this document an operator's existing OpenSearch monitoring already
-covers, and duplicating it is how an alerter earns its reputation for noise. The one exception worth owning
-is `status/awareness`, which per `SUPERVISOR_KEYS.md` is *"the check the control plane cannot make today"* —
-so nothing else can alert on it.
+Red indices from `tenant/<t>/status/cluster`. This tier is last on purpose: it is the only part of this document
+an operator's existing OpenSearch monitoring already covers, and duplicating it is how an alerter earns its
+reputation for noise.
+
+**`status/awareness` is not a source of violations**, which is worth correcting rather than leaving as a
+plausible-sounding line. It carries the *values that exist* for the pool's declared awareness attributes — it says
+`zone: [z1, z2]`, not that anything is wrong. Two rules are actually available, and they are different from each
+other:
+
+- **A declared attribute whose value set has shrunk.** `SUPERVISOR_KEYS.md` names the hazard: a zone whose nodes
+  are all down silently stops being a valid weighted-routing target, so a request naming it is rejected for a
+  reason that reads like a typo. That needs the *previous* sample, which is exactly what this component has and
+  the supervisor does not.
+- **An unsatisfiable awareness requirement**, which is already a finding — `UNPLACEABLE`, with the allocator's
+  sentence in `unplaceable_because` — and belongs in §5.1 with the rest of them rather than here.
+
+Note that the document narrowed while this was being written: it now offers **only the pool's declared
+awareness attributes**, where it used to publish every attribute a node carried. A rule counting its keys would
+have been counting `remote_store.segment.repository` among the routing dimensions.
 
 ---
 

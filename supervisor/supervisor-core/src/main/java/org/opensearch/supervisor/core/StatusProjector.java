@@ -52,10 +52,20 @@ public final class StatusProjector {
 
     /** @return how many keys were actually written this pass */
     public int project(Observation observation) {
+        return project(observation, java.util.List.of());
+    }
+
+    /**
+     * @param awarenessAttributes the pool's declared awareness attributes, which decide what
+     *     {@code status/awareness} may offer as a weighted-routing dimension
+     * @return how many keys were actually written this pass
+     */
+    public int project(Observation observation, java.util.List<String> awarenessAttributes) {
         int before = written;
 
         for (TenantId tenant : observation.tenants().keySet()) {
-            StatusComputation.TenantStatus status = StatusComputation.compute(tenant, observation);
+            StatusComputation.TenantStatus status =
+                StatusComputation.compute(tenant, observation, awarenessAttributes);
 
             Set<String> live = new LinkedHashSet<>();
 

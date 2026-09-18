@@ -206,7 +206,9 @@ public final class SupervisorLoop {
                 // The projections the control plane reads. Computed from the observation this pass began
                 // with, so they describe what was seen rather than what has just been asked for -- which is
                 // the invariant docrep peer resolution depends on.
-                lastStatusWrites = status.project(observation);
+                lastStatusWrites = status.project(observation, definition
+                    .map(org.opensearch.supervisor.model.pool.PoolDefinition::awarenessAttributes)
+                    .orElse(java.util.List.of()));
 
                 // Last of all, and deliberately: reaping is cleanup, and every decision above is better made
                 // with the corpse still visible. A node deleted here is one whose copies this pool has already

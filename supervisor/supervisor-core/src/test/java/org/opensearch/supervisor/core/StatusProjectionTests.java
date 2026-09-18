@@ -86,7 +86,11 @@ class StatusProjectionTests {
     void setUp() {
         store = new InMemoryKeyValueStore();
         clock = new MutableClock();
-        store.put(Keys.poolDefinition(POOL), new PoolDefinition(POOL, PoolKind.SHARED, false, null, null, java.util.List.of(), false).toBytes());
+        // Declares `zone` as its awareness attribute, which is what a pool wanting zone-weighted routing does.
+        // status/awareness offers only the declared attributes, so a fixture declaring none would be modelling a
+        // pool with no valid routing dimensions at all.
+        store.put(Keys.poolDefinition(POOL), new PoolDefinition(
+            POOL, PoolKind.SHARED, false, null, null, java.util.List.of("zone"), false).toBytes());
         store.put(Keys.poolBinding(ACME), PoolBinding.to(POOL).toBytes());
         store.put(Keys.tenantRegistration(ACME), "{\"tenant\":\"acme\"}".getBytes(StandardCharsets.UTF_8));
     }
@@ -232,6 +236,23 @@ class StatusProjectionTests {
 
         AwarenessStatus awareness = AwarenessStatus.from(store.get(Keys.awarenessStatus(ACME)).orElseThrow().value());
         assertEquals(List.of("z1", "z2"), awareness.attributes().get("zone"));
+    }
+
+    @Test
+    void anAttributeThePoolDoesNotSpreadAcrossIsNotOfferedAsARoutingDimension() {
+        // It offered every attribute a node carried, so `remote_store.segment.repository` appeared beside `zone` as
+        // though a client could weight traffic by which bucket the segments are in. Two costs: a weighted-routing
+        // request that is accepted and does nothing, because the allocator spreads across the declared attributes
+        // and no others; and in a shared pool, telling one tenant the repository name the pool writes to.
+        FakeNode a = node(NODE, "z1");
+        a.start();
+        createIndex("my-index", UUID, 1, 0);
+
+        run(supervisor(), List.of(a), 10);
+
+        AwarenessStatus awareness = AwarenessStatus.from(store.get(Keys.awarenessStatus(ACME)).orElseThrow().value());
+        assertEquals(List.of("zone"), List.copyOf(awareness.attributes().keySet()),
+            "only the pool's declared awareness attributes belong here");
     }
 
     // ---------------------------------------------------------------- write behaviour

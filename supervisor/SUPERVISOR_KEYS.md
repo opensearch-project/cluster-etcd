@@ -213,13 +213,19 @@ Values are the distinct values across nodes currently serving the tenant. **A va
 live node reports it**, and that is a hazard worth stating: a zone whose nodes are all down would silently
 stop being a valid weighted-routing target. Include values from `stale` nodes, exclude `lost` ones.
 
-**Every attribute, not only the pool's awareness attributes** — which is what the code does and is worth deciding
-rather than inheriting. A node's `remote_store.segment.repository` therefore appears here beside `zone`, and it is
-not a failure domain anybody would route by. Two arguments for narrowing it to `pools/definitions/<id>`'s
-`awareness_attributes`: this document exists to validate weighted routing, and in a shared pool it currently tells
-one tenant the repository name the pool writes to. One argument against: an operator adding a new awareness
-attribute would then have to write the pool definition before the values showed up. Not changed yet, because it
-is a behaviour change visible to the control plane rather than a defect.
+**Only the attributes named in `pools/definitions/<pool-id>.awareness_attributes`**, which is a correction rather
+than a tidy-up. Weighted routing weights by an *awareness attribute* — the allocator spreads copies across those
+values and across no others — so an attribute that is not one is not a routing dimension, and offering it invites
+a request that is accepted and then does nothing. It used to publish every attribute a node carried, which put
+`remote_store.segment.repository` here beside `zone` as though a client could weight search traffic by which
+bucket the segments are in, and in a shared pool told every tenant the repository name the pool writes to.
+
+**A pool declaring no awareness attributes therefore gets an empty map**, not every attribute. That is the honest
+answer to "what may I weight by": nothing, until an operator says what the failure domains are. A reader must not
+read empty as "not computed yet" — the document is rewritten with a fresh `observed_at` regardless, so staleness
+and emptiness are distinguishable. Discovering which values exist *before* declaring the attribute is a different
+question, and `status/nodes/<node-id>` answers it: it carries each node's attributes in full. Handed to the
+control plane as `docs/proposed-awareness-attribute-narrowing.md`.
 
 ### `tenant/<t>/status/snapshots/<repo>/<snapshot>` — R5.3
 

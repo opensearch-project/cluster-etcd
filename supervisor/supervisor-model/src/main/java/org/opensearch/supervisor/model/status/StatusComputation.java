@@ -44,6 +44,16 @@ public final class StatusComputation {
     private StatusComputation() {}
 
     public static TenantStatus compute(TenantId tenant, Observation observation) {
+        return compute(tenant, observation, List.of());
+    }
+
+    /**
+     * @param awarenessAttributes the pool's declared awareness attributes, which are the <em>only</em> valid
+     *     weighted-routing dimensions and therefore the only ones {@code status/awareness} should offer. An empty
+     *     list means the pool declares none, and the honest answer then is an empty document rather than every
+     *     attribute a node happens to carry.
+     */
+    public static TenantStatus compute(TenantId tenant, Observation observation, List<String> awarenessAttributes) {
         Observation.DesiredState desired = observation.tenants().get(tenant);
         if (desired == null) {
             return new TenantStatus(Map.of(), null, Map.of(), null);
@@ -81,7 +91,7 @@ public final class StatusComputation {
             byStatus, observation.observedAt().toEpochMilli(), observation.pass()
         );
 
-        return new TenantStatus(indices, cluster, nodes, awareness(nodes, observation));
+        return new TenantStatus(indices, cluster, nodes, awareness(nodes, observation, awarenessAttributes));
     }
 
     // ---------------------------------------------------------------- per index
@@ -319,14 +329,38 @@ public final class StatusComputation {
 
     // ---------------------------------------------------------------- awareness
 
-    private static AwarenessStatus awareness(Map<NodeId, NodeStatus> nodes, Observation observation) {
+    /**
+     * The values of the pool's awareness attributes, across the nodes serving this tenant.
+     *
+     * <p><b>Only the declared attributes</b>, which is a narrowing and a correction rather than a tidy-up. This
+     * document exists to validate weighted routing, and weighted routing in OpenSearch weights by an
+     * <em>awareness attribute</em> — so offering any other attribute invites a request that is accepted and does
+     * nothing, because the allocator spreads copies across the declared attributes and no others.
+     *
+     * <p>It published every attribute a node carried, which meant {@code remote_store.segment.repository} appeared
+     * beside {@code zone} as though a client could weight traffic by which bucket the segments are in. In a shared
+     * pool it also told one tenant the repository name the pool writes to, which is a neighbour's business.
+     *
+     * <p>A pool declaring no awareness attributes therefore gets an <b>empty</b> document, not every attribute.
+     * That is the honest answer to "what may I weight by": nothing, until an operator says what the failure
+     * domains are. Discovering which values exist before declaring the attribute is a different question, and
+     * {@code status/nodes/<id>} answers it — it carries each node's attributes in full.
+     */
+    private static AwarenessStatus awareness(
+        Map<NodeId, NodeStatus> nodes,
+        Observation observation,
+        List<String> awarenessAttributes
+    ) {
         Map<String, Set<String>> values = new TreeMap<>();
         for (NodeStatus node : nodes.values()) {
             if (node.isReachable() == false) {
                 continue;
             }
-            node.attributes().forEach((key, value) ->
-                values.computeIfAbsent(key, ignored -> new TreeSet<>()).add(value));
+            node.attributes().forEach((key, value) -> {
+                if (awarenessAttributes.contains(key)) {
+                    values.computeIfAbsent(key, ignored -> new TreeSet<>()).add(value);
+                }
+            });
         }
 
         Map<String, List<String>> attributes = new LinkedHashMap<>();

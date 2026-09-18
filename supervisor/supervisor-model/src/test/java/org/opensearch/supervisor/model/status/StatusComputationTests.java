@@ -291,10 +291,37 @@ class StatusComputationTests {
                 Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED))),
             NODE_B, node(NODE_B, Liveness.LIVE, Map.of("zone", "z2"),
                 Map.of(0, copy(ShardRole.REPLICA, ShardState.STARTED)))
-        )));
+        )), List.of("zone", "rack"));
 
         assertEquals(List.of("z1", "z2"), status.awareness().attributes().get("zone"));
         assertEquals(List.of("r7"), status.awareness().attributes().get("rack"));
+    }
+
+    @Test
+    void awarenessOffersOnlyThePoolsDeclaredAttributes() {
+        // It offered every attribute a node carried, which put `remote_store.segment.repository` beside `zone` as
+        // though a client could weight traffic by which bucket the segments are in. Weighted routing weights by an
+        // awareness attribute, so anything else here invites a request that is accepted and does nothing -- and in
+        // a shared pool it tells one tenant the repository name the pool writes to.
+        var declared = StatusComputation.compute(ACME, observe(index(true, 1, 0), Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE,
+                Map.of("zone", "z1", "remote_store.segment.repository", "segments"),
+                Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))
+        )), List.of("zone"));
+
+        assertEquals(List.of("zone"), List.copyOf(declared.awareness().attributes().keySet()));
+    }
+
+    @Test
+    void aPoolDeclaringNoAwarenessAttributesOffersNothingToWeightBy() {
+        // The honest answer to "what may I weight by": nothing, until an operator says what the failure domains
+        // are. Publishing every attribute instead was how the old behaviour looked useful while being wrong.
+        var none = StatusComputation.compute(ACME, observe(index(true, 1, 0), Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of("zone", "z1"),
+                Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))
+        )));
+
+        assertTrue(none.awareness().attributes().isEmpty());
     }
 
     @Test
@@ -305,13 +332,13 @@ class StatusComputationTests {
         var stale = StatusComputation.compute(ACME, observe(index(true, 1, 0), Map.of(
             NODE_A, node(NODE_A, Liveness.STALE, Map.of("zone", "z1"),
                 Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))
-        )));
+        )), List.of("zone"));
         assertEquals(List.of("z1"), stale.awareness().attributes().get("zone"));
 
         var lost = StatusComputation.compute(ACME, observe(index(true, 1, 0), Map.of(
             NODE_A, node(NODE_A, Liveness.LOST, Map.of("zone", "z1"),
                 Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))
-        )));
+        )), List.of("zone"));
         assertTrue(lost.awareness().attributes().isEmpty());
     }
 
