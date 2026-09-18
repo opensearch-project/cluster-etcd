@@ -293,7 +293,7 @@ discovered during implementation. Every blocked rule is blocked on a document th
 | `POOL_UNSUPERVISED` | a key under `pools/definitions/` with no live holder of `supervisor/pools/<p>/lease` | CRITICAL | today |
 | `POOL_NOT_ADVANCING` | lease held, but `convergence.pass` unchanged across samples spanning ≫ the pass interval | CRITICAL | today |
 | `NO_SUPERVISOR_MEMBERS` | `supervisor/members/` is empty | CRITICAL | today |
-| `REGISTRATION_REWRITTEN` | any node reporting `registration.rewrites_after_going_missing` > 0 | CRITICAL | **blocked** — the counter is on the node's `/_clusterless/status` endpoint only, and this reader reads the store |
+| `REGISTRATION_REWRITTEN` | a node reporting a `registration_rewrites.last_at` inside the window | WARNING | **blocked** — asked for; see below |
 | `NODE_REAP_BLOCKED` | a `NodeReaper` `kept` entry persisting across samples | WARNING | **blocked** — §7.5; the report is held in a field and never projected |
 | `HOUSEKEEPING_ABSENT` | no holder of `supervisor/leases/housekeeping`, or `housekeeping.observedAt` stale | WARNING | today |
 | `PASS_SATURATED` | `convergence.passDurationMillis` ≥ 50% of the member document's `passIntervalMillis` | WARNING | **blocked** — `supervisor/status/members/<id>` is written by nothing |
@@ -317,6 +317,21 @@ Notes on the ones that are not obvious:
   the control plane writes `tenants/<id>` the tenant list comes from configuration, so `TENANT_UNPOOLED` can
   only ever be as complete as a config file. An operator reading a clean `unpooled_tenants` deserves to know
   which list produced it. This is open question 4 surfacing as an operational fact.
+
+- **`REGISTRATION_REWRITTEN` is asked for rather than blocked on nothing**, and the ask changed its shape.
+  `../opensearch-data-plane/ASK_REGISTRATION_REWRITE_COUNTER.md` requests the counter in `nodes/heartbeat/<id>`
+  rather than only on the node's HTTP endpoint — a store reader has to work when the supervisor is wedged and
+  without reaching a node's port, which is the whole premise of §4.
+
+  It also asks for a **timestamp** beside the count, and that is what turned the rule from `CRITICAL` on `count > 0`
+  into a windowed `WARNING`. A bare count is monotonic for the life of the process, so `count > 0` fires on the
+  first event and never clears until somebody restarts the node — and an alert that cannot clear gets suppressed,
+  which is the same as no alert. `§6`'s law in a form it is easy to miss: the alarm is on age, and "has ever
+  happened" is not an age.
+
+  Note that the count **goes backwards across a node restart**, because it is process-lifetime state. A reader
+  differencing samples must read that as "new process", which `ephemeral_id` in the same document confirms — not as
+  a lost event.
 
   Its condition was written against `!= "tenants/"`, taken from an example in `SUPERVISOR_KEYS.md` that was also
   wrong: the field is `registry` or `configuration`, never `tenants/`. As written the rule fires on every healthy

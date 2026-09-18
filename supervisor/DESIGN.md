@@ -758,6 +758,21 @@ wants the same fix.
     a compromise across three unrelated durations. Not implemented; §24.2 is the part worth reading before
     anything here is designed around it.
 
+12. **A tenant's awareness attributes are read by nothing.** `ClusterSettings` parses exactly
+    `cluster.routing.allocation.enable` and `cluster.routing.rebalance.enable`; awareness reaches
+    `AwarenessDecider` from `PoolDefinition.awarenessAttributes` alone. So a tenant setting
+    `cluster.routing.allocation.awareness.attributes` in its own cluster settings changes nothing about where its
+    copies go — the same silent inertness as `index.number_of_search_replicas`, which is what `DESIRED_COPY_IGNORED`
+    exists for.
+
+    Found by the control plane while acknowledging the `status/awareness` narrowing
+    (`../opensearch-control-plane/docs/proposed-awareness-attribute-narrowing.md`): it validates weighted routing
+    against the tenant's setting, so a weight can be accepted for an axis nothing spreads along. The question under
+    it is not the finding but the ownership — **may a tenant declare its own failure domains at all**, when in a
+    shared pool the nodes and their attributes belong to the operator? Leaning no, in which case a finding saying
+    the setting was ignored is the whole answer, and a rejection at the control plane's boundary is better still
+    because the tenant learns at the moment it asks.
+
 ---
 
 ## 14. Balancing

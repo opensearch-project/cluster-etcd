@@ -225,7 +225,14 @@ answer to "what may I weight by": nothing, until an operator says what the failu
 read empty as "not computed yet" — the document is rewritten with a fresh `observed_at` regardless, so staleness
 and emptiness are distinguishable. Discovering which values exist *before* declaring the attribute is a different
 question, and `status/nodes/<node-id>` answers it: it carries each node's attributes in full. Handed to the
-control plane as `docs/proposed-awareness-attribute-narrowing.md`.
+control plane as `docs/proposed-awareness-attribute-narrowing.md` and acknowledged there.
+
+**An attribute absent from a non-empty map means "not a routing dimension in this deployment"**, not "this
+attribute has no values". Stated because the control plane found the case where the difference matters: it
+validates weighted routing against the *tenant's* `cluster.routing.allocation.awareness.attributes`, which this
+service reads nowhere — awareness reaches the allocator from the pool definition alone — so a weight can be
+accepted for an axis nothing spreads along, and a values check against this document would then find nothing to
+require and pass vacuously. `DESIGN.md` open question 12.
 
 ### `tenant/<t>/status/snapshots/<repo>/<snapshot>` — R5.3
 

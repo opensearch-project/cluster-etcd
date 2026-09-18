@@ -89,9 +89,12 @@ does **not** implement this rule is still contract-conformant for everything els
 the rule holds; that is the argument for reaping on an aged `NODE_LOST` rather than eagerly, and `DESIGN.md` §20.2
 is what this repository does about it.
 
-Counting the rewrites and reporting the count is strongly recommended, and the data plane exposes it as
-`registration.rewrites_after_going_missing`, present only when non-zero. **Self-healing hides the thing it
-heals:** one rewrite is an incident, and a steady trickle is something reaping the registrations of live nodes.
+**Self-healing hides the thing it heals**, so counting the rewrites is required rather than recommended: one
+rewrite is an incident — a supervisor deleted the registration of a live node, which means its reap conditions were
+wrong — and a steady trickle is something systematically reaping live nodes. The data plane counts it today and
+exposes it as `registration.rewrites_after_going_missing` on its own HTTP endpoint. That is not sufficient, because
+whoever needs to notice reads the **store**: see `registration_rewrites` in the heartbeat above, which is proposed
+for exactly this and is the only field in this contract currently waiting on the other side.
 
 It detects **absence only**. Something overwriting the registration with different content is not noticed, since
 the decision to write compares against the node's own in-memory copy. The layout's one-writer rule says that
@@ -148,6 +151,7 @@ or ten thousand**.
   "applied": { "assignment_version": 42, "outcome": "applied" },
   "shards_digest": "sha256:9f2c1b7e…",
   "shard_copies": 137,
+  "registration_rewrites": { "count": 2, "last_at": 1788969001000 },
   "capacity": {
     "disk_total_bytes": 994663170048,
     "disk_available_bytes": 856882249728,
@@ -173,6 +177,22 @@ or ten thousand**.
   inconsistency be spotted without the re-read.
 - **`capacity`** is what allocation needs and nothing else. Absolute bytes, not percentages, because a
   decider comparing two nodes needs the denominator.
+- **`registration_rewrites`** is **proposed, not implemented** — see
+  `../opensearch-data-plane/ASK_REGISTRATION_REWRITE_COUNTER.md`. How many times this process has rewritten its
+  registration because it found the document missing, and when it last did. **Absent entirely when the count is
+  zero.** The data plane counts this today and reports it only on its own HTTP endpoint; it is wanted here because
+  noticing it is a store reader's job — one that has to work when the supervisor is wedged and without reaching a
+  node's HTTP port.
+
+  Two things about it that are easy to get wrong. It counts rewrites caused by **absence** only: an attribute
+  change is an ordinary rewrite and not an incident, and counting both would make the signal mean nothing. And the
+  count **resets on restart**, because it is process-lifetime state — so a reader differencing samples will see it
+  go backwards, and the correct reading is "new process", which `ephemeral_id` confirms.
+
+  `last_at` earns its place: a bare count is monotonic for the life of the process, so "count > 0 is an incident"
+  fires once and never clears, and an alert that cannot clear gets suppressed. With a timestamp, "a rewrite in the
+  last fifteen minutes" distinguishes one historical incident from the trickle that means something is
+  systematically reaping live nodes.
 
 **Ordering requirement:** a node that has changed its inventory writes `nodes/shards/<id>` **before** the
 heartbeat announcing the new digest. Then a mismatch always means "the heartbeat is behind the inventory",
@@ -615,12 +635,24 @@ than a retry loop that happens to work.
 | registration, no heartbeat | node is starting | grace period; not stale, not lost |
 | `shards_digest` ≠ digest of the inventory read | inventory write not yet visible | use what was read; re-read next pass |
 | `applied.assignment_version` < assignment `version` | node has not caught up | normal; a finding only after N passes |
-| `applied.assignment_version` > assignment `version` | the supervisor read a stale assignment, or another supervisor is writing | verify the lease, discard the pass, recompute (R6.3) |
+| `applied.assignment_version` > assignment `version` | **usually** a stale read or a second writer — but see below | verify the lease, discard the pass, recompute (R6.3) |
 | `ephemeral_id` changed | node restarted | discard cached inventory and every ack; re-read |
 | heartbeat and inventory disagree on `ephemeral_id` | the pair straddles a restart | **prefer the inventory** and treat the ack as void. A node writes registration, then inventory, then heartbeat, so within one process the inventory is never the older of the two; across a restart the previous process's heartbeat can outlive it |
 | the assignment's `pool` ≠ the node's current pool | written by the pool's previous owner, or the node has just been moved | the new owner rewrites it; the old owner must stop, and the `epoch` says which is which |
 | a node in my pool holds copies of a tenant bound elsewhere | a rebind in progress, or an abandoned one | `FOREIGN_COPY`; remove only once the binding shows no `moving_to` and the finding has aged |
 | inventory **or the node's own assignment** names an index uuid absent from desired state | index deleted — **or** desired state is torn | finding `ORPHANED_COPY`; **do not delete until it has held**, and only with evidence — `DESIGN.md` §22 |
+
+**The version row has an exception, and it is newly reachable.** An assignment's `version` counts up from the
+document that is already there, so deleting the document restarts it at 1 — and `DESIGN.md` §20.2's reaping deletes
+it. A node reaped while it was merely unreachable therefore comes back reporting the version it last applied, say
+11, against a freshly written version 1, which is neither a stale read nor a second writer. `ephemeral_id` and the
+absence of the node's other documents are what tell the cases apart.
+
+Nothing implements this row today; the only comparison in the code is the equality one that
+`resume-ingestion` acknowledgement uses. It is written down so that whoever implements it does not implement the
+ordered reading, which would treat a correct reap as a split brain. The general form is the same trap the store's
+revision contract had until finding 10: **a counter that restarts on deletion cannot be compared by ordering across
+the deletion.**
 
 The last row is the one that matters. An index document that has not yet landed and an index that was
 deleted look identical, and one of the two readings destroys data. Waiting costs disk on a deleted
