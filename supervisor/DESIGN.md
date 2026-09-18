@@ -1543,3 +1543,57 @@ findings each carrying a refusal that explains the wait, before anything is dest
 A copy **held with no assignment entry** is refused with a reason rather than acted on, because there is nothing
 left for this service to withdraw — the document already says "do not hold this". Dropping it is the node's to do.
 Planning a removal anyway would write no change and report a copy dropped, which is worse than leaving it.
+
+## 23. A primary and a read-only copy competing for the last node
+
+Found by running a real pool down to one node. The survivor held a shard's **search replica**; the node that held
+its **primary** was long dead; `SameShardDecider` refused the only candidate for the primary because it already
+held a copy of that shard. Every rule behaved exactly as designed, and the index could never be written to again —
+not after a wait, not after a supervisor restart, not ever.
+
+**It is not a tie.** Reads survive losing a copy. Writes do not survive losing their primary, and a search replica
+**cannot become one**: upstream has no promotion path for a search-only copy, so the copy's presence is pure
+obstruction rather than a head start. That asymmetry is the whole rule.
+
+### 23.1 Ask the allocator again; do not read the refusal
+
+The tempting implementation is to match on the refusal — kind is `UNASSIGNED_PRIMARY`, decider is `same_shard` —
+and delete the copy. That guesses about the other eight deciders. A node refused for **disk as well as** for
+holding the copy would lose a serving copy and gain nothing, which is strictly worse than the deadlock it was
+meant to break.
+
+So `Displacer` asks the question it actually means: it re-runs the allocator against a context where those copies
+are treated as already gone (`AllocationContext.withoutCopiesOfThisShardOn`), and acts only if the primary is
+placed *on the node whose copy would go*. Every decider runs unchanged; only the copy counts differ. If the answer
+is still no, the reason is written into the refusal — because `same_shard`'s "already holds a copy" reads as
+*"delete that and this would work"*, and it matters to know when that is false.
+
+The scope is deliberately narrow in one more way. If removing the copy on A would let the primary land on **C**,
+the obstruction was indirect — an awareness or address rule counting A's copy against C — and that is reported
+rather than acted on. "Delete a serving copy on A so that C can take a primary" is a longer argument than this
+rule has made.
+
+### 23.2 Drop now, place later
+
+Only the removal is planned. The primary is placed on a later pass by the ordinary path, once the node reports the
+copy gone, and **nothing is remembered in between** — the next pass re-derives all of it from what it observes,
+like every other decision here. The same shape as a move completing as a surplus (§14.5): two independent
+decisions, neither aware that the other happened.
+
+A node that has been told to drop the copy but still reports it is **waited for, not told again**. Re-planning the
+removal every pass would write no change, spend a slot against the work ceiling, and claim in the plan to have
+dropped a copy — so the wait is stated in the refusal instead.
+
+**The one-write alternative is real and is the eventual upgrade.** An assignment holds one role per shard, so
+changing `{0: search_replica}` to `{0: primary}` is a single field in a single document, with no window at all. It
+needs the data plane to turn a read-only copy into a writeable one in place, including removing an index-level
+`index.blocks.search_only`, so it is a coordinated change across two repositories. Dropping and placing needs
+nothing from anybody. Its costs, stated: the copy is rebuilt from the remote store rather than reused, and the
+shard serves no reads for a window. Both are better than a shard that can never be written to.
+
+### 23.3 Why it cannot undo itself
+
+Having given up the search replica, the pool is one node holding a primary and one unplaceable search replica —
+which is the mirror image of the state that started this. The rule cannot run in that direction: it fires only for
+`UNASSIGNED_PRIMARY`, so a primary is never given up for a replica. The resulting `UNASSIGNED_SEARCH_REPLICA` is a
+yellow index with an explanation, which is the correct end state for a one-node pool.

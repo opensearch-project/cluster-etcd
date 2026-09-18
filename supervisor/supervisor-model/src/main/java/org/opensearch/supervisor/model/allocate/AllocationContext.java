@@ -47,6 +47,20 @@ public final class AllocationContext {
     private final boolean refuseCopiesSharingAHost;
     private final List<PlannedCopy> planned;
 
+    /**
+     * Nodes whose copy of <em>this shard</em> is to be judged as though it were already gone.
+     *
+     * <p>Empty in every ordinary decision. It exists so that one question can be asked honestly: <em>would
+     * removing that copy actually let the primary be placed here?</em> The alternative is to infer it from the
+     * refusal — see {@code same_shard}, delete the copy, hope — and that guesses about the other eight deciders.
+     * A node refused for disk as well as for holding the copy would lose a serving copy and gain nothing, which
+     * is strictly worse than the deadlock it was meant to break.
+     *
+     * <p>Scoped to the shard being placed, because that is the only copy a displacement would remove. The node's
+     * other copies still count against its limits, still fill its disk and still make it a worse candidate.
+     */
+    private final Set<NodeId> displacing;
+
     public AllocationContext(
         TenantId tenant,
         IndexConfig index,
@@ -76,6 +90,22 @@ public final class AllocationContext {
         boolean refuseCopiesSharingAHost,
         List<PlannedCopy> planned
     ) {
+        this(tenant, index, shard, role, observation, awarenessAttributes, maxCopiesPerNode,
+            refuseCopiesSharingAHost, planned, Set.of());
+    }
+
+    private AllocationContext(
+        TenantId tenant,
+        IndexConfig index,
+        int shard,
+        ShardRole role,
+        Observation observation,
+        List<String> awarenessAttributes,
+        Integer maxCopiesPerNode,
+        boolean refuseCopiesSharingAHost,
+        List<PlannedCopy> planned,
+        Set<NodeId> displacing
+    ) {
         this.tenant = Objects.requireNonNull(tenant, "tenant");
         this.index = Objects.requireNonNull(index, "index");
         this.shard = shard;
@@ -85,6 +115,7 @@ public final class AllocationContext {
         this.maxCopiesPerNode = maxCopiesPerNode;
         this.refuseCopiesSharingAHost = refuseCopiesSharingAHost;
         this.planned = planned == null ? List.of() : List.copyOf(planned);
+        this.displacing = displacing == null ? Set.of() : Set.copyOf(displacing);
     }
 
     public TenantId tenant() {
@@ -145,7 +176,7 @@ public final class AllocationContext {
     public Set<NodeId> nodesWithThisShard() {
         Set<NodeId> nodes = new LinkedHashSet<>();
         observation.nodes().forEach((nodeId, node) -> {
-            if (node.copiesCount() == false) {
+            if (node.copiesCount() == false || displacing.contains(nodeId)) {
                 return;
             }
             // Two different kinds of evidence, and they need different tests. What a node reports holding counts
@@ -175,8 +206,9 @@ public final class AllocationContext {
      */
     public int copiesOfThisShardInRole(ShardRole wanted) {
         int count = 0;
-        for (Observation.NodeObservation node : observation.nodes().values()) {
-            if (node.copiesCount() == false) {
+        for (Map.Entry<NodeId, Observation.NodeObservation> entry : observation.nodes().entrySet()) {
+            Observation.NodeObservation node = entry.getValue();
+            if (node.copiesCount() == false || displacing.contains(entry.getKey())) {
                 continue;
             }
             Optional<ShardInventory.ShardCopy> held = heldCopy(node, shard);
@@ -216,8 +248,9 @@ public final class AllocationContext {
 
     /** Whether some node already has a started primary of this shard. */
     public boolean primaryIsActive() {
-        for (Observation.NodeObservation node : observation.nodes().values()) {
-            if (node.copiesCount() == false) {
+        for (Map.Entry<NodeId, Observation.NodeObservation> entry : observation.nodes().entrySet()) {
+            Observation.NodeObservation node = entry.getValue();
+            if (node.copiesCount() == false || displacing.contains(entry.getKey())) {
                 continue;
             }
             Optional<ShardInventory.ShardCopy> copy = heldCopy(node, shard);
@@ -242,6 +275,12 @@ public final class AllocationContext {
                 // it is reporting, though -- a silent node is not filling up.
                 count += node.assignment().copyCount();
             }
+            if (displacing.contains(nodeId) && count > 0) {
+                // The copy about to be displaced does not occupy a slot in the world being asked about, and this
+                // is the number ShardsLimitDecider reads -- so a node at its cap would otherwise be refused the
+                // primary it is being emptied for.
+                count--;
+            }
         }
         for (PlannedCopy copy : planned) {
             if (copy.node().equals(nodeId)) {
@@ -264,6 +303,10 @@ public final class AllocationContext {
                         }
                     }
                 }
+            }
+            if (displacing.contains(nodeId)
+                && heldCopy(node, shard).filter(copy -> copy.state() == ShardState.INITIALIZING).isPresent()) {
+                count--;
             }
         }
         for (PlannedCopy copy : planned) {
@@ -326,8 +369,11 @@ public final class AllocationContext {
 
     /** Same context, for a different shard and role. Cheap, because everything else is shared. */
     public AllocationContext forShard(int otherShard, ShardRole otherRole) {
+        // Deliberately drops `displacing`, which names copies of *this* shard: carrying it to another shard
+        // would hide a copy that is really there.
         return new AllocationContext(
-            tenant, index, otherShard, otherRole, observation, awarenessAttributes, maxCopiesPerNode, planned
+            tenant, index, otherShard, otherRole, observation, awarenessAttributes, maxCopiesPerNode,
+            refuseCopiesSharingAHost, planned, Set.of()
         );
     }
 
@@ -336,8 +382,40 @@ public final class AllocationContext {
         List<PlannedCopy> next = new ArrayList<>(planned);
         next.add(copy);
         return new AllocationContext(
-            tenant, index, shard, role, observation, awarenessAttributes, maxCopiesPerNode, next
+            tenant, index, shard, role, observation, awarenessAttributes, maxCopiesPerNode,
+            refuseCopiesSharingAHost, next, displacing
         );
+    }
+
+    /**
+     * The same question asked of a world where these nodes' copies of this shard are already gone.
+     *
+     * <p>Used to establish that a displacement would actually achieve something before a serving copy is
+     * deleted for it. Every decider runs unchanged; only the copy counts differ.
+     */
+    public AllocationContext withoutCopiesOfThisShardOn(Set<NodeId> nodes) {
+        return new AllocationContext(
+            tenant, index, shard, role, observation, awarenessAttributes, maxCopiesPerNode,
+            refuseCopiesSharingAHost, planned, nodes
+        );
+    }
+
+    /**
+     * The role a node has for the shard being placed — what it reports holding, else what it was told to hold.
+     *
+     * <p>Reported beats assigned, the same precedence as {@link #copiesOfThisShardInRole}: the assignment may
+     * name a role the node has not applied yet.
+     */
+    public Optional<ShardRole> roleOfCopyOn(NodeId nodeId) {
+        Observation.NodeObservation node = observation.nodes().get(nodeId);
+        if (node == null || node.copiesCount() == false) {
+            return Optional.empty();
+        }
+        Optional<ShardInventory.ShardCopy> held = heldCopy(node, shard);
+        if (held.isPresent()) {
+            return Optional.of(held.get().role());
+        }
+        return node.actsOnItsAssignment() ? Optional.ofNullable(assignedRole(node)) : Optional.empty();
     }
 
     /** Every assignment already in force, for a decider that needs the whole picture. */

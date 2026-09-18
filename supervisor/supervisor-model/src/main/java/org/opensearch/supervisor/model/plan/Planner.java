@@ -201,10 +201,27 @@ public final class Planner {
 
             Allocator.Outcome outcome = allocator.choose(context, candidates);
             if (outcome.placed() == false) {
+                // A primary with nowhere to go gets one more question asked on its behalf: is a read-only copy
+                // the only thing in the way? On a pool worn down to one node that is a permanent deadlock rather
+                // than a wait, and it is the one case where this service gives up a copy that is currently
+                // serving. See Displacer -- including why it only removes, and lets a later pass place.
+                Displacer.Outcome displacement = Displacer.propose(context, allocator, candidates);
+                if (displacement.displacing()) {
+                    Displacer.Displacement giveUp = displacement.displacement();
+                    instructions.add(new Instruction.RemoveCopy(
+                        tenant, indexUuid, shard, giveUp.node(), giveUp.because()
+                    ));
+                    refusals.put(finding.refusalKey(),
+                        outcome.refusal().because() + "; " + giveUp.because());
+                    continue;
+                }
+
                 // Not a finding of its own -- the diff already says the shard is unassigned -- but the reason
                 // is kept and projected alongside that finding. An earlier version computed this sentence and
                 // dropped it, which threw away the entire benefit of having rules that can explain themselves.
-                refusals.put(finding.refusalKey(), outcome.refusal().because());
+                refusals.put(finding.refusalKey(), displacement.because() == null
+                    ? outcome.refusal().because()
+                    : outcome.refusal().because() + "; " + displacement.because());
                 continue;
             }
 

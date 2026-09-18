@@ -628,6 +628,33 @@ shape as the coordinator-membership fix, which is not finding-driven either.
 
 ### 7b. A primary cannot displace a replica on the last node
 
+> **Fixed.** `DESIGN.md` §23, `Displacer`, and the deadlock is now reproduced end to end with real nodes in
+> `ActingTests.theLastNodeGivesUpItsSearchOnlyCopyAndTheShardGetsAPrimaryAgain`: two nodes, the one holding the
+> primary stops speaking, and the survivor ends up with a primary instead of a read-only copy. Verified to fail
+> with the rule disabled, which is the only way to know a regression test of this shape works.
+>
+> **Your suggestion, with one change that matters.** Matching on "the refusal is `same_shard` against a node
+> holding a read-only copy" guesses about the other eight deciders: a node refused for **disk as well as** for
+> holding the copy would lose a serving copy and gain nothing, which is strictly worse than the deadlock. So the
+> rule re-runs the allocator against a context where that copy is treated as gone, and acts only if the primary
+> then lands on the node whose copy would go. When the answer is still no, the refusal says so — `same_shard`'s
+> "already holds a copy" reads as *"delete that and this would work"*, and it matters to know when that is false.
+>
+> **Not planned in the same pass.** Only the removal is planned; the primary is placed by the ordinary path once
+> the node reports the copy gone, with nothing remembered in between. Same shape as a move completing as a surplus.
+> A node already told to drop the copy is waited for rather than told again — otherwise the instruction writes
+> nothing every pass, spends a work-ceiling slot, and claims in the plan to have dropped a copy.
+>
+> **Only a search replica is ever given up.** An ordinary document-replication replica *can* become a primary
+> upstream, so deleting one would throw away a copy that was most of the way there. The gap there is promotion, and
+> deletion is not a substitute for it.
+>
+> **The in-place role flip is the upgrade, and it needs you.** An assignment holds one role per shard, so
+> `{0: search_replica}` → `{0: primary}` is one field in one document with no window at all — no rebuild from the
+> remote store, no gap in read service. It needs the data plane to turn a read-only copy into a writeable one in
+> place, including removing an index-level `index.blocks.search_only`. Worth doing eventually; not worth blocking
+> a permanently unwritable index on.
+
 `placeable_nodes: 1`, and the one live node holds `pull-based-index`'s **search replica** while the node that held
 its **primary** is among the 23 given up on. So:
 
@@ -691,14 +718,15 @@ than guessing at: the candidate list, `nodesWithThisShard()` and the `planned` l
 
 ### On 7a and 7b, from this side
 
-**7a is done, both halves — see the note under 7a itself.** The resolution kept your objection and dropped my
-suggestion: the fix is a third case in the finding, not a new kind and not an applier that can see ages.
+**Both are done — see the notes under 7a and 7b themselves.**
 
-**7b is right and worth doing**, and it is the one that definitely stops an index being written to. Not attempted
-here: displacing a replica to make room for a primary means planning a `RemoveCopy` against a copy that is
-currently serving, which is the first time this service would delete a *working* copy in order to place another,
-and it wants its own thinking about ordering — the primary must be planned in the same pass or the shard has no
-copies at all for a window.
+7a kept your objection and dropped my suggestion: the fix is a third case in the finding, not a new kind and not an
+applier that can see ages.
+
+7b turned out not to need the same-pass placement I was worried about. The concern was real — this is the first
+time the service deletes a copy that is currently *serving* — and the answer was to make the removal prove itself
+rather than to make the two writes atomic: the allocator is asked again, against a world where that copy is gone,
+and the copy is kept unless the primary demonstrably lands on the node being emptied.
 
 <details><summary>7a as originally argued, kept because the objection was the useful part</summary>
 

@@ -32,6 +32,15 @@ import org.opensearch.supervisor.model.NodeId;
  * single-machine deployment shares {@code 127.0.0.1}, so no replica of anything could ever be placed. That is
  * every developer's first two-node test, and it presented as a shard that stayed unassigned while the diff
  * insisted two nodes could take it.
+ *
+ * <h2>The one case where refusing correctly is still a deadlock</h2>
+ *
+ * <p>A pool worn down to one node, where the survivor holds a shard's <em>search replica</em> and the node that
+ * held its primary is gone. This refuses the only candidate, quite rightly, and the index can never be written to
+ * again. Nothing about that is this rule's to fix — a decider says yes or no about one candidate and cannot propose
+ * deleting anything — so it is handled a level up, by {@link org.opensearch.supervisor.model.plan.Displacer} and
+ * {@code DESIGN.md} §23. Worth knowing from here, because this decider's refusal is the sentence an operator will
+ * be looking at when it happens.
  */
 public final class SameShardDecider implements AllocationDecider {
 

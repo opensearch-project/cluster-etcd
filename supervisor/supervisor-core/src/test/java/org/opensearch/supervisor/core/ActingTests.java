@@ -1348,4 +1348,57 @@ class ActingTests {
             "ten passes is well inside the patience an absence alone buys");
         assertNotNull(assignmentOf(NODE).tenants().get(ACME).indices().get(UUID));
     }
+
+    // ---------------------------------------------------------------- making room for a primary
+
+    private void createIndexWithSearchReplicas(int shards, int searchReplicas) {
+        store.put(Keys.indicesPrefix(ACME) + "my-index", IndexConfig.toDocument(
+            "my-index", UUID, true, IndexConfig.settingsOf(shards, 0, searchReplicas, Replication.SEGMENT)
+        ));
+    }
+
+    private ShardRole roleHeldBy(FakeNode node) {
+        var tenantShards = node.inventory().tenants().get(ACME);
+        if (tenantShards == null || tenantShards.indices().get(UUID) == null) {
+            return null;
+        }
+        var copy = tenantShards.indices().get(UUID).shards().get(0);
+        return copy == null ? null : copy.role();
+    }
+
+    @Test
+    void theLastNodeGivesUpItsSearchOnlyCopyAndTheShardGetsAPrimaryAgain() {
+        // 7b, end to end and from the top: two nodes, one primary and one search replica, and then the node
+        // holding the primary never speaks again. The survivor holds a read-only copy of the shard, which is the
+        // one candidate the primary could go to, and SameShardDecider correctly refuses it -- a deadlock that no
+        // amount of waiting or restarting resolves, and an index that can never be written to again.
+        FakeNode a = node(NODE);
+        FakeNode b = node(NODE_B);
+        a.start();
+        b.start();
+        a.tick();
+        b.tick();
+        createIndexWithSearchReplicas(1, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(ShardRole.PRIMARY, roleHeldBy(a), "shape of the fixture: A takes the primary");
+        assertEquals(ShardRole.SEARCH_REPLICA, roleHeldBy(b), "and B the search replica");
+
+        // A is gone. Only B is left, and it is holding the wrong kind of copy.
+        for (int pass = 0; pass < 70; pass++) {
+            supervisor.tick();
+            b.tick();
+            advance();
+        }
+
+        assertEquals(ShardRole.PRIMARY, roleHeldBy(b),
+            "the survivor has to end up with a primary, or the index is unwritable for ever");
+        assertEquals(1, b.inventory().copyCount(), "and only one copy of the shard, not two");
+    }
 }
