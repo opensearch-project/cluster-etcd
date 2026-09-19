@@ -140,35 +140,63 @@ public class CoordinatorViewSourceTests extends OpenSearchTestCase {
 
     // ---------------------------------------------------------------- peer resolution, for a node that routes nothing
 
-    public void testANodeHoldingACopyGetsThePeersOfItsOwnShard() {
-        // No coordinator role anywhere in this test. The node holds shard 0 and needs the other copy of it, because
-        // a primary publishes segment-replication checkpoints to the replicas in its own routing table and a search
-        // replica whose primary is missing has to set the marker that disables its own polling.
-        placement("AAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBB");
-        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
+    public void testANodeHoldingThePrimaryWantsNoPeersAtAll() {
+        // No coordinator role anywhere in this test. Under remote-store replication a primary uploads segments and
+        // the replicas poll, so it does not need to know who they are -- it does not even need their addresses.
+        //
+        // This used to want them. A primary with no replicas in its routing table logs
+        // "UnavailableShardsException: Not enough active copies" once per checkpoint from PublishCheckpointAction,
+        // and that symptom is what put them there. It is a primary pushing checkpoints in a deployment where
+        // nothing reads them, which is upstream's to fix rather than a reason to put four copies in five states.
+        placementWithSearchReplicas("AAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBB", "CCCCCCCCCCCCCCCCCCCCCC");
         peer("BBBBBBBBBBBBBBBBBBBBBB", "eph-b", 9302, "live");
+        peer("CCCCCCCCCCCCCCCCCCCCCC", "eph-c", 9303, "live");
 
         CoordinatorView view = readHolding(Map.of(0, ShardRole.PRIMARY));
 
         assertEquals(1, view.indices().size());
         assertEquals(Set.of(0), view.indices().get(0).shards());
-        assertEquals("both copies' nodes are wanted", 2, view.peers().size());
+        assertEquals("a primary wants nothing", 0, view.peers().size());
+    }
+
+    public void testASearchReplicaWantsThePrimaryAndNoOtherReplica() {
+        // The case an operator found on five nodes: one primary, four search replicas, and every node knowing all
+        // five copies. A search replica needs the primary -- without one in its routing table RoutingNodes requires
+        // index.blocks.search_only, and that block disables the timer doing the polling -- and needs nothing at all
+        // from the other replicas.
+        placementWithSearchReplicas(
+            "AAAAAAAAAAAAAAAAAAAAAA",
+            "EEEEEEEEEEEEEEEEEEEEEE",
+            "CCCCCCCCCCCCCCCCCCCCCC",
+            "DDDDDDDDDDDDDDDDDDDDDD"
+        );
+        peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
+        peer("CCCCCCCCCCCCCCCCCCCCCC", "eph-c", 9303, "live");
+        peer("DDDDDDDDDDDDDDDDDDDDDD", "eph-d", 9304, "live");
+
+        CoordinatorView view = readHolding(Map.of(0, ShardRole.SEARCH_REPLICA));
+
+        assertEquals(1, view.indices().size());
+        assertEquals("only the primary's node", Set.of(NodeId.of("AAAAAAAAAAAAAAAAAAAAAA")), view.peers().keySet());
     }
 
     public void testItTakesOnlyTheShardsThisNodeHolds() {
         // The difference from coordinating, and the reason peer resolution is the cheaper mechanism: a node holding
         // one shard of a large index has no business knowing where the other shards are.
+        // This node holds shard 0 as a search replica, so shard 0's primary is a peer it genuinely wants -- which is
+        // what makes the absence of shard 1's primary mean something rather than being another zero.
         store.put(
             Keys.indexStatus(ACME, UUID),
             ("{\"index\":\"my-index\",\"index_uuid\":\"" + UUID + "\",\"number_of_shards\":2,\"shards\":{"
-                + "\"0\":[{\"node_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"}],"
+                + "\"0\":[{\"node_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"},"
+                + "{\"node_id\":\"EEEEEEEEEEEEEEEEEEEEEE\",\"role\":\"SEARCH_REPLICA\",\"state\":\"STARTED\"}],"
                 + "\"1\":[{\"node_id\":\"BBBBBBBBBBBBBBBBBBBBBB\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"}]}}")
                 .getBytes(StandardCharsets.UTF_8)
         );
         peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
         peer("BBBBBBBBBBBBBBBBBBBBBB", "eph-b", 9302, "live");
 
-        CoordinatorView view = readHolding(Map.of(0, ShardRole.PRIMARY));
+        CoordinatorView view = readHolding(Map.of(0, ShardRole.SEARCH_REPLICA));
 
         assertEquals(Set.of(0), view.indices().get(0).shards());
         assertEquals("only shard 0's node, not shard 1's", 1, view.peers().size());
@@ -184,11 +212,11 @@ public class CoordinatorViewSourceTests extends OpenSearchTestCase {
                 + "\"0\":[{\"node_id\":\"BBBBBBBBBBBBBBBBBBBBBB\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"}]}}")
                 .getBytes(StandardCharsets.UTF_8)
         );
-        placement("AAAAAAAAAAAAAAAAAAAAAA");
+        placementWithSearchReplicas("AAAAAAAAAAAAAAAAAAAAAA", "EEEEEEEEEEEEEEEEEEEEEE");
         peer("AAAAAAAAAAAAAAAAAAAAAA", "eph-a", 9301, "live");
         peer("BBBBBBBBBBBBBBBBBBBBBB", "eph-b", 9302, "live");
 
-        CoordinatorView view = readHolding(Map.of(0, ShardRole.PRIMARY));
+        CoordinatorView view = readHolding(Map.of(0, ShardRole.SEARCH_REPLICA));
 
         assertEquals(1, view.indices().size());
         assertEquals(UUID, view.indices().get(0).uuid());
@@ -311,6 +339,27 @@ public class CoordinatorViewSourceTests extends OpenSearchTestCase {
             List.of()
         );
         return new CoordinatorViewSource.FromStore(store, configs).read(desired);
+    }
+
+    /**
+     * One shard: a primary on the first node, search replicas on the rest.
+     *
+     * <p>Roles matter now that a node takes only the copies it has a relationship with, so a placement of
+     * all-primaries — which is what this fixture used to write — cannot express the case that matters.
+     */
+    private void placementWithSearchReplicas(String primaryNode, String... replicaNodes) {
+        StringBuilder copies = new StringBuilder();
+        copies.append("{\"node_id\":\"").append(primaryNode).append("\",\"role\":\"PRIMARY\",\"state\":\"STARTED\"}");
+        for (String replica : replicaNodes) {
+            copies.append(",{\"node_id\":\"")
+                .append(replica)
+                .append("\",\"role\":\"SEARCH_REPLICA\",\"state\":\"STARTED\"}");
+        }
+        store.put(
+            Keys.indexStatus(ACME, UUID),
+            ("{\"index\":\"my-index\",\"index_uuid\":\"" + UUID + "\",\"number_of_shards\":1,"
+                + "\"shards\":{\"0\":[" + copies + "]}}").getBytes(StandardCharsets.UTF_8)
+        );
     }
 
     private void placement(String... nodeIds) {

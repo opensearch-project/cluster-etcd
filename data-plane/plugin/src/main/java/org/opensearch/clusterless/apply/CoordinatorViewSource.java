@@ -159,14 +159,26 @@ public interface CoordinatorViewSource {
                 CoordinatorView.RoutedIndex routed = coordinated
                     ? wholeIndex(tenant, placement, deferred)
                     // Only the shards this node holds, and no index-document read: the configuration was already
-                    // read to build the copies, so the desired state has it.
-                    : new CoordinatorView.RoutedIndex(tenant, mine.config(), placement, mine.shards().keySet());
+                    // read to build the copies, so the desired state has it. The roles travel with it, because
+                    // which *copies* of those shards are wanted depends on what this node holds of each --
+                    // see RoutedIndex.needs.
+                    : new CoordinatorView.RoutedIndex(tenant, mine.config(), placement, mine.shards().keySet(), mine.shards());
                 if (routed == null) {
                     return;
                 }
 
                 indices.add(routed);
-                routed.shards().forEach(shard -> placement.copiesOf(shard).forEach(copy -> wanted.add(copy.node())));
+                // Only the peers whose copies will actually reach the routing table. Resolving an address this node
+                // has no use for would put a node in DiscoveryNodes for nothing, which is the same surplus one step
+                // earlier -- and the whole point of narrowing is that a primary stops learning its replicas' addresses.
+                CoordinatorView.RoutedIndex forPeers = routed;
+                forPeers.shards()
+                    .forEach(
+                        shard -> placement.copiesOf(shard)
+                            .stream()
+                            .filter(copy -> forPeers.needs(shard, copy.role()))
+                            .forEach(copy -> wanted.add(copy.node()))
+                    );
             });
         }
 

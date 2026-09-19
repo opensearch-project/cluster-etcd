@@ -560,19 +560,43 @@ correctness.
 
 ## M8.1. Peers of a node's own shards — **done, and confirmed with nothing coordinating**
 
-The loose end M8 exposed, and it is not about routing. A data node that answers no queries still needs the other
-copies of the shards it holds:
+The loose end M8 exposed, and it is not about routing. A data node that answers no queries still needs *some* of
+the other copies of the shards it holds — and the original version of this section got which ones wrong, so both
+claims are kept here with the correction, because the wrong one is the more tempting.
 
-- a primary publishes segment-replication checkpoints to the replicas in **its own** routing table, so a primary
-  that does not know its replicas publishes to nobody — seen as `UnavailableShardsException: Not enough active
-  copies ... (have 0, needed DEFAULT). Timeout: [1m]` once per checkpoint;
-- a search replica whose primary is missing from the table needs `index.blocks.search_only` to satisfy
-  `RoutingNodes`, and that setting disables `IndexService.AsyncReplicationTask` — the timer that keeps it current.
-  So a replica that cannot see its primary is refreshed by nothing at all.
+- **Corrected: a primary needs no peers at all.** This said that a primary publishes segment-replication
+  checkpoints to the replicas in its own routing table, so one that knows none publishes to nobody — seen as
+  `UnavailableShardsException: Not enough active copies ... (have 0, needed DEFAULT). Timeout: [1m]` once per
+  checkpoint. The observation was real; the conclusion was not. Under remote-store replication a primary uploads
+  segments and the replicas poll, so **nothing reads those checkpoints**, and a primary pushing them at peers it
+  should not need is an upstream defect to fix upstream rather than a reason to put every replica in every
+  primary's state. Putting them there was papering over a symptom.
+- **A search replica needs the primary, and only the primary.** Without one in its routing table `RoutingNodes`
+  requires `index.blocks.search_only`, and that setting disables `IndexService.AsyncReplicationTask` — the timer
+  that keeps it current. So a replica that cannot see its primary is refreshed by nothing at all. Note what this
+  implies: a *fabricated* node id would satisfy the assertion equally well, which is the clearest possible sign
+  that **the assertion is the thing that should go**, upstream. Until it does, the real primary is the honest way
+  to satisfy it.
 
 Both are freshness rather than reach, and both were invisible until a coordinator happened to supply the missing
 entries. Before this, the only way to keep a search replica current was to give its node the coordinator role,
 which is a much larger statement than the problem needs.
+
+**What the surplus cost, found on five nodes.** An operator brought up one primary and four search replicas of a
+one-shard index and found every node's `/_cluster/state` knowing all five copies — because the narrowing was per
+*shard*, and asking the projection for shard 0 yields every copy of shard 0. The problem is not the size, which is
+bounded by copies per shard. It is that **all five copies republish their cluster state whenever any one of them
+changes state**: quadratic in copies per shard, on the feature whose entire purpose is scaling reads out. Twenty
+search replicas would make one restart into four hundred publications.
+
+So the rule is now a *relationship* rather than a shard — `CoordinatorView.RoutedIndex.needs` — and for that
+five-node index each node knows exactly what it uses: the primary's node holds one routing entry and one node in
+its `DiscoveryNodes`, and each replica holds two. A document-replication replica still takes everything, because
+its replication group is real and M9 owns that question.
+
+The count follows the table rather than the projection, which is what keeps this out of the M8 defect where
+`number_of_search_replicas` said 0 beside a started search replica: `CoordinatorState` counts the copies it
+actually put in, so narrowing the peers narrows the count by construction.
 
 **Same projections, narrower question.** A coordinated tenant contributes every shard of every index it has; an
 index this node merely holds copies of contributes only the shards it holds, and needs no index-document read at

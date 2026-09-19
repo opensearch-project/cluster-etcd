@@ -5,6 +5,7 @@
 package org.opensearch.clusterless.apply;
 
 import org.opensearch.clusterless.contract.IndexConfig;
+import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.clusterless.contract.IndexStatus;
 import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.contract.NodeStatus;
@@ -95,35 +96,84 @@ public record CoordinatorView(List<RoutedIndex> indices, Map<NodeId, NodeStatus>
     }
 
     /**
-     * One index this node needs other nodes' copies of, and which of its shards.
+     * One index this node needs other nodes' copies of, which of its shards, and which copies of those shards.
      *
-     * <p><b>Two reasons to be here, and the shard set is the difference.</b> A tenant this node <em>coordinates</em>
-     * contributes every shard of every one of its indices, because a coordinator answers queries about all of them.
-     * An index this node merely <em>holds copies of</em> contributes only the shards it holds — it does not need the
-     * fleet's routing table, it needs the peers of its own shards, which is a much smaller thing and available from
-     * the same document.
-     *
-     * <p>That second case is not routing. A primary publishes segment-replication checkpoints to the replicas in its
-     * own routing table, so without them it publishes to nobody; and a search replica whose primary is absent needs
-     * the marker that disables its own polling. Both are freshness rather than reach, and both are why a data node
-     * wants its peers even when it answers no queries at all.
+     * <p><b>Two reasons to be here, and they want very different amounts.</b> A tenant this node
+     * <em>coordinates</em> contributes every shard of every one of its indices, because a coordinator answers
+     * queries about all of them. An index this node merely <em>holds copies of</em> contributes only the shards it
+     * holds, and of those only the copies it has a <em>relationship</em> with — see {@link #needs}.
      *
      * @param config the control plane's document, for the settings and mappings the cluster state needs
      * @param placement the supervisor's observation of where the copies are, including ones not yet started
      * @param shards which of the placement's shards to put in the routing table
+     * @param localRoles what this node holds of each of those shards, or empty when this index is here because the
+     *     tenant is coordinated — which is what {@link #needs} dispatches on
      */
-    public record RoutedIndex(TenantId tenant, IndexConfig config, IndexStatus placement, Set<Integer> shards) {
+    public record RoutedIndex(
+        TenantId tenant,
+        IndexConfig config,
+        IndexStatus placement,
+        Set<Integer> shards,
+        Map<Integer, ShardRole> localRoles
+    ) {
 
         public RoutedIndex {
             Objects.requireNonNull(tenant, "tenant");
             Objects.requireNonNull(config, "config");
             Objects.requireNonNull(placement, "placement");
             shards = shards == null ? Set.of() : Set.copyOf(shards);
+            localRoles = localRoles == null ? Map.of() : Map.copyOf(localRoles);
         }
 
         /** Every shard the supervisor observed, which is what a coordinated tenant's index contributes. */
         public static RoutedIndex wholeIndex(TenantId tenant, IndexConfig config, IndexStatus placement) {
-            return new RoutedIndex(tenant, config, placement, placement.shards().keySet());
+            return new RoutedIndex(tenant, config, placement, placement.shards().keySet(), Map.of());
+        }
+
+        /**
+         * Whether this node needs another node's copy of one of its own shards in its routing table.
+         *
+         * <p><b>The rule is a relationship, not a shard.</b> Asking the projection for "shard 0" yields every copy
+         * of shard 0, and on a five-node index with one primary and four search replicas that put all five copies
+         * into all five nodes' states. Most of that is surplus, and the cost is not the size — it is that every
+         * copy republishes its cluster state whenever any copy changes state, which is quadratic in copies per
+         * shard on the feature whose whole purpose is scaling reads out.
+         *
+         * <p>So, per shard, by what this node holds of it:
+         *
+         * <ul>
+         *   <li><b>A primary needs nothing.</b> Under remote-store replication a primary uploads segments and the
+         *       replicas poll; it does not need to know who they are. This used to include them, because a primary
+         *       with no replicas in its table logs {@code UnavailableShardsException: Not enough active copies}
+         *       once per checkpoint from {@code PublishCheckpointAction} — but that is a primary trying to push
+         *       checkpoints in a deployment where nothing reads them, which is an upstream defect to fix upstream
+         *       rather than a reason to inflate every primary's state.
+         *   <li><b>A search replica needs the primary, and only the primary.</b> Not to replicate — it polls the
+         *       remote store — but because {@code RoutingNodes} requires {@code index.blocks.search_only} on an
+         *       index whose routing table has no primary, and that block disables
+         *       {@code IndexService.AsyncReplicationTask}, the timer doing the polling. So the primary's presence is
+         *       what keeps a search replica current, and a fabricated node id would satisfy the assertion just as
+         *       well — which is the clearest sign the assertion is the thing that should go.
+         *   <li><b>A document-replication replica gets everything, for now.</b> Its replication group is a real one
+         *       and M9 owns the question; narrowing it before then would be guessing.
+         * </ul>
+         */
+        public boolean needs(int shard, ShardRole copyRole) {
+            if (localRoles.isEmpty()) {
+                // Here because the tenant is coordinated: this node answers queries about the whole index.
+                return true;
+            }
+            ShardRole mine = localRoles.get(shard);
+            if (mine == null) {
+                // A shard of this index that this node does not hold, which the shard set should already have
+                // excluded. Nothing needs it.
+                return false;
+            }
+            return switch (mine) {
+                case PRIMARY -> false;
+                case SEARCH_REPLICA -> copyRole == ShardRole.PRIMARY;
+                case REPLICA, UNKNOWN -> true;
+            };
         }
 
         public String uuid() {

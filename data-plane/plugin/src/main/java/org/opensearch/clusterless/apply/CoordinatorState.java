@@ -154,6 +154,13 @@ public final class CoordinatorState implements NodeState {
                     // -- the projection is the supervisor's observation of it and may be a pass behind.
                     continue;
                 }
+                if (routed.needs(shardNumber, copy.role()) == false) {
+                    // A copy this node has no relationship with: another search replica of a shard it also holds a
+                    // search replica of, or any peer at all of a shard it holds the primary of. Leaving it out is
+                    // what keeps a five-copy shard from putting five entries in five nodes' states -- and the count
+                    // below follows the table rather than the projection, so the two cannot disagree.
+                    continue;
+                }
                 ShardRouting elsewhere = routingFor(new ShardId(index, shardNumber), copy, previous, index);
                 if (elsewhere == null) {
                     continue;

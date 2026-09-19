@@ -539,6 +539,111 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         return new CoordinatorState(data, TestFixtures.localNode(LOCAL), view, MappingSource.WRAPPED).buildClusterState(previous);
     }
 
+    // ---------------------------------------------------------------- peers, not coordination
+
+    public void testANodeHoldingASearchReplicaLearnsThePrimaryAndNoOtherReplica() {
+        // The five-node shape an operator brought up: one primary and four search replicas of a one-shard index,
+        // and every node's /_cluster/state knowing all five copies. A search replica needs the primary, because
+        // RoutingNodes requires index.blocks.search_only on a table with no primary and that block disables the
+        // timer that does the polling. It needs nothing whatever from the other three replicas.
+        //
+        // The cost of the surplus was never size. It is that all five copies republish their cluster state whenever
+        // any one of them changes state -- quadratic in copies per shard, on the feature whose purpose is scaling
+        // reads out.
+        ClusterState state = peerResolved(ShardRole.SEARCH_REPLICA);
+
+        IndexShardRoutingTable shard = state.routingTable().index(state.metadata().index(indexName()).getIndex()).shard(0);
+        assertEquals("its own copy and the primary, and nothing else", 2, shard.size());
+        assertEquals(1, shard.shards().stream().filter(ShardRouting::primary).count());
+        assertEquals(1, shard.shards().stream().filter(ShardRouting::isSearchOnly).count());
+
+        // The count has to describe this table, not the fleet's -- the M8 defect, which is avoided here by counting
+        // what went into the table rather than what the projection reported.
+        assertEquals(1, state.metadata().index(indexName()).getNumberOfSearchOnlyReplicas());
+        // A primary is present, so the marker that would stop this replica polling is not.
+        assertFalse(
+            state.metadata().index(indexName()).getSettings().hasValue(IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.getKey())
+        );
+    }
+
+    public void testANodeHoldingThePrimaryLearnsNoCopiesAtAll() {
+        // A primary uploads segments and the replicas poll. It does not need to know who they are, and the
+        // UnavailableShardsException that used to argue otherwise is a primary pushing checkpoints nothing reads.
+        ClusterState state = peerResolved(ShardRole.PRIMARY);
+
+        IndexShardRoutingTable shard = state.routingTable().index(state.metadata().index(indexName()).getIndex()).shard(0);
+        assertEquals("only its own copy", 1, shard.size());
+        assertTrue(shard.shards().get(0).primary());
+        assertEquals(0, state.metadata().index(indexName()).getNumberOfSearchOnlyReplicas());
+        assertEquals("and only itself in the node list", 1, state.nodes().getSize());
+    }
+
+    public void testNarrowedPeerResolutionIsAFixedPoint() {
+        // Everything here is applied every pass, so the second one has to produce the same state -- including the
+        // same allocation ids for the peers it did keep.
+        ClusterState first = peerResolved(ShardRole.SEARCH_REPLICA);
+        ClusterState second = new CoordinatorState(
+            new DataNodeState(
+                CLUSTER,
+                TestFixtures.localNode(LOCAL),
+                holdingOnly(Map.of(0, ShardRole.SEARCH_REPLICA)),
+                MappingSource.WRAPPED,
+                LocalShardStore.EMPTY
+            ),
+            TestFixtures.localNode(LOCAL),
+            fiveCopies(Map.of(0, ShardRole.SEARCH_REPLICA)),
+            MappingSource.WRAPPED
+        ).buildClusterState(first);
+
+        assertTrue("and the whole state must be a fixed point", StateEquivalence.sameContent(first, second));
+    }
+
+    /** One primary elsewhere, this node plus three others holding search replicas, and no coordinator role. */
+    private static ClusterState peerResolved(ShardRole mine) {
+        return new CoordinatorState(
+            new DataNodeState(
+                CLUSTER,
+                TestFixtures.localNode(LOCAL),
+                holdingOnly(Map.of(0, mine)),
+                MappingSource.WRAPPED,
+                LocalShardStore.EMPTY
+            ),
+            TestFixtures.localNode(LOCAL),
+            fiveCopies(Map.of(0, mine)),
+            MappingSource.WRAPPED
+        ).buildClusterState(ClusterState.EMPTY_STATE);
+    }
+
+    /**
+     * The projection for a one-shard index with five copies, seen by a node that holds one of them and coordinates
+     * nothing — so the {@code RoutedIndex} carries this node's roles and {@code needs} decides the rest.
+     */
+    private static CoordinatorView fiveCopies(Map<Integer, ShardRole> localRoles) {
+        String primaryNode = localRoles.get(0) == ShardRole.PRIMARY ? LOCAL : PEER;
+        List<IndexStatus.Copy> copies = new java.util.ArrayList<>();
+        copies.add(copy(primaryNode, ShardRole.PRIMARY, ShardState.STARTED));
+        for (String replica : List.of("replica-one-aaaaaaaaaa", "replica-two-aaaaaaaaaa", "replica-three-aaaaaaa")) {
+            copies.add(copy(replica, ShardRole.SEARCH_REPLICA, ShardState.STARTED));
+        }
+        if (localRoles.get(0) == ShardRole.SEARCH_REPLICA) {
+            copies.add(copy(LOCAL, ShardRole.SEARCH_REPLICA, ShardState.STARTED));
+        }
+
+        Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
+        copies.forEach(copy -> peers.put(copy.node(), peer(copy.node().value())));
+        return new CoordinatorView(
+            List.of(new CoordinatorView.RoutedIndex(ACME, config(), placement(Map.of(0, copies)), Set.of(0), localRoles)),
+            peers,
+            List.of()
+        );
+    }
+
+    /** Holds a copy, coordinates nothing — which is what makes this peer resolution rather than routing. */
+    private static DesiredState holdingOnly(Map<Integer, ShardRole> shards) {
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        return new DesiredState(42, Map.of(key, new DesiredState.DesiredIndex(key, config(), shards)), List.of(), List.of());
+    }
+
     private static IndexStatus.Copy copy(String node, ShardRole role, ShardState state) {
         return new IndexStatus.Copy(NodeId.of(node), role, state, state == ShardState.STARTED);
     }
