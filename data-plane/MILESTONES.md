@@ -984,6 +984,44 @@ else.
 document replication has a hole that a primary restart opens silently, and that is worth knowing before anyone runs
 it.
 
+### But a primary restart is the wrong thing to design for — promotion is
+
+In practice a docrep primary does not come back; it goes away and a replica takes over. OpenSearch has the API for
+driving that deliberately — `POST /_cluster/deployment/_transition` with a `DRAIN` state, which `OperationRouting`
+already reads to steer searches off a draining node — and the intended operation is that a deployment system
+announces which nodes are going down, primaries there are **preemptively demoted**, and replicas elsewhere are
+promoted. Zone by zone, so in a three-zone deployment every primary moves twice per deploy. That is the normal path,
+not a failure path.
+
+**This plugin cannot promote, and the reason is the primary term.** `IndexShard.updateShardState` splits on it:
+
+- **term unchanged** — primary mode is activated only if the current entry is `initializing`. A *started* replica
+  whose term did not change falls through both branches: no promotion, no error, and a shard the routing table calls
+  a primary while its `ReplicationTracker` is not in primary mode. Writes then fail with "shard is not in primary
+  mode" and nothing says why.
+- **term increased** — the promotion path, guarded by `assert newPrimaryTerm > pendingPrimaryTerm : "primary terms
+  can only go up"`. This is what calls `bumpPrimaryTerm`, resets the engine to the global checkpoint and fills
+  sequence-number gaps.
+
+Every term fabricated here is `1`, carried forward and never advanced, so the promotion branch is unreachable.
+
+**And the term is the fence**, which is the part worth carrying into D8.2. A replica refuses a stale-term operation
+outright — *"operation primary term [N] is too old (current [M])"* — so a demoted primary that keeps writing is
+rejected by every replica once the new term is in play. Compare the segment-replication side, where the fence is a
+CAS token on the *translog* repository and therefore unreachable in `segments_only`: **for document replication,
+fencing costs nothing but a number that goes up.** It is the one place in this design where the hard problem is
+cheap, which is an odd thing to discover about the path being discouraged.
+
+Raised as finding 11. It needs a per-shard primary term in the assignment before this side can do anything, and two
+small changes once it exists: use the assigned term rather than the constant, and **reuse the allocation id across a
+role change** so the server sees one copy transitioning rather than a different copy appearing. Today a role change
+mints a fresh allocation id, so `isSameAllocation` fails and `IndicesClusterStateService` removes the shard and
+creates a new one — a full close and recovery instead of a promotion.
+
+**Better that it cannot promote than that it appears to.** A role change "handled" by recreating the shard at the
+same term produces two copies believing they are primary at the same term, which is exactly the state D8.2 exists to
+prevent.
+
 ## M10. Cluster-manager actions — **the not-hanging half is done**
 
 - `cluster.health` and `cluster.state` answered from the projections; mutations refused with a reason naming
