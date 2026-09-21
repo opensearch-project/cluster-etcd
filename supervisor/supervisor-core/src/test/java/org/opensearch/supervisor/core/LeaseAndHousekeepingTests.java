@@ -205,7 +205,7 @@ class LeaseAndHousekeepingTests {
         return new Supervisor(store, clock, id, Set.of(), 1.0, TTL, Balancer.Config.defaults());
     }
 
-    private Housekeeping.Report reportOf(Supervisor supervisor) {
+    private org.opensearch.supervisor.model.projection.Projections.HousekeepingStatus reportOf(Supervisor supervisor) {
         return supervisor.housekeeping().lastReport();
     }
 

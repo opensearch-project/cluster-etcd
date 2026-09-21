@@ -11,6 +11,12 @@ import org.opensearch.supervisor.model.diff.FindingKind;
 import org.opensearch.supervisor.model.diff.Severity;
 import org.opensearch.supervisor.model.observe.Observation;
 import org.opensearch.supervisor.model.plan.Plan;
+import org.opensearch.supervisor.model.projection.Projections.Convergence;
+import org.opensearch.supervisor.model.projection.Projections.ProjectedFinding;
+import org.opensearch.supervisor.model.projection.Projections.Tasks;
+import org.opensearch.supervisor.model.projection.Projections.TenantDiff;
+import org.opensearch.supervisor.model.projection.Projections.TenantSummary;
+import org.opensearch.supervisor.model.projection.Projections.Trend;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -66,92 +72,6 @@ public final class Projector {
         this.store = Objects.requireNonNull(store, "store");
         this.supervisorId = Objects.requireNonNull(supervisorId, "supervisorId");
     }
-
-    /** What a projected diff looks like on the wire. */
-    public record TenantDiff(
-        TenantId tenant,
-        PoolId pool,
-        long pass,
-        long observedAt,
-        Map<String, Integer> counts,
-        boolean truncated,
-        int shown,
-        int total,
-        List<ProjectedFinding> findings
-    ) {}
-
-    /**
-     * @param unplaceableBecause why this finding could not be acted on, when something tried and declined.
-     *     Kept beside {@code because} rather than folded into it, because the two answer different questions:
-     *     one says what is wrong, the other says what is stopping it being fixed, and an operator needs both.
-     *     <p>The name is narrower than the meaning, and deliberately left alone: {@code unplaceable_because} is a
-     *     published field, and it now also carries {@link org.opensearch.supervisor.model.plan.OrphanReaper}'s
-     *     reasons for declining to <em>remove</em> a copy. Any rule that refuses to act on a finding files its
-     *     sentence here.
-     */
-    public record ProjectedFinding(
-        String kind,
-        String severity,
-        String subject,
-        String because,
-        String unplaceableBecause,
-        long firstObservedPass,
-        long passes
-    ) {}
-
-    /**
-     * Per-pool convergence: the answer to "is this getting better?", which one number cannot give.
-     *
-     * @param epoch the lease epoch this pass ran under. Promised by {@code SUPERVISOR_KEYS.md} from the start and
-     *     absent for as long: a split brain is meant to be diagnosable afterwards from data the system already
-     *     wrote, and the assignments carry it while the document an operator actually reads did not.
-     * @param workCeilingHit whether this pass ran out of its budget before it ran out of work. The capacity
-     *     signal that pairs with {@code pass_duration_millis}: a pool that is always at its ceiling is converging
-     *     at the rate of the ceiling rather than at the rate of the cluster.
-     */
-    public record Convergence(
-        PoolId pool,
-        long epoch,
-        String holder,
-        long pass,
-        long passStartedAt,
-        long passDurationMillis,
-        int nodes,
-        int placeableNodes,
-        int indices,
-        double weight,
-        int findingsTotal,
-        Map<String, Integer> findingsByKind,
-        long lastEmptyDiffAt,
-        long passesSinceEmpty,
-        Trend trend,
-        Map<String, TenantSummary> tenants,
-        Tasks tasks,
-        boolean workCeilingHit,
-        int unreadableDocuments,
-        long watchPollFailures,
-        Plan.Balance balance
-    ) {}
-
-    /**
-     * What the queue did this pass.
-     *
-     * <p>Worth publishing because a queue that has stopped draining is invisible otherwise: the control plane
-     * would keep reporting a growing pile through {@code cluster.pending_tasks} and nothing would say why.
-     */
-    public record Tasks(int claimed, int completed, int failed, int reaped, int lost) {
-        public static final Tasks NONE = new Tasks(0, 0, 0, 0, 0);
-    }
-
-    /** Per tenant, capped at the worst {@link #MAX_TENANTS_SHOWN} so this cannot grow with tenant count. */
-    public record TenantSummary(int findings, long oldestPasses) {}
-
-    /**
-     * @param delta change in finding count across the window. Negative is recovery; zero with a non-empty
-     *     diff is the alarm {@code REQUIREMENTS.md} names — a reconciler that is quietly failing looks
-     *     exactly like one with nothing to do.
-     */
-    public record Trend(int window, int delta) {}
 
     public void project(Diff diff, Observation observation, long passDurationMillis, long watchPollFailures) {
         project(diff, observation, passDurationMillis, watchPollFailures, Tasks.NONE, Map.of(), null, 0, false);

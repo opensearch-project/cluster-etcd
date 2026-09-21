@@ -85,7 +85,8 @@ class SupervisorKeysDocumentTests {
      * guessed which objects were maps would quietly stop checking whichever document it guessed wrong about.
      */
     private static final Set<String> DATA_KEYED = Set.of(
-        "shards", "indices_by_status", "tenants", "attributes", "counts", "findings_by_kind"
+        "shards", "indices_by_status", "tenants", "attributes", "counts", "findings_by_kind",
+        "liveness.effective_millis"
     );
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -200,6 +201,11 @@ class SupervisorKeysDocumentTests {
     }
 
     @Test
+    void theMemberStatusDocumentMatchesItsDescription() {
+        assertDocumented("supervisor/status/members/<supervisor-id>", Keys.memberStatus("s1"));
+    }
+
+    @Test
     void theFixtureProducesADiffWithAFindingInIt() {
         // Guards the guard. Every check above is only as good as the document it read, and a finding-shaped
         // check against an empty findings array passes without comparing anything.
@@ -222,7 +228,11 @@ class SupervisorKeysDocumentTests {
             "tenant/<t>/status/awareness",
             "supervisor/status/pools/<pool-id>/convergence",
             "supervisor/status/diff/<tenant-id>",
-            "supervisor/status/housekeeping"
+            "supervisor/status/housekeeping",
+            "supervisor/status/members/<supervisor-id>",
+            // Checked by MonitoringTests rather than here: it is absent unless a reap happened, so producing one
+            // means running a pool down to a lost node, which is a different fixture from this one.
+            "supervisor/status/pools/<pool-id>/reaping"
         );
         List<String> unaccounted = new ArrayList<>();
         for (Section section : sectionsOf(projectedSectionsOf(document()))) {

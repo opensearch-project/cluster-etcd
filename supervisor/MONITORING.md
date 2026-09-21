@@ -15,15 +15,42 @@ rules are worth more than the process that runs them, so the rules come first an
 
 Three stages, in order, and each is useful alone:
 
-| stage | artifact | needs |
-|---|---|---|
-| 1 | a rule library, and `supervisor-app alerts` — one shot, read-only, exit status | nothing new |
-| 2 | four fields the projections do not yet carry | small supervisor changes |
-| 3 | a long-running `opensearch-monitor` that runs the same rules and notifies | a lease, an outbound seam |
+| stage | artifact | needs | status |
+|---|---|---|---|
+| 1 | a rule library, and `supervisor-app --alerts` — one shot, read-only, exit status | nothing new | **built** |
+| 2 | fields and documents the projections did not carry | small supervisor changes | **built**, except the oscillation detector |
+| 3 | a long-running `opensearch-monitor` that runs the same rules and notifies | a lease, an outbound seam | not built |
+
+**Stages 1 and 2 landed together**, because stage 1 could not honestly be finished without two of stage 2's
+documents: `PASS_SATURATED` divides by a cadence only the member document carries, and `NODE_REAP_BLOCKED` reads a
+report that existed only in a field. The rest of stage 2 turned out to be spelling corrections rather than
+features — §3.1 has them.
+
+**What is not built, and it is a feature rather than a gap in plumbing:** the oscillation detector (R7.3). It needs
+cross-pass memory of *actions*, not of findings, and a definition of the window; §5.2 marks `OSCILLATING` as its
+only remaining blocked rule. Everything else in §5.1, §5.2 and §5.4 evaluates today.
 
 **Stage 1 is the whole point of this document.** A one-shot command that prints what is wrong and exits
 non-zero is enough to run from `cron`, from a CI job, from a terminal during a demo, and it is the same code
 a daemon would later run in a loop. Stages 2 and 3 are named so that stage 1 does not foreclose them.
+
+```
+$ supervisor-app --store=file:///var/lib/clusterless --alerts
+CRITICAL NO_SUPERVISOR_MEMBERS   -          no supervisor has a live member record, so no pool is owned and
+                                            nothing in this system is reconciling anything
+CRITICAL POOL_UNSUPERVISED       shared-a   a pool definition exists and no live supervisor holds its lease, so
+                                            nothing places shards, computes health or drains tasks for it — and
+                                            none of that produces an error anywhere
+WARNING  HOUSEKEEPING_ABSENT     -          the housekeeping document is 15090ms old or its lease is unheld, so
+                                            this whole tier of checks is silent rather than clean
+INFO     REGISTRY_IS_FALLBACK    -          the tenant list came from [configuration] rather than the registry
+$ echo $?
+2
+```
+
+Real output, from a store whose supervisor had been stopped. Note what it does *not* say: no rule invented a
+sentence, and every line above is the supervisor's own words or the rule's own statement of a fact about the
+store.
 
 What this costs, stated plainly: an alerter reading projections is one step removed from the reasoning that
 produced them, so **every alert is only as good as the `because` the supervisor wrote down.** Where that
@@ -153,10 +180,11 @@ tested — `WORKING_NOTES.md`: put the risk in code that needs no network.
 two that agree until they do not"* — and `Json.read(bytes, Class<T>, what)` is all a reader needs. Two things
 stand in the way, both small and both worth doing regardless:
 
-1. **The projection records live in the wrong module.** `Projector.Convergence`, `ProjectedFinding`, `Trend`,
-   `Tasks`, `TenantSummary` and `Housekeeping.Report` are nested in `supervisor-core` classes that hold a
-   store. They are pure data and belong in `supervisor-model` beside `model/status/*`, which already holds
-   the tenant-facing projections. Moving them is a rename, and it puts them in the module that owns `Json`.
+1. ~~**The projection records live in the wrong module.**~~ **Done.** They are `model/projection/Projections`
+   now, beside `model/status/*`, and the move was load-bearing rather than tidy: the rules live in
+   `supervisor-model`, which cannot see a `KeyValueStore`, so "the monitor cannot write" is a property of the
+   module graph. `MonitorReader` is the single class in the path that touches a store, and it is the only thing
+   needing review for write-freedom.
 2. ~~**Nothing has ever read these documents back**, so no round-trip test pins them.~~ **Done, differently.**
    `SupervisorKeysDocumentTests` runs a real pass, extracts the JSON examples from `SUPERVISOR_KEYS.md` and
    compares field *paths* both ways. It does not round-trip through the records — it pins the schema against its
@@ -283,10 +311,10 @@ which is oscillation and already has its own document (§5.2).
 
 ### 5.2 The supervisor itself — what a pass cannot see about itself
 
-These are the rules that justify the component. **Six of the eleven are computable from the store today**; the
-claim that all of them were did not survive checking the keys, and the gap is marked in the table rather than
-discovered during implementation. Every blocked rule is blocked on a document that is *described* in
-`SUPERVISOR_KEYS.md` and written by nothing — which is the same defect §3.1 is about, one level further on.
+These are the rules that justify the component, and **all but one evaluate today.** The original claim that they
+all did was wrong — five were blocked on documents `SUPERVISOR_KEYS.md` described in the present tense and nothing
+wrote. Four of those documents and fields now exist; the fifth, `OSCILLATING`, needs a detector rather than a
+field and is still outstanding.
 
 | id | condition | severity | computable |
 |---|---|---|---|
@@ -294,11 +322,12 @@ discovered during implementation. Every blocked rule is blocked on a document th
 | `POOL_NOT_ADVANCING` | lease held, but `convergence.pass` unchanged across samples spanning ≫ the pass interval | CRITICAL | today |
 | `NO_SUPERVISOR_MEMBERS` | `supervisor/members/` is empty | CRITICAL | today |
 | `REGISTRATION_REWRITTEN` | — | — | **done, and moved**: the data plane writes `registration_rewrites` in the heartbeat and the supervisor raises `NODE_REGISTRATION_REWRITTEN`, so this is a §5.1 finding rather than a rule here |
-| `NODE_REAP_BLOCKED` | a `NodeReaper` `kept` entry persisting across samples | WARNING | **blocked** — §7.5; the report is held in a field and never projected |
+| `NODE_REAP_BLOCKED` | a `NodeReaper` `kept` entry | WARNING | today |
 | `HOUSEKEEPING_ABSENT` | no holder of `supervisor/leases/housekeeping`, or `housekeeping.observedAt` stale | WARNING | today |
-| `PASS_SATURATED` | `convergence.passDurationMillis` ≥ 50% of the member document's `passIntervalMillis` | WARNING | **blocked** — `supervisor/status/members/<id>` is written by nothing |
-| `WATCH_DEAD` | `watchPollFailures` rising, read against `store_backend` from the member document | WARNING | **partly** — the counter is in `convergence`; the backend name is in the unwritten member document |
-| `OSCILLATING` | anything in `supervisor/status/pools/<p>/oscillation` | WARNING | **blocked** — no detector, no document |
+| `PASS_SATURATED` | `convergence.passDurationMillis` ≥ 50% of the member document's `passIntervalMillis` | WARNING | today |
+| `WORK_CEILING_HIT` | `convergence.workCeilingHit`, when the pass was not also slow | WARNING | today |
+| `WATCH_DEAD` | `watchPollFailures` rising, read against `store_backend` from the member document | WARNING | today |
+| `OSCILLATING` | anything in `supervisor/status/pools/<p>/oscillation` | WARNING | **blocked** — no detector, no document; the one rule here that needs a feature rather than a field |
 | `DIFF_STABLE_NON_EMPTY` | `findingsTotal > 0` and `trend.delta ≥ 0` and `passesSinceEmpty` large | WARNING | today |
 | `REGISTRY_IS_FALLBACK` | `housekeeping.registrySource` is not `registry` | INFO | today |
 
@@ -339,14 +368,19 @@ Notes on the ones that are not obvious:
   cluster for ever. A worked example of why a rule against a documented value, rather than against the value, is
   not worth the confidence it reads with.
 
-- **Five rules are blocked on documents that do not exist**, and it is worth being precise about the shape of
-  that. Each is described in `SUPERVISOR_KEYS.md` in the present tense, so each was written here in good faith,
-  and none of them can be evaluated. Two consequences for sequencing: `PASS_SATURATED` and `WATCH_DEAD` want
-  `supervisor/status/members/<id>`, which is also R3.3's requirement that the effective liveness threshold be
-  observable — so implementing it discharges a requirement and unblocks two rules at once, and it is the cheapest
-  item in §7. And `REGISTRATION_REWRITTEN` needs a change in the *data plane*: the rewrite counter is on its HTTP
-  endpoint, and a store-only reader cannot see it. Asking for it in the heartbeat is the natural request, since
-  "self-healing hides the thing it heals" is the whole reason the counter exists.
+- **What unblocking these actually took**, recorded because the sequencing argument held up. The member document
+  was the cheapest item and paid for itself twice: it discharges R3.3 — the effective liveness threshold had been
+  configurable and observable nowhere — and it carries the cadence `PASS_SATURATED` and `WATCH_DEAD` both needed.
+  `pass_interval_millis` had to come from `supervisor-app`, because the loop lives there and the supervisor never
+  sleeps; a default would have made the alert *wrong* rather than absent, which is worse.
+
+  `NODE_REAP_BLOCKED` needed `NodeReaper.Report` projected, and the `kept` half turned out to be the more valuable:
+  declining to act produces no finding, so a node the reaper keeps refusing was silent everywhere.
+
+  `REGISTRATION_REWRITTEN` needed the *data plane* to move its counter into the heartbeat, which it did — and it
+  then moved out of this table entirely, because the supervisor raises `NODE_REGISTRATION_REWRITTEN` as a finding.
+  That is the better home: the likeliest cause is the supervisor's own reaper, and a service's worst mistake should
+  appear in the document it writes about itself.
 - **`WATCH_DEAD` must be read against the backend.** `SUPERVISOR_KEYS.md` §4 notes the poll counter stays
   zero by design on remote backends — so a *non-zero* count on etcd or ZooKeeper does not mean polling is
   failing, it means an assumption about which code path is running is wrong. Both readings are worth an
@@ -475,15 +509,14 @@ Supervisor-side work, each small, each independently useful, and none of it bloc
    mechanism outright: *"an unexplained finding sitting for ever is how the previous version of this was
    eventually noticed — by someone reading a status document in confusion."* `Decision`'s reason slug already
    exists (§16) and is the natural grouping key.
-4. **The fields §3.1 found missing** — `epoch`, `work_ceiling_hit` (`Plan.ceilingHit` is computed and thrown
-   away), `etcd_watch_failures`. `work_ceiling_hit` standing true for many consecutive passes is the
-   difference between a burst and a pool permanently behind, and R2.6 is the reason the flag exists.
-5. **Project `NodeReaper.Report`.** Today it is returned from `SupervisorLoop.lastReaping()` and held in a
-   field, so the `because` behind every document the supervisor *deleted*, and every one it declined to
-   delete, exists only in the memory of the process that decided it. That is §1.2 applied to the most
-   destructive thing this service does: a reap cannot be reviewed after the fact, and `NODE_REAP_BLOCKED`
-   cannot be evaluated at all. A bounded document under `supervisor/status/pools/<p>/reaping`, capped like
-   every other status document, with the `kept` list carrying its reasons.
+4. ~~**The fields §3.1 found missing**~~ **Done.** `epoch` and `work_ceiling_hit` are published;
+   `etcd_watch_failures` was dropped from the spec instead, being the store's counter rather than this process's.
+   `work_ceiling_hit` standing true for many consecutive passes is the difference between a burst and a pool
+   permanently behind, and `WORK_CEILING_HIT` in §5.2 is that rule.
+5. ~~**Project `NodeReaper.Report`.**~~ **Done**, at `supervisor/status/pools/<p>/reaping`, capped at 20 per list
+   with exact totals. Absent when there is nothing to say and deleted when a pass finds nothing, so a stale report
+   cannot outlive the state it described — "this pool has reaped nothing" and "nothing is running here" stay
+   distinguishable.
 
 ---
 

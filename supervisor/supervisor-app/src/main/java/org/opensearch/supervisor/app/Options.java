@@ -50,7 +50,11 @@ public record Options(
     long maxPasses,
     Duration shutdownBudget,
     LivenessTracker.Config liveness,
-    DefinePool.Request definePool
+    DefinePool.Request definePool,
+    boolean alerts,
+    int alertSamples,
+    Duration alertInterval,
+    boolean alertJson
 ) {
 
     /** Sentinel for {@code --max-passes}: run until told to stop. */
@@ -135,7 +139,11 @@ public record Options(
             integer(resolve(given, env, "max-passes", "-1"), "max-passes"),
             duration(resolve(given, env, "shutdown-budget", "10s"), "shutdown-budget"),
             liveness(given, env),
-            definePool(given, env)
+            definePool(given, env),
+            given.containsKey("alerts") || env.containsKey("alerts"),
+            integer(resolve(given, env, "alert-samples", "2"), "alert-samples"),
+            duration(resolve(given, env, "alert-interval", "5s"), "alert-interval"),
+            given.containsKey("alert-json") || env.containsKey("alert-json")
         );
     }
 
@@ -200,7 +208,8 @@ public record Options(
         "per-tenant-floor", "minimum-passes", "rebalance", "hysteresis", "release-after-passes",
         "default-pool-weight", "log-level", "max-passes", "shutdown-budget", "liveness-floor",
         "stale-multiplier", "lost-multiplier", "define-pool", "pool-kind", "pool-default", "pool-awareness",
-        "pool-max-copies-per-node", "pool-refuse-copies-sharing-a-host"
+        "pool-max-copies-per-node", "pool-refuse-copies-sharing-a-host",
+        "alerts", "alert-samples", "alert-interval", "alert-json"
     );
 
     /**
@@ -363,6 +372,20 @@ public record Options(
 
             Required:
               --store=<uri>                Where desired state lives.
+
+            Checking on a running system, read-only and one shot:
+              --alerts                     Read the store once, print what is wrong, and exit. 0 clean, 1 a
+                                           warning fired, 2 a critical fired, 3 the store could not be read --
+                                           so anything that can run a command can alert on this, with no webhook
+                                           and no agreement about a schema. Writes nothing: the rules live in a
+                                           module that cannot see a store.
+              --alert-samples=<n>          How many reads to take. Default 2, because the most important rule --
+                                           "this pool's pass number has not moved" -- needs two observations and
+                                           a clock, which is exactly what a supervisor cannot have about itself.
+                                           1 is faster and silently skips those rules.
+              --alert-interval=<duration>  Gap between samples. Default 5s, and it has to be long enough for a
+                                           pass to have happened or the comparison proves nothing.
+              --alert-json                 The same alerts as a JSON array, for a machine.
 
             Setup, before anything will happen at all:
               --define-pool=<pool-id>      Write pools/definitions/<pool-id> and exit. Nothing else in any of the

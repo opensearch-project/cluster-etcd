@@ -3,6 +3,7 @@ package org.opensearch.supervisor.core;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.supervisor.model.Json;
 import org.opensearch.supervisor.model.Keys;
+import org.opensearch.supervisor.model.projection.Projections.HousekeepingStatus;
 import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
@@ -30,28 +31,14 @@ import java.util.Set;
 public final class Housekeeping {
 
     /** Findings about the fleet itself, projected for an operator. */
-    public record Report(
-        long pass,
-        String holder,
-        long observedAt,
-        List<String> unpooledTenants,
-        List<String> unpooledNodes,
-        List<String> unownedPools,
-        List<String> poolsWithoutDefinition,
-        List<String> duplicateDefaults,
-        List<String> overloadedDedicatedPools,
-        int membersLive,
-        int membersReaped,
-        String registrySource,
-        List<String> unreadable
-    ) {}
+
 
     private final KeyValueStore store;
     private final LeaseManager leases;
     private final TenantDiscovery tenants;
     private final String supervisorId;
 
-    private Report lastReport;
+    private HousekeepingStatus lastReport;
 
     public Housekeeping(
         KeyValueStore store,
@@ -105,7 +92,7 @@ public final class Housekeeping {
             }
         }
 
-        Report report = new Report(
+        HousekeepingStatus report = new HousekeepingStatus(
             pass,
             supervisorId,
             nowMillis,
@@ -160,7 +147,7 @@ public final class Housekeeping {
         return List.copyOf(missing);
     }
 
-    public Report lastReport() {
+    public HousekeepingStatus lastReport() {
         return lastReport;
     }
 

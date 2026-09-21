@@ -4,6 +4,8 @@ import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.RevisionConflictException;
 import org.opensearch.supervisor.model.Keys;
 import org.opensearch.supervisor.model.NodeId;
+import org.opensearch.supervisor.model.PoolId;
+import org.opensearch.supervisor.model.projection.ReapingStatus;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.diff.Diff;
 import org.opensearch.supervisor.model.diff.Finding;
@@ -80,6 +82,31 @@ public final class NodeReaper {
     public NodeReaper(KeyValueStore store, LivenessTracker liveness) {
         this.store = store;
         this.liveness = liveness;
+    }
+
+    /**
+     * Projects what a reap did, so the most destructive action here can be reviewed after the fact.
+     *
+     * <p>The {@code kept} half is the more useful of the two and the reason this is not merely an audit log: a node
+     * that keeps being declined means something is pinned that should not be — most often a shard whose only
+     * started copy is on a machine nobody can reach — and declining to act produces no finding, so that state is
+     * otherwise entirely silent.
+     *
+     * <p>Written only when the content changes, like every other projection, so a pool that reaps nothing writes
+     * nothing. A pool that has never reaped anything has no document at all, which is the honest difference between
+     * "nothing to say" and "not running".
+     */
+    public ReapingStatus statusOf(Report report, PoolId pool, String holder, long pass, long observedAt) {
+        return new ReapingStatus(
+            pass, holder, observedAt,
+            report.reaped().size(), report.kept().size(),
+            report.reaped().stream().limit(ReapingStatus.MAX_SHOWN)
+                .map(entry -> new ReapingStatus.Reaped(entry.node().value(), entry.keys(), entry.because()))
+                .toList(),
+            report.kept().stream().limit(ReapingStatus.MAX_SHOWN)
+                .map(entry -> new ReapingStatus.Kept(entry.node().value(), entry.because()))
+                .toList()
+        );
     }
 
     public Report reap(Diff diff, Observation observation) {

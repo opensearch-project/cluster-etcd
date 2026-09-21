@@ -41,6 +41,19 @@ public final class Supervisor {
     private final Balancer.Config balancerConfig;
     private final PoolWeights weights;
     private final Housekeeping housekeeping;
+
+    /**
+     * The cadence assumed when nobody declares one, matching {@code supervisor-app}'s own default.
+     *
+     * <p>A default rather than a required argument because most callers are tests that never publish anything an
+     * operator reads. The app passes the real value, which matters: {@code PASS_SATURATED} compares a pass's
+     * duration against this number, so a wrong one would make the alert wrong rather than absent.
+     */
+    public static final Duration DECLARED_PASS_INTERVAL = Duration.ofSeconds(2);
+
+    private final MemberStatusProjector memberStatus;
+    /** Thresholds only: the methods used are pure functions of a registration and the config, with no history. */
+    private final LivenessTracker thresholds;
     private final Planner.Policy policy;
     private final LivenessTracker.Config liveness;
     private final boolean readOnly;
@@ -99,6 +112,29 @@ public final class Supervisor {
         boolean readOnly,
         LivenessTracker.Config liveness
     ) {
+        this(store, clock, supervisorId, configuredTenants, capacityWeight, leaseTtl, balancerConfig, policy,
+            readOnly, liveness, DECLARED_PASS_INTERVAL);
+    }
+
+    /**
+     * @param passInterval how often whatever drives this expects to call {@link #tick()}. <b>Declared, not
+     *     enforced</b> — the loop lives in {@code supervisor-app} and this class never sleeps. It is here because
+     *     it is published in the member-status document, where it is the denominator for "is a pass taking too
+     *     long": a duration means nothing without the cadence it is competing with.
+     */
+    public Supervisor(
+        KeyValueStore store,
+        Clock clock,
+        String supervisorId,
+        Set<TenantId> configuredTenants,
+        double capacityWeight,
+        Duration leaseTtl,
+        Balancer.Config balancerConfig,
+        Planner.Policy policy,
+        boolean readOnly,
+        LivenessTracker.Config liveness,
+        Duration passInterval
+    ) {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.supervisorId = Objects.requireNonNull(supervisorId, "supervisorId");
@@ -110,6 +146,11 @@ public final class Supervisor {
         this.housekeeping = new Housekeeping(store, leases, this.configuredTenants, supervisorId);
         this.policy = Objects.requireNonNull(policy, "policy");
         this.liveness = Objects.requireNonNull(liveness, "liveness");
+        this.thresholds = new LivenessTracker(clock.instant(), liveness);
+        this.memberStatus = new MemberStatusProjector(
+            store, supervisorId, liveness, passInterval.toMillis(), leaseTtl, this.policy, readOnly,
+            clock.millis()
+        );
         this.readOnly = readOnly;
     }
 
@@ -157,15 +198,23 @@ public final class Supervisor {
         housekeeping.tick(pass, pools, membership, clock.millis());
 
         // Only now, with ownership settled, does any reconciliation happen.
+        java.util.Map<org.opensearch.supervisor.model.NodeId, org.opensearch.supervisor.model.node.Registration>
+            seen = new LinkedHashMap<>();
         for (PoolId pool : held) {
-            loops.computeIfAbsent(pool, id -> readOnly
+            SupervisorLoop loop = loops.computeIfAbsent(pool, id -> readOnly
                 ? new SupervisorLoop(store, clock, id, supervisorId, configuredTenants, liveness)
                 // The lease check is a supplier closing over the manager, so it is evaluated at the moment
                 // of the write rather than at the moment the loop was built.
                 : new SupervisorLoop(store, clock, id, supervisorId, configuredTenants,
                     () -> leases.holds(id), policy, leases.epochOf(id), liveness)
-            ).pass();
+            );
+            loop.pass();
+            seen.putAll(loop.lastRegistrations());
         }
+
+        // What this process is running with, published after the pools are settled so `pools_held` is the answer
+        // for the pass that just ran rather than the one before it. R3.3, which had no observable answer until now.
+        memberStatus.project(seen, List.copyOf(held), thresholds, clock.millis());
     }
 
     private void applyDecision(Balancer.Decision decision) {

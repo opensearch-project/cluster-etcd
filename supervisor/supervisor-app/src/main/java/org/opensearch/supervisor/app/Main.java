@@ -37,6 +37,17 @@ public final class Main {
 
         Log.threshold(options.logLevel());
 
+        if (options.alerts()) {
+            // Read-only and one-shot, like --define-pool: nothing is leased, no pass runs, and the process exits.
+            // Safe to point at a store a running supervisor owns, which is the whole point of it.
+            try (KeyValueStore store = open(options)) {
+                return Alerts.run(store, options);
+            } catch (Throwable thrown) {
+                log.error("could not read the store", thrown, "store", options.storeUri());
+                return Alerts.EXIT_UNREADABLE;
+            }
+        }
+
         if (options.definePool() != null) {
             // A one-shot operator action, not a supervisor. Nothing is leased, no pass runs, and the process
             // exits -- so this can safely be pointed at a store a running supervisor already owns.
@@ -67,7 +78,10 @@ public final class Main {
                 options.balancer(),
                 options.policy(),
                 options.readOnly(),
-                options.liveness()
+                options.liveness(),
+                // Declared so the member-status document publishes the real cadence: PASS_SATURATED compares a
+                // pass's duration against it, and a default would make that alert wrong rather than absent.
+                options.interval()
             );
 
             warnIfIdentityLooksTaken(store, options);

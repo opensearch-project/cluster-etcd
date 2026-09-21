@@ -574,12 +574,37 @@ oscillation that has stopped is not worth persisting.
 oscillating rather than the allocator, and it is recorded in the same document with `subject: "pool"` —
 same detector, same shape, because it is the same failure one layer up.
 
-### `supervisor/status/members/<supervisor-id>` — R3.3
+### `supervisor/status/pools/<pool-id>/reaping`
 
-> **Nothing writes this yet.** `Keys.memberStatus` is a key builder with no caller, so R3.3's requirement that the
-> effective liveness threshold be observable is **not met**: the values are real and configurable and nothing
-> publishes them. `supervisor/members/<supervisor-id>` (§3) exists and carries liveness and the held pools, but not
-> the effective configuration this describes.
+What a pool's reaper deleted, and what it declined to delete. **Absent when there is nothing to say**, which is
+deliberate: "this pool has reaped nothing" and "nothing is running here" are different, and a document that is
+always present but usually empty loses the difference. The key is deleted once a pass finds nothing, so a stale
+report cannot outlive the state it described.
+
+```json
+{
+  "pass": 10432, "holder": "supervisor-a1b2", "observed_at": 1788969977900,
+  "reaped_total": 1, "kept_total": 1,
+  "reaped": [
+    { "node": "aB3xQ…", "keys": ["nodes/heartbeat/aB3xQ…", "nodes/shards/aB3xQ…"],
+      "because": "lost for 34 passes and holding no copy this pool needs, so its documents were deleted" }
+  ],
+  "kept": [
+    { "node": "pv1sDM…",
+      "because": "still the only node with a started copy of index uuid uzKx… shard 0 for tenant [acme]" }
+  ]
+}
+```
+
+**The `kept` half is the more useful of the two**, and the reason this is not merely an audit log. Declining to act
+produces no finding, so a node the reaper keeps refusing is otherwise completely silent — and its commonest cause
+is worth being told: a shard whose only started copy is on a machine nobody can reach. `reaped` is the audit half:
+`DESIGN.md` §20.2 is the most destructive thing this service does, and until this existed a reap could not be
+reviewed after the fact at all.
+
+Both lists are capped at 20 with exact totals beside them, so truncation never makes the summary wrong.
+
+### `supervisor/status/members/<supervisor-id>` — R3.3
 
 The **effective** configuration of one supervisor process, published because R3.3 requires the liveness
 threshold's effective value to be observable, and because "what is this process actually running with" is
@@ -588,23 +613,44 @@ different builds with different settings — which is itself worth being able to
 
 ```json
 {
-  "supervisor_id": "supervisor-a1b2", "epoch": 7, "started_at": 1788969000000,
+  "supervisor_id": "supervisor-a1b2",
+  "started_at": 1788969000000,
   "version": "0.1.0-SNAPSHOT",
-  "store_backend": "etcd",
+  "store_backend": "EtcdKeyValueStore",
   "pools_held": ["shared-a", "dedicated-acme"],
-  "liveness": { "multiplier": 6, "floor_millis": 20000, "lost_multiplier": 20,
-                "effective_millis": { "pv1sDM…": 30000, "72ZSKe…": 30000 } },
+  "liveness": {
+    "stale_multiplier": 6,
+    "lost_multiplier": 20,
+    "floor_millis": 20000,
+    "effective_millis": { "pv1sDM…": { "stale_millis": 30000, "lost_millis": 100000 } }
+  },
   "pass_interval_millis": 2000,
   "lease_ttl_millis": 15000,
   "work_ceiling_per_pass": 200,
-  "balancer": { "hysteresis": 0.25, "release_after_passes": 20, "capacity_weight": 1.0 },
-  "task_max_attempts": 5,
-  "orphan_confirm_passes": 3
+  "per_tenant_floor": 5,
+  "minimum_passes": 2,
+  "rebalance_enabled": true,
+  "read_only": false,
+  "observed_at": 1788969977900
 }
 ```
 
-`effective_millis` is capped at the 50 nodes with the most unusual values; a 200-node cluster must not
-produce a 200-entry document here.
+**`effective_millis` is the field R3.3 is actually about.** The multipliers and the floor are *inputs*; what an
+operator needs is how long a given node may be silent before its copies stop counting, and that depends on the
+interval the node itself advertises — so it cannot be derived from the configuration alone, and publishing the
+configuration would not have satisfied the requirement.
+
+Capped at 50 entries, and the ones kept are the nodes whose thresholds are **furthest from the majority**. A cap
+that kept the first 50 by id would hide the one misconfigured node in a pool of two hundred, which is the only
+thing anybody reads this for.
+
+**`pass_interval_millis` is declared by whatever drives the loop**, because the loop lives in `supervisor-app` and
+the supervisor never sleeps. It is here because a pass duration means nothing without the cadence it competes
+with — `PASS_SATURATED` in `MONITORING.md` divides by it.
+
+**No `epoch`** — that is per pool, and lives in each pool's convergence document. **No `balancer`,
+`task_max_attempts` or `orphan_confirm_passes`**: each was in this example and none is published, so they are
+removed rather than left as a promise. They belong here if anything ever needs them; nothing does yet.
 
 ### `supervisor/status/housekeeping`
 

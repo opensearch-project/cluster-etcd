@@ -1,6 +1,6 @@
 # Findings from the data plane
 
-Ten items wanted in this repository, all found by running the real data plane
+Eleven items wanted in this repository, all found by running the real data plane
 (`../opensearch-data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
@@ -13,7 +13,8 @@ with the acknowledgement design and reporting that the sequencing underneath it 
 ninth is the other half of an ask this repository made: the node now rewrites its registration when it goes
 missing, so the reaping that `DESIGN.md` §20.2 declined to do is safe to do. The tenth is not this repository's bug at
 all — a reused store revision froze its desired state on a deleted index's uuid — and is here because two things
-on this side rested on the guarantee that was missing.
+on this side rested on the guarantee that was missing. The eleventh is the one that blocks a milestone: promoting a
+replica needs a primary term in the assignment, and that term is also the only fence document replication gets.
 
 Each item says what happened, why the current behaviour is wrong, where the code is, what a fix has to be careful
 about, and the tests worth having. All of them are self-contained.
@@ -1098,6 +1099,92 @@ lives in the store's own conformance suite, which is where it belongs.
 > equality one — so the fix is to the contract before someone implements the ordered reading and treats a correct
 > reap as a split brain. **A counter that restarts on deletion cannot be compared by ordering across the
 > deletion**, which is your root cause stated generally, and it now says so in the contract.
+
+---
+
+## 11. Promoting a replica needs a primary term in the assignment, and that term is the fence
+
+**The blocker for the deployment flow this design is aimed at**, and the first time D8.2's "no per-primary
+generation" has been a concrete requirement rather than a recorded risk.
+
+### What was asked, and the answer
+
+Can a data plane promote a replica to primary when an assignment changes its role? **No, and not for the reason it
+looks like.** The answer is the primary term, not the allocation id.
+
+The deployment shape that makes this urgent: a deployment system announces that nodes are about to go down —
+OpenSearch has `POST /_cluster/deployment/_transition` with a `DRAIN` state for exactly this — and primaries on those
+nodes are *preemptively demoted* while replicas elsewhere are promoted. Zone by zone, so every primary moves twice
+during a three-zone deploy. That is not a failure path, it is the normal operation of the thing.
+
+### Why the term is not optional
+
+`IndexShard.updateShardState` has two branches for a routing entry that says primary:
+
+- **`newPrimaryTerm == pendingPrimaryTerm`** — primary mode is activated *only* if the current entry is
+  `initializing`. A **started replica** whose term did not change falls through both branches: no promotion, no
+  error, and a shard the routing table calls a primary while its `ReplicationTracker` is not in primary mode. Writes
+  then fail with "shard is not in primary mode" and nothing explains why.
+- **`newPrimaryTerm != pendingPrimaryTerm`** — the promotion path, guarded by
+  `assert newPrimaryTerm > pendingPrimaryTerm : "primary terms can only go up"`, plus
+  `assert currentRouting.primary() == false : "term is only increased as part of primary promotion"` and
+  `newRouting.initializing() == false`. This is the branch that calls `bumpPrimaryTerm`, resets the engine to the
+  global checkpoint and fills sequence-number gaps.
+
+So an in-place promotion **requires the term to increase**. Every primary term this plugin fabricates is `1`, carried
+forward and never advanced, so the promotion branch is unreachable.
+
+**And the term is the fence.** `IndexShard` rejects a replica-side operation whose term is stale:
+
+```
+operation primary term [%d] is too old (current [%d])
+```
+
+which means a demoted primary that keeps writing is refused by every replica the moment the new term is in play.
+Worth contrasting with the segment-replication side, where the fence is a CAS token on the *translog* repository and
+therefore unavailable in `segments_only` (finding in `WORKING_NOTES.md`): for document replication the fence costs
+nothing but a number that goes up. It is the one place in this design where fencing is easy.
+
+### What the contract needs
+
+**A per-shard primary term in the assignment, which the supervisor advances by one each time it moves a shard's
+primary.** The shape is yours to choose; the constraint is only that it is per shard and monotonic per shard. Today
+`shards` maps a shard number to a role string:
+
+```json
+"shards": { "0": "PRIMARY" }
+```
+
+so either that value becomes an object, or a sibling map carries the terms. Three properties this side needs:
+
+- **It goes up on promotion and not otherwise.** A term that advanced for unrelated reasons would make every pass
+  look like a promotion, and `updateShardState` asserts a started primary never changes its term.
+- **It never goes backwards for a shard**, including across a supervisor restart or a pool handover — the same
+  hazard as finding 10's reused revision, one level up again, and worth checking against however you persist it.
+- **The demoted primary's node must be told too**, in the same pass if possible. It learns it is now a replica from
+  its own assignment, and the term it sees must be the new one, or it will refuse its own writes rather than
+  understanding it has been superseded.
+
+### What this side will do
+
+Two changes, both small, neither of which can land first:
+
+- use the assigned term instead of the constant, which is one line in `DataNodeState`;
+- **reuse the allocation id across a role change**, so that the server sees the same copy transitioning rather than
+  a different one. Today a role change mints a fresh allocation id, which makes `isSameAllocation` false, which makes
+  `IndicesClusterStateService` remove the shard and create a new one — a full close and recovery instead of a
+  promotion. That is safe only once the term bump is there to make the promotion path the one taken.
+
+Until then this plugin cannot promote, and it is better that it cannot: a role change that it "handled" by
+recreating the shard at the same term would produce two copies believing they are primary at the same term, which is
+precisely the state D8.2 exists to prevent.
+
+### Tests worth having on your side
+
+- a `DRAIN` on a zone demotes every primary there and promotes a replica elsewhere, with the term advancing by one
+  per shard and no shard's term ever repeating;
+- the demoted node's assignment names the same new term, so both ends of the handover agree;
+- a supervisor restart mid-handover does not reissue a term already used for that shard.
 
 ---
 

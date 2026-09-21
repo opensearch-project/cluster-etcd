@@ -2,6 +2,7 @@ package org.opensearch.supervisor.core;
 
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.Watches;
+import org.opensearch.supervisor.model.Keys;
 import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.diff.Diff;
@@ -44,6 +45,7 @@ public final class SupervisorLoop {
     private final KeyValueStore store;
     private final Clock clock;
     private final PoolId pool;
+    private final String supervisorId;
     private final Observer observer;
     private final Projector projector;
     private final FindingAges ages = new FindingAges();
@@ -59,11 +61,13 @@ public final class SupervisorLoop {
     private final NodeReaper reaper;
 
     private Diff lastDiff;
+    private Observation lastObservation;
     private Plan lastPlan;
     private Applier.Outcome lastOutcome;
     private TaskQueue.Outcome lastTaskOutcome;
     private int lastStatusWrites;
     private NodeReaper.Report lastReaping = NodeReaper.Report.NOTHING;
+    private boolean reapingWritten;
 
     /** Read-only: observes, diffs and projects, and writes nothing a node will act on. */
     public SupervisorLoop(
@@ -132,6 +136,7 @@ public final class SupervisorLoop {
         this.store = Objects.requireNonNull(store, "store");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.pool = Objects.requireNonNull(pool, "pool");
+        this.supervisorId = supervisorId;
         // One tracker, shared: the reaper compare-and-sets a heartbeat delete against the same revision the
         // liveness verdict was computed from, so it has to be the same history, not a second copy of it.
         LivenessTracker tracker = new LivenessTracker(clock.instant(), liveness);
@@ -176,6 +181,7 @@ public final class SupervisorLoop {
         );
 
         lastDiff = diff;
+        lastObservation = observation;
         lastPlan = null;
         lastOutcome = null;
 
@@ -214,6 +220,7 @@ public final class SupervisorLoop {
                 // with the corpse still visible. A node deleted here is one whose copies this pool has already
                 // replaced, so nothing earlier in the pass was waiting on it.
                 lastReaping = reaper.reap(diff, observation);
+                projectReaping(diff, observation);
             }
         }
         return diff;
@@ -245,6 +252,50 @@ public final class SupervisorLoop {
     }
 
     /** How many projection keys the last pass wrote; zero in steady state. */
+    /**
+     * Publishes what the reaper did, and what it would not do.
+     *
+     * <p>Only once there is something to say, and then until there is not: a pool that has never reaped anything
+     * has no document, which distinguishes "nothing to report" from "not running" — and the key is deleted once a
+     * pass finds nothing, so a stale reaping report cannot outlive the state it described.
+     */
+    private void projectReaping(Diff diff, Observation observation) {
+        String key = Keys.poolReaping(pool);
+        if (lastReaping.reaped().isEmpty() && lastReaping.kept().isEmpty()) {
+            if (reapingWritten) {
+                store.delete(key);
+                reapingWritten = false;
+            }
+            return;
+        }
+        store.put(key, reaper.statusOf(
+            lastReaping, pool, supervisorId, diff.pass(), observation.observedAt().toEpochMilli()
+        ).toBytes());
+        reapingWritten = true;
+    }
+
+    /**
+     * Every node this pool's last pass saw, with its registration.
+     *
+     * <p>Exposed so the member-status document can publish each node's <em>effective</em> liveness thresholds
+     * without a second scan of {@code nodes/registration/}: the observer has already read and parsed them, and a
+     * document written almost never should not add a read to every pass.
+     */
+    public java.util.Map<org.opensearch.supervisor.model.NodeId, org.opensearch.supervisor.model.node.Registration>
+        lastRegistrations() {
+        if (lastObservation == null) {
+            return java.util.Map.of();
+        }
+        java.util.Map<org.opensearch.supervisor.model.NodeId, org.opensearch.supervisor.model.node.Registration>
+            registrations = new java.util.LinkedHashMap<>();
+        lastObservation.nodes().forEach((nodeId, node) -> {
+            if (node.registration() != null) {
+                registrations.put(nodeId, node.registration());
+            }
+        });
+        return registrations;
+    }
+
     /** What the last pass deleted, and what it declined to delete. Empty on almost every pass. */
     public NodeReaper.Report lastReaping() {
         return lastReaping;
@@ -254,11 +305,11 @@ public final class SupervisorLoop {
         return lastStatusWrites;
     }
 
-    private Projector.Tasks taskFigures() {
+    private org.opensearch.supervisor.model.projection.Projections.Tasks taskFigures() {
         if (lastTaskOutcome == null) {
-            return Projector.Tasks.NONE;
+            return org.opensearch.supervisor.model.projection.Projections.Tasks.NONE;
         }
-        return new Projector.Tasks(
+        return new org.opensearch.supervisor.model.projection.Projections.Tasks(
             lastTaskOutcome.claimed(), lastTaskOutcome.completed(), lastTaskOutcome.failed(),
             lastTaskOutcome.reaped(), lastTaskOutcome.lost()
         );

@@ -199,6 +199,17 @@ public final class Keys {
         return "supervisor/status/pools/" + pool.value() + "/convergence";
     }
 
+    /**
+     * What a pool's reaper deleted, and what it declined to delete.
+     *
+     * <p>Absent when there is nothing to say, which is deliberate: the difference between "this pool has reaped
+     * nothing" and "nothing is running here" is worth keeping, and a document that is always present but usually
+     * empty loses it.
+     */
+    public static String poolReaping(PoolId pool) {
+        return "supervisor/status/pools/" + pool.value() + "/reaping";
+    }
+
     public static String poolOscillation(PoolId pool) {
         return "supervisor/status/pools/" + pool.value() + "/oscillation";
     }
