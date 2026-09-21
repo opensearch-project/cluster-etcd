@@ -4,6 +4,7 @@ import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.allocate.RemoteStoreDecider;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.index.IndexConfig;
+import org.opensearch.supervisor.model.node.Heartbeat;
 import org.opensearch.supervisor.model.node.ShardInventory;
 import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
@@ -13,6 +14,7 @@ import org.opensearch.supervisor.model.task.TaskRecord;
 import org.opensearch.supervisor.model.task.TaskState;
 import org.opensearch.supervisor.model.task.TaskType;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -47,6 +49,47 @@ public final class Differ {
         return new Diff(observation.pass(), observation.pool(), ages.age(findings, observation.pass()));
     }
 
+    /**
+     * How recently a rewrite still counts as news.
+     *
+     * <p>Windowed rather than keyed on the count, because the count never returns to zero within a process's
+     * lifetime — so "has ever happened" would stand as a finding for ever, and a finding that cannot clear is one
+     * an operator learns to scroll past. Long enough that a reap and the operator noticing it do not have to
+     * happen in the same minute; short enough that a rewrite last Tuesday is history rather than an alert.
+     */
+    static final Duration REGISTRATION_REWRITE_WINDOW = Duration.ofMinutes(15);
+
+    /**
+     * A node that has recently had to put its own registration back.
+     *
+     * <p>The supervisor reporting on itself, most of the time: the likeliest cause is that §20.2's reaping deleted
+     * the documents of a node that was alive, and the contract rule that makes reaping safe is the same rule that
+     * would otherwise hide it. A node with a clock far enough ahead of the supervisor's could report a rewrite
+     * "in the future"; that is still inside the window and still worth saying, so it is not filtered out.
+     */
+    private static void registrationRewriteFinding(
+        Observation observation,
+        NodeId nodeId,
+        Observation.NodeObservation node,
+        List<Finding> findings
+    ) {
+        if (node.heartbeat() == null || node.heartbeat().registrationRewrites() == null) {
+            return;
+        }
+        Heartbeat.RegistrationRewrites rewrites = node.heartbeat().registrationRewrites();
+        long sinceMillis = observation.observedAt().toEpochMilli() - rewrites.lastAt();
+        if (sinceMillis > REGISTRATION_REWRITE_WINDOW.toMillis()) {
+            return;
+        }
+        findings.add(Finding.of(
+            FindingKind.NODE_REGISTRATION_REWRITTEN, Subject.ofNode(nodeId), observation.pass(),
+            "node found its own registration document missing and wrote it again, " + rewrites.count()
+                + " time(s) this process, most recently " + Math.max(0, sinceMillis) + "ms ago; the likeliest"
+                + " cause is this supervisor reaping a node that was alive, and the contract rule that makes"
+                + " reaping safe is what would otherwise hide it"
+        ));
+    }
+
     // ---------------------------------------------------------------- nodes
 
     private static void nodeFindings(Observation observation, List<Finding> findings) {
@@ -58,6 +101,7 @@ public final class Differ {
                         + " new, since this is more often a torn read than a broken node"
                 ));
             }
+            registrationRewriteFinding(observation, nodeId, node, findings);
             if (node.pool() == null && node.registration() != null) {
                 findings.add(Finding.of(
                     FindingKind.NODE_UNPOOLED, Subject.ofNode(nodeId), observation.pass(),

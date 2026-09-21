@@ -82,6 +82,26 @@ public enum FindingKind {
     NODE_UNREGISTERED(WARNING),
 
     /**
+     * A node has recently had to put its own registration back, because it found the document missing.
+     *
+     * <p><b>Most likely this service's own reaper was wrong about it.</b> {@code DESIGN.md} §20.2 deletes a
+     * departed node's four documents, and the rule that makes that safe is the node restoring its registration
+     * when it notices — so a node reporting a rewrite is telling the supervisor it reaped something that was
+     * alive. That belongs in this service's own diff rather than only in an external monitor's: a reconciler that
+     * quietly destroys and re-creates state is the failure this whole design is arranged against.
+     *
+     * <p>Not only reaping, which is why the node's counter is worth more than the supervisor watching itself: the
+     * registration may have been deleted by a stray script, a botched migration, or a key-prefix change in another
+     * repository. Those are the cases nobody thought to look for.
+     *
+     * <p><b>Raised on the age of the last rewrite, never on the count.</b> The count never returns to zero within
+     * a process's lifetime, so a finding keyed on "has ever happened" would stand for ever, and a finding that
+     * cannot clear is one an operator learns to scroll past. {@code WARNING} rather than critical because the node
+     * recovered by itself: nothing is unavailable, and the thing to do is find out why it was reaped.
+     */
+    NODE_REGISTRATION_REWRITTEN(WARNING),
+
+    /**
      * Nodes in one pool write their segments to <em>different</em> remote repositories.
      *
      * <p>{@code CRITICAL}, and the only finding here whose failure mode is a lie rather than an absence. Copies of

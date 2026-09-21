@@ -360,6 +360,7 @@ independently disableable, which matters when one of them turns out to oscillate
 | `STALE_CONFIG` | a copy's `config_revision` ≠ the index document's revision | warning |
 | `NODE_STALE` / `NODE_LOST` | heartbeat revision unchanged past the thresholds | warning / critical; `LOST` is reaped once it ages (§20.2) |
 | `NODE_UNREGISTERED` | heartbeat without registration | warning |
+| `NODE_REGISTRATION_REWRITTEN` | a node recently put its own registration back — most likely this service reaped a live one (§20.3) | warning, **on the age of the last rewrite, never the count** |
 | `NODE_UNPOOLED` | a node in no pool, or naming a pool that does not exist | warning |
 | `TENANT_UNPOOLED` | a registered tenant with no binding | critical — it is entirely unmanaged |
 | `POOL_UNOWNED` | no live member holds the lease | critical |
@@ -1345,7 +1346,33 @@ leaves a registration with no heartbeat, which the observer already handles as "
 a grace period, then `LOST` again, then another attempt. The reverse order would leave a heartbeat with no
 registration, which is the exact state this whole design is trying not to create.
 
-### 20.3 One thing neither side detects
+### 20.3 Noticing that a reap was wrong
+
+Reaping is safe because a node puts its registration back. That same rule is what would otherwise make a *wrong*
+reap invisible — the node recovers, and nothing anywhere records that this service destroyed the documents of a
+machine that was alive. **Self-healing hides the thing it heals.**
+
+So the node counts the rewrites and reports them in its heartbeat (`NODE_CONTRACT.md`), and the supervisor raises
+`NODE_REGISTRATION_REWRITTEN` while the last one is recent. Two things about the shape:
+
+- **Keyed on the age of the last rewrite, never on the count.** The count never returns to zero within a process's
+  lifetime, so a finding on "has ever happened" would stand for ever — and a finding that cannot clear is one an
+  operator learns to scroll past. This is §6's law applied to a counter: the alarm is on age, and *has ever
+  happened* is not an age.
+- **It is this service reporting on itself**, which is the right place for it. The likeliest cause of a rewrite is
+  §20.2 reaping a live node, and a reconciler that quietly destroys and recreates state is the failure this whole
+  design is arranged against. Leaving it to an external monitor would put the supervisor's own worst mistake in the
+  one document the supervisor does not write.
+
+**The supervisor could detect some of this alone, and it is not a substitute.** It knows which nodes it reaped, so
+a node reappearing with the same `ephemeral_id` after a reap was a live node wrongly reaped — no contract change
+needed, and it attributes the mistake to the supervisor that made it. It catches strictly less, though: the memory
+is lost when that supervisor crashes or hands over the pool, which is a plausible pairing since a reap and a crash
+can come from the same bad state; and it only sees registrations deleted **by a reap**, where the node's counter
+sees one deleted by anything — a stray script, a botched migration, a key-prefix change in another repository.
+Those are the cases nobody thought to look for, which is what makes the counter worth asking for.
+
+### 20.4 One thing neither side detects
 
 Absence only. If something *overwrites* a registration with different content rather than deleting it, the node
 does not notice — its decision to rewrite compares against its own in-memory copy, and its store read only asks

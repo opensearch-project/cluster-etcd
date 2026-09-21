@@ -93,8 +93,8 @@ is what this repository does about it.
 rewrite is an incident — a supervisor deleted the registration of a live node, which means its reap conditions were
 wrong — and a steady trickle is something systematically reaping live nodes. The data plane counts it today and
 exposes it as `registration.rewrites_after_going_missing` on its own HTTP endpoint. That is not sufficient, because
-whoever needs to notice reads the **store**: see `registration_rewrites` in the heartbeat above, which is proposed
-for exactly this and is the only field in this contract currently waiting on the other side.
+whoever needs to notice reads the **store**: `registration_rewrites` in the heartbeat above carries it, and the
+supervisor raises `NODE_REGISTRATION_REWRITTEN` while the last one is recent.
 
 It detects **absence only**. Something overwriting the registration with different content is not noticed, since
 the decision to write compares against the node's own in-memory copy. The layout's one-writer rule says that
@@ -177,12 +177,12 @@ or ten thousand**.
   inconsistency be spotted without the re-read.
 - **`capacity`** is what allocation needs and nothing else. Absolute bytes, not percentages, because a
   decider comparing two nodes needs the denominator.
-- **`registration_rewrites`** is **proposed, not implemented** — see
-  `../opensearch-data-plane/ASK_REGISTRATION_REWRITE_COUNTER.md`. How many times this process has rewritten its
-  registration because it found the document missing, and when it last did. **Absent entirely when the count is
-  zero.** The data plane counts this today and reports it only on its own HTTP endpoint; it is wanted here because
-  noticing it is a store reader's job — one that has to work when the supervisor is wedged and without reaching a
-  node's HTTP port.
+- **`registration_rewrites`** is how many times this process has rewritten its registration because it found the
+  document missing, and when it last did. **Absent entirely when the count is zero.** It is here rather than only on
+  the node's HTTP endpoint because noticing it is a store reader's job — one that has to work when the supervisor is
+  wedged and without reaching a node's port — and it is here rather than on the registration for a sharper reason:
+  **after a reap the registration is absent**, which is the window the count matters most in, and a reader then
+  cannot tell "never reaped" from "being reaped right now".
 
   Two things about it that are easy to get wrong. It counts rewrites caused by **absence** only: an attribute
   change is an ordinary rewrite and not an incident, and counting both would make the signal mean nothing. And the
@@ -192,7 +192,7 @@ or ten thousand**.
   `last_at` earns its place: a bare count is monotonic for the life of the process, so "count > 0 is an incident"
   fires once and never clears, and an alert that cannot clear gets suppressed. With a timestamp, "a rewrite in the
   last fifteen minutes" distinguishes one historical incident from the trickle that means something is
-  systematically reaping live nodes.
+  systematically reaping live nodes. The supervisor raises `NODE_REGISTRATION_REWRITTEN` on exactly that window.
 
 **Ordering requirement:** a node that has changed its inventory writes `nodes/shards/<id>` **before** the
 heartbeat announcing the new digest. Then a mismatch always means "the heartbeat is behind the inventory",

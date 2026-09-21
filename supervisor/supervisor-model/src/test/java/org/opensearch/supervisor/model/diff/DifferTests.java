@@ -6,6 +6,7 @@ import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.index.IndexConfig;
 import org.opensearch.supervisor.model.node.Assignment;
+import org.opensearch.supervisor.model.node.Heartbeat;
 import org.opensearch.supervisor.model.node.NodeRole;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
@@ -15,6 +16,7 @@ import org.opensearch.supervisor.model.observe.Observation;
 import org.opensearch.supervisor.model.status.Liveness;
 import org.opensearch.supervisor.model.status.Replication;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
@@ -241,6 +243,69 @@ class DifferTests {
         assertEquals(1, orphans.size());
         assertTrue(orphans.get(0).because().contains("node holds"),
             "held is the stronger statement and must win: " + orphans.get(0).because());
+    }
+
+    // ---------------------------------------------------------------- a node putting its registration back
+
+    private static Observation.NodeObservation nodeWithRewrites(int count, long lastAt) {
+        Heartbeat heartbeat = new Heartbeat(NODE_A, "eph", 1L, Heartbeat.Applied.NONE, null, 0,
+            new Heartbeat.Capacity(1000, 500, 10, 10, 0.1),
+            count == 0 ? null : new Heartbeat.RegistrationRewrites(count, lastAt));
+        return new Observation.NodeObservation(
+            NODE_A, registration(NODE_A), heartbeat, null, Liveness.LIVE, POOL, null, 0
+        );
+    }
+
+    /** An observation whose {@code observedAt} is a known distance after the epoch, so a window is testable. */
+    private static Observation observeAt(long observedAtMillis, Observation.NodeObservation node) {
+        Map<TenantId, Observation.DesiredState> tenants = new LinkedHashMap<>();
+        tenants.put(ACME, new Observation.DesiredState(Map.of()));
+        return new Observation(1, Instant.ofEpochMilli(observedAtMillis), POOL, tenants,
+            Map.of(NODE_A, node), List.of());
+    }
+
+    @Test
+    void aNodeThatRecentlyPutItsRegistrationBackIsReported() {
+        // The supervisor reporting on itself. A node rewrites its registration when it finds the document
+        // missing -- which is what makes reaping safe -- so a rewrite is the node saying this service deleted
+        // something that was alive, and the rule that makes reaping safe is what would otherwise hide it.
+        long now = 1_000_000;
+        Diff diff = Differ.diff(observeAt(now, nodeWithRewrites(2, now - 60_000)));
+
+        List<Finding> found = diff.of(FindingKind.NODE_REGISTRATION_REWRITTEN);
+        assertEquals(1, found.size());
+        assertEquals(NODE_A, found.get(0).subject().node());
+        assertTrue(found.get(0).because().contains("reaping a node that was alive"),
+            "the reason has to name the likely culprit: " + found.get(0).because());
+    }
+
+    @Test
+    void anOldRewriteIsHistoryRatherThanAFinding() {
+        // Keyed on the age of the last rewrite, never on the count. The count never returns to zero within a
+        // process's lifetime, so a finding on "has ever happened" would stand for ever -- and a finding that
+        // cannot clear is one an operator learns to scroll past.
+        long now = 10_000_000;
+        Diff diff = Differ.diff(observeAt(now, nodeWithRewrites(2, now - Duration.ofHours(3).toMillis())));
+
+        assertEquals(List.of(), diff.of(FindingKind.NODE_REGISTRATION_REWRITTEN));
+    }
+
+    @Test
+    void aNodeThatHasNeverRewrittenItsRegistrationSaysNothing() {
+        // Absent rather than zero, which is the contract's convention and the reason the field is nullable.
+        Diff diff = Differ.diff(observeAt(1_000_000, nodeWithRewrites(0, 0)));
+
+        assertEquals(List.of(), diff.of(FindingKind.NODE_REGISTRATION_REWRITTEN));
+    }
+
+    @Test
+    void aRewriteReportedFromAClockAheadOfOursStillCounts() {
+        // A node whose clock runs fast reports a rewrite in the supervisor's future. Filtering that out would
+        // drop the finding for exactly the deployments most likely to have clock skew.
+        long now = 1_000_000;
+        Diff diff = Differ.diff(observeAt(now, nodeWithRewrites(1, now + 30_000)));
+
+        assertEquals(1, diff.of(FindingKind.NODE_REGISTRATION_REWRITTEN).size());
     }
 
     // ---------------------------------------------------------------- liveness

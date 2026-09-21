@@ -293,7 +293,7 @@ discovered during implementation. Every blocked rule is blocked on a document th
 | `POOL_UNSUPERVISED` | a key under `pools/definitions/` with no live holder of `supervisor/pools/<p>/lease` | CRITICAL | today |
 | `POOL_NOT_ADVANCING` | lease held, but `convergence.pass` unchanged across samples spanning ≫ the pass interval | CRITICAL | today |
 | `NO_SUPERVISOR_MEMBERS` | `supervisor/members/` is empty | CRITICAL | today |
-| `REGISTRATION_REWRITTEN` | a node reporting a `registration_rewrites.last_at` inside the window | WARNING | **blocked** — asked for; see below |
+| `REGISTRATION_REWRITTEN` | — | — | **done, and moved**: the data plane writes `registration_rewrites` in the heartbeat and the supervisor raises `NODE_REGISTRATION_REWRITTEN`, so this is a §5.1 finding rather than a rule here |
 | `NODE_REAP_BLOCKED` | a `NodeReaper` `kept` entry persisting across samples | WARNING | **blocked** — §7.5; the report is held in a field and never projected |
 | `HOUSEKEEPING_ABSENT` | no holder of `supervisor/leases/housekeeping`, or `housekeeping.observedAt` stale | WARNING | today |
 | `PASS_SATURATED` | `convergence.passDurationMillis` ≥ 50% of the member document's `passIntervalMillis` | WARNING | **blocked** — `supervisor/status/members/<id>` is written by nothing |
@@ -318,13 +318,14 @@ Notes on the ones that are not obvious:
   only ever be as complete as a config file. An operator reading a clean `unpooled_tenants` deserves to know
   which list produced it. This is open question 4 surfacing as an operational fact.
 
-- **`REGISTRATION_REWRITTEN` is asked for rather than blocked on nothing**, and the ask changed its shape.
-  `../opensearch-data-plane/ASK_REGISTRATION_REWRITE_COUNTER.md` requests the counter in `nodes/heartbeat/<id>`
-  rather than only on the node's HTTP endpoint — a store reader has to work when the supervisor is wedged and
-  without reaching a node's port, which is the whole premise of §4.
+- **`REGISTRATION_REWRITTEN` was asked for and is done**, and it ended up on the other side of the seam. The data
+  plane writes `registration_rewrites` in the heartbeat; the supervisor raises `NODE_REGISTRATION_REWRITTEN` while
+  the last rewrite is recent, so this reader picks it up from `supervisor/status/diff/<tenant>` with the other
+  findings rather than deriving it. That is the right home: the likeliest cause is the supervisor's own reaper, and
+  a service's worst mistake should appear in the document it writes about itself.
 
-  It also asks for a **timestamp** beside the count, and that is what turned the rule from `CRITICAL` on `count > 0`
-  into a windowed `WARNING`. A bare count is monotonic for the life of the process, so `count > 0` fires on the
+  The ask also gained a **timestamp** beside the count, and that is what turned it from `CRITICAL` on `count > 0`
+  into something windowed. A bare count is monotonic for the life of the process, so `count > 0` fires on the
   first event and never clears until somebody restarts the node — and an alert that cannot clear gets suppressed,
   which is the same as no alert. `§6`'s law in a form it is easy to miss: the alarm is on age, and "has ever
   happened" is not an age.

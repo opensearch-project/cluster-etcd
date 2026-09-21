@@ -23,6 +23,9 @@ import java.util.Optional;
  *     {@code null} if the node has never written an inventory. How the supervisor avoids re-reading
  *     inventories that have not changed.
  * @param shardCopies the count, so an inconsistency can be spotted without the re-read
+ * @param registrationRewrites how often this process has rewritten its registration after finding the document
+ *     missing, and when it last did — or null if it never has. Asked for and implemented by the data plane; see
+ *     {@link RegistrationRewrites}.
  */
 public record Heartbeat(
     NodeId nodeId,
@@ -31,11 +34,45 @@ public record Heartbeat(
     Applied applied,
     String shardsDigest,
     int shardCopies,
-    Capacity capacity
+    Capacity capacity,
+    RegistrationRewrites registrationRewrites
 ) {
+
+    /**
+     * How often a node has had to put its own registration back, and when it last did.
+     *
+     * <p><b>Self-healing hides the thing it heals.</b> A node rewrites its registration when it finds the document
+     * missing, which is what makes {@code DESIGN.md} §20.2's reaping safe — and it means a supervisor that reaped a
+     * <em>live</em> node leaves no trace of having done so. This is the trace. One rewrite says the reap conditions
+     * were wrong once; a steady trickle says something is systematically deleting live nodes' registrations.
+     *
+     * <p>Absent entirely when the count is zero, so a reader never has to distinguish "nothing happened" from a
+     * field it forgot to check.
+     *
+     * @param count reset on restart, because it is process-lifetime state. A reader differencing samples will see
+     *     it go <em>backwards</em> across a restart, and the correct reading is "new process" — which
+     *     {@code ephemeralId} in the same document confirms — not "a lost event".
+     * @param lastAt epoch millis of the most recent rewrite, and the reason this is not just a count. A count alone
+     *     is monotonic for the life of the process, so "count &gt; 0 is an incident" fires once and never clears,
+     *     and an alert that cannot clear gets suppressed. With a timestamp the alarm is on <b>age</b>, which is the
+     *     law everywhere else here.
+     */
+    public record RegistrationRewrites(int count, long lastAt) {}
 
     /** No assignment has been applied yet. Assignment versions start at 1. */
     public static final long NO_ASSIGNMENT = 0L;
+
+    public Heartbeat(
+        NodeId nodeId,
+        String ephemeralId,
+        long timestamp,
+        Applied applied,
+        String shardsDigest,
+        int shardCopies,
+        Capacity capacity
+    ) {
+        this(nodeId, ephemeralId, timestamp, applied, shardsDigest, shardCopies, capacity, null);
+    }
 
     public Heartbeat {
         Objects.requireNonNull(nodeId, "nodeId");
