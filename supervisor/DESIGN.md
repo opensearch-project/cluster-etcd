@@ -3,8 +3,10 @@
 How the service works, as distinct from what it must do (`REQUIREMENTS.md`) and what it reads and writes
 (`KEY_LAYOUT.md`, [`NODE_CONTRACT.md`](NODE_CONTRACT.md), [`SUPERVISOR_KEYS.md`](SUPERVISOR_KEYS.md)).
 
-Milestones 1 and 2 are built (§11); everything from §3 onward is still design to argue with rather than
-code to read. Where implementing something changed the design, the section says so.
+Milestones 1–11 are built (§11), and §§1–23 describe code rather than intentions. §24 is future work and says
+so; §25 is a principle rather than a component. Where implementing something changed the design, the section says
+so — and there is rather a lot of that, because most sections were written before the code and several were wrong
+in ways only the code found.
 
 ## 0. Decisions taken, and what they cost
 
@@ -510,13 +512,12 @@ false and zero fields, so a failed transaction has no `succeeded` key.
    the balancer, housekeeping, and failover — driven by `Supervisor.tick()`. A fleet test runs three members
    over one in-memory store and asserts no pool is ever held twice, including through a rolling restart.
    Still writes no assignment, which a test enforces. Placement is milestone 5.
-5. **Act, narrowly.** ✅ *Done.* One finding — `UNASSIGNED_PRIMARY`, and only where the shard is neither
-   held nor already assigned anywhere in the pool — behind the age threshold, the work ceiling, the
-   per-tenant floor, and all three stale-writer defences from §12. `Planner` only ever *adds* a copy, so the
-   worst a wrong decision can do is create a surplus copy: a self-clearing finding rather than lost data.
-   Node selection is deliberately the simplest defensible thing (most free disk, deterministic tiebreak) and
-   is not the allocator this will need — see open question 7. Everything else in the diff stays observation,
-   and a read-only mode is retained because it is the safest way to introduce this to a live cluster.
+5. **Act, narrowly.** ✅ *Done.* Originally one finding — `UNASSIGNED_PRIMARY` — behind the age threshold, the
+   work ceiling, the per-tenant floor, and all three stale-writer defences from §12, with node selection
+   deliberately the simplest defensible thing. **That description is long out of date and is kept because the
+   ordering argument below depends on it**: the point of the milestone was that `Planner` only ever *added* a
+   copy, so the worst a wrong decision could do was create a surplus — a self-clearing finding rather than lost
+   data. Four later milestones each gave up a piece of that safety on purpose, and each says what it bought.
 6. **The task lifecycle.** ✅ *Done.* Claim by compare-and-set, bounded attempts, complete, fail, reap — so
    `cluster.pending_tasks` starts telling the truth as soon as claiming works, since it reports only
    `pending`. Completion is decided from the observation rather than from having acted, which is what makes a
@@ -528,8 +529,65 @@ false and zero fields, so a failed transaction has no `succeeded` key.
    change. Snapshot metadata (R5.3) is the one piece still outstanding, and is deferred because it needs
    repository access, which is the only part of this service that talks to something other than the store.
 
-A read-only supervisor projects none of these, which is worth knowing before relying on read-only mode as a
-way to observe a live cluster. It follows from a decision taken in milestone 2: one document serves four
+Milestones 8 onward were not planned in advance. Each one came from running the thing — most of them from the data
+plane finding something (`FINDINGS_FROM_THE_DATA_PLANE.md`), which is why they are grouped by what they gave up
+rather than by feature.
+
+8. **The allocator, and rebalancing.** ✅ *Done.* Nine deciders returning `YES`/`THROTTLE`/`NO` with a reason
+   code each (§16), so a refusal explains itself and refusals group exactly rather than approximately. Then a
+   separate `RebalanceDecider`/`BalanceSignal` split (§14): load normalised per signal because units cannot be
+   added, move cost accounted asymmetrically because segment replication charges only the target, and a strict
+   improvement threshold that is simultaneously the termination proof and the reason a move lands where it was
+   aimed. A move completes as a *surplus* decision taken later by code that does not know a move happened.
+   This is where the milestone-5 property went: the service now removes copies.
+
+9. **Letting go, and the three things that needed it.** ✅ *Done.* `ORPHANED_COPY` acted on for the first time
+   (§22), which turned out to be three bugs rather than unreclaimed disk — a deletion task that could never
+   finish, and a node that could never report an assignment as applied, which silently disabled consumer-pointer
+   resets. Then `Displacer` (§23), giving up a search-only copy so a shard can have a primary again, which is the
+   first time this service deletes a copy that is currently *serving*. Then `NodeReaper` (§20.2), deleting a
+   departed node's four documents, which needed a contract change agreed with the data plane to be safe at all.
+   Each of these gave up a piece of milestone 5's guarantee, and each asks the allocator whether the removal
+   achieves anything before making it.
+
+10. **What a tenant can ask for, and what the operator answers.** ✅ *Done.* `number_of_search_replicas` honoured
+    and copies counted per role (§17), coordinators assigned as membership rather than placement (§18), ingestion
+    paused and resumed with a consumer-pointer reset handed over, acknowledged and withdrawn (§21) — the messiest
+    thing here, because a pointer is the one instruction that is not desired state. And `DESIRED_COPY_IGNORED`, so
+    a request this service declines leaves a reason behind instead of evaporating.
+
+11. **Noticing that any of this has stopped.** ✅ *Done.* `MONITORING.md` stages 1 and 2: a rule library that is
+    a pure function of a sample, `supervisor-app --alerts` with exit status as its interface, and the two
+    documents the rules needed — `status/members/<id>`, which finally discharges R3.3, and
+    `status/pools/<p>/reaping`, which makes the most destructive action reviewable. The part worth having is the
+    rule a pass cannot evaluate about itself: a supervisor whose pass number has stopped moving looks exactly
+    like one with nothing to do, from inside.
+
+### What is not built
+
+Short, and each item says whose it is:
+
+- **Primary generation and fencing** — open question 1, and the largest gap by some distance. Promoting a primary
+  is two writes with no token, so two nodes can hold the role at once. Partly not ours: it depends on OpenSearch's
+  remote-store segment replication supporting a new primary writing a new path and bootstrapping from the previous
+  one.
+- **Snapshot metadata** — R5.3, and the only piece of this service that would talk to something other than the
+  store. Deferred for exactly that reason rather than for effort.
+- **The oscillation detector** — R7.3, and the one monitoring rule still blocked. It needs cross-pass memory of
+  *actions* rather than of findings, and a window definition; the rest of §5.2 evaluates today.
+- **`STALE_CONFIG` is declared and raised by nothing.** The condition is evaluated only as a task's completion
+  test, so a copy sitting on an old configuration for ever is not a finding. Cheap to add and nobody has needed
+  it.
+- **`Differ` and `StatusComputation` count *configured* copies, not authorised ones**, where `SurplusReaper` and
+  `AllocationContext` count authorised (§15). So a shard legitimately scaled past its setting would raise a
+  `SURPLUS_COPY` the reaper then correctly declines to act on — a permanent finding, which now also means a
+  permanently non-empty diff and therefore a `DIFF_STABLE_NON_EMPTY` alert. The seam exists; two of its four users
+  have not been moved onto it.
+- **Two open questions belong to other repositories**: 12's rejection of an operator-owned setting written by a
+  tenant is the control plane's, and 10's inexpressible ordinary replica needs both sides at once.
+
+A read-only supervisor projects none of the milestone-7 documents, which is worth knowing before relying on
+read-only mode as a way to observe a live cluster. It follows from a decision taken in milestone 2: one document serves four
 readers — `cluster.health`, `cluster.state`, coordinator routing and docrep peer resolution — which was right
 for write amplification, and means health cannot be published without publishing routing that coordinators
 will act on. Splitting the routing half out would allow observation without behaviour change; not worth doing
