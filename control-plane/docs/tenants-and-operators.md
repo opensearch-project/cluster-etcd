@@ -20,6 +20,57 @@ resources that connect to something outside the cluster:
 Not an absolute rule and deliberately not one: the same deployment can have an operator's backup bucket and a
 tenant's own bucket registered through the same API. §5 is the whole of it.
 
+## The product this is for, and why it decides the classification
+
+Every call below depends on which product this is, so it is worth stating before the sweep rather than leaving it
+implicit. Two managed offerings sit at different points and the difference is not cosmetic:
+
+- **Amazon OpenSearch Service** runs a *shared responsibility* model. The service replaces failed hardware, takes
+  automated snapshots, and retries failed allocations — but **the customer chooses and pays for specific instance
+  types**, and remains free to put too much data in a shard, create too many indices, or send too much traffic.
+- **OpenSearch Serverless** does not ask the customer about hardware at all.
+
+**This project targets the second shape.** The operators run pools of nodes on hardware they own, and a customer
+states what they need rather than what to run it on. An autoscaling component is intended eventually — reacting to
+signals from the supervisor and the monitoring plane, ordering hardware, and letting the supervisor spread shards,
+add search replicas, and in time initiate a live shard split. It is not scoped yet, but it is the direction the
+classification should anticipate, because it moves the boundary.
+
+Two qualifications that matter as much as the shape:
+
+**The tenant keeps real authority, not a reduced menu.** They create their own indices with their own mappings to
+solve their own business problems. They know their business and want search as a solution; the operators know
+OpenSearch and want running that solution to be painless. So this axis is not about withholding capability — it is
+about not making a tenant answer questions about hardware they did not buy.
+
+**And the audience is internal, not a public cloud.** The target is a Search Platform team at a reasonably sized
+company operating this as a service for product and business teams. That is why *"customers shouldn't care where
+their data lives"* is the goal rather than *"shouldn't know"*: a customer who sees behind the curtain has found
+something not useful to them, not something they were denied. **Secrecy is not a design goal here**, which settles
+more below than it sounds like it should.
+
+### What follows from it
+
+- **The cutting line for capacity is supply against demand.** The operator owns supply — nodes, hardware, placement,
+  snapshots, self-healing, and eventually the autoscaler. The tenant owns demand — indices, mappings, documents,
+  queries, and the freedom to overload themselves. That is a sharper tool than §25.1 for anything with a number in
+  it, because it says who is *accountable* for the number rather than who may write it.
+- **Autoscaling changes the remedy for the intersection category.** §25.2 resolves tenant-intent-against-
+  operator-capability by honouring the request up to the capability and *reporting* the shortfall. With an
+  autoscaler in the loop the report stops being a message to a human and becomes **an input that changes the
+  capability** — the same finding, two audiences. Worth saying to the supervisor before the findings vocabulary
+  hardens: a finding wants a machine-consumable payload (which resource, how far short) and not only prose, because
+  something will act on it.
+- **Secrecy-motivated filtering is not worth building.** The awareness narrowing gave two reasons, and its second —
+  that a tenant-scoped document was telling every tenant in a shared pool the name of the repository the pool writes
+  to — is worth approximately nothing under this model. The first reason carries it alone, and comfortably: an
+  attribute that is not a routing dimension should not be offered as one. Good outcome, since correctness-motivated
+  filtering stays correct when the threat model changes and secrecy-motivated filtering does not.
+- **Placement detail may be visible without becoming a contract.** "Shouldn't care" permits exposing where data
+  lives; it does not permit a tenant building on it. So an eventual `cluster.state`-shaped projection is fine, and
+  the thing to avoid is a response field that quietly becomes a promise about a node that the autoscaler will later
+  break.
+
 ## Why this repository needs a second axis
 
 [The README's line](../README.md#short-lived-crud-only-is-the-line-and-it-decides-scope) — short-lived CRUD,
@@ -41,7 +92,7 @@ and the pause/resume of a tenant's own ingestion are all *things the tenant want
 `cluster.state` and `cluster.pending_tasks` are observations, which the tenant is entitled to about its own
 indices.
 
-Six exceptions, most-actionable first. The last is not an exception so much as the reason the others are
+Eight items, most-actionable first. The last is not an exception so much as the reason the others are
 categories rather than individual calls.
 
 ### 1. The weighted-routing validator's entire input is operator-owned
@@ -122,6 +173,12 @@ Unlike awareness this one has no store read waiting for it, so the options are t
 as a known instance of the class. Left alone for now; listed because the next `cluster.*` or `index.*` setting
 added should be classified before it is wired, not after.
 
+**The product shape makes this firmer than "a known instance".** In a managed-hardware offering a customer who
+chose and paid for particular instances has some claim to say which of them their index sits on. Here nobody is
+buying specific nodes, so `require.zone: z1` is not a request that can be honoured *or* meaningfully refused — it
+names a fleet the tenant does not have a view of, and an autoscaler will move the ground under it. Rejection is the
+right end state; it is queued behind the same missing mechanism as §1 rather than being a separate decision.
+
 ### 5. External infrastructure: ownership is per registration, not per resource type
 
 Snapshot repositories and ingestion sources both name a system outside the cluster, and the classifier does not
@@ -149,16 +206,19 @@ source are test-only fixtures — never production — so the fact that both let
 problem to solve, and the pause/resume verification run leaning on `base_directory` was exactly the intended use.
 What matters is the shape they share with the production cases above.
 
-#### Three access levels, and the third costs more than it looks
+#### Two access levels. Hidden was considered and dropped
 
 1. **Tenant-owned** — full CRUD. Today's only mode.
 2. **Operator-owned, visible** — present in reads; writes and deletes rejected. This is the automated-snapshot
-   shape, and it should be the default: a tenant that can list and restore from the operator's repository can use
-   it, which is the point of it existing.
-3. **Operator-owned, hidden** — absent from reads entirely.
+   shape, and it is the answer: a tenant that can list and restore from the operator's repository can use it, which
+   is the point of it existing.
 
-Level 3 is where it gets expensive, because **invisibility and name collision are in direct tension.** If the
-operator has a hidden repository `backups` and a tenant sends `PUT /_snapshot/backups`, every answer is bad:
+A third level — operator-owned and **invisible** — is not being built. The costs are real and the benefit is
+negligible to non-existent for an internal service where seeing behind the curtain is acceptable. Recorded because
+the reasoning outlives the decision, and because a public-cloud version of this would have to revisit it.
+
+Invisibility and name collision are in **direct tension.** If the operator has a hidden repository `backups` and a
+tenant sends `PUT /_snapshot/backups`, every answer is bad:
 
 - *accept* → two resources under one name, and whichever loses resolution is silently unreachable;
 - *reject* → the rejection discloses the existence of the thing that was meant to be invisible, and the message has
@@ -166,13 +226,16 @@ operator has a hidden repository `backups` and a tenant sends `PUT /_snapshot/ba
 - *accept and shadow* → the tenant's registration works and the operator's stops being used, so a guarantee the
   operator made (backups keep running) breaks on a tenant write.
 
-The standard escape is **reserved names**, and it is what Amazon OpenSearch Service does: the automated repository
-sits at a reserved name (`cs-automated`, plus an encrypted variant) that a customer's registration cannot take. Then
-collision is impossible by construction, and the rejection leaks nothing beyond "that prefix is not yours". Note it
-is *visible* there rather than hidden, which is the further evidence that level 2 is the useful one.
+The escape would be **reserved names**, which is what Amazon OpenSearch Service does — the automated repository sits
+at a reserved name (`cs-automated`, plus an encrypted variant) that a customer's registration cannot take, so
+collision is impossible by construction rather than adjudicated. Note it is *visible* there rather than hidden,
+which was the first hint that level 2 is the whole of the useful part.
 
-**Recommendation: a reserved prefix, visible and read-only by default, with hidden as an opt-in flag permitted only
-inside that prefix.** Without reserved naming, level 3 is not merely costly, it is incoherent.
+**What survives from all that is the collision problem, which level 2 has too.** An operator declaring `backups`
+while a tenant already has one is still two resources under one name, and it still needs an answer — but with
+nothing to conceal, the answer is easy: reject the tenant's write with a message that names the operator's
+registration and says it cannot be replaced. A naming convention is then a convenience for making that message
+obvious rather than a requirement for making the design coherent.
 
 #### Where operator registrations would live
 
@@ -212,7 +275,51 @@ entirely and never calls this API. But it does mean the only rule we can enforce
 through here", and a deployment where an operator genuinely wants to use the same API needs either a privileged
 caller or a separate admin surface. Neither exists; recorded so it is a known gap rather than a surprise.
 
-### 6. How much of any of this matters depends on whether tenants reach this service at all
+### 6. Per-tenant quotas are the operator-owned constraint this service is missing entirely
+
+"Tenants remain free to shoot themselves in the foot" is right, and in a shared pool some of those feet belong to
+neighbours. Too much data in one shard is the tenant's own problem; **too many indices is the pool's**, and there is
+no mechanism here for an operator to bound it — nothing in this service reads a limit of any kind, verified rather
+than recalled.
+
+This is the same mechanism as §5 rather than a new one, which is the argument for noticing it now: the limit is the
+operator's to declare, the write path it must be enforced on is ours, and the route between them is the one already
+built — declared on the pool, projected per tenant, read here at creation time. Three notes on how it differs from
+awareness:
+
+- **Absence fails open, and that is the right default.** No projected quota means unlimited, which is today's
+  behaviour, so the mechanism can land before any operator declares anything.
+- **Enforcement belongs here even though the accounting does not.** Index count is answerable from a prefix scan of
+  our own keys; shard count against live capacity is not, and that half stays the supervisor's.
+- **The error shape exists already.** OpenSearch has a validation failure for exceeding
+  `cluster.max_shards_per_node`, so a quota rejection has a precedent to match rather than inventing one.
+
+Nothing to build until an operator needs it, but it is the most likely next item on this axis, and it wants deciding
+alongside §5 because the two would otherwise grow two different projections for the same purpose.
+
+### 7. Shard count is a capacity decision the tenant is currently required to make
+
+The clearest case of vanilla making a tenant answer a question this model says is the operator's.
+`index.number_of_shards` is set by the tenant at creation, static thereafter, and OpenSearch Serverless does not ask
+a customer for it at all. Under *supply against demand* it is squarely supply: how the tenant's data is spread over
+hardware they do not own.
+
+Two things make it more than a curiosity:
+
+- **The autoscaler makes it a moving value, not just a misplaced one.** Once live shard split exists, shard count is
+  something the system should choose and then revise as the data grows. A tenant-declared static number is then not
+  merely in the wrong hands, it is a value the operator must silently overrule to do its job — and §25.2's remedy
+  (honour up to the capability, report the shortfall) does not fit a number that is *supposed* to change.
+- **The resize family inherits the question.** `indices.clone` / `shrink` / `split` are in scope and deferred, and
+  they are tenant-facing shard-count surgery: exactly what an autoscaler would want to initiate itself. **Their
+  ownership should be settled before they are implemented**, because "the tenant asks and the control plane registers
+  a task" and "the autoscaler decides and the supervisor does it" are different designs, not different call sites.
+
+Not proposing a change. `index.number_of_shards` is load-bearing in every client and tool, so removing it is a
+compatibility decision well beyond this axis, and accepting-then-overruling it is a defensible landing place. Listed
+because the decision belongs to whoever builds the autoscaler, and it is easier made now than discovered then.
+
+### 8. How much of any of this matters depends on whether tenants reach this service at all
 
 In the Kafka deployment above, tenants **could not create indices directly.** They worked through an
 operator-owned provisioning UI, which created the topic and the index together. Every request arriving at the
@@ -252,9 +359,12 @@ pool definition field rather than anything here.
    and there is no such surface today.
 3. **Is weighted routing a tenant API at all?** §3 above. Answering "yes, with the dimension validated" is a
    position, and the one the supervisor has assumed.
-4. **Reserved prefix for operator-registered resources: what is it, and does it apply per resource kind?** Needed
-   before anything in §5 can be built, and it is a compatibility decision as much as a design one, since the prefix
-   becomes a name tenants can never use.
-5. **Is hidden (level 3) wanted at all, or is visible-and-read-only enough?** The precedent that exists in the wild
-   is visible. Hidden costs the reserved prefix *and* a rule about what a collision reports, and nothing here needs
-   it yet.
+4. **What does a name collision on an operator-registered resource report?** All that survives of the reserved-name
+   question now that invisibility is dropped (§5). A message naming the operator's registration is enough; a naming
+   convention is a convenience rather than a prerequisite.
+5. ~~**Is hidden wanted?**~~ **Answered: no.** Visible and read-only is the whole of it — the costs are real and the
+   benefit is negligible for an internal service. A public-cloud version would have to reopen it.
+6. **Do quotas and operator-registered resources share one projection?** §6. Deciding it late means two mechanisms
+   for one purpose.
+7. **Who owns shard count and the resize family?** §7. Belongs to whoever scopes the autoscaler, and is cheaper to
+   settle before `clone`/`shrink`/`split` are built than after.

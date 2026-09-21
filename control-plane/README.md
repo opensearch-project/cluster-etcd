@@ -70,6 +70,29 @@ and do the actual create-shard work. No plane calls another directly.
 This is why an `OperationHandler` returning a response is a complete operation:
 nothing here blocks on shard work.
 
+### The service this is meant to be
+
+Worth stating, because it decides questions the layering alone leaves open. The model
+is closer to **OpenSearch Serverless than to a managed-hardware offering**: the
+operators run pools of nodes on hardware they own, and a tenant says what they need
+rather than what to run it on. Contrast a managed service where the customer chooses
+and pays for specific instance types, and so has a claim to say which of them their
+index sits on.
+
+The audience is **internal** — a Search Platform team operating this as a service for
+product and business teams, not a public cloud offering. So the aim is that a tenant
+*need not* care where their data lives, rather than that they cannot find out:
+secrecy is not a design goal, and a tenant who sees behind the curtain has found
+something not useful to them rather than something they were denied.
+
+What tenants keep is the part that matters — their own indices, their own mappings,
+their own business problems. They know their business and want search as a solution;
+the operators know OpenSearch and want running that solution to be painless. An
+autoscaling component that reacts to supervisor and monitoring signals and orders
+hardware is intended but not yet scoped, and it is the thing to anticipate when
+classifying anything with a capacity number in it. See
+[`docs/tenants-and-operators.md`](docs/tenants-and-operators.md).
+
 ### "Short-lived CRUD only" is the line, and it decides scope
 
 The sharper version of the older test ("answerable from cluster state and metadata
@@ -124,12 +147,14 @@ infrastructure may belong to either party, and which one is a property of the
 individual registration rather than of the resource type.** A managed service's
 automated-backup bucket and a customer's own bucket are both snapshot repositories
 registered through the same API, so what is needed is a mechanism for an operator to
-register one a tenant cannot modify — and sometimes cannot see — rather than a ruling
-on who owns repositories.
+register one a tenant cannot modify — visible and read-only, since hiding it costs
+real complexity and buys nothing for an internal service — rather than a ruling on
+who owns repositories.
 
 The sweep of this surface — including the three decommission-awareness groups,
-index-level node filters, why the fix for awareness cannot land as a rejection on its
-own, and why an invisible resource needs a reserved name — is
+index-level node filters, the quota mechanism this service does not have, why the fix
+for awareness cannot land as a rejection on its own, and why shard count is a
+question the tenant should probably not be asked — is
 [`docs/tenants-and-operators.md`](docs/tenants-and-operators.md).
 
 ## How the API surface is defined
