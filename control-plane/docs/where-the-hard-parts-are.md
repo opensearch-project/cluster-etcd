@@ -4,6 +4,11 @@ A survey of the 73 stubbed operation groups, sorted by what makes them hard rath
 namespace. Written to answer "what should we not underestimate?" — the goal is to avoid discovering
 mid-implementation that an operation needs machinery we have not built.
 
+**The counts below are as of writing**, when 73 groups were stubbed; most have since been implemented or
+struck through, and three left the surface altogether on the ownership axis. The README's status block is
+the current number. The tiers are still the useful part — they say what each operation *needs*, which does
+not change as the count falls.
+
 Grounded in the spec and in OpenSearch 3.9.0 behaviour, not guessed. Where a claim is inference
 rather than observation it says so.
 
@@ -256,10 +261,13 @@ Worth knowing which these are, because several are near-copies of code that alre
 These need the task lifecycle to be real — attempt counts, leases, terminal-state sweeps — which the
 current `IndexManagementTasks` explicitly is not.
 
-- **`indices.clone`, `shrink`, `split`** — create target metadata, then orchestrate a data copy
-  through the shard manager. Each has preconditions worth reproducing: the source must be
-  read-only, shrink requires a single-shard target, split requires the shard count to be a multiple
-  of the source's.
+- ~~**`indices.clone`, `shrink`, `split`**~~ — **out of scope as of 2026-09-21**, on the ownership axis
+  rather than this one: a tenant cannot trigger them, because they are operator-initiated. `shrink` and
+  `split` want hardware provisioned for the purpose rather than nodes serving queries, and shard count is
+  supply rather than a tenant's demand. See [`tenants-and-operators.md`](tenants-and-operators.md).
+  The preconditions stay worth knowing for whoever implements them on the operator side — the source must
+  be read-only, shrink requires a single-shard target, and split requires the shard count to be a multiple
+  of the source's — and the shape of the work does not change, only who may ask for it.
 - **`indices.rollover`** — still the most demanding operation in the namespace, but less of it is
   ours than it first looked. Condition evaluation needs doc counts and sizes the control plane does
   not have, so it is a collaboration with the shard manager rather than something to implement here.

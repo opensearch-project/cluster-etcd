@@ -10,13 +10,13 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-125 routes, 78 operation groups, 55 implemented, 23 stubbed
-(58 / 20 when the capabilities file declares script languages, contexts and grok patterns)
+119 routes, 75 operation groups, 55 implemented, 20 stubbed
+(58 / 17 when the capabilities file declares script languages, contexts and grok patterns)
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
-| `indices` | 67 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations; `create_data_stream`, `delete_data_stream` |
+| `indices` | 61 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations; `create_data_stream`, `delete_data_stream` |
 | `cluster` | 21 | component template CRUD, `get_settings`, `put_settings`, `pending_tasks`, weighted routing (`get`/`put`/`delete_weighted_routing`) |
 | `snapshot` | 16 | repository registration: `create_repository`, `get_repository`, `delete_repository` |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`†, `get_script_context`† |
@@ -228,11 +228,26 @@ source of truth and no way for the two to disagree. **If a dangling index ever
 appears, the distributed system is incorrect**, and the answer is to fix it rather
 than to ship a tool for importing the wreckage.
 
-`indices.clone` / `shrink` / `split` / `rollover` are in scope even though they
-move data, on the same terms as `indices.create`: the control plane validates,
-creates the target index metadata and registers a task. The copy itself and the
-task's lifecycle — retries, cleanup, reporting — belong to the management plane,
-which is what keeps these short-lived CRUD from this side.
+`indices.rollover` is in scope even though it moves data, on the same terms as
+`indices.create`: the control plane validates, creates the target index metadata and
+registers a task. The copy itself and the task's lifecycle — retries, cleanup,
+reporting — belong to the management plane, which is what keeps it short-lived CRUD
+from this side.
+
+**`indices.clone` / `shrink` / `split` used to sit beside it and no longer do.** They
+are excluded on the ownership axis rather than the layering one: **a tenant cannot
+trigger them directly, because they are operator-initiated** — by a human operator or
+eventually by the autoscaling service. `shrink` and `split` are heavy enough to want
+hardware provisioned for the purpose rather than nodes serving queries, and shard
+count is supply rather than a tenant's demand. A tenant that wants a split still gets
+one by asking; what is gone is the direct trigger, not the outcome. `rollover` stays
+because it is index lifecycle, not shard-count surgery.
+
+One consequence to know: an excluded operation has no route, so these answer the
+generic `400 no handler found` rather than a message explaining who to ask. That is
+the honest answer available today — a helpful one needs a place to point at, and
+there is no operator-facing surface yet. See
+[`docs/tenants-and-operators.md`](docs/tenants-and-operators.md).
 
 The `tasks` namespace is the one deliberate gap in that story. It is deferred, not
 out of scope — exposing `_tasks` compatibly needs a task identity decision first,
@@ -1259,11 +1274,12 @@ request would normally get. Verified, and reproduced.
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
 - Everything about the operation groups that are still stubbed. With a full capabilities file that is
-  **20**, and there is no easy CRUD left among them: seven are snapshot data or administration
-  operations that belong to another plane, four are the deferred resize family, three are decommission
-  awareness, and the rest — `cluster.health`, `cluster.state`, `indices.get_data_stream`,
+  **17**, and there is no easy CRUD left among them: eight are snapshot data or administration
+  operations that belong to another plane, one is the deferred `rollover`, three are decommission
+  awareness, and the remaining five — `cluster.health`, `cluster.state`, `indices.get_data_stream`,
   `indices.add_block`, `cluster.remote_info` — each have their reason recorded here or in
-  [`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md).
+  [`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md). (The snapshot count read
+  *seven* before and the total never added up; it is eight, and the arithmetic now closes.)
 - **`indices.get_data_stream` is stubbed for a specific reason, not just because it is next.** Its
   `status` field is a `HealthStatus` over the backing indices and the spec marks it **required**, so
   unlike `pending_tasks`' prose durations it cannot simply be omitted and leave a valid response. Health
@@ -1330,7 +1346,7 @@ match — far more systematic than hand-written curl probes.
 
 ## What is hard about the rest
 
-[`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md) surveys the 73 stubbed
+[`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md) surveys the stubbed
 operation groups by what makes them difficult rather than by namespace. The short version:
 
 - **Aliases are their own keyed resource** (`aliases/<name>`), not fields inside index metadata. The

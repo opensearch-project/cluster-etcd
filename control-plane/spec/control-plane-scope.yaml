@@ -185,7 +185,7 @@ included_operations:
   - indices.create_data_stream
   - indices.get_data_stream
   - indices.delete_data_stream
-  # resize / rollover. In scope but DEFERRED, and deliberately not yet designed.
+  # rollover. In scope but DEFERRED, and deliberately not yet designed.
   #
   # The control plane's part is the short-lived half: validate, create the target
   # index metadata, register a task. The copy itself and the task lifecycle --
@@ -193,13 +193,16 @@ included_operations:
   # earlier version of this comment claimed the control plane owned that
   # lifecycle; it does not. See the README's plane table.)
   #
-  # Deferred because these are the operations most likely to look different in this
-  # architecture rather than the same, and reproducing OpenSearch's shape before
-  # deciding what they should be would bake in the old one. Revisit when the
+  # Deferred because this is one of the operations most likely to look different in
+  # this architecture rather than the same, and reproducing OpenSearch's shape before
+  # deciding what it should be would bake in the old one. Revisit when the
   # management plane exists to design against.
-  - indices.clone
-  - indices.shrink
-  - indices.split
+  #
+  # Its three former companions -- clone, shrink, split -- have left the tenant
+  # surface on the ownership axis; see excluded_operations. Rollover stays because it
+  # is index lifecycle rather than shard-count surgery: a tenant deciding that
+  # today's data goes in a new backing index is a statement about their own data, and
+  # it needs no hardware anyone has to provision.
   - indices.rollover
 
   # -- cluster: cluster state, settings, component templates, coordination.
@@ -300,6 +303,31 @@ excluded_operations:
   indices.clear_cache: "node-local cache state"
   indices.upgrade: "shard-level Lucene upgrade; deprecated in OpenSearch"
   indices.get_upgrade: "shard-level Lucene upgrade; deprecated in OpenSearch"
+
+  # -- indices: resize. Excluded on the OWNERSHIP axis, not because they need shards.
+  #
+  # Decided 2026-09-21: tenants cannot call these directly. They are operator-initiated,
+  # whether a human operator or the autoscaling service. Two reasons, and the second is
+  # the one that generalises:
+  #
+  #   * shrink and split are heavy, and this system intends to run them on hardware
+  #     provisioned for the purpose rather than on nodes serving queries. Whether an
+  #     operator or the autoscaler schedules that is an implementation detail; that it is
+  #     scheduled rather than triggered by whoever asked is not.
+  #   * shard count is supply, not demand -- see docs/tenants-and-operators.md. Once the
+  #     autoscaler can split a live index, shard count is a value the system chooses and
+  #     revises, and an API letting a tenant set it directly competes with that.
+  #
+  # A tenant that wants a split still gets one: they ask, and it runs as an
+  # operator-initiated operation. What is removed is the direct trigger, not the outcome.
+  # Note this means there is no route at all rather than a 501, so the answer is the
+  # generic 400 no-handler; see the README on why a helpful message would need a surface
+  # that does not exist yet.
+  #
+  # Rollover stays IN scope -- index lifecycle rather than shard-count surgery.
+  indices.clone: "operator-initiated: shard-count surgery is supply, not the tenant's demand"
+  indices.shrink: "operator-initiated: heavy, and wants hardware provisioned for it"
+  indices.split: "operator-initiated: heavy, and wants hardware provisioned for it"
 
   # -- cluster: needs the routing table or node runtime.
   cluster.reroute: "operates on the shard routing table"

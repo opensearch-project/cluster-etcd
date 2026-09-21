@@ -310,10 +310,50 @@ Two things make it more than a curiosity:
   something the system should choose and then revise as the data grows. A tenant-declared static number is then not
   merely in the wrong hands, it is a value the operator must silently overrule to do its job — and §25.2's remedy
   (honour up to the capability, report the shortfall) does not fit a number that is *supposed* to change.
-- **The resize family inherits the question.** `indices.clone` / `shrink` / `split` are in scope and deferred, and
-  they are tenant-facing shard-count surgery: exactly what an autoscaler would want to initiate itself. **Their
-  ownership should be settled before they are implemented**, because "the tenant asks and the control plane registers
-  a task" and "the autoscaler decides and the supervisor does it" are different designs, not different call sites.
+- **The resize family inherits the question, and it is now answered.** **Decided 2026-09-21: tenants cannot call
+  `indices.clone` / `shrink` / `split` directly.** They are operator-initiated — by a human operator or eventually
+  by the autoscaling service — and the three groups have left the tenant surface in the scope file. Two reasons,
+  and the second is the one that generalises: `shrink` and `split` are heavy enough that this system intends to run
+  them on hardware provisioned for the purpose rather than on nodes serving queries, and shard count is supply
+  rather than demand. Whether an operator or the autoscaler schedules the work is an implementation detail; that it
+  is *scheduled* rather than triggered by whoever asked is not. A tenant who wants a split still gets one by asking
+  — what is removed is the direct trigger, not the outcome. `indices.rollover` stays in scope: index lifecycle, not
+  shard-count surgery, and it needs no hardware anyone has to provision.
+
+Three things that decision drags behind it, all recorded rather than solved:
+
+- **The rejection cannot explain itself.** An excluded operation has no route, so these now answer the generic
+  `400 no handler found` — honest, and no help at all to a tenant wondering who to ask. The alternative, a route
+  kept alive solely to return a pointed message, claims the API exists and then refuses it, and costs a handler.
+  Worth revisiting the moment there is an operator-facing surface to point *at*; until then the generic answer is
+  the one that does not lie.
+- **The desired-state write still has to come through here, which is a feature.** An operator-initiated split
+  produces a *new index*, and its `indices/<name>` document is a key whose only writer is the control plane —
+  `KEY_LAYOUT.md`'s one-writer invariant, and §5.5 forbids the supervisor writing it. So the mechanics are
+  "whoever initiates creates the target through the ordinary create path, and the supervisor does the copy", not
+  "the supervisor invents an index". That needs no new key-space rule and no privileged caller: the target index is
+  an ordinary index, and only the *trigger* left the tenant surface. Had the resize been implemented here first,
+  this would have been discovered as a contract violation instead.
+- **Dedicated hardware is a scheduling constraint the task record would have to carry.** "Not on nodes serving
+  queries" is a placement decision, so whatever eventually initiates a split has to say *where* it may run — a node
+  role or a separate pool. Nothing in this service needs to know that, which is the point of noting it: the
+  constraint lives entirely on the operator side, and the control plane's ignorance of it is now correct rather
+  than a gap.
+- **And the operation a tenant would have been calling is not the operation this system performs.** Checked in the
+  supervisor's `NODE_CONTRACT.md` rather than assumed: in-place live shard splitting is explicitly *not* the
+  approach, because pull-based ingestion makes a split a matter of standing up a new index with the new shard
+  layout, restoring from snapshot, deleting the out-of-shard documents, and resuming from the checkpoint in the
+  shard snapshot — so OpenSearch's `SPLITTING` shard state should never appear in a pool this system owns.
+
+  Two things follow. First, `POST /{index}/_split` would have been a tenant-facing verb for a procedure with
+  different steps, different intermediate states and a different failure surface: excluding it avoids promising a
+  vanilla shape over machinery that does not match it, which is a stronger reason than ownership on its own.
+  Second, **that procedure is assembled from primitives this service already exposes** — create an index, restore,
+  delete by query, and resume ingestion from an offset. The `resume-ingestion` reset written earlier is precisely
+  the "resume from the checkpoint" step. So the operator surface needed for a split may be orchestration over
+  existing operations rather than a new API, and the pause/resume semantics are load-bearing in an operator
+  procedure rather than only a tenant convenience — which raises the cost of the one weakness already recorded
+  about them, that a lost `details.reset_settings` payload is not recoverable from anywhere else.
 
 Not proposing a change. `index.number_of_shards` is load-bearing in every client and tool, so removing it is a
 compatibility decision well beyond this axis, and accepting-then-overruling it is a defensible landing place. Listed
@@ -354,7 +394,8 @@ pool definition field rather than anything here.
 1. **Does weighted routing require a supervisor?** Needed before the awareness rejection can land, because the
    rejection and the `status/awareness` read must ship together, and an absent document has to mean something.
 2. **Do the three decommission operations leave the route table?** Mechanical once decided: three lines move in the
-   scope file, and the route and group counts in the README change with them. Note the answer is "not on the
+   scope file, and the route and group counts in the README change with them — §7's exclusion is the worked
+   precedent, and it cost one scope-file edit plus four stale numbers. Note the answer is "not on the
    tenant surface" rather than "nowhere" — under §5's companion clause an operator-facing surface could offer it,
    and there is no such surface today.
 3. **Is weighted routing a tenant API at all?** §3 above. Answering "yes, with the dimension validated" is a
@@ -366,5 +407,7 @@ pool definition field rather than anything here.
    benefit is negligible for an internal service. A public-cloud version would have to reopen it.
 6. **Do quotas and operator-registered resources share one projection?** §6. Deciding it late means two mechanisms
    for one purpose.
-7. **Who owns shard count and the resize family?** §7. Belongs to whoever scopes the autoscaler, and is cheaper to
-   settle before `clone`/`shrink`/`split` are built than after.
+7. ~~**Who owns shard count and the resize family?**~~ **The resize family is answered: operator-initiated, and
+   `clone`/`shrink`/`split` are out of the tenant surface as of 2026-09-21** (§7). `index.number_of_shards` itself
+   is still tenant-set and still belongs to whoever scopes the autoscaler; accept-then-overrule is the likely
+   landing place.
