@@ -189,6 +189,24 @@ class FileSystemKeyValueStoreTests extends KeyValueStoreContractTests {
     }
 
     @Test
+    void anUnreadableExtraFileDoesNotStopTheStoreOpening() throws IOException {
+        // The revision counter is recovered by scanning the directory on construction, so construction now looks at
+        // files it did not write. A directory shares space with whatever ends up in it, and refusing to open over a
+        // subdirectory or a stray file would make the store fail on untidiness it has no opinion about. Caught by a
+        // data-plane test that puts an extra file in a store directory on purpose.
+        Path directory = tempDir.resolve("untidy");
+        KeyValueStore first = new FileSystemKeyValueStore(directory);
+        long revision = first.put("a", bytes("one"));
+
+        Files.writeString(directory.resolve("not-a-store-file"), "x");
+        Files.createDirectory(directory.resolve("a-subdirectory"));
+
+        KeyValueStore reopened = new FileSystemKeyValueStore(directory);
+        assertEquals(Optional.of("one"), asString(reopened, "a"));
+        assertTrue(reopened.put("b", bytes("two")) > revision, "and revisions still move forward");
+    }
+
+    @Test
     void deleteRemovesTheFile() throws IOException {
         Path directory = tempDir.resolve("deletes");
         KeyValueStore store = new FileSystemKeyValueStore(directory);

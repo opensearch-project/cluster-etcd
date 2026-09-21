@@ -140,7 +140,17 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
                 if (name.startsWith(TEMP_PREFIX) || name.equals(REVISION_COUNTER_FILE)) {
                     continue;
                 }
-                recovered = Math.max(recovered, read(file).map(Versioned::revision).orElse(ABSENT));
+                // Anything that is not a readable store file contributes nothing, and must not stop the store
+                // opening. A directory shares this one with whatever else ends up in it -- a subdirectory, an
+                // editor's backup, a test fixture's stray file -- and refusing to construct over one would make the
+                // store fail on exactly the untidiness it has no opinion about. Found by a data-plane test that puts
+                // an extra file in a store directory on purpose, which the old per-key scheme never had to look at.
+                try {
+                    recovered = Math.max(recovered, read(file).map(Versioned::revision).orElse(ABSENT));
+                } catch (RuntimeException unreadable) {
+                    // Swallowed deliberately: the counter file above is the authority in the ordinary case, and a
+                    // key file this cannot read is one that get() will fail on just as loudly when asked for it.
+                }
             }
         } catch (IOException e) {
             throw new UncheckedIOException("could not scan " + directory + " to recover the revision counter", e);
