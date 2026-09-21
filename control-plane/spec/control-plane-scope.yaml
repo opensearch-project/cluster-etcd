@@ -29,6 +29,14 @@
 # including the three cluster.*_decommission_awareness groups below, which are
 # included today for a difficulty reason and look operator-owned -- is in
 # docs/tenants-and-operators.md.
+#
+# One thing the second axis does NOT decide, and this file cannot express: for a
+# resource that names a neighbouring service or cloud infrastructure -- a snapshot
+# repository, an ingestion source -- ownership belongs to the individual
+# registration rather than to the operation. An operator's backup bucket and a
+# tenant's own bucket are both registered through snapshot.create_repository. So
+# those operations stay in scope, and the ownership question moves to the resources
+# they write. Same document.
 
 # ---------------------------------------------------------------------------
 # The OpenSearch version this service claims to be.

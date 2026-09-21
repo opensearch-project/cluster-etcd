@@ -118,9 +118,18 @@ and `zone` is a fact about a rack in a building. The supervisor has verified tha
 nothing there reads those settings, so a tenant setting them changes nothing about
 where copies go.
 
-The rule is `../opensearch-supervisor/DESIGN.md` §25. The sweep of this surface —
-including the three decommission-awareness groups, index-level node filters, and why
-the fix for awareness cannot land as a rejection on its own — is
+The rule is `../opensearch-supervisor/DESIGN.md` §25, with one companion clause
+this surface forced: **a resource naming a neighbouring service or cloud
+infrastructure may belong to either party, and which one is a property of the
+individual registration rather than of the resource type.** A managed service's
+automated-backup bucket and a customer's own bucket are both snapshot repositories
+registered through the same API, so what is needed is a mechanism for an operator to
+register one a tenant cannot modify — and sometimes cannot see — rather than a ruling
+on who owns repositories.
+
+The sweep of this surface — including the three decommission-awareness groups,
+index-level node filters, why the fix for awareness cannot land as a rejection on its
+own, and why an invisible resource needs a reserved name — is
 [`docs/tenants-and-operators.md`](docs/tenants-and-operators.md).
 
 ## How the API surface is defined

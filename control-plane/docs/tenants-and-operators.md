@@ -10,6 +10,16 @@ Vanilla OpenSearch does not need this rule, because it assumes the party that ru
 uses it are the same person: one `cluster.*` namespace, one admin role, and nothing in the model separating "I want
 this index" from "I own these machines". Here they are different parties.
 
+**One companion clause, which the sweep below forced** — the classifier settles settings and does not settle
+resources that connect to something outside the cluster:
+
+> A resource naming a **neighbouring service or cloud infrastructure** may belong to either party, and which one is
+> a property of the individual registration rather than of the resource type. So there must exist a mechanism for an
+> operator to register one that tenants **cannot modify**, and in some deployments **cannot see**.
+
+Not an absolute rule and deliberately not one: the same deployment can have an operator's backup bucket and a
+tenant's own bucket registered through the same API. §5 is the whole of it.
+
 ## Why this repository needs a second axis
 
 [The README's line](../README.md#short-lived-crud-only-is-the-line-and-it-decides-scope) — short-lived CRUD,
@@ -31,7 +41,8 @@ and the pause/resume of a tenant's own ingestion are all *things the tenant want
 `cluster.state` and `cluster.pending_tasks` are observations, which the tenant is entitled to about its own
 indices.
 
-Six exceptions, most-actionable first.
+Six exceptions, most-actionable first. The last is not an exception so much as the reason the others are
+categories rather than individual calls.
 
 ### 1. The weighted-routing validator's entire input is operator-owned
 
@@ -111,27 +122,116 @@ Unlike awareness this one has no store read waiting for it, so the options are t
 as a known instance of the class. Left alone for now; listed because the next `cluster.*` or `index.*` setting
 added should be classified before it is wired, not after.
 
-### 5. Snapshot repository registration sits in the intersection
+### 5. External infrastructure: ownership is per registration, not per resource type
 
-Already in scope, and the short-lived-CRUD test still puts it here: a registration is one key. Ownership qualifies
-rather than overturns that. A `fs` repository's `location` must be inside `path.repo` **on every node**, and an
-`s3` one names a bucket plus credentials the operator provisions — so the document a tenant writes is partly a
-claim about the machines, and a wrong one fails at snapshot time rather than at registration.
+Snapshot repositories and ingestion sources both name a system outside the cluster, and the classifier does not
+settle them — because for these, **ownership is a property of the individual registration rather than of the kind of
+thing being registered.** The same OpenSearch concept has operator instances and tenant instances in one deployment:
 
-That is §25.2's third category (tenant intent, operator capability, answer is the overlap), and it resolves the way
-the other two instances did: honour the request up to the capability and report the shortfall. Nothing to do until
-the supervisor publishes what the pool provides.
+| case | registered by | tenant may |
+|---|---|---|
+| Amazon OpenSearch Service's automated snapshots, to a bucket the service team owns | operator | see it, restore from it; **not** modify or remove it |
+| a customer's own S3 repository, pointing at their own bucket | tenant | everything |
+| Kafka brokers and topics owned by the search team that ran the fleet (a deployment the author worked on) | operator | consume the topic provisioned for them |
+| an object-store ingestion source over a tenant's own S3 data, which is being built now | tenant | everything |
 
-### 6. A `file`-type ingestion source names a path on the data node
+So "who owns snapshot repositories?" is not a question with an answer. "Who registered *this* repository?" is. Two
+things follow, and the second is the load-bearing one:
 
-`ingestion_source.param.base_directory` for `"type": "file"` is a filesystem path on whichever node polls it — a
-machine fact, written by the tenant, and the one place this repo demonstrably already allows it (the end-to-end run
-that verified pause/resume used `/Users/.../clusterless-ingestion`). `type: kafka` is different: the tenant's
-stream is the tenant's, and bootstrap servers describe their system rather than ours.
+- The classifier needs a companion clause rather than an extension. Something like: **a resource that connects to a
+  neighbouring service or cloud infrastructure may belong to either party, and there must exist a mechanism for an
+  operator to register one that tenants cannot modify — and, in some deployments, cannot see.**
+- The control plane therefore has to hold resources **it did not write and cannot change**, and tell them apart
+  from the tenant's own. It has exactly one mode today: the tenant wrote it, so the tenant may change it.
 
-So the ownership question here is per source type, not per setting, which no registry keyed by setting name can
-express. Recorded rather than acted on: the control plane does not interpret `ingestion_source` at all today, and
-the party that must reject an unreachable directory is the one that can see the filesystem.
+The two instances I flagged earlier are the least interesting ones. An `fs` repository and a `file`-type ingestion
+source are test-only fixtures — never production — so the fact that both let a tenant name a host path is not a
+problem to solve, and the pause/resume verification run leaning on `base_directory` was exactly the intended use.
+What matters is the shape they share with the production cases above.
+
+#### Three access levels, and the third costs more than it looks
+
+1. **Tenant-owned** — full CRUD. Today's only mode.
+2. **Operator-owned, visible** — present in reads; writes and deletes rejected. This is the automated-snapshot
+   shape, and it should be the default: a tenant that can list and restore from the operator's repository can use
+   it, which is the point of it existing.
+3. **Operator-owned, hidden** — absent from reads entirely.
+
+Level 3 is where it gets expensive, because **invisibility and name collision are in direct tension.** If the
+operator has a hidden repository `backups` and a tenant sends `PUT /_snapshot/backups`, every answer is bad:
+
+- *accept* → two resources under one name, and whichever loses resolution is silently unreachable;
+- *reject* → the rejection discloses the existence of the thing that was meant to be invisible, and the message has
+  to either say why or lie;
+- *accept and shadow* → the tenant's registration works and the operator's stops being used, so a guarantee the
+  operator made (backups keep running) breaks on a tenant write.
+
+The standard escape is **reserved names**, and it is what Amazon OpenSearch Service does: the automated repository
+sits at a reserved name (`cs-automated`, plus an encrypted variant) that a customer's registration cannot take. Then
+collision is impossible by construction, and the rejection leaks nothing beyond "that prefix is not yours". Note it
+is *visible* there rather than hidden, which is the further evidence that level 2 is the useful one.
+
+**Recommendation: a reserved prefix, visible and read-only by default, with hidden as an opt-in flag permitted only
+inside that prefix.** Without reserved naming, level 3 is not merely costly, it is incoherent.
+
+#### Where operator registrations would live
+
+Not in `tenant/<t>/snapshot/repositories/<name>`. That key's single writer is the control plane, and one writer per
+key is the invariant that keeps the store safe without cross-key transactions — `KEY_LAYOUT.md` is explicit that
+every key has exactly one writer at any moment, and §5.5 of the supervisor's requirements forbids the traffic in
+the other direction for the same reason.
+
+The shape that fits what already exists: **the operator declares on the pool, the supervisor projects per tenant,
+the control plane reads the projection.** That is `status/awareness` exactly — and the argument that justifies the
+projection existing rather than being derived is the same one, that it saves a prefix scan on a request path. It
+also matches how these resources actually appear: one broker set or one backup bucket per fleet, not one per
+tenant, so a pool-level declaration projected into `tenant/<t>/status/…` is one write per pool and one read per
+request.
+
+Three consequences for this service, none of them large on their own:
+
+- **`GET /_snapshot/_all` merges the projection with our own keys**, and cannot tag the difference — the response
+  shape is OpenSearch's and has no owner field. AWS does not tag it either; `cs-automated` simply looks like a
+  repository. So a tenant learns ownership by being refused, which is acceptable and worth stating deliberately
+  rather than discovering.
+- **A refused delete needs a status.** `403` implies an authorisation system this service does not have, so the
+  400 illegal-argument shape naming the reserved prefix is the honest answer.
+- **An absent projection means "no operator resources", and that is fail-open on purpose** — the opposite of the
+  awareness decision in §1, and for a good reason. A resource the operator has not declared does not exist, so
+  reading nothing permits nothing that should have been forbidden. An *attribute* the operator has not declared is
+  different: reading nothing there would permit weights on any axis at all.
+
+#### And the boundary cannot currently tell who is calling
+
+§25.3 says an operator-owned request should be rejected at the control plane's boundary. That presumes the boundary
+can distinguish an operator from a tenant, and **ours cannot — every request is a tenant request.** The tenant
+resolver produces a tenant id and there is no privileged caller identity.
+
+Which is fine for the reserved-prefix design, because the operator writes its registrations somewhere else
+entirely and never calls this API. But it does mean the only rule we can enforce is "*nobody* may write these
+through here", and a deployment where an operator genuinely wants to use the same API needs either a privileged
+caller or a separate admin surface. Neither exists; recorded so it is a known gap rather than a surprise.
+
+### 6. How much of any of this matters depends on whether tenants reach this service at all
+
+In the Kafka deployment above, tenants **could not create indices directly.** They worked through an
+operator-owned provisioning UI, which created the topic and the index together. Every request arriving at the
+control plane was therefore an operator's request, and the tenant/operator distinction on this surface was close to
+irrelevant — not because the two parties were the same, but because only one of them was a caller.
+
+That is the variable to keep in mind whenever this document says "reject at the boundary". Three things follow:
+
+- **The cost of misclassifying is deployment-dependent, not absolute.** A setting in the wrong category is a real
+  defect where tenants hold API access and a naming inconsistency where they do not.
+- **So the mechanism should be data rather than code.** A compiled-in list of operator-only operations would be
+  wrong for the provisioning-UI deployment, where an operator legitimately wants every one of them. A reserved
+  prefix and a projected list of operator-owned resources are configuration, and a deployment that needs neither
+  simply declares neither.
+- **And it argues against building the privileged-caller notion first.** The gap at the end of §5 is real, but the
+  deployment that most needs a separate operator surface is the one where tenants have no access, which is exactly
+  the deployment that does not need the distinction enforced.
+
+
 
 ## What this does not change
 
@@ -147,6 +247,14 @@ pool definition field rather than anything here.
 1. **Does weighted routing require a supervisor?** Needed before the awareness rejection can land, because the
    rejection and the `status/awareness` read must ship together, and an absent document has to mean something.
 2. **Do the three decommission operations leave the route table?** Mechanical once decided: three lines move in the
-   scope file, and the route and group counts in the README change with them.
+   scope file, and the route and group counts in the README change with them. Note the answer is "not on the
+   tenant surface" rather than "nowhere" — under §5's companion clause an operator-facing surface could offer it,
+   and there is no such surface today.
 3. **Is weighted routing a tenant API at all?** §3 above. Answering "yes, with the dimension validated" is a
    position, and the one the supervisor has assumed.
+4. **Reserved prefix for operator-registered resources: what is it, and does it apply per resource kind?** Needed
+   before anything in §5 can be built, and it is a compatibility decision as much as a design one, since the prefix
+   becomes a name tenants can never use.
+5. **Is hidden (level 3) wanted at all, or is visible-and-read-only enough?** The precedent that exists in the wild
+   is visible. Hidden costs the reserved prefix *and* a rule about what a collision reports, and nothing here needs
+   it yet.
