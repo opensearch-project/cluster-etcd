@@ -258,7 +258,12 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
 
         assertEquals(1, poller.status().copies());
         assertEquals(1, poller.status().deferred().size());
-        assertTrue(poller.status().deferred().get(0), poller.status().deferred().get(0).contains("peer resolution"));
+        // A REPLICA of a segment-replicated index, which is a role the supervisor should not assign for one -- the
+        // reason names the setting rather than a milestone, now that a docrep replica is built.
+        assertTrue(
+            poller.status().deferred().get(0),
+            poller.status().deferred().get(0).contains("index.replication.type")
+        );
     }
 
     public void testAPresentAssignmentThatNamesNothingResolvesToNothing() {

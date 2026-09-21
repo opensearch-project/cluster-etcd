@@ -910,8 +910,79 @@ index does not get one — so M9's exposure is not D8.2's shared-remote-path cor
 diverging *locally*, which is a different failure with a different answer, and the mitigation for both remains the
 same: the supervisor never moves or fails over a primary.
 
-**The deferral reason in `DesiredStateResolver` is stale** and should be the first thing fixed: it declines a
-`REPLICA` saying peer resolution is not implemented, and M8.1 implemented it.
+**Started. What is done, and what it turned up.**
+
+The stale deferral is gone: `DesiredStateResolver` declined a `REPLICA` saying peer resolution was not implemented
+long after M8.1 implemented it. A `REPLICA` of a **document-replication** index is now buildable, and a `REPLICA` of
+a segment-replicated one is declined with a reason that names `index.replication.type` rather than a milestone —
+that is the supervisor's mapping having drifted, since it maps `SEGMENT` to `SEARCH_REPLICA`.
+
+**Two things the server requires, both found by an assertion rather than by thinking.**
+
+- **A docrep replica always recovers from its primary**, whatever is on this disk. `ShardRouting` asserts that a
+  copy which is neither a primary nor search-only has `PeerRecoverySource` — *"replica shards always recover from
+  primary"* — so the existing-store source a primary would use is not available to it. The local bytes are not
+  wasted: peer recovery negotiates which segments and operations are actually needed.
+- **A replica cannot exist in a fabricated state without its primary**, and this is the sharper one.
+  `RoutingNodes` asserts `indexShard.primary != null` for every shard unless `index.blocks.search_only` is set — so
+  it is not a search-replica rule at all, and a docrep replica has no marker it could honestly set, since the block
+  would claim the index takes no writes. **This is the same assertion the search-replica work is removing
+  upstream**, which makes that change worth more than "nice to have": it is load-bearing for two milestones.
+
+So `PeerRecovery` is the counterpart to `RemoteRecovery` — a step that runs once per pass, reduces the desired state
+rather than guessing, and leaves a reason for every copy it declines. It declines a docrep replica whose primary is
+not visible, using *exactly* the test the fabricator applies (a copy in the projection, in a state that maps to a
+routing entry, on a node the peer view resolved an address for), because a copy this step thought buildable and the
+fabricator then left out is how the node reaches that assertion. And an assertion on the applier thread does not
+decline a shard — it exits the node, which is how the in-sync set growing without bound was found.
+
+**Also fixed before it could bite: the peer narrowing had to be exempted for document replication.** A docrep
+primary's replication group *is* the copies in its own routing table, so a primary that knows no replicas does not
+fail to push — it acknowledges writes only it holds, silently. `CoordinatorView.RoutedIndex.needs` checks the
+index's replication type before the local role for that reason.
+
+### Document replication is the discouraged path, and that is a design decision
+
+Recorded because it changes what "done" means here. **Segment replication is the intended shape**: it avoids
+duplicating indexing effort across primary and replicas, and it accepts the eventual consistency that a search
+system can live with rather than chasing the strong consistency document replication is built for. Document
+replication stays supported because small-scale tenants will not be convinced, and those cases are expected to be
+small. So M9's job is that docrep *works*, not that it works at scale.
+
+Against that, the decision on in-sync durability was: **a replica re-recovering after a primary restart is
+acceptable**, and persisting `in_sync_allocation_ids` is a nice-to-have rather than a priority.
+
+**The premise turned out to be wrong, and the correction matters more than the decision.** A replica does not
+re-recover. Read from the server:
+
+- `ReplicationGroup` derives its replication targets from the routing table intersected with the **tracked** set;
+  anything else becomes a `skippedShard`;
+- `ReplicationTracker.updateFromClusterManager` adds checkpoints only for **initializing** allocation ids plus
+  whatever the in-sync set names, and drops any checkpoint that is in neither.
+
+So a fresh primary, whose fabricated in-sync set contains only itself, sees a **started** replica that is in neither
+list. The replica is skipped: not tracked, not replicated to, and never told. Nothing triggers recovery, because
+from its own side it is started and healthy. The outcome is not wasted work, it is **a replica that silently stops
+receiving writes and goes on answering reads with what it had** — the failure shape this design refuses everywhere
+else.
+
+**Two honest ways out, and the cheap one preserves the decision as stated:**
+
+1. **Make the re-recovery actually happen**, using a signal already in the projection. A primary's `node_id` survives
+   a restart and its `ephemeral_id` does not, and `tenant/<t>/status/nodes/<id>` carries the ephemeral id — added in
+   M8 for the transport handshake. A replica that notices the primary it last synced with has a new incarnation can
+   rebuild its own copy as `INITIALIZING`, which makes it an initializing id, which gets it tracked, recovered and
+   marked in sync by the ordinary machinery. Process-local memory is enough: a replica that restarts too re-recovers
+   anyway. No contract change, and it is the one place where D2.2's "never rebuild a serving entry" should be broken
+   deliberately, because a deliberate shard restart is exactly the goal.
+2. **Persist the in-sync set**, which is what a real cluster manager does after `shardStarted` and what makes a
+   primary restart free rather than merely safe. It needs a contract field and a round trip — the node reports which
+   copies it has brought in sync, the supervisor writes it back — so it is the larger change, and it makes (1)
+   deletable.
+
+**Recommended: (1) now, (2) never unless docrep grows**, which is the door left ajar. Until one of them is in,
+document replication has a hole that a primary restart opens silently, and that is worth knowing before anyone runs
+it.
 
 ## M10. Cluster-manager actions — **the not-hanging half is done**
 

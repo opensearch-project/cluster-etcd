@@ -157,6 +157,11 @@ public record CoordinatorView(List<RoutedIndex> indices, Map<NodeId, NodeStatus>
          *   <li><b>A document-replication replica gets everything, for now.</b> Its replication group is a real one
          *       and M9 owns the question; narrowing it before then would be guessing.
          * </ul>
+         *
+         * <p><b>Document replication is checked first, and inverts the primary's answer.</b> A docrep primary's
+         * replication group is exactly the copies in its own routing table, so one that knows no replicas does not
+         * merely fail to push — it acknowledges writes that only it holds. That is the one failure this narrowing
+         * could cause that nothing would report, which is why the check is on the index rather than on the role.
          */
         public boolean needs(int shard, ShardRole copyRole) {
             if (localRoles.isEmpty()) {
@@ -168,6 +173,14 @@ public record CoordinatorView(List<RoutedIndex> indices, Map<NodeId, NodeStatus>
                 // A shard of this index that this node does not hold, which the shard set should already have
                 // excluded. Nothing needs it.
                 return false;
+            }
+            // Document replication is the case where every copy genuinely is a peer, and it is checked before the
+            // role because the reasoning is the opposite way round: a docrep primary's replication group *is* the
+            // copies in its own routing table -- ReplicationOperation sends to what ReplicationTracker found there
+            // -- so a primary that knows no replicas does not publish to nobody, it acknowledges writes that only
+            // it has. That is the one failure this narrowing must not cause, and it is silent.
+            if ("DOCUMENT".equals(config.replication())) {
+                return true;
             }
             return switch (mine) {
                 case PRIMARY -> false;

@@ -468,6 +468,15 @@ public final class DataNodeState implements NodeState {
             recoverySource = recoverySources.getOrDefault(shardId, RecoverySource.EmptyStoreRecoverySource.INSTANCE);
         }
 
+        if (role == ShardRole.REPLICA) {
+            // A document-replication replica always recovers from its primary, whatever is on this disk. The local
+            // bytes are not wasted -- peer recovery negotiates which segments and operations are actually needed,
+            // so an existing copy still resumes cheaply -- but the *source* is not a choice: ShardRouting asserts
+            // that a copy which is neither a primary nor search-only recovers from a peer, and the existing-store
+            // source above is what a primary uses.
+            recoverySource = RecoverySource.PeerRecoverySource.INSTANCE;
+        }
+
         return ShardRouting.newUnassigned(
             shardId,
             primary,

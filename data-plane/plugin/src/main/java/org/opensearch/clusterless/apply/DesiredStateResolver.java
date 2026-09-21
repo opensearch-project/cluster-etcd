@@ -182,11 +182,25 @@ public final class DesiredStateResolver {
                         );
                     }
                 }
-                case REPLICA -> defer(
-                    deferred,
-                    key + "/" + shard + ": a document-replication replica needs peer resolution, which this "
-                        + "node does not implement yet"
-                );
+                case REPLICA -> {
+                    if ("DOCUMENT".equals(config.replication())) {
+                        // Buildable as far as this step can tell. Whether its primary is actually reachable is
+                        // decided later, once the peer view has been read -- see PeerRecovery, which declines it
+                        // with a reason rather than building a routing table RoutingNodes will not accept.
+                        buildable.put(shard, role);
+                    } else {
+                        // The mirror of the search-replica case above. The supervisor maps SEGMENT to
+                        // SEARCH_REPLICA and DOCUMENT to REPLICA, so this is either a supervisor newer than this
+                        // node or a mapping that has drifted; either way, building a peer-recovering copy of an
+                        // index whose segments come from a repository would recover from a primary that is not
+                        // publishing operations to it.
+                        defer(
+                            deferred,
+                            key + "/" + shard + ": a document-replication replica needs the index to use document "
+                                + "replication, and [" + config.name() + "] does not (index.replication.type)"
+                        );
+                    }
+                }
                 case UNKNOWN -> defer(
                     deferred,
                     key + "/" + shard + ": the role is not one this node understands, so the copy was not built"

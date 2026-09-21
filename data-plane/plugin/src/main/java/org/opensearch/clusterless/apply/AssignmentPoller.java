@@ -251,6 +251,12 @@ public final class AssignmentPoller {
             // tenant either way.
             CoordinatorView coordinated = coordinatedShards.read(desired);
             lastCoordinated = coordinated;
+            // The second step that can reduce the desired state, and it has to come after the view: a
+            // document-replication replica cannot be built unless its primary will be in the routing table, because
+            // RoutingNodes asserts a primary exists for every shard and an assertion on the applier thread exits the
+            // node rather than declining a copy. See PeerRecovery.
+            desired = PeerRecovery.reduce(desired, coordinated);
+            lastResolved = desired;
             // Fabricated against the live state to decide whether anything needs doing, and fabricated again
             // inside the applier against whatever the server hands over. The two can differ -- a shard may have
             // finished recovering in between -- and the applier's copy is the one that counts.

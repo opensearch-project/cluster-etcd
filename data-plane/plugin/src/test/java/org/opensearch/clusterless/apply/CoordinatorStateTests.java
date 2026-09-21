@@ -598,6 +598,70 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         assertTrue("and the whole state must be a fixed point", StateEquivalence.sameContent(first, second));
     }
 
+    public void testADocumentReplicationPrimaryKeepsItsReplicas() {
+        // The narrowing must not reach document replication, and this is the one arm where getting it wrong is
+        // silent. A docrep primary's replication group is exactly the copies in its own routing table --
+        // ReplicationOperation sends to what ReplicationTracker found there -- so a primary that knows no replicas
+        // does not fail to push, it acknowledges writes that only it holds. Nothing logs that.
+        List<IndexStatus.Copy> copies = List.of(
+            copy(LOCAL, ShardRole.PRIMARY, ShardState.STARTED),
+            copy(PEER, ShardRole.REPLICA, ShardState.STARTED)
+        );
+        Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
+        copies.forEach(copy -> peers.put(copy.node(), peer(copy.node().value())));
+        CoordinatorView view = new CoordinatorView(
+            List.of(
+                new CoordinatorView.RoutedIndex(
+                    ACME,
+                    docrepConfig(),
+                    placement(Map.of(0, copies)),
+                    Set.of(0),
+                    Map.of(0, ShardRole.PRIMARY)
+                )
+            ),
+            peers,
+            List.of()
+        );
+
+        ClusterState state = new CoordinatorState(
+            new DataNodeState(
+                CLUSTER,
+                TestFixtures.localNode(LOCAL),
+                new DesiredState(
+                    42,
+                    Map.of(
+                        new DesiredState.IndexKey(ACME, UUID),
+                        new DesiredState.DesiredIndex(new DesiredState.IndexKey(ACME, UUID), docrepConfig(), Map.of(0, ShardRole.PRIMARY))
+                    ),
+                    List.of(),
+                    List.of()
+                ),
+                MappingSource.WRAPPED,
+                LocalShardStore.EMPTY
+            ),
+            TestFixtures.localNode(LOCAL),
+            view,
+            MappingSource.WRAPPED
+        ).buildClusterState(ClusterState.EMPTY_STATE);
+
+        IndexShardRoutingTable shard = state.routingTable().index(state.metadata().index(indexName()).getIndex()).shard(0);
+        assertEquals("a docrep primary must keep the replica it replicates to", 2, shard.size());
+        assertEquals(2, state.nodes().getSize());
+    }
+
+    /** The same index, under document replication, which is the case the narrowing must not touch. */
+    private static IndexConfig docrepConfig() {
+        return new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            Map.of("index.number_of_shards", "1", "index.number_of_replicas", "1", "index.replication.type", "DOCUMENT"),
+            Map.of("properties", Map.of("host", Map.of("type", "keyword"))),
+            3041
+        );
+    }
+
     /** One primary elsewhere, this node plus three others holding search replicas, and no coordinator role. */
     private static ClusterState peerResolved(ShardRole mine) {
         return new CoordinatorState(

@@ -249,8 +249,14 @@ public final class CoordinatorState implements NodeState {
             shardId,
             primary,
             searchOnly,
-            // Inert: this node is not recovering somebody else's copy. A started entry drops it entirely below.
-            RecoverySource.EmptyStoreRecoverySource.INSTANCE,
+            // Which source is required rather than chosen. ShardRouting asserts that a copy which is neither a
+            // primary nor search-only recovers from a peer -- "replica shards always recover from primary" -- so a
+            // document-replication replica must say so even in another node's entry, where it is inert: this node is
+            // not the one recovering it, and a started entry drops the source entirely below. The other two roles
+            // are exempt from that assertion, and an empty store is the honest "not my business" for them.
+            primary || searchOnly
+                ? RecoverySource.EmptyStoreRecoverySource.INSTANCE
+                : RecoverySource.PeerRecoverySource.INSTANCE,
             new UnassignedInfo(UnassignedInfo.Reason.CLUSTER_RECOVERED, "observed by the supervisor on another node")
         ).initialize(copy.node().value(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
         return copy.state() == ShardState.STARTED ? fresh.moveToStarted() : fresh;

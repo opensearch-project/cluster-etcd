@@ -132,16 +132,57 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
         assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("declares 2 shards"));
     }
 
-    public void testADocumentReplicationReplicaIsDeclinedWithAReasonThatNamesTheGap() {
-        // The honest failure. A docrep replica needs to know which node holds its primary, which is peer
-        // resolution, which is milestone 9 -- so the copy is not built rather than built as something else.
+    public void testAReplicaOfASegmentReplicatedIndexIsDeclined() {
+        // Not the docrep case, despite what this test used to be called: `config` asks for no replication type, so
+        // the index is segment-replicated and a REPLICA of it is a role the supervisor should never have assigned --
+        // it maps SEGMENT to SEARCH_REPLICA. Either a supervisor newer than this node or a mapping that has drifted,
+        // and building a peer-recovering copy of an index whose segments come from a repository would recover from a
+        // primary that publishes no operations to it.
         documents.put("acme/my-index", config(UUID, true, 2));
 
         DesiredState desired = resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA)));
 
         assertEquals(1, desired.copyCount());
         assertEquals(ShardRole.PRIMARY, desired.indices().values().iterator().next().shards().get(0));
-        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("peer resolution"));
+        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("index.replication.type"));
+    }
+
+    public void testADocumentReplicationReplicaIsBuildable() {
+        // M9. It was deferred with "needs peer resolution, which this node does not implement yet" long after M8.1
+        // implemented peer resolution -- a stale reason outliving its cause, which is its own kind of defect.
+        //
+        // Buildable *here* is not the whole answer: whether the primary is actually reachable is decided once the
+        // peer view has been read, by PeerRecovery, because this step has no view to consult. What matters at this
+        // point is that the role is no longer refused for being document replication.
+        documents.put("acme/my-index", documentReplicated(UUID));
+
+        DesiredState desired = resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA)));
+
+        assertEquals(2, desired.copyCount());
+        DesiredState.DesiredIndex index = desired.indices().values().iterator().next();
+        assertEquals(ShardRole.PRIMARY, index.shards().get(0));
+        assertEquals(ShardRole.REPLICA, index.shards().get(1));
+        assertTrue(desired.deferred().toString(), desired.deferred().isEmpty());
+    }
+
+    /** An open two-shard index that asked for document replication. */
+    private static IndexConfig documentReplicated(String uuid) {
+        return new IndexConfig(
+            "my-index",
+            uuid,
+            1788969977933L,
+            true,
+            Map.of(
+                "index.number_of_shards",
+                "2",
+                "index.number_of_replicas",
+                "1",
+                "index.replication.type",
+                "DOCUMENT"
+            ),
+            Map.of(),
+            3041
+        );
     }
 
     public void testASearchReplicaIsBuildable() {
