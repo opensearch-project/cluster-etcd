@@ -598,6 +598,21 @@ The count follows the table rather than the projection, which is what keeps this
 `number_of_search_replicas` said 0 beside a started search replica: `CoordinatorState` counts the copies it
 actually put in, so narrowing the peers narrows the count by construction.
 
+**Confirmed on five nodes**, the same shape that exposed the problem: one primary and four search replicas of a
+one-shard index, brought up with
+`./gradlew run -Pclusterless.ingestion=true -Pclusterless.segments_only=true -Pclusterless.nodes=5`. Four nodes
+report two shard copies each — their own search replica and the primary — and the node holding the primary reports
+one copy and **no other nodes at all**. Before the change all five reported five.
+
+**One line to delete when the upstream assertion goes.** A search replica takes the primary only to keep
+`RoutingNodes` from demanding `index.blocks.search_only`. Once an index whose routing table has no primary is
+allowed, `RoutedIndex.needs` becomes *"a search replica needs nothing either"* — the `SEARCH_REPLICA` arm returns
+false — and then every node in that five-node index knows exactly its own copy, which is the whole of what a data
+node should carry. The test to change with it is
+`CoordinatorStateTests.testANodeHoldingASearchReplicaLearnsThePrimaryAndNoOtherReplica`, whose expected size of two
+becomes one. Worth doing in that order: the assertion first, this second, because until it lands a replica with no
+primary in its table stops polling and goes quietly stale.
+
 **Same projections, narrower question.** A coordinated tenant contributes every shard of every index it has; an
 index this node merely holds copies of contributes only the shards it holds, and needs no index-document read at
 all, because its configuration was already read to build the copies. `CoordinatorView.RoutedIndex` carries the
