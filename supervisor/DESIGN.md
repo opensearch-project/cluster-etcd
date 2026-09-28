@@ -769,8 +769,11 @@ wants the same fix.
 
 1. **No fencing identity for a primary — carried as a known gap**, and partly not ours to close. §12:
    promoting a primary is two writes with no token, so two nodes can hold the role at once. Pull-based
-   ingestion removes the data divergence but not the remote-store path collision, so no replication mode is
-   exempt. **§26 is now the worked proposal** — the short version is that the path prefix buys isolation and not
+   ingestion removes the data divergence, and the remote store's term ordering removes the path collision once
+   terms advance — so under pull ingestion two primaries become a deployment tool rather than a hazard. **§27 supersedes most of §26**: the remote segment store already orders writers by primary term, so the
+   path prefix is unnecessary and the generation is the primary term (finding 11). What remains is exclusion for push
+   ingestion (§26.2) and, for rollback, a search-replica pin, forward-only in-place moves, and suspending cleanup —
+   §27.3. The earlier short version, kept for its reasoning, is that the path prefix buys isolation and not
    exclusion, that the exclusion half is a node self-demotion rule needing nothing from upstream, and that the
    per-shard-versus-index-setting difficulty has a three-step ladder out of it whose first step asks nobody for
    anything.
@@ -1920,6 +1923,11 @@ point of this section.
 
 ## 26. Fencing a primary: what the path prefix does and does not buy
 
+> **Partly superseded by §27.** The remote segment store already orders writers by primary term, so the per-primary
+> path prefix proposed here is unnecessary (§26 intro, §26.5). §26.2's exclusion rule still stands for push
+> ingestion; §26.3 and §26.4 stand with the primary term as the number. §27 also covers what a rollback needs,
+> which this section did not.
+
 Open question 1 is the largest gap here, and there is a concrete proposal for it: the
 `index.remote_store.segment.path_prefix` setting — added upstream in response to an issue filed during the
 `../cluster-etcd` work — with a unique value per primary incarnation, so a new primary writes somewhere the old one
@@ -2041,3 +2049,136 @@ Worth noting before anyone prices this as fencing alone. A per-shard generation 
 what §24.4's graceful primary demotion needs, and what an upgrade-with-rollback needs — a new primary on a new
 OpenSearch version writing a new path, with the old path intact to roll back to. Same number, same channel, three
 reasons to want it.
+
+---
+
+## 27. The primary term is already the generation, and what a rollback still needs
+
+§26 set out to give each primary incarnation its own remote path. Reading the remote segment store's code — prompted
+by the data plane's `WORKING_NOTES.md`, *"The primary term already orders the remote segment store"*, and checked
+here against the source rather than taken second-hand — shows the store already orders writers by primary term.
+That removes most of §26's machinery. It does not remove the rollback problem, which turns out to need three things
+§26 did not identify.
+
+### 27.1 What the store already does
+
+- **The newest term wins on every read.** A segment metadata filename begins with `RemoteStoreUtils.invertLong(primaryTerm)`,
+  then the generation (`RemoteSegmentStoreDirectory.MetadataFilenameUtils.getMetadataFilename`), and
+  `readLatestMetadataFile` lists them lexicographically and takes the first. A superseded primary's metadata can
+  never be read as the latest.
+- **Two writers at one term fail loudly.** The node id is in the filename, and `RemoteStoreUtils.verifyNoMultipleWriters`
+  throws when two node ids share a (term, generation). It inspects only the newest `METADATA_FILES_TO_FETCH` (10)
+  files, so it is a tripwire rather than a guarantee.
+- **Cleanup cannot delete the winner's data.** `deleteStaleSegments` deletes a data file only when a metadata file
+  being deleted references it *and* no kept or locked metadata file does (`activeSegmentRemoteFilenames`).
+  Uploaded data files are named with a uuid suffix, so two writers never produce the same blob. Even a superseded
+  primary running cleanup — which it does here, because the upstream fence that would stop it
+  (`isRemoteStoreFenceSupersededFailingClosed`) is off — leaves the higher term's files alone.
+
+**So D8.2's "two primaries could write to the same remote path and corrupt it" is wrong for segments.** With both
+primaries writing to one path, readers deterministically prefer the higher term and nothing is overwritten.
+
+### 27.2 What that removes from §26, and what it does not
+
+- **The path prefix is unnecessary** (§26 intro, §26.5). The primary term is already a per-shard value, already in
+  `IndexMetadata`, already in the layout. The shard-versus-index-setting ladder does not have to be climbed, and
+  nothing needs to be asked of upstream for isolation.
+- **§26.3 and §26.4 survive with a different number.** The supervisor should still choose the value and it should
+  still be monotonic per shard and durable independently of any node's documents. The value is the **primary
+  term**, which finding 11 already requires in the assignment for promotion to work at all. One number serves
+  promotion, fencing and rollback.
+- **§26.1's warning changes form rather than going away.** A shared path means a lower-term primary's writes are
+  simply invisible to readers. Under push ingestion, a lower-term primary that is still accepting writes loses them
+  silently — the same split §26.1 described, arrived at differently. **§26.2's self-demotion rule is still required
+  for push ingestion and document replication.** Under pull-based ingestion both primaries consume one stream, so
+  running two is not a split but a feature, and that is the case the rest of this section is about.
+- **Today every term is 1.** Two primaries of one shard therefore collide at the same term and hit
+  `verifyNoMultipleWriters`. Finding 11 — the supervisor owning and advancing a per-shard term — is the
+  prerequisite for everything below.
+
+### 27.3 What a rollback needs
+
+The deployment this design wants, which vanilla OpenSearch never does: start a new primary at term N+1 beside the
+old one at N, move search replicas across gradually, and be able to move them back if the new version misbehaves.
+Three facts of the replication and cleanup paths stand in the way.
+
+**Search replicas cannot be pinned.** `RemoteStoreReplicationSource.getCheckpointMetadata` reads through
+`remoteDirectory.init()`, which is `readLatestMetadataFile`. So the first upload at N+1 moves every search replica at
+once. That is right for failover and rules out a gradual rollout. Pinning needs an upstream change, and the
+narrowest one is:
+
+> a search-only copy reads the newest metadata whose term is **≤ the term its cluster state names for that shard**.
+
+The data plane's note worried about the term field carrying two meanings. Under this rule it carries one: a copy
+never reads from a primary its cluster state has not told it about. That is defensible upstream by itself, independent
+of this deployment. **The term must be read from `IndexMetadata.primaryTerm(shardId)`, not from the shard.** A
+shard's own term is set only at construction, on promotion (`updateShardState`, primary branch only) or when a
+primary's operation arrives (`acquireReplicaOperationPermit`), and a remote-store search replica receives no
+operations — so its own term never moves. The same fact makes raising a search replica's fabricated term in place
+harmless: `updateShardState` does nothing with a term change on a non-primary entry.
+
+**A replica can move forward in place, but not back.** `SegmentReplicationTargetService` starts a round only when the
+received checkpoint `isAheadOf` the replica's own, and that comparison is term-first. The check is skipped only
+while the copy is initializing. So raising a replica's pin from N to N+1 is in place; lowering it is a **rebuild** —
+remove the copy and place a new one pinned to N. §26.6's point stands in the asymmetric form: remove-then-place
+already exists (§14.5, §23), and rollback is the direction that needs it.
+
+**Cleanup deletes the old primary's state within seconds.** `deleteStaleSegments` keeps the newest
+`cluster.remote_store.index.segment_metadata.retention.max_count` files (default 10) across **all** terms, and
+every term-N+1 file sorts ahead of every term-N file. So about ten refreshes after the new primary starts, all of the
+old primary's remote metadata — including what it uploaded a moment ago — is eligible for deletion, and so are the
+data files only it references. With pinned timestamps disabled, `filterOutMetadataFilesBasedOnAge` adds no grace.
+Both primaries run cleanup, so the old primary deletes its own history too. A replica pinned to N reads files that are
+being deleted underneath it.
+
+Three ways to spare term N, in increasing order of precision:
+
+1. **Turn cleanup off on the two nodes for the duration.** The retention setting accepts `-1`, which makes
+   `deleteStaleSegments` return immediately, and it is a dynamic *cluster* setting — so each node can carry it in its
+   own fabricated cluster state with no upstream change. Blunt: every shard on those two nodes stops cleaning up,
+   and the remote store grows for the length of the deployment. Worth confirming on the data plane side that a
+   persistent setting in fabricated metadata reaches `RemoteStoreSettings`' update consumer.
+2. **Lock the old primary's metadata** with `RemoteStoreMetadataLockManager`, the mechanism snapshots use and that
+   cleanup honours by failing closed. Precise, but a lock pins one file and the old primary uploads a new one every
+   refresh, so the lock would have to follow its head.
+3. **Pinned timestamps**, which cleanup also honours as implicit locks. Not investigated.
+
+**Recommended: (1) for a first version.** It needs nothing from anybody, it is obviously correct, and its cost is
+bounded by the deployment's duration. It also gives the lifecycle a clean shape: **cleanup being off on a shard's
+primaries means rollback is still possible; turning it back on commits the deployment.**
+
+### 27.4 Rollback never demotes the old primary
+
+The obvious model — "fail back to the old primary" — cannot work, for two reasons found in `IndexShard.updateShardState`:
+
+- terms only go up (`assert newPrimaryTerm > pendingPrimaryTerm`), so the old copy cannot return to term N as
+  primary — it would have to take N+2;
+- and a started primary cannot take a higher term in place (`assert currentRouting.primary() == false : "term is only
+  increased as part of primary promotion"`), so it would have to be re-opened — and re-opening a remote-store copy
+  runs `syncSegmentsFromRemoteSegmentStore`, which, as the data plane's notes document, replaces local commits with
+  the **latest uploaded** one. That is the new primary's: the state being rolled back from.
+
+So the old primary must simply never stop. The sequence:
+
+1. **Deploy.** Place a new primary at term N+1 beside the old one at N. Cleanup off on both nodes. Search replicas
+   stay pinned to N.
+2. **Roll forward.** Raise search replica pins to N+1, one at a time, in place.
+3. **Roll back.** Rebuild each moved replica pinned to N, retire the N+1 primary, and **delete term N+1's metadata**.
+   Leaving it is not harmless: once cleanup is back on, the old primary's keep-window would retain the dead N+1
+   files ahead of its own and delete its own current state.
+4. **Commit.** All replicas at N+1: turn cleanup back on, retire the old primary.
+
+This works because pull-based ingestion keeps both primaries consuming one stream, so the old one is never behind
+and no data has to flow back to it.
+
+### 27.5 What is still open
+
+- **The pin is an upstream change**, and the only one this section needs. Everything else is supervisor and data
+  plane work.
+- **Deleting term N+1's metadata on rollback needs repository access**, which the supervisor does not have (the same
+  reason R5.3 is deferred). The natural actor is a data plane node, instructed through its assignment.
+- **The instruction vocabulary.** An assignment needs to carry, per copy: the primary term (finding 11), a search
+  replica's pin, and whether cleanup may run. Worth designing together, since all three change in the same
+  deployment steps.
+- **Push ingestion and document replication** get §26.2's exclusion rule and not this section's dual-run. Two
+  primaries accepting writes is a split, whatever the path layout.
