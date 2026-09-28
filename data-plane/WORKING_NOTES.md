@@ -515,6 +515,41 @@ settings" problem does not have to be solved. And a search replica needs no flip
 `readLatestMetadataFile`, which follows the highest term on its own, so a primary moving needs no rolling replace of
 its replicas.
 
+### A persistent setting in fabricated metadata does reach RemoteStoreSettings — traced end to end
+
+Asked for by the supervisor, because `DESIGN.md` §27.3's first recommendation rests on it: turning segment cleanup
+off on a shard's primaries for the length of a deployment, so a rollback stays possible, using the dynamic cluster
+setting `cluster.remote_store.index.segment_metadata.retention.max_count`. Five links, all checked:
+
+1. `Metadata.settings()` is `Settings.builder().put(persistentSettings).put(transientSettings).build()`, so a
+   **persistent** setting is included — transient wins a tie, which is upstream's precedence and not ours to change.
+2. `ClusterApplierService` calls `clusterSettings.applySettings(event.state().metadata().settings())` on an applied
+   state, **guarded by `metadataChanged()`** — see the next paragraph, which is the part that nearly made this a
+   no-op.
+3. The setting is `Property.NodeScope, Property.Dynamic`, which is what makes it applicable at all: `applySettings`
+   only touches dynamic settings.
+4. `RemoteStoreSettings` registers `addSettingsUpdateConsumer(..., this::setMinRemoteSegmentMetadataFiles)`, so the
+   value lands in the node-level singleton.
+5. `RemoteStoreRefreshListener` reads it **live** on each sync —
+   `deleteStaleSegmentsAsync(indexShard.getRemoteStoreSettings().getMinRemoteSegmentMetadataFiles())` — so a change
+   takes effect on already-running shards without reopening anything.
+
+`-1` is the documented off switch: the setting's minimum is `-1`, its javadoc says `value < 1` disables deletion of
+stale metadata, and `0` is rejected outright with *"it would delete all the data from remote segment store"*.
+
+**The link that was missing was on this side.** `metadataChanged()` only holds on a pass that publishes, a pass only
+publishes when `StateEquivalence.sameContent` sees a difference, and `sameContent` compared indices and routing
+tables only — its javadoc asserted "everything else in the state is constant". So a state differing *only* by a
+cluster setting compared equal, was never published, and the setting reached nothing: the node would hold the value
+in the state it fabricated while the running components did not have it. Fixed, with tests, and worth remembering as
+the general shape — **anything this plugin ever puts in a cluster state outside an index has to be in `sameContent`
+or it does not happen.**
+
+**One cost worth stating before this is the recommended first version:** the setting is cluster-scoped, so it stops
+cleanup for *every* shard on that node, not just the one being deployed. On a node holding several tenants' shards
+the blast radius of the remote-store growth is other tenants' storage, which may argue for the metadata lock sooner
+than "first version" suggests, or for placing a deployment's primaries on nodes chosen for it.
+
 ### Pinning a search replica to a term, and why the pin must come with a lock
 
 Two live primaries at different terms is not something vanilla OpenSearch ever has, and it is something this design

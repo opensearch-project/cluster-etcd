@@ -133,12 +133,32 @@ negotiable**: 200 nodes writing everything at heartbeat rate is the store's domi
 - **D8.1 The plugin must not promote itself.** It holds the role it was assigned. Deciding that a shard needs a
   primary is the supervisor's job, and a node that promoted on its own initiative could produce two primaries
   from one partition.
-- **D8.2 Primary fencing is a known, open gap — do not paper over it.** There is currently no per-primary
-  generation, so two nodes briefly believing they are primary for a remote-store-backed shard could write to the
-  same remote path and corrupt it. The supervisor avoids the situation by never moving or failing over a
-  primary. **If implementing this exposes a mechanism that would let a superseded primary be fenced, that is a
-  finding worth reporting** — it is the single biggest gap in the whole design, and it is partly work in
-  OpenSearch itself. See `../opensearch-supervisor/DESIGN.md` §13, open question 1.
+- **D8.2 Primary fencing is a known gap, and it is smaller than this said.** The original text claimed that two
+  nodes briefly believing they are primary for a remote-store-backed shard "could write to the same remote path and
+  corrupt it". **That is wrong for segments**, and it was wrong when written. Reading the remote segment store shows
+  three things already in place: a metadata filename begins with `RemoteStoreUtils.invertLong(primaryTerm)` and
+  `readLatestMetadataFile` takes the lexicographically first, so **the newest term wins every read** and a
+  superseded primary's metadata can never be latest; the node id is in that filename and
+  `verifyNoMultipleWriters` throws when two node ids share a (term, generation), which is a tripwire over the newest
+  ten files rather than a guarantee; and uploaded data files carry a uuid, so two writers never produce the same
+  blob. `deleteStaleSegments` also deletes a data file only when no kept or locked metadata file references it, so
+  even a superseded primary's cleanup leaves the higher term's files alone. `WORKING_NOTES.md` has the detail and
+  `../opensearch-supervisor/DESIGN.md` §27 has the analysis both sides arrived at.
+
+  **What remains is real and has a shape.** Isolation is not exclusion: a shared path means a lower-term primary's
+  writes are invisible rather than corrupting, which for **push ingestion and document replication** is a silent
+  loss of acknowledged writes, and for **pull-based ingestion** is not a split at all because both primaries consume
+  one stream. So the gap is exclusion, and the mechanism is a per-shard primary term the supervisor owns and
+  advances — which document replication needs anyway for promotion to work at all (finding 11), and which is the
+  *same number* segment replication needs for fencing. **Every primary term this plugin fabricates is `1` and never
+  advances, so none of it is available yet**, and until it is, the supervisor avoids the situation by never moving or
+  failing over a primary.
+
+  The mechanism that would fence a superseded primary on the **translog** side does exist — a CAS token claimed by
+  `IndexShard.sealRemoteStoreFence` — and is unreachable here, because it is claimed on the translog repository and
+  gated on `isRemoteTranslogStoreEnabled()`, which `segments_only` does not have. Reported upstream as the finding
+  this requirement asks for: the enforcement side already reads fence ownership on the segment path, so it is one
+  repository-shaped gap from being usable.
 - **D8.3** A node must never act on an assignment written for a different `ephemeral_id` in a way that assumes
   continuity with its own predecessor's state.
 - **D8.4** Two processes must never share a node id. If a node id is derivable rather than configured, it must
