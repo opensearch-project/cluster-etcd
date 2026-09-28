@@ -69,9 +69,6 @@ public enum FindingKind {
     /** A copy of a tenant's shard on a node outside that tenant's pool. */
     FOREIGN_COPY(CRITICAL),
 
-    /** A copy built against a different revision of the index document than the current one. */
-    STALE_CONFIG(WARNING),
-
     /** A node's heartbeat key has not changed revision within its staleness threshold. */
     NODE_STALE(WARNING),
 

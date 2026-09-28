@@ -359,7 +359,6 @@ independently disableable, which matters when one of them turns out to oscillate
 | `SURPLUS_COPY` | more copies than desired | warning |
 | `ORPHANED_COPY` | a copy whose index uuid is absent from desired state, **held or merely assigned** | warning, **acts only after K passes** |
 | `FOREIGN_COPY` | a copy on a node outside the tenant's pool | info during a rebind, critical otherwise |
-| `STALE_CONFIG` | a copy's `config_revision` ≠ the index document's revision | warning |
 | `NODE_STALE` / `NODE_LOST` | heartbeat revision unchanged past the thresholds | warning / critical; `LOST` is reaped once it ages (§20.2) |
 | `NODE_UNREGISTERED` | heartbeat without registration | warning |
 | `NODE_REGISTRATION_REWRITTEN` | a node recently put its own registration back — most likely this service reaped a live one (§20.3) | warning, **on the age of the last rewrite, never the count** |
@@ -575,9 +574,11 @@ Short, and each item says whose it is:
   store. Deferred for exactly that reason rather than for effort.
 - **The oscillation detector** — R7.3, and the one monitoring rule still blocked. It needs cross-pass memory of
   *actions* rather than of findings, and a window definition; the rest of §5.2 evaluates today.
-- **`STALE_CONFIG` is declared and raised by nothing.** The condition is evaluated only as a task's completion
-  test, so a copy sitting on an old configuration for ever is not a finding. Cheap to add and nobody has needed
-  it.
+- ~~**`STALE_CONFIG`**~~ **removed rather than implemented.** A copy whose `config_revision` is behind is not a
+  problem, it is a copy mid-update: the condition is already the completion test for `UPDATE_MAPPING` and
+  `UPDATE_SETTINGS`, so a stuck update shows up as `TASK_STUCK` — a finding that names the task, the attempts and
+  the reason, which is strictly more useful than one naming the copy. A finding for the same condition would have
+  fired on every configuration change in flight.
 - **`Differ` and `StatusComputation` count *configured* copies, not authorised ones**, where `SurplusReaper` and
   `AllocationContext` count authorised (§15). So a shard legitimately scaled past its setting would raise a
   `SURPLUS_COPY` the reaper then correctly declines to act on — a permanent finding, which now also means a
@@ -769,9 +770,10 @@ wants the same fix.
 1. **No fencing identity for a primary — carried as a known gap**, and partly not ours to close. §12:
    promoting a primary is two writes with no token, so two nodes can hold the role at once. Pull-based
    ingestion removes the data divergence but not the remote-store path collision, so no replication mode is
-   exempt. The shape of the answer is a per-shard **primary generation** rather than only a term, since
-   per-generation paths also buy upgrade-with-rollback; it depends on OpenSearch's remote-store segrep
-   supporting a new primary writing a new path and bootstrapping from the previous one.
+   exempt. **§26 is now the worked proposal** — the short version is that the path prefix buys isolation and not
+   exclusion, that the exclusion half is a node self-demotion rule needing nothing from upstream, and that the
+   per-shard-versus-index-setting difficulty has a three-step ladder out of it whose first step asks nobody for
+   anything.
 2. **Cross-pool data migration** — §4. The supported path only covers the case where nodes can move with
    their data. Everything else is a sketch.
 3. **The dedicated-pool ceiling** — a single tenant too large for one supervisor has no answer short of
@@ -1915,3 +1917,127 @@ So the tenant-scoped reading is right and **incomplete: there is no operator-sco
 cannot today say "stop allocating in this pool", and the nearest thing is asking every tenant bound to it to set
 its own flag. Worth having, and it is a pool definition field rather than a cluster setting — which is the whole
 point of this section.
+
+## 26. Fencing a primary: what the path prefix does and does not buy
+
+Open question 1 is the largest gap here, and there is a concrete proposal for it: the
+`index.remote_store.segment.path_prefix` setting — added upstream in response to an issue filed during the
+`../cluster-etcd` work — with a unique value per primary incarnation, so a new primary writes somewhere the old one
+was not. Search replicas are told the same value and are rolling-replaced onto the new prefix when it changes.
+
+The idea is sound and this section is mostly about what has to go with it, plus one change to who chooses the value
+and one cheaper way to ask upstream for the hard part.
+
+### 26.1 Isolation is not exclusion, and that distinction is the whole problem
+
+**A unique prefix per writer prevents collision. It does not prevent two writers.** Two nodes each believing they
+hold the primary, each writing to its own prefix, produce no corruption at all — and a **silent split of the
+data**: some documents land under `P0`, some under `P1`, the search replicas follow whichever prefix they were
+told, and the other half is simply invisible. Nothing reports it, nothing repairs it, and both nodes report
+themselves perfectly healthy. That is worse than the collision it was meant to prevent, because the collision is
+at least detectable.
+
+So the prefix belongs to the *recovery* half of the problem — it is what makes a primary move cheap and an upgrade
+rollback possible — and something else has to do the *exclusion*. It is worth being explicit that these are two
+mechanisms, because a scheme that only isolates looks finished.
+
+### 26.2 The exclusion half can be built now, with no upstream change
+
+**A node holding a primary stops accepting writes if it has not re-read its own assignment within T.**
+
+That is the whole rule, and every piece of it already exists. The node polls its own assignment key. It knows its
+heartbeat interval. The supervisor already decides a node is gone from revision silence — so this is that same
+mechanism pointed the other way: instead of the supervisor concluding the node is gone, the node concludes it may
+have been *declared* gone. Set the node's self-demotion window below the supervisor's `lost` threshold and the
+window in which two nodes can both believe they are primary closes by construction:
+
+```
+node stops writing at   T_self  = lost − margin
+supervisor may reassign  T_lost
+```
+
+Three things make this cheaper here than it sounds:
+
+- **The data plane needs no new capability.** Self-demotion is the node behaving as though its assignment had
+  stopped naming it as primary — which is a thing it already does, every time the supervisor withdraws a copy. It
+  needs a timer, not a new code path for refusing writes.
+- **It needs no remote-store support and no OpenSearch change.** It is a contract rule and a clock.
+- **It composes with the prefix rather than competing.** Exclusion makes the split impossible; the prefix makes the
+  handover cheap. Neither substitutes for the other.
+
+The cost, stated plainly: a node partitioned from the store stops serving **writes** for its primaries while
+remaining up. That is the correct trade for a primary and it is a real availability cost, and it is the same trade
+every lease-based system makes. Reads are unaffected, which matters — a search replica has no exclusion problem at
+all, because it writes nothing.
+
+### 26.3 The supervisor should choose the value, not the node
+
+The proposal has the node hosting the primary inject a unique value — its node id or ephemeral id. In vanilla
+OpenSearch that is the only option, because nothing else is in a position to. Here it is the weaker choice:
+
+- a search replica has to be told which prefix to follow, and if the node picks it, the supervisor learns it only
+  by reading it back — so the instruction depends on an observation of the thing it is instructing;
+- and two nodes that both believe they are primary would each pick a value with **nobody arbitrating**, which is
+  exactly the case the mechanism exists for.
+
+The supervisor is the single writer of the assignment, so it is the natural allocator — and allocating the value
+with a compare-and-set **is** the fencing primitive, rather than being a separate thing bolted beside one. A node
+that finds a generation in its assignment newer than the one it is writing under knows it has been superseded
+without being told.
+
+### 26.4 Where the generation lives is the interesting consequence
+
+It must be **monotonic per shard and durable independently of any node's documents**, and that is a sharper
+constraint than it looks. `nodes/assignment/<id>` cannot be its home: §20.2's reaping deletes that key, and finding
+10's lesson generalises — *a counter that restarts on deletion cannot be compared by ordering across the
+deletion.* A projection cannot be its home either, because projections are derived and this is not.
+
+So it wants its own supervisor-owned key, incremented under compare-and-set. And that makes it **the first
+authoritative, non-derived state this service would own.** Everything the supervisor writes today is either derived
+from an observation or an instruction computed from one; R2.1 is satisfied because a restarted supervisor can
+recompute all of it. A generation counter is neither: it is *input* to a decision and cannot be recomputed from
+what it can see.
+
+That is a real departure and should be taken deliberately rather than discovered. It does not violate R2.1 so much
+as add a second category — and the property that keeps it honest is that the counter only ever increases, so losing
+track of it can only ever be repaired by skipping forward, never by reusing a value.
+
+### 26.5 The shard-versus-index setting problem, and a ladder out of it
+
+The known difficulty: the prefix is an **index** setting, and what is wanted is a **shard** setting, because one
+index's shards have primaries on different nodes and therefore different generations. Shard-level settings are not
+an OpenSearch concept, and asking for one is asking for a new concept.
+
+Three steps, each shippable alone, each correct, in increasing order of what it asks of other people:
+
+1. **Index-level generation, bumped for every shard at once.** Any primary move anywhere in the index advances one
+   number, so generations never differ within an index and today's index setting is sufficient for ever. Needs
+   nothing from anybody. The cost is real and bounded: a single primary move re-replicates the whole index. For a
+   deployment where primary moves are rare — and a demo, and any early production — that is a price worth paying
+   to have the correctness now.
+2. **Per-shard generation, plus a placement rule.** Generations may then differ within an index, and the only thing
+   that breaks is *one node holding two shards of one index whose generations differ*. That is an allocation
+   decider — refuse a copy whose generation disagrees with a copy of the same index already on that node — which is
+   exactly the shape this codebase is already built around, and it costs placement flexibility rather than
+   correctness. It binds only after a primary has actually moved, so on a converged pool it is free.
+3. **Ask upstream for an affix setting, not a shard setting.** `index.remote_store.segment.path_prefix.<shard-id>`
+   as a grouped or affix setting is expressible in today's index metadata, and OpenSearch has plenty of precedent
+   for settings keyed by something — `index.routing.allocation.require.*` among them. That is a keyed map rather
+   than a new level of the settings hierarchy, which is a much smaller ask than "shards can have settings" and
+   stands a far better chance of landing.
+
+Step 2 is the one worth aiming at, and step 1 is worth building first because it is the same supervisor-side
+machinery with the generation scoped differently — the seam is where the number is stored, not how it is used.
+
+### 26.6 The rolling replace is already expressible
+
+Flipping search replicas onto a new prefix needs no new instruction. "Replace a search replica" is remove one, place
+one, and §14.5's add-before-remove ordering plus `SurplusReaper` already sequence exactly that — the machinery
+§23's displacement uses. So the expensive-sounding half of the proposal is the half that is already built.
+
+### 26.7 Three customers for the same mechanism
+
+Worth noting before anyone prices this as fencing alone. A per-shard generation carried in the assignment is also
+what §24.4's graceful primary demotion needs, and what an upgrade-with-rollback needs — a new primary on a new
+OpenSearch version writing a new path, with the old path intact to roll back to. Same number, same channel, three
+reasons to want it.

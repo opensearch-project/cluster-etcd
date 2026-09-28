@@ -66,7 +66,6 @@ public final class Thresholds {
         // One per deleted index is the signature of a copy nothing will let go of.
         rules.put(FindingKind.TASK_STUCK, new Rule(10, Alert.Severity.WARNING));
 
-        rules.put(FindingKind.STALE_CONFIG, new Rule(100, Alert.Severity.WARNING));
         rules.put(FindingKind.PROJECTION_STALE, new Rule(100, Alert.Severity.WARNING));
 
         // A version skew or a codec bug. Either way somebody has to look at bytes.
