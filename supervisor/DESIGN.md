@@ -2193,9 +2193,8 @@ and no data has to flow back to it.
   plane work.
 - **Deleting term N+1's metadata on rollback needs repository access**, which the supervisor does not have (the same
   reason R5.3 is deferred). The natural actor is a data plane node, instructed through its assignment.
-- **The instruction vocabulary.** An assignment needs to carry, per copy: the primary term (finding 11) and a search
-  replica's pin; and per node, whether cleanup may run — per node rather than per copy, because that is the
-  granularity of the setting. Worth designing together, since all three change in the same deployment steps. The
+- **The instruction vocabulary** is designed in §28: one per-copy term that also serves as the pin, retention as
+  per-copy intent with the mechanism declared by the node, and term abandonment as an acknowledged instruction. The
   data plane side of the cleanup switch is done; nothing yet asks for it.
 - **A lock that follows the old primary's head** (27.3's option 2) is undesigned. It is the one that shared pools
   want, and the obvious holder is the old primary itself — it knows each file as it uploads it — told through its
@@ -2206,3 +2205,159 @@ and no data has to flow back to it.
   already reads ownership on the segment path, but which is claimed on the translog repository and so is gated off
   in `segments_only` mode. The data plane has reported that gap upstream; if it closes, exclusion for push ingestion
   may come from OpenSearch rather than from a self-demotion timer.
+
+---
+
+## 28. The assignment fields for terms, pins and retention
+
+**Status: designed, not implemented.** §27.5 listed the instruction vocabulary as open; this is it. The wire format is
+in `NODE_CONTRACT.md`, *Proposed: primary terms and remote-store history*. This section is the reasoning.
+
+Four fields and one registration field. The design choices that matter are why there are only four.
+
+### 28.1 The term and the pin are one field
+
+Each copy gets one number: **the primary term this node's cluster state names for that shard.** What it means
+follows from the copy's role, and every meaning is one OpenSearch already gives the term:
+
+| role | what the term does |
+|---|---|
+| `PRIMARY` | the term it writes under. An increase on a copy that was not primary is a promotion (finding 11). |
+| `REPLICA` (document replication) | the term it accepts operations at; a primary writing at an older term is refused. |
+| `SEARCH_REPLICA` | the highest term whose remote metadata it reads — the pin, once upstream honours §27.3's rule. |
+
+A separate pin field was the obvious design, and it would be two numbers that can disagree, leaving a node to decide
+which wins. Under §27.3's rule — *a search-only copy reads metadata no newer than the term its cluster state names* —
+they are the same number, so they are one field. Until upstream implements that rule, a search replica ignores it
+and reads the latest, which is today's behaviour. The field is therefore safe to ship before the upstream change,
+and becomes a pin when it lands.
+
+Terms are per copy rather than per shard because each assignment is one node's. In steady state every copy of a
+shard is told the same term. The exception is §27.4's dual-run, where the old primary is told N and the new one
+N+1 — which is why the field cannot live in a shard-level document.
+
+### 28.2 A sibling map, not an object
+
+`shards` stays `{"0": "PRIMARY"}`. The terms go in a sibling map, `primary_terms: {"0": 4}`, on the same index entry.
+
+Making each shard value an object would say it more directly, and it would break every deployed reader in the
+direction that matters: a supervisor upgraded before its nodes would write documents no node can read. The `roles`
+change (§18.1) cost a running deployment in exactly that way, and a sibling map is additive — an older reader ignores
+it and carries on at term 1, which is today's constant.
+
+The cost is that two maps can disagree, so the rules are stated rather than assumed: the supervisor writes a term for
+**every** shard in `shards` or for none of that index, never some; a shard with no term is at 1; a term for a shard
+absent from `shards` is an error the node defers with a reason.
+
+### 28.3 A node must say which fields it understands
+
+The ingestion reset is acknowledged through `applied` (§21.2), and that works because a node that did not understand
+the reset would not be holding the shard's primary consumer anyway. **For terms, `applied` lies.** A node whose reader
+ignores an unknown `primary_terms` field applies everything else, fabricates term 1, and reports `applied` — and for a
+promotion that means recreating the shard at the same term as the old primary, which is two primaries at one term.
+
+So registration gains **`contract_features`**: a list of strings naming the optional parts of this contract the node
+implements. Written once per process, 4 KiB budget, no per-copy cost. The supervisor:
+
+- writes `primary_terms` to every node regardless — harmless to one that ignores it;
+- **only moves or dual-runs a shard's primary when every node involved declares `primary_terms`**. In a pool where
+  some node does not, primaries stay where they are, which is today's behaviour. Nodes can therefore upgrade one at
+  a time with no flag day;
+- ignores feature strings it does not recognise, for the same reason a node ignores unknown fields.
+
+The inventory gains nothing. It is at 89% of its budget with no room for a per-copy field (the contract's own
+measurement), and with capability declared up front, `applied` plus the existing deferred reasons are enough to
+confirm a term took effect.
+
+### 28.4 Retention: intent per copy, mechanism per node for now
+
+`retain_remote_history: {"0": 3}` on a `PRIMARY` copy means: **spare shard 0's term-3 remote metadata, and the files it
+references, from cleanup.** During a dual-run both primaries carry it, with the old term as the value, because both
+run cleanup (§27.3).
+
+The intent is per copy even though today's mechanism is per node, and that corrects §27.5's first draft, which put the
+field on the node because that is the setting's granularity. Stating intent lets the mechanism change without a format
+change:
+
+- **`retain_remote_history`** — the node implements it with the `-1` retention setting, so every primary on the
+  node stops cleaning up;
+- **`retain_remote_history_scoped`** — the node implements it with a metadata lock that follows the old primary's
+  head, so only that shard is affected.
+
+The supervisor knows the cost and makes the choice, per §27.3: **a dedicated pool accepts either feature; a shared pool
+requires the scoped one**, so no tenant's deployment grows another tenant's storage. The same field, two feature
+strings, and the policy stays where the knowledge is.
+
+### 28.5 Abandoning a term is an instruction, acknowledged like a reset
+
+`abandon_remote_terms: {"id": "<rollback id>", "shards": {"0": 3}}` means: **delete shard 0's remote metadata whose term
+is above 3.** It is §27.4's rollback step, and it is an instruction rather than desired state for the reason §21.2
+gives: expressing it as a standing condition ("no metadata above term 3 exists") would have the node list the
+repository for every shard on every pass. It runs once, keyed on its id, and is acknowledged through `applied` exactly
+as a reset is.
+
+It is destructive, so the supervisor writes it only when all of these hold:
+
+- no observed inventory and no live assignment holds a copy of the shard at a term above T — the newer primary has
+  been retired **and has gone**, or it would upload new metadata behind the deletion;
+- the receiving copy is the shard's `PRIMARY` at term T;
+- the receiving node declares `abandon_remote_terms`.
+
+And it must be acknowledged **before** retention is released. Released first, the old primary's cleanup would keep the
+abandoned term's files ahead of its own and delete its own current state (§27.4).
+
+### 28.6 Where the term comes from
+
+A supervisor-owned key, `supervisor/terms/<tenant>/<index-uuid>`, holding the highest term ever issued for each
+shard. It is §26.4's counter with the primary term as its value, and it is the first authoritative, non-derived state
+this service owns.
+
+- **Incremented under compare-and-set before any assignment carries the new term.** An assignment written first and the
+  counter lost after would reissue the term.
+- **Created with the index, at 1 for every shard.** So an absent counter for an index this service has seen is an
+  error, not a default: the supervisor refuses to move that index's primaries and raises a finding, because
+  guessing 1 after terms have advanced is the reuse finding 10 warned about. Indices that predate this get their
+  counter when first observed; that is the one moment absent means "never advanced".
+- **Tenant- and index-scoped, not pool-scoped**, so it survives a pool handover. Deleted with the index uuid, which
+  is safe because the remote store path is per index uuid — a recreated index starts from an empty path.
+- **Outside `tenant/<t>/`**, because the control plane has no business reading or writing it.
+
+### 28.7 The two sequences, as field changes
+
+Promotion — document replication, or a drain (finding 11). One pass:
+
+1. Counter for the shard: N → N+1, under compare-and-set.
+2. The copy being promoted: role `PRIMARY`, term N+1.
+3. The demoted copy: role `REPLICA`, term N+1 — in the same pass, so it sees it has been superseded rather than
+   refusing its own writes.
+4. Every other copy of the shard: term N+1.
+
+Dual-run deployment with rollback (§27.4), across many passes:
+
+| step | fields |
+|---|---|
+| deploy | counter N → N+1; new copy `PRIMARY` term N+1 with `retain_remote_history` N; old copy stays `PRIMARY` term N, gains `retain_remote_history` N; search replicas stay at N |
+| roll forward | one search replica at a time: term N → N+1, in place |
+| roll back | each moved search replica removed and replaced at term N; new primary removed; once it has gone, `abandon_remote_terms` N on the old primary; once acknowledged, `retain_remote_history` removed |
+| commit | all search replicas at N+1; `retain_remote_history` removed from both; old primary removed |
+
+### 28.8 What each side validates
+
+The node defers, with a reason, rather than acting on:
+
+- a term for a shard not in `shards`;
+- a term lower than the one a started copy is already running — the supervisor should replace the copy instead;
+- `retain_remote_history` or `abandon_remote_terms` on a copy that is not `PRIMARY`;
+- `abandon_remote_terms` whose T is not the receiving copy's own term.
+
+The supervisor never writes a term below the counter, never writes two `PRIMARY` copies of a shard at one term, and
+never lowers a copy's term in place.
+
+### 28.9 What this does not decide
+
+- **Where "a deployment is in progress for this shard" lives.** Two `PRIMARY` copies of one shard are, today, a
+  surplus. The differ and the reaper need to know a dual-run is intended, and that is desired state, not an
+  assignment field — the announced-deployments document recorded as future work is its natural home.
+- **The upstream pin.** Until it lands, a search replica's term is recorded and has no effect on what it reads, so
+  the roll-forward and roll-back steps move nothing.
+- **The scoped lock's design** (§27.5).

@@ -517,6 +517,60 @@ The node's full desired state. Written only when it changes.
   practice, is to split per tenant — `nodes/assignment/<node-id>/<tenant>` — which the layout permits
   without moving anything else.
 
+### Proposed: primary terms and remote-store history
+
+**Status: proposed, not implemented by either side.** The reasoning is `DESIGN.md` §28; this is the format.
+
+Registration gains one optional field:
+
+```json
+"contract_features": ["primary_terms", "retain_remote_history", "abandon_remote_terms"]
+```
+
+It names the optional parts of this contract the node implements. **A node must list a feature only if it acts on
+it**, because the supervisor uses the list to decide what it may safely ask. A reader that silently ignores an unknown
+assignment field still reports `applied`, so `applied` cannot tell the supervisor whether a term was understood. The
+supervisor ignores feature strings it does not recognise. Absent means none.
+
+| feature | the node implements |
+|---|---|
+| `primary_terms` | `primary_terms` below |
+| `retain_remote_history` | `retain_remote_history`, by turning segment cleanup off for the whole node |
+| `retain_remote_history_scoped` | the same field, by a metadata lock covering only that shard |
+| `abandon_remote_terms` | `abandon_remote_terms` below |
+
+An index entry in the assignment gains three optional fields, siblings of `shards`, which is unchanged:
+
+```json
+"uzKxLWZu4nPSrTknEcDpoA": {
+  "name": "my-index",
+  "config_revision": 3041,
+  "shards": { "0": "PRIMARY", "1": "SEARCH_REPLICA" },
+  "primary_terms": { "0": 4, "1": 4 },
+  "retain_remote_history": { "0": 3 },
+  "abandon_remote_terms": { "id": "rollback-7f3a", "shards": { "0": 3 } }
+}
+```
+
+- **`primary_terms`** — the primary term this node's cluster state names for each shard. Present for every shard in
+  `shards` or for none; a shard with no entry is at 1. A `PRIMARY` writes under it, and an increase on a copy that
+  was not primary is a promotion. A `REPLICA` accepts operations at it. A `SEARCH_REPLICA` reads remote metadata no
+  newer than it, once upstream supports that; until then it has no effect on what the copy reads. The supervisor
+  never lowers a term in place: a node told a lower term than a started copy is running defers it with a reason.
+- **`retain_remote_history`** — on `PRIMARY` copies only: spare remote metadata at this term, and the files it
+  references, from segment cleanup, until the entry disappears. Which mechanism is used is declared by feature, and
+  the supervisor chooses what to ask for knowing the difference.
+- **`abandon_remote_terms`** — on the shard's `PRIMARY`, whose own term must equal the value: delete this shard's
+  remote metadata above that term. An instruction, keyed on `id` for idempotence and acknowledged through `applied`
+  exactly as `ingestion_reset` is. The supervisor writes it only once no copy at a higher term exists or is assigned,
+  and removes it once acknowledged.
+
+A node defers, with a reason, a term for a shard not in `shards`, either remote-history field on a copy that is not
+`PRIMARY`, and `abandon_remote_terms` whose term is not the copy's own.
+
+**No inventory field.** The inventory has no room for another per-copy field, and none is needed: with the feature
+declared, `applied` and the deferred reasons confirm the instruction.
+
 ### Routing is not here, and neither is peer wiring
 
 A coordinator needs to know where every shard of its tenants lives. So, under document replication, does a
