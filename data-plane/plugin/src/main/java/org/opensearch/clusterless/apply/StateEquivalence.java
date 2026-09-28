@@ -33,8 +33,9 @@ import java.util.Set;
  * usefully have one — the version differs by construction, and so would any timestamp in it. What matters is
  * what this plugin actually fabricates: which indices exist, their metadata, and the routing table for each.
  * {@link IndexMetadata} and {@link IndexRoutingTable} both implement {@code equals}, which is what makes this a
- * comparison rather than a heuristic. Everything else in the state is constant: the node list is this node, and
- * the blocks and customs are whatever a fresh builder produces.
+ * comparison rather than a heuristic. Cluster-scoped settings are compared too, for a reason given at the call —
+ * they are the one part of the state outside the indices that anything here would ever change. Beyond those, the
+ * state is constant: the node list is this node, and the blocks and customs are whatever a fresh builder produces.
  */
 public final class StateEquivalence {
 
@@ -44,6 +45,22 @@ public final class StateEquivalence {
      * @return true when applying {@code intended} would change nothing about the indices this node holds
      */
     public static boolean sameContent(ClusterState applied, ClusterState intended) {
+        // Cluster-scoped settings, and they are here because leaving them out makes an instruction vanish.
+        // ClusterApplierService applies settings from an applied state -- clusterSettings.applySettings(
+        // event.state().metadata().settings()) -- but only when metadataChanged(), which only happens on a pass that
+        // publishes. So a state differing *only* by a cluster setting would compare equal here, never be published,
+        // and the setting would never reach its update consumer: the node would carry the value in the state it
+        // fabricated and the running components would not have it.
+        //
+        // Nothing sets one yet. It matters because the supervisor's DESIGN.md §27.3 wants exactly this shape --
+        // turning segment cleanup off on a shard's primaries for the length of a deployment, via the dynamic
+        // cluster setting cluster.remote_store.index.segment_metadata.retention.max_count = -1, so that a rollback
+        // stays possible -- and an instruction that is silently dropped there leaves cleanup running while the
+        // deployment believes it is off, which is the failure that design is trying to avoid.
+        if (applied.metadata().settings().equals(intended.metadata().settings()) == false) {
+            return false;
+        }
+
         Set<Index> appliedIndices = indicesOf(applied);
         Set<Index> intendedIndices = indicesOf(intended);
         if (appliedIndices.equals(intendedIndices) == false) {
