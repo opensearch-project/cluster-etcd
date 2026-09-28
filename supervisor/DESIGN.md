@@ -2134,18 +2134,34 @@ being deleted underneath it.
 Three ways to spare term N, in increasing order of precision:
 
 1. **Turn cleanup off on the two nodes for the duration.** The retention setting accepts `-1`, which makes
-   `deleteStaleSegments` return immediately, and it is a dynamic *cluster* setting — so each node can carry it in its
-   own fabricated cluster state with no upstream change. Blunt: every shard on those two nodes stops cleaning up,
-   and the remote store grows for the length of the deployment. Worth confirming on the data plane side that a
-   persistent setting in fabricated metadata reaches `RemoteStoreSettings`' update consumer.
+   `deleteStaleSegments` return immediately (`0` is rejected upstream as "would delete all the data"), and it is a
+   dynamic *cluster* setting — so each node can carry it in its own fabricated cluster state with no upstream change.
+   **Confirmed end to end by the data plane**: a persistent setting in fabricated metadata reaches
+   `ClusterApplierService.applySettings`, then `RemoteStoreSettings`' update consumer, and
+   `RemoteStoreRefreshListener` reads the value live on each sync, so it takes effect on running shards.
+   It did not work until the data plane fixed its own state comparison, which looked only at indices and routing
+   tables: a state differing only by a cluster setting compared equal, was never applied, and the node would have
+   *said* cleanup was off while cleanup ran. The general rule it left behind — anything a node puts in a cluster
+   state outside an index must be in that comparison or it does not happen — is worth remembering for every
+   instruction that follows.
+   **The cost is cross-tenant.** The setting stops cleanup for every primary on the node, not only the shard being
+   deployed, and a shared pool (§2) puts several tenants on one node. So one tenant's deployment grows other tenants'
+   remote storage. Placement cannot fully contain it: the new primary's node can be chosen, but cleanup must also
+   be off on the *old* primary's node, which is wherever the old primary already is.
 2. **Lock the old primary's metadata** with `RemoteStoreMetadataLockManager`, the mechanism snapshots use and that
    cleanup honours by failing closed. Precise, but a lock pins one file and the old primary uploads a new one every
    refresh, so the lock would have to follow its head.
 3. **Pinned timestamps**, which cleanup also honours as implicit locks. Not investigated.
 
-**Recommended: (1) for a first version.** It needs nothing from anybody, it is obviously correct, and its cost is
-bounded by the deployment's duration. It also gives the lifecycle a clean shape: **cleanup being off on a shard's
-primaries means rollback is still possible; turning it back on commits the deployment.**
+**Recommended: (1) for dedicated pools, (2) for shared ones.** In a dedicated pool every shard on the node belongs to
+the tenant being deployed, so (1)'s blast radius is that tenant's own storage for the length of its own deployment,
+and it needs nothing from anybody. In a shared pool the cost falls on tenants who asked for nothing, which is the
+argument for the lock — scoped to one shard's files by construction — despite its having to follow the old primary's
+head. The pool kind is already in `PoolDefinition`, so the supervisor can choose per deployment rather than per
+fleet.
+
+Either way the lifecycle has the same shape: **term N's metadata being spared means rollback is still possible;
+releasing it commits the deployment.**
 
 ### 27.4 Rollback never demotes the old primary
 
@@ -2177,8 +2193,16 @@ and no data has to flow back to it.
   plane work.
 - **Deleting term N+1's metadata on rollback needs repository access**, which the supervisor does not have (the same
   reason R5.3 is deferred). The natural actor is a data plane node, instructed through its assignment.
-- **The instruction vocabulary.** An assignment needs to carry, per copy: the primary term (finding 11), a search
-  replica's pin, and whether cleanup may run. Worth designing together, since all three change in the same
-  deployment steps.
+- **The instruction vocabulary.** An assignment needs to carry, per copy: the primary term (finding 11) and a search
+  replica's pin; and per node, whether cleanup may run — per node rather than per copy, because that is the
+  granularity of the setting. Worth designing together, since all three change in the same deployment steps. The
+  data plane side of the cleanup switch is done; nothing yet asks for it.
+- **A lock that follows the old primary's head** (27.3's option 2) is undesigned. It is the one that shared pools
+  want, and the obvious holder is the old primary itself — it knows each file as it uploads it — told through its
+  assignment that it is a rollback target.
 - **Push ingestion and document replication** get §26.2's exclusion rule and not this section's dual-run. Two
-  primaries accepting writes is a split, whatever the path layout.
+  primaries accepting writes is a split, whatever the path layout. An upstream alternative exists and is nearly
+  reachable: the translog-side fence (`IndexShard.sealRemoteStoreFence`, a compare-and-set token) whose enforcement
+  already reads ownership on the segment path, but which is claimed on the translog repository and so is gated off
+  in `segments_only` mode. The data plane has reported that gap upstream; if it closes, exclusion for push ingestion
+  may come from OpenSearch rather than from a self-demotion timer.
