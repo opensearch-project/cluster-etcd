@@ -484,6 +484,77 @@ The same machinery is why the empty-primary hole in `MILESTONES.md` M7.1 is wors
 that copy becomes authoritative in a way the copy that still has the data cannot contest — and in `segments_only`
 there is no fence to contest with either.
 
+### The primary term already orders the remote segment store, which revises D8.2 downwards
+
+The note above says this deployment has no fence, and for the *translog* CAS token that is true. The segment side is
+in better shape than that implies, and it is worth knowing before anyone designs a path-prefix scheme to get it.
+
+Three mechanisms, all already there:
+
+- **Segment metadata filenames begin with `RemoteStoreUtils.invertLong(primaryTerm)`** — `Long.MAX_VALUE - term`,
+  zero-padded — followed by the generation. `readLatestMetadataFile` lists them with
+  `listFilesByPrefixInLexicographicOrder` and takes `get(0)`, so **the highest primary term wins, deterministically,
+  at read time**. A superseded primary's metadata can never be the latest. That is a fence in the sense readers care
+  about, and it is better than a per-primary path would be: both primaries write to one place and every reader
+  prefers the higher term without being told which to look at.
+- **The node id is in the metadata filename too**, and `RemoteStoreUtils.verifyNoMultipleWriters` throws
+  `IllegalStateException("Multiple metadata files from different nodes having same primary term and generations")`
+  when two node ids appear at one (term, generation). So two primaries at the *same* term — which is this
+  deployment today, every term being 1 — are **detected loudly on the read path** rather than silently merged.
+- **Uploaded segment data files carry a uuid** (`SEGMENT_NAME_UUID_SEPARATOR`), so two writers producing `_0.cfs`
+  write distinct blobs. They cannot overwrite each other's data.
+
+**So D8.2's "could write to the same remote path and corrupt it" is pessimistic for segments.** The honest failure
+today is a loud exception plus a superseded primary uploading metadata nobody reads. What makes it safe is entirely
+that the term orders the metadata — and what stops us using that is only that **the term never advances here**, which
+is finding 11 and not a remote-store problem at all.
+
+**Two consequences worth carrying.** A per-shard `index.remote_store.segment.path_prefix` is not needed: the primary
+term is already a per-shard value in cluster state and already in the layout, so the "OpenSearch has no shard
+settings" problem does not have to be solved. And a search replica needs no flipping between prefixes — it calls
+`readLatestMetadataFile`, which follows the highest term on its own, so a primary moving needs no rolling replace of
+its replicas.
+
+### Pinning a search replica to a term, and why the pin must come with a lock
+
+Two live primaries at different terms is not something vanilla OpenSearch ever has, and it is something this design
+wants: promote a new primary at term N+1, keep the old one at N alive, and roll back to it if the upgrade goes
+wrong. That makes "a search replica follows the highest term automatically" the wrong default — convenient for
+failover, useless for rollback, because every replica has already moved.
+
+**Both mechanisms needed already exist, built for snapshots.**
+
+- `RemoteSegmentStoreDirectory.initializeToSpecificCommit(primaryTerm, commitGeneration, acquirerId)` reads a
+  *chosen* (term, generation) rather than the latest. So reading an older primary's view is not new machinery.
+- It goes through `RemoteStoreMetadataLockManager.fetchLockedMetadataFile(prefix, acquirerId)`, and
+  `deleteStaleSegments` calls `fetchLockedMetadataFiles(METADATA_PREFIX)` and excludes what it finds — **failing
+  closed**, skipping deletion entirely if the locks cannot be read. So a lock protects a metadata file and the data
+  files it references from garbage collection.
+
+**The two are not independent, and this is the part to get right.** `lastNMetadataFilesToKeep` counts metadata files
+in lexicographic order regardless of which primary wrote them, so a busy new primary at term N+1 pushes the old
+primary's term-N metadata out of the keep-window — at which point the data files only term N references become
+eligible. **A replica pinned to term N without a lock on term N's metadata is reading files the new primary's GC is
+free to delete.** That is why the snapshot path pairs them, and it is the one coupling a rollback design must not
+miss.
+
+**The per-shard granularity worry does not apply here**, which is worth knowing before anyone tries to add shard
+settings upstream. Two reasons: the assignment is already per-node *and* per-shard, so it can carry a pin without
+any new OpenSearch concept; and each node fabricates its own `IndexMetadata`, so even an index setting is
+effectively per-node in this deployment. The residual case — two shards of one index on one node wanting different
+terms — is already expressible, because primary terms in `IndexMetadata` are per shard.
+
+Worth weighing rather than assuming: the replica's own fabricated `primaryTerm(shardId)` could *be* the pin, with
+upstream honouring it on the segment read path for search-only copies, which needs no new setting at all. Against
+that, reusing the term field for two meanings is subtle, and an explicit pin says what it means.
+
+**The half still worth the fence, and where I stopped short of a claim:** deletion. `RemoteStoreRefreshListener`
+gates stale-segment collection on `isRemoteStoreFencingEnabled() && isRemoteStoreFenceSupersededFailingClosed()`,
+which is off here — so a superseded primary still runs `deleteStaleSegmentsAsync`. It keeps the N most recent
+metadata files by the same lexicographic order, so it would retain the winner's metadata, which suggests it is
+safe; but I have not traced how the referenced-data-file set is computed, and "reads are ordered, garbage collection
+is argued" is exactly the asymmetry the fence exists for.
+
 ### A metadata-only change reaches a running shard, which is what makes the ingestion pause free
 
 Worth knowing generally and not just for ingestion: `IndicesClusterStateService.createOrUpdateShards` iterates
