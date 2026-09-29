@@ -23,7 +23,7 @@ include("supervisor-integ")
 // The cost, recorded so nobody rediscovers it: this build depends on a path outside itself, so CI must
 // check out both repositories. A submodule or a published artifact removes that later without changing
 // the module layout.
-includeBuild("../opensearch-kv-store")
+includeBuild("../kv-store")
 
 dependencyResolutionManagement {
     repositories {
