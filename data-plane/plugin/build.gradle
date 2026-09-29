@@ -100,53 +100,45 @@ def clusterlessCoordinating = providers.gradleProperty('clusterless.coordinating
 // server, so the node has to have it installed -- without it a shard fails with "No factory found for ingestion
 // source type [FILE]", which is at least a clear failure.
 //
-// Published with OpenSearch as org.opensearch.plugin:ingestion-fs, and taken at the OpenSearch version this plugin
-// builds against, since a node refuses a plugin built for any other version:
+// OpenSearch publishes it only as a jar -- org.opensearch.plugin:ingestion-fs, with no plugin zip beside it -- so
+// the zip is assembled here: that jar plus the plugin-descriptor.properties OpenSearch's own build generates for it.
+// The plugin has no dependencies and no security policy, so nothing else belongs in the zip. It is taken at the
+// OpenSearch version this plugin builds against, since a node refuses a plugin built for any other, and from the
+// same repositories as the server: a local OpenSearch change reaches it through publishToMavenLocal.
 //
 //   ../gradlew run -Pclusterless.ingestion=true
-//
-// Resolved only when asked for, so no other task needs the repositories that publish it. To install a zip built
-// elsewhere instead -- an OpenSearch checkout with unmerged changes to the plugin, say -- name its directory:
-//
-//   ../gradlew run -Pclusterless.ingestion=true \
-//       -Pclusterless.ingestion.plugin=/path/to/OpenSearch/plugins/ingestion-fs/build/distributions
 def clusterlessIngestion = providers.gradleProperty('clusterless.ingestion').getOrElse('false') == 'true'
-def ingestionFsDistributions = providers.gradleProperty('clusterless.ingestion.plugin').getOrNull()
 
 configurations {
     ingestionFs {
         canBeConsumed = false
+        transitive = false
     }
 }
 dependencies {
-    ingestionFs "org.opensearch.plugin:ingestion-fs:${opensearch_version}@zip"
-}
-repositories {
-    // Only the published zip will do. OpenSearch's publishToMavenLocal puts the same coordinates in mavenLocal
-    // with nothing but the jar, and Gradle stops at the first repository that has the module, so the lookup is
-    // confined to where the zip is published: snapshots for a -SNAPSHOT version, Maven Central for a release.
-    exclusiveContent {
-        forRepositories(maven { url 'https://ci.opensearch.org/ci/dbc/snapshots/maven/' }, mavenCentral())
-        filter {
-            includeModule 'org.opensearch.plugin', 'ingestion-fs'
-        }
-    }
+    ingestionFs "org.opensearch.plugin:ingestion-fs:${opensearch_version}"
 }
 
-def ingestionFsZip = null
-if (ingestionFsDistributions != null) {
-    ingestionFsZip = file(ingestionFsDistributions).listFiles()?.find { it.name.endsWith('.zip') }
-    if (ingestionFsZip == null) {
-        throw new GradleException("-Pclusterless.ingestion.plugin=${ingestionFsDistributions} holds no plugin zip."
-            + " Build one with: cd /path/to/OpenSearch && ./gradlew :plugins:ingestion-fs:bundlePlugin")
-    }
+// The values OpenSearch's build writes for this plugin, from plugins/ingestion-fs/build.gradle.
+def ingestionFsDescriptor = tasks.register('ingestionFsDescriptor', WriteProperties) {
+    destinationFile = layout.buildDirectory.file('ingestion-fs/plugin-descriptor.properties')
+    property 'description', 'Pull-based ingestion plugin to read from local files for testing'
+    property 'version', opensearch_version
+    property 'name', 'ingestion-fs'
+    property 'classname', 'org.opensearch.plugin.ingestion.fs.FilePlugin'
+    property 'java.version', '21'
+    property 'opensearch.version', opensearch_version.tokenize('-')[0]
+    property 'custom.foldername', ''
+    property 'extended.plugins', ''
+    property 'has.native.controller', 'false'
 }
-// OpenSearchCluster.plugin takes a Provider<RegularFile> or a *project path* -- a plain File matches neither, and
-// the failure is a Groovy "could not find method plugin()" that says nothing about why. testClusters turns the
-// file into the file:// URL the opensearch-plugin CLI wants itself, at install time.
-def ingestionFsPlugin = project.layout.file(project.provider {
-    ingestionFsZip ?: configurations.ingestionFs.singleFile
-})
+def ingestionFsBundle = tasks.register('ingestionFsBundle', Zip) {
+    description = 'Assembles the ingestion-fs plugin zip that run -Pclusterless.ingestion=true installs'
+    archiveFileName = "ingestion-fs-${opensearch_version}.zip"
+    destinationDirectory = layout.buildDirectory.dir('ingestion-fs')
+    from configurations.ingestionFs
+    from ingestionFsDescriptor
+}
 def clusterlessIngestionDir = layout.buildDirectory.dir('clusterless-ingestion').get().asFile
 
 def runCluster = testClusters.maybeCreate('runTask')
@@ -172,7 +164,7 @@ testClusters.all {
         // Only the plugin. The directory the source reads from is named per index, in
         // index.ingestion_source.param.base_directory, so there is nothing node-wide to configure -- and nothing
         // that would collide with the remote store's path.repo.
-        plugin(ingestionFsPlugin)
+        plugin(ingestionFsBundle.flatMap { it.archiveFile })
     }
 
     if (clusterlessRemoteStore) {
