@@ -55,7 +55,7 @@ allprojects {
         // Tell Testcontainers where Docker actually is.
         //
         // It finds the daemon on its own only when the socket is at the conventional path. Colima, Rancher
-        // Desktop, Apple's `container` tool and a Docker Desktop with the default socket disabled all put it
+        // Desktop, and a Docker Desktop with the default socket disabled all put it
         // somewhere else, and the symptom is the integration tests skipping on a machine where `docker` works
         // perfectly -- which is exactly what happened here.
         //

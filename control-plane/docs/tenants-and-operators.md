@@ -43,7 +43,7 @@ solve their own business problems. They know their business and want search as a
 OpenSearch and want running that solution to be painless. So this axis is not about withholding capability — it is
 about not making a tenant answer questions about hardware they did not buy.
 
-**And the audience is internal, not a public cloud.** The target is a Search Platform team at a reasonably sized
+**And the audience is internal, not a public cloud.** The target is a search platform team at a reasonably sized
 company operating this as a service for product and business teams. That is why *"customers shouldn't care where
 their data lives"* is the goal rather than *"shouldn't know"*: a customer who sees behind the curtain has found
 something not useful to them, not something they were denied. **Secrecy is not a design goal here**, which settles

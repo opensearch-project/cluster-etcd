@@ -79,7 +79,7 @@ rather than what to run it on. Contrast a managed service where the customer cho
 and pays for specific instance types, and so has a claim to say which of them their
 index sits on.
 
-The audience is **internal** — a Search Platform team operating this as a service for
+The audience is **internal** — a search platform team operating this as a service for
 product and business teams, not a public cloud offering. So the aim is that a tenant
 *need not* care where their data lives, rather than that they cannot find out:
 secrecy is not a design goal, and a tenant who sees behind the curtain has found

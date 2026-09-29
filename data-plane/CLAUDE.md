@@ -107,7 +107,7 @@ Decides arguments that would otherwise be settled by what is easiest on a laptop
 - **Coordinators get dedicated capacity at ~50+ nodes**; colocating is a small-deployment convenience.
 - **The tenant arrives in an `x-tenant-id` header** injected by an auth layer outside OpenSearch.
   `clusterless.tenant` (a single-tenant node) remains available.
-- **The audience is Search Platform teams** running OpenSearch for many internal tenants; see the control plane's
+- **The audience is search platform teams** running OpenSearch for many internal tenants; see the control plane's
   documents.
 - **Live shard splitting is not the plan** — stand up a new index, restore, delete out-of-shard documents, resume
   from the checkpoint.
