@@ -6,7 +6,7 @@
 # socket is denied. Every dependency this build needs is already in ~/.gradle/caches or ~/.m2, so javac and
 # a hand-rolled JUnit launcher get the same work done. See WORKING_NOTES.md.
 #
-# THIS IS NOT THE BUILD. ./gradlew build is. Anything this script has to special-case is a difference
+# THIS IS NOT THE BUILD. ../gradlew build is. Anything this script has to special-case is a difference
 # between the two, and the difference is the bug.
 #
 # Usage:
@@ -18,7 +18,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-KV_STORE="${KV_STORE:-$ROOT/../opensearch-kv-store}"
+KV_STORE="${KV_STORE:-$ROOT/../kv-store}"
 OUT="$ROOT/build/jbuild"
 
 # Matches the Gradle toolchain.
@@ -39,7 +39,7 @@ else
     JAVAC=javac
     JAVA=java
     echo "WARNING: no Java $RELEASE toolchain found; falling back to $(javac -version 2>&1) with --release $RELEASE." >&2
-    echo "         Set JAVA21_HOME to match what ./gradlew uses." >&2
+    echo "         Set JAVA21_HOME to match what ../gradlew uses." >&2
 fi
 
 JACKSON_VERSION=2.22.1
@@ -83,7 +83,7 @@ jar() {
 
     echo "MISSING: $group:$artifact:$version" >&2
     echo "  Maven Central is unreachable from here, so a dependency not already in a local cache cannot" >&2
-    echo "  be fetched and this module cannot be compiled. Ask a human to run ./gradlew build." >&2
+    echo "  be fetched and this module cannot be compiled. Ask a human to run ../gradlew build." >&2
     return 1
 }
 
@@ -127,12 +127,12 @@ compile() {
 
 rm -rf "$OUT"
 
-# store-api is compiled from source rather than taken from ../opensearch-kv-store/build/libs, so that a
+# store-api is compiled from source rather than taken from ../kv-store/build/libs, so that a
 # change over there is picked up here immediately. It has no dependencies at all, which makes this cheap.
 echo "==> store-api (from source: $KV_STORE)"
 if [[ ! -d "$KV_STORE/store-api/src/main/java" ]]; then
     echo "  store-api sources not found at $KV_STORE" >&2
-    echo "  Set KV_STORE=/path/to/opensearch-kv-store, or check out the repository beside this one." >&2
+    echo "  Set KV_STORE=/path/to/kv-store." >&2
     exit 1
 fi
 compile "store-api main" "$KV_STORE/store-api/src/main/java" "$OUT/store-api/main"
@@ -162,7 +162,7 @@ compile "supervisor-app" supervisor-app/src/main/java "$OUT/supervisor-app/main"
 compile "fake-node" fake-node/src/main/java "$OUT/fake-node/main" \
     "$OUT/supervisor-model/main:$STORE_CP:$JACKSON_CP"
 
-# The shared node-contract conformance suite, published as test fixtures for ../opensearch-data-plane to
+# The shared node-contract conformance suite, published as test fixtures for ../data-plane to
 # consume. Compiled with the main sources rather than with the tests because it is a published artifact:
 # a fixture that only compiles when this repository's own tests do would break the consumer and not us.
 compile "fake-node testFixtures" fake-node/src/testFixtures/java "$OUT/fake-node/testFixtures" \
@@ -212,7 +212,7 @@ if [[ -n "$TESTCONTAINERS" && -n "$JUNIT4" && -d "$STORE_ETCD_CLASSES" && -d "$S
     echo "    typechecked, not run"
 else
     echo "    SKIPPED: needs org.testcontainers:testcontainers:1.21.4 and junit:junit:4.13.2 in a local cache,"
-    echo "    and both backends built (do it once: cd $KV_STORE && ./gradlew build)"
+    echo "    and both backends built (do it once: cd $KV_STORE && ../gradlew build)"
 fi
 
 echo "==> test runner"

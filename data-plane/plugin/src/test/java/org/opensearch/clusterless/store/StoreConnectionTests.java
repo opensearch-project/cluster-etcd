@@ -52,7 +52,7 @@ public class StoreConnectionTests extends OpenSearchTestCase {
     }
 
     public void testWhatIsInstalledCanBeAskedForWithoutOpeningAnything() {
-        // The runtime half of the diagnostic D6.2 asks for; ./gradlew :plugin:schemes prints the same text
+        // The runtime half of the diagnostic D6.2 asks for; ../gradlew :plugin:schemes prints the same text
         // for a build, which is where somebody packaging a deployment will look.
         String described = StoreConnection.describeInstalled();
         assertTrue(described, described.contains("Installed store backends:"));

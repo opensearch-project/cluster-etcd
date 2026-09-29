@@ -6,7 +6,7 @@
 # Emits a control plane capabilities file describing what a given OpenSearch cluster supports.
 #
 #   tools/dump-capabilities.sh http://localhost:9200 > capabilities.yaml
-#   ./gradlew :server:run --args="--capabilities capabilities.yaml"
+#   ../gradlew :server:run --args="--capabilities capabilities.yaml"
 #
 # Generated rather than hand-written on purpose. The processor types a cluster has depend on which
 # plugins are installed, nothing in the OpenSearch API specification records that, and a list

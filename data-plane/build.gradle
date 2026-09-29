@@ -5,11 +5,11 @@
 
 buildscript {
     ext {
-        // 3.9.0-SNAPSHOT is the version in ../OpenSearch, and it is the first with the clusterless server
+        // 3.9.0-SNAPSHOT is the version on OpenSearch main, and it is the first with the clusterless server
         // path this plugin steers: LocalClusterService, LocalDiscovery and LocalShardStateAction. Build and
         // install it once before building here:
         //
-        //     cd ../OpenSearch && ./gradlew publishToMavenLocal
+        //     cd /path/to/OpenSearch && ./gradlew publishToMavenLocal
         //
         // Overridable, because the plugin itself only needs ClusterPlugin.isClusterless() and
         // ClusterApplierService, both of which are older than that.

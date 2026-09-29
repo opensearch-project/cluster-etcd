@@ -11,7 +11,7 @@ import org.testcontainers.utility.DockerImageName;
  * otherwise the tests skip. One container for the whole JVM, since each test isolates itself in a fresh key
  * prefix.
  *
- * <p>Deliberately a near-copy of {@code EtcdTestServer} in {@code opensearch-kv-store}, rather than something
+ * <p>Deliberately a near-copy of {@code EtcdTestServer} in {@code kv-store}, rather than something
  * new. That file has four hard-won details in it that are invisible until they bite, and re-deriving them here
  * would mean rediscovering them: etcd needs {@code --listen-client-urls=0.0.0.0} or it binds to loopback inside
  * the container and the mapped port reaches nothing; it refuses to start at all without

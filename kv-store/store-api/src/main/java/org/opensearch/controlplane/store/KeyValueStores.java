@@ -98,7 +98,7 @@ public final class KeyValueStores {
         // nothing about why it is short.
         description.append("\n\nOther backends are separate jars; add one to the runtime classpath and it")
             .append("\nappears here. Building from source:")
-            .append("\n  ./gradlew :server:run -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT");
+            .append("\n  ../gradlew :server:run -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT");
         return description.toString();
     }
 }

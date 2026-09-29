@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * test, so {@code AccessController.doPrivileged} here is a plain method call that runs the action — which is
  * also exactly what it is in production, since its only job is to put a recognisable frame on the stack for the
  * agent's walker to stop at. Whether the agent then accepts what it finds is verifiable only by starting a node,
- * which is what {@code ./gradlew run} is for.
+ * which is what {@code ../gradlew run} is for.
  *
  * <p>So this covers the risk the decorator itself introduced, which is a real one and cheap to check: a
  * delegating wrapper that drops a call, loses a return value or swallows an exception would be worse than the

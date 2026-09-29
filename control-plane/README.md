@@ -409,16 +409,20 @@ used to validate OpenSearch itself. It replays YAML story files over HTTP and va
 *and* response bodies against the spec, which is what proves the two surfaces agree rather than us
 asserting they do.
 
+The harness lives in a clone of
+[opensearch-api-specification](https://github.com/opensearch-project/opensearch-api-specification), with
+`npm install` run in it; `--spec-repo` names that clone and is required.
+
 ```bash
 # a real OpenSearch usually already holds 9200, so run the control plane elsewhere
-./gradlew :server:run --args="--port 9400 --data-path /tmp/cp-conformance"
+../gradlew :server:run --args="--port 9400 --data-path /tmp/cp-conformance"
 
 # in another shell
-conformance/run.sh
-conformance/run.sh --reference http://localhost:9200   # differential; see below
-conformance/run.sh --spec-repo /path/to/opensearch-api-specification
-conformance/run.sh -- --verbose          # anything after -- goes to the tester
-conformance/run.sh --all                 # every story; a to-do list, not a gate
+SPEC=/path/to/opensearch-api-specification
+conformance/run.sh --spec-repo $SPEC
+conformance/run.sh --spec-repo $SPEC --reference http://localhost:9200   # differential; see below
+conformance/run.sh --spec-repo $SPEC -- --verbose   # anything after -- goes to the tester
+conformance/run.sh --spec-repo $SPEC --all          # every story; a to-do list, not a gate
 ```
 
 ### Running against a reference OpenSearch

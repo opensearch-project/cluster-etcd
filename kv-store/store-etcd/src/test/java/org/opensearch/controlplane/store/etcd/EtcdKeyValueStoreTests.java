@@ -33,7 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The etcd backend against the shared store contract, plus what only a real cluster shows.
  *
  * <pre>{@code
- * ./gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379
+ * ../gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379
  * }</pre>
  *
  * <p>Skipped without one. Unlike the ZooKeeper backend there is no companion unit test carrying the

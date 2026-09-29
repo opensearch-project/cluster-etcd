@@ -25,7 +25,7 @@
 # assumes one party runs and uses the cluster: one flat `cluster.*` namespace with
 # two owners, so an unclassified setting lands wherever it was first implemented.
 # Classify anything new on BOTH axes before wiring it. The rule is
-# ../opensearch-supervisor/DESIGN.md section 25; the sweep of this surface --
+# ../supervisor/DESIGN.md section 25; the sweep of this surface --
 # including the three cluster.*_decommission_awareness groups below, which are
 # included today for a difficulty reason and look operator-owned -- is in
 # docs/tenants-and-operators.md.

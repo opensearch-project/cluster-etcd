@@ -44,7 +44,7 @@ dependencies {
 tasks.test {
     // With Docker available these start their own etcd and need no configuration. Point them at a cluster you
     // are already running instead -- much faster, and sometimes the point:
-    //   ./gradlew :supervisor-integ:test -Dsupervisor.etcd=localhost:2379 -Dsupervisor.zookeeper=localhost:2181
+    //   ../gradlew :supervisor-integ:test -Dsupervisor.etcd=localhost:2379 -Dsupervisor.zookeeper=localhost:2181
     // Each backend is independent: point one at a running server and the other still uses a container. The
     // images are overridable for a different version or an unreachable registry:
     //   -Dsupervisor.etcd.image=... -Dsupervisor.zookeeper.image=...

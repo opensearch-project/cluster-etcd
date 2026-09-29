@@ -15,7 +15,7 @@ dependencies {
 
     // Backend jars are deliberately absent: KeyValueStores discovers them through ServiceLoader, so nothing
     // here names etcd or ZooKeeper at compile time. To run against one, add it to the runtime classpath:
-    //   ./gradlew :supervisor-app:installDist \
+    //   ../gradlew :supervisor-app:installDist \
     //       -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT
     // Guarded, so it has no effect unless asked for.
     if (project.hasProperty("storeJars")) {

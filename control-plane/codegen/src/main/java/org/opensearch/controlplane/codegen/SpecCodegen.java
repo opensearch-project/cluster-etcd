@@ -368,7 +368,7 @@ public final class SpecCodegen {
              *
              * Produced by :codegen from spec/opensearch-openapi.yaml filtered through
              * spec/control-plane-scope.yaml. To change the API surface, edit the scope
-             * file and re-run `./gradlew :server:generateRoutes`.
+             * file and re-run `../gradlew :server:generateRoutes`.
              */
             """);
         out.append("package ").append(TARGET_PACKAGE).append(";\n\n");

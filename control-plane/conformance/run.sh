@@ -11,23 +11,24 @@
 # they do.
 #
 # Usage:
-#   conformance/run.sh [--url URL] [--reference URL] [--spec-repo PATH] [--all]
+#   conformance/run.sh --spec-repo PATH [--url URL] [--reference URL] [--all]
 #                      [-- <extra tester args>]
 #
+#   --spec-repo PATH   a clone of https://github.com/opensearch-project/opensearch-api-specification,
+#                      with npm install run in it. Required.
 #   --url URL          control plane base URL (default http://localhost:9400)
 #   --reference URL    also run the same stories against a real OpenSearch and compare. This is
 #                      what separates "we are wrong" from "this story does not pass against
 #                      OpenSearch either", which happens when a story depends on something out of
 #                      scope or on a different server version.
-#   --spec-repo PATH   opensearch-api-specification checkout (default ../opensearch-api-specification)
 #   --all              run every story in one pass instead of the manifest. Expect large numbers of
 #                      failures: everything unimplemented answers 501. A to-do list, not a gate.
 #
 # Anything after -- is passed through to the tester, e.g. --verbose or --coverage-report.
 #
 # Typical development setup, with a real OpenSearch on 9200:
-#   ./gradlew :server:run --args="--port 9400 --data-path /tmp/cp-conformance"
-#   conformance/run.sh --reference http://localhost:9200
+#   ../gradlew :server:run --args="--port 9400 --data-path /tmp/cp-conformance"
+#   conformance/run.sh --spec-repo /path/to/opensearch-api-specification --reference http://localhost:9200
 
 set -euo pipefail
 
@@ -38,7 +39,6 @@ RUN_ALL=0
 EXTRA_ARGS=()
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -47,20 +47,21 @@ while [[ $# -gt 0 ]]; do
     --spec-repo) SPEC_REPO="$2"; shift 2 ;;
     --all) RUN_ALL=1; shift ;;
     --) shift; EXTRA_ARGS=("$@"); break ;;
-    -h|--help) sed -n '7,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '7,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
-if [[ -z "$SPEC_REPO" ]]; then
-  SPEC_REPO="$(cd "$repo_root/.." && pwd)/opensearch-api-specification"
-fi
-
 # --- preflight -------------------------------------------------------------
 
-if [[ ! -d "$SPEC_REPO/spec" ]]; then
+if [[ -z "$SPEC_REPO" || ! -d "$SPEC_REPO/spec" ]]; then
+  if [[ -z "$SPEC_REPO" ]]; then
+    problem="no --spec-repo given"
+  else
+    problem="no spec repo at $SPEC_REPO"
+  fi
   cat >&2 <<EOF
-error: no spec repo at $SPEC_REPO
+error: $problem
 
 The harness lives in the opensearch-api-specification repo. Clone it and point at it:
 
@@ -89,7 +90,7 @@ error: nothing answered HTTP at $url ($what)
 
 If this is the control plane, start it on a port that does not collide with a real OpenSearch:
 
-  ./gradlew :server:run --args="--port 9400 --data-path /tmp/cp-conformance"
+  ../gradlew :server:run --args="--port 9400 --data-path /tmp/cp-conformance"
 
 A throwaway --data-path is worth using: the harness creates and deletes real resources.
 EOF

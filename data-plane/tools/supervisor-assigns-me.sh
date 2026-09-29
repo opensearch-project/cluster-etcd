@@ -14,14 +14,14 @@
 # Java; only handing that state to the applier needs a node, and that is the next milestone.
 #
 # Usage:
-#   tools/supervisor-assigns-me.sh [store-directory]
+#   OPENSEARCH=/path/to/OpenSearch tools/supervisor-assigns-me.sh [store-directory]
 #
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-SUPERVISOR="${SUPERVISOR:-$ROOT/../opensearch-supervisor}"
-OPENSEARCH="${OPENSEARCH:-$ROOT/../OpenSearch}"
+SUPERVISOR="${SUPERVISOR:-$ROOT/../supervisor}"
+OPENSEARCH="${OPENSEARCH:?set OPENSEARCH to an OpenSearch checkout, built once with ./gradlew assemble}"
 STORE_DIR="${1:-/tmp/dp-assign}"
 OUT="$ROOT/build/jbuild"
 NODE_ID="dp-node-0"

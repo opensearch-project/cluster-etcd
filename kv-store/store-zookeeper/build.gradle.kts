@@ -35,7 +35,7 @@ tasks.test {
     // The contract suite needs a real ensemble. With Docker available it starts one itself and needs no
     // configuration, which is how CI runs. Set this to point it at a ensemble you are already running
     // instead -- faster, and sometimes the point:
-    //   ./gradlew :store-zookeeper:test -Dcontrolplane.zookeeper=localhost:2181
+    //   ../gradlew :store-zookeeper:test -Dcontrolplane.zookeeper=localhost:2181
     //
     // The image is overridable too, for a different version or an unreachable registry:
     //   -Dcontrolplane.zookeeper.image=...

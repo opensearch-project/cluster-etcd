@@ -31,7 +31,7 @@ tasks.test {
     // The contract suite needs a real cluster. With Docker available it starts one itself and needs no
     // configuration, which is how CI runs. Set this to point it at a cluster you are already running
     // instead -- faster, and sometimes the point:
-    //   ./gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379
+    //   ../gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379
     //
     // The image is overridable too, for a different version or an unreachable registry:
     //   -Dcontrolplane.etcd.image=...

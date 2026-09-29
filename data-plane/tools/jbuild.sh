@@ -3,12 +3,12 @@
 # Compile and test without Gradle.
 #
 # Gradle cannot run in the development sandbox: it fails creating its file-lock service, because binding a
-# socket is denied. Every dependency this build needs is already on disk — the OpenSearch server jar in a
-# sibling checkout, everything else in ~/.gradle/caches or ~/.m2 — so javac and a hand-rolled JUnit
+# socket is denied. Every dependency this build needs is already on disk — the OpenSearch server jar in the
+# checkout OPENSEARCH names, everything else in ~/.gradle/caches or ~/.m2 — so javac and a hand-rolled JUnit
 # launcher get the same work done. The supervisor repository next door has the same script for the same
 # reason; this one differs only in having to find OpenSearch.
 #
-# THIS IS NOT THE BUILD. ./gradlew build is, and it additionally runs the OpenSearch plugin packaging,
+# THIS IS NOT THE BUILD. ../gradlew build is, and it additionally runs the OpenSearch plugin packaging,
 # forbidden-APIs, testingConventions and the license checks, none of which are reproduced here. Anything this
 # script has to special-case is a difference between the two, and the difference is the bug.
 #
@@ -18,6 +18,8 @@
 # passes. See WORKING_NOTES.md.
 #
 # Usage:
+#   OPENSEARCH=/path/to/OpenSearch tools/jbuild.sh [...]
+#
 #   tools/jbuild.sh                 compile everything and run every test
 #   tools/jbuild.sh --no-tests      compile only
 #   tools/jbuild.sh NodePublisher   run only tests whose class name matches (regex, anchored by JUnit)
@@ -26,9 +28,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-KV_STORE="${KV_STORE:-$ROOT/../opensearch-kv-store}"
-SUPERVISOR="${SUPERVISOR:-$ROOT/../opensearch-supervisor}"
-OPENSEARCH="${OPENSEARCH:-$ROOT/../OpenSearch}"
+KV_STORE="${KV_STORE:-$ROOT/../kv-store}"
+SUPERVISOR="${SUPERVISOR:-$ROOT/../supervisor}"
+OPENSEARCH="${OPENSEARCH:?set OPENSEARCH to an OpenSearch checkout, built once with ./gradlew assemble}"
 OUT="$ROOT/build/jbuild"
 
 RELEASE=21
@@ -83,7 +85,7 @@ jar() {
 
     echo "MISSING: $group:$artifact:$version" >&2
     echo "  Maven Central is unreachable from the sandbox, so a dependency not already in a local cache" >&2
-    echo "  cannot be fetched. Ask a human to run ./gradlew build." >&2
+    echo "  cannot be fetched. Ask a human to run ../gradlew build." >&2
     return 1
 }
 
@@ -93,9 +95,9 @@ join_cp() { local IFS=:; echo "$*"; }
 #
 # From the sibling checkout's build output rather than from a published artifact, because that is the
 # version the Gradle build targets and because having the sources beside the jars is the difference
-# between reading what a server method does and guessing. ../OpenSearch must have been built once:
+# between reading what a server method does and guessing. $OPENSEARCH must have been built once:
 #
-#     cd ../OpenSearch && ./gradlew :server:jar :libs:core:jar :libs:common:jar :libs:x-content:jar
+#     cd $OPENSEARCH && ./gradlew :server:jar :libs:core:jar :libs:common:jar :libs:x-content:jar
 #
 echo "==> resolving OpenSearch from $OPENSEARCH"
 # server plus every built lib, rather than the four the plugin's own imports need. Static initialisers
@@ -111,7 +113,6 @@ SERVER_JAR=$(find "$OPENSEARCH/server/build/distributions" -name '*.jar' ! -name
 if [[ -z "$SERVER_JAR" ]]; then
     echo "  MISSING: $OPENSEARCH/server/build/distributions/*.jar" >&2
     echo "  Build it once:  cd $OPENSEARCH && ./gradlew assemble" >&2
-    echo "  Or set OPENSEARCH=/path/to/OpenSearch." >&2
     exit 1
 fi
 OPENSEARCH_JARS+=("$SERVER_JAR")
@@ -144,7 +145,7 @@ echo "==> resolving dependencies"
 # imports them.
 LOG4J_API=$(jar org.apache.logging.log4j log4j-api 2.25.4)
 
-# Lucene, at the version ../OpenSearch pins rather than the newest one cached -- several may be,
+# Lucene, at the version $OPENSEARCH pins rather than the newest one cached -- several may be,
 # and picking the wrong one would compile and then fail somewhere specific and confusing. Every artifact,
 # not just the core, because ClusterSettings' static initialiser reaches into the analysis package.
 LUCENE_VERSION=$(sed -n 's/^lucene *= *"\(.*\)"/\1/p' "$OPENSEARCH/gradle/libs.versions.toml" | head -1)
@@ -237,7 +238,7 @@ compile() {
 
 rm -rf "$OUT"
 
-# store-api from source rather than from ../opensearch-kv-store/build/libs, so a change over there is
+# store-api from source rather than from ../kv-store/build/libs, so a change over there is
 # picked up here immediately. It has no dependencies at all, which makes this cheap.
 echo "==> store-api (from source: $KV_STORE)"
 if [[ ! -d "$KV_STORE/store-api/src/main/java" ]]; then

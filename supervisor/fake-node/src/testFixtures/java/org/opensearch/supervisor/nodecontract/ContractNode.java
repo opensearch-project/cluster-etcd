@@ -9,7 +9,7 @@ import java.util.List;
  * A data plane node, reduced to what {@link NodeContractTests} needs to drive it.
  *
  * <p>{@code NODE_CONTRACT.md} has two independent implementations — {@code fake-node} and the real plugin
- * in {@code ../opensearch-data-plane} — and two implementations of one document format that are only
+ * in {@code ../data-plane} — and two implementations of one document format that are only
  * tested separately are two formats. This is the adapter that lets one suite of assertions run against
  * both, in the manner of {@code KeyValueStoreContractTests} in the store repository.
  *

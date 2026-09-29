@@ -18,7 +18,7 @@ import java.util.Map;
  * without any of the machinery a real data plane needs.
  *
  * <pre>
- * ./gradlew :fake-node:run --args="--data-path /tmp/sup --node-id node-1 --pool shared-a --zone z1"
+ * ../gradlew :fake-node:run --args="--data-path /tmp/sup --node-id node-1 --pool shared-a --zone z1"
  * </pre>
  *
  * <p>The filesystem backend is the only one that works without a network, which is the whole reason this

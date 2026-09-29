@@ -30,7 +30,7 @@ import java.util.stream.Collectors;
  *
  * <pre>{@code
  * curl 'localhost:9200/_cluster/settings_registry?pretty' -o settings_registry.yaml
- * ./gradlew :server:run --args="--settings-registry settings_registry.yaml"
+ * ../gradlew :server:run --args="--settings-registry settings_registry.yaml"
  * }</pre>
  *
  * <p>A real cluster reports 221 index settings and 801 cluster settings, so the file is around 180 kB.

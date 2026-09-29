@@ -9,7 +9,7 @@ dependencies {
     api(project(":supervisor-model"))
 
     // Group, name and version must match exactly, or the composite-build substitution declared in
-    // settings.gradle.kts misses and this resolves against a repository instead of ../opensearch-kv-store.
+    // settings.gradle.kts misses and this resolves against a repository instead of ../kv-store.
     api("org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT")
 
     testImplementation(platform("org.junit:junit-bom:$junitVersion"))

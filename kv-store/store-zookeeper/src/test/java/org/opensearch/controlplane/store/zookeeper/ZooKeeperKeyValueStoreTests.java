@@ -34,7 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>They need a live ZooKeeper and are skipped without one:
  *
  * <pre>{@code
- * ./gradlew :store-zookeeper:test -Dcontrolplane.zookeeper=localhost:2181
+ * ../gradlew :store-zookeeper:test -Dcontrolplane.zookeeper=localhost:2181
  * }</pre>
  *
  * <p>Skipped rather than failed, and rather than started in-process, because the sandbox this was written

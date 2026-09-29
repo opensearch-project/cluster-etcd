@@ -20,13 +20,13 @@
 #     supervisor-app --store=<uri> --define-pool=shared-a
 #
 # Usage:
-#   tools/supervisor-sees-me.sh [store-directory] [node-count]
+#   OPENSEARCH=/path/to/OpenSearch tools/supervisor-sees-me.sh [store-directory] [node-count]
 #
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-SUPERVISOR="${SUPERVISOR:-$ROOT/../opensearch-supervisor}"
+SUPERVISOR="${SUPERVISOR:-$ROOT/../supervisor}"
 STORE_DIR="${1:-/tmp/dp-demo}"
 NODES="${2:-2}"
 OUT="$ROOT/build/jbuild"
@@ -45,7 +45,7 @@ fi
 
 jars() { find "$@" -name '*.jar' ! -name '*-sources.jar' 2>/dev/null | tr '\n' ':'; }
 
-OPENSEARCH="${OPENSEARCH:-$ROOT/../OpenSearch}"
+OPENSEARCH="${OPENSEARCH:?set OPENSEARCH to an OpenSearch checkout, built once with ./gradlew assemble}"
 PLUGIN_CP="$OUT/plugin/main:$OUT/tools:$OUT/store-api/main:$(jars \
     "$OPENSEARCH/server/build/distributions" \
     "$OPENSEARCH/libs/core/build/distributions" \

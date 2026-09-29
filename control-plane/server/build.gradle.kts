@@ -64,7 +64,7 @@ sourceSets["main"].java.srcDir(generateRoutes.map { generatedSourcesDir.get() })
 //
 // or per invocation:
 //
-//     ./gradlew :server:run -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT
+//     ../gradlew :server:run -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT
 // ---------------------------------------------------------------------------
 val storeJars: List<String> = ((findProperty("storeJars") as String?) ?: "")
     .split(",")
@@ -76,7 +76,7 @@ dependencies {
 
     storeJars.forEach { coordinate -> runtimeOnly(coordinate) }
 
-    // The persistence SPI, from the shared ../opensearch-kv-store build. A coordinate rather than a
+    // The persistence SPI, from the shared ../kv-store build. A coordinate rather than a
     // project(...) reference because it is a separate build; Gradle substitutes the local project via the
     // includeBuild in settings.gradle.kts, so there is no publish step.
     //

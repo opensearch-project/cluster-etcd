@@ -5,7 +5,7 @@
 // contract is implementable. Milestone 2 fills it in.
 //
 // It also publishes the contract's shared conformance suite as test fixtures. NODE_CONTRACT.md now has two
-// independent implementations -- this one and the real plugin in ../opensearch-data-plane -- and two
+// independent implementations -- this one and the real plugin in ../data-plane -- and two
 // implementations of one document format tested separately are two formats. The assertions belong in the
 // repository that owns the contract, in the manner of KeyValueStoreContractTests in the store repository,
 // so that a change to the document is a change to one suite both sides then have to pass.

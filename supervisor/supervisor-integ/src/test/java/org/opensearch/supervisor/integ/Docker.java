@@ -74,7 +74,7 @@ final class Docker {
             System.err.println("  answer; some runtimes need starting with their own command first.");
         }
         System.err.println("  Or bypass containers entirely by pointing at a server you already have:");
-        System.err.println("    ./gradlew :supervisor-integ:test -D" + endpointProperty + "=host:port");
+        System.err.println("    ../gradlew :supervisor-integ:test -D" + endpointProperty + "=host:port");
     }
 
     private static String describe(String value) {
