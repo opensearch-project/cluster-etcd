@@ -4,7 +4,19 @@
  */
 package org.opensearch.clusterless.contract;
 
+import org.opensearch.Version;
+import org.opensearch.cluster.ClusterName;
+import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.node.DiscoveryNode;
+import org.opensearch.cluster.node.DiscoveryNodeRole;
+import org.opensearch.clusterless.apply.DataNodeState;
+import org.opensearch.clusterless.apply.DesiredState;
+import org.opensearch.clusterless.apply.DesiredStateResolver;
+import org.opensearch.clusterless.apply.LocalShardStore;
+import org.opensearch.clusterless.apply.MappingSource;
 import org.opensearch.clusterless.publish.CapacityProbe;
+import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.clusterless.publish.NodePublisher;
 import org.opensearch.supervisor.nodecontract.ContractCopy;
 import org.opensearch.supervisor.nodecontract.ContractNode;
@@ -17,6 +29,8 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -39,10 +53,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>{@code runAll} reports every failure rather than the first, which matters because the checks overlap: one
  * broken field usually breaks several, and the set that failed identifies it faster than the first one alone.
  *
- * <p>Note what the adapter does not do: it does not drive an assignment, because at this milestone the plugin
- * does not read one. What it holds is supplied directly, which is the seam {@code ShardInventorySource} exists
- * for — a different route to the same states {@code fake-node} reaches by converging. The checks do not care
- * how, only what comes out.
+ * <p>What it holds is supplied directly rather than converged on, which is the seam {@code ShardInventorySource}
+ * exists for — a different route to the same states {@code fake-node} reaches by converging. The checks do not care
+ * how, only what comes out. Reading an assignment is the exception, and goes further than the parse: the primary
+ * terms it reports are the ones the fabricated state carries, because that is what the checks ask about.
  */
 public class PluginNodeContractTests extends OpenSearchTestCase {
 
@@ -162,7 +176,65 @@ public class PluginNodeContractTests extends OpenSearchTestCase {
                     )
                 )));
             });
-            return new ContractNode.Understood(roles, copies);
+            return new ContractNode.Understood(roles, copies, fabricatedTerms(assignment, copies));
+        }
+
+        /**
+         * The term each copy is <em>fabricated</em> at, read back out of the cluster state this plugin would publish.
+         *
+         * <p>Not {@code primaryTermOf}, which is the parse: the check exists to catch a node that reads the field and
+         * then builds at 1 regardless, and only the built {@code IndexMetadata} can show that. So this goes through
+         * the resolver and {@link DataNodeState}, the same two steps a pass takes, with an index document made up to
+         * fit, since an assignment does not carry one and the checks are not about it.
+         */
+        private static Map<ContractCopy, Long> fabricatedTerms(Assignment assignment, List<ContractCopy> copies) {
+            DesiredState desired = new DesiredStateResolver((tenant, name) -> {
+                Assignment.IndexAssignment index = assignment.tenants().get(tenant).indices().values().stream()
+                    .filter(candidate -> candidate.name().equals(name))
+                    .findFirst()
+                    .orElseThrow();
+                String uuid = assignment.tenants().get(tenant).indices().entrySet().stream()
+                    .filter(entry -> entry.getValue() == index)
+                    .findFirst()
+                    .orElseThrow()
+                    .getKey();
+                int shards = index.shards().keySet().stream().mapToInt(Integer::intValue).max().orElse(0) + 1;
+                return Optional.of(
+                    new IndexConfig(
+                        name,
+                        uuid,
+                        1788969977933L,
+                        true,
+                        Map.of("index.number_of_shards", Integer.toString(shards), "index.number_of_replicas", "0"),
+                        Map.of(),
+                        index.configRevision()
+                    )
+                );
+            }).resolve(assignment);
+
+            ClusterState built = new DataNodeState(
+                new ClusterName("clusterless"),
+                new DiscoveryNode(NODE.value(), NODE.value(), EPHEMERAL, "localhost", "127.0.0.1",
+                    new TransportAddress(TransportAddress.META_ADDRESS, 9300), Map.of(),
+                    Set.of(DiscoveryNodeRole.DATA_ROLE), Version.CURRENT),
+                desired,
+                MappingSource.WRAPPED,
+                LocalShardStore.EMPTY
+            ).buildClusterState(ClusterState.EMPTY_STATE);
+
+            Map<String, IndexMetadata> byUuid = new java.util.HashMap<>();
+            built.metadata().forEach(index -> byUuid.put(index.getIndexUUID(), index));
+
+            Map<ContractCopy, Long> terms = new java.util.LinkedHashMap<>();
+            for (ContractCopy copy : copies) {
+                IndexMetadata index = byUuid.get(copy.indexUuid());
+                if (index != null) {
+                    // Absent is left absent: a copy this node declined to build has no fabricated term, and the
+                    // check should say so rather than be handed a number nothing produced.
+                    terms.put(copy, index.primaryTerm(copy.shard()));
+                }
+            }
+            return terms;
         }
 
         /** As with {@link #roleOf}, a switch so that a role added on either side is a compile error. */
