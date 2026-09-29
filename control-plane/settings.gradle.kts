@@ -7,10 +7,7 @@ include("server")
 // implementations of the same revision semantics against the same keys is how two planes would silently
 // disagree about state. Included as a composite build rather than consumed as a published artifact, so
 // that editing both services together needs no publish step.
-//
-// This does mean the build depends on a path outside this repository; CI has to check out both. A
-// submodule or a real published artifact removes that later without changing the module layout.
-includeBuild("../opensearch-kv-store")
+includeBuild("../kv-store")
 
 dependencyResolutionManagement {
     repositories {

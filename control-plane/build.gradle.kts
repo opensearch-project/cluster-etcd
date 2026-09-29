@@ -35,6 +35,13 @@ allprojects {
     }
 }
 
+
+// ":check" and friends at this root cover every project, so the repository's root build can delegate to
+// this build without listing its modules. Run from here, Gradle already selects the task in every project.
+listOf("assemble", "check", "build", "clean").forEach { name ->
+    tasks.named(name) { dependsOn(subprojects.map { "${it.path}:$name" }) }
+}
+
 extra["nettyVersion"] = nettyVersion
 extra["jacksonVersion"] = jacksonVersion
 extra["junitVersion"] = junitVersion

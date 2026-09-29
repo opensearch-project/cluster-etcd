@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 // Consumers include it as a composite build:
 //
 //     // settings.gradle.kts
-//     includeBuild("../opensearch-kv-store")
+//     includeBuild("../kv-store")
 //
 //     // build.gradle.kts
 //     implementation("org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT")
@@ -77,6 +77,13 @@ allprojects {
             }
         }
     }
+}
+
+
+// ":check" and friends at this root cover every project, so the repository's root build can delegate to
+// this build without listing its modules. Run from here, Gradle already selects the task in every project.
+listOf("assemble", "check", "build", "clean").forEach { name ->
+    tasks.named(name) { dependsOn(subprojects.map { "${it.path}:$name" }) }
 }
 
 extra["junitVersion"] = junitVersion

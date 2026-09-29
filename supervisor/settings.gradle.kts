@@ -19,10 +19,6 @@ include("supervisor-integ")
 // and a service together needs no publish step. Substitution matches on group and name, so the
 // coordinate in each module must stay exactly "org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT" —
 // change either and it resolves against a repository instead of the local project, and fails.
-//
-// The cost, recorded so nobody rediscovers it: this build depends on a path outside itself, so CI must
-// check out both repositories. A submodule or a published artifact removes that later without changing
-// the module layout.
 includeBuild("../kv-store")
 
 dependencyResolutionManagement {

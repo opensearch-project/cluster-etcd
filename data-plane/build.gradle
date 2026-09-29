@@ -47,3 +47,10 @@ configure(project(':plugin')) {
 
     version = opensearch_build
 }
+
+// ":check" and friends at this root cover the plugin, so the repository's root build can delegate to this
+// build without knowing its layout. Run from here, Gradle already selects the task in every project.
+apply plugin: 'base'
+['assemble', 'check', 'build', 'clean'].each { name ->
+    tasks.named(name) { dependsOn ":plugin:${name}" }
+}
