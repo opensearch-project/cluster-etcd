@@ -1058,6 +1058,17 @@ promotion from any node that does not. `NodePublisher` preserves it across a reg
 after this lands: every assignment is rewritten once as it gains explicit terms, and the no-op guard holds after
 that.
 
+**What promotion does not fix, and what is next.** A promoted primary fabricates an in-sync set of only itself —
+the same gap as after a primary restart, above — so the replicas that were already started are neither tracked nor
+replicated to. Promotion makes it *more* likely to bite, because promotion is the deploy path. Recommended, and not
+yet approved: extend option (1) so a replica rebuilds itself as `INITIALIZING` whenever its primary's identity
+changes — a new node, a new `ephemeral_id`, or a new allocation id — rather than only on a restart. Not recommended:
+having the promoted primary declare every visible replica in sync, which guesses at exactly what the in-sync set
+exists to know. The supervisor has this on its list as the data plane's M9.
+
+Not proven: promotion has unit coverage and has not been driven on a running cluster. The supervisor promotes only
+when a primary is *lost*; the drain flow that demotes one on purpose is not built.
+
 ## M10. Cluster-manager actions — **the not-hanging half is done**
 
 - `cluster.health` and `cluster.state` answered from the projections; mutations refused with a reason naming
