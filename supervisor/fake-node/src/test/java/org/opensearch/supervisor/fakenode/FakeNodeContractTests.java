@@ -130,10 +130,18 @@ class FakeNodeContractTests extends NodeContractTests {
             // The copies half goes through FakeNode's own derivation, so this reports what the node would act on
             // rather than what the adapter thinks the document says.
             List<ContractCopy> copies = new java.util.ArrayList<>();
-            FakeNode.desiredOf(parsed).forEach((desired, role) -> copies.add(new ContractCopy(
-                desired.tenant(), desired.indexUuid(), desired.indexName(), desired.configRevision(),
-                desired.shard(), role
-            )));
+            Map<ContractCopy, Long> terms = new LinkedHashMap<>();
+            FakeNode.desiredOf(parsed).forEach((desired, role) -> {
+                ContractCopy copy = new ContractCopy(
+                    desired.tenant(), desired.indexUuid(), desired.indexName(), desired.configRevision(),
+                    desired.shard(), role
+                );
+                copies.add(copy);
+                // fake-node fabricates no cluster state, so the parse is all it has; honest for the same reason its
+                // roles half is.
+                terms.put(copy, parsed.tenants().get(desired.tenant()).indices().get(desired.indexUuid())
+                    .primaryTermOf(desired.shard()));
+            });
 
             // The roles half is the parse, and honestly so: fake-node does not act on roles at all -- it walks
             // indices and nothing else -- so it has no interpretation of its own to report. That is precisely why
@@ -141,7 +149,7 @@ class FakeNodeContractTests extends NodeContractTests {
             Map<TenantId, Set<NodeRole>> roles = new LinkedHashMap<>();
             parsed.tenants().forEach((tenant, entry) -> roles.put(tenant, entry.roles()));
 
-            return new ContractNode.Understood(roles, copies);
+            return new ContractNode.Understood(roles, copies, terms);
         }
 
         private Assignment assignmentFor(List<ContractCopy> copies) {

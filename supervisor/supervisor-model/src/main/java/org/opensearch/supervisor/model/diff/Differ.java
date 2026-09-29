@@ -229,6 +229,17 @@ public final class Differ {
             .count();
         long nonPrimaries = copies.size() - primaries;
 
+        if (primaries > 1) {
+            findings.add(Finding.of(
+                FindingKind.PRIMARY_CONFLICT, subject, observation.pass(),
+                "index [" + index.name() + "] shard " + key.shard() + " is reported as PRIMARY by " + primaries
+                    + " nodes: " + copies.stream().filter(copy -> copy.role() == ShardRole.PRIMARY)
+                    .map(copy -> copy.node().value()).sorted().toList()
+                    + ". Expected briefly when a lost primary returns after its replacement was promoted, until it"
+                    + " applies the assignment that withdraws its copy; anything longer is a split"
+            ));
+        }
+
         if (primaries == 0) {
             findings.add(Finding.of(
                 FindingKind.UNASSIGNED_PRIMARY, subject, observation.pass(),

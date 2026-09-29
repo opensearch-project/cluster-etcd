@@ -1113,6 +1113,13 @@ lives in the store's own conformance suite, which is where it belongs.
 > restarted supervisor does not reissue a term. Format and reasoning: `NODE_CONTRACT.md`, *Proposed: primary terms*,
 > and `DESIGN.md` §28.
 >
+> **After your side landed, one more fix here.** A primary that was lost and then *returned* was told `PRIMARY` at
+> the term its replacement had been promoted at, because its stale entry was stamped with the counter's current value.
+> The supervisor now withdraws a `PRIMARY` entry whose recorded term is below the shard's current one, and reports
+> `PRIMARY_CONFLICT` while two nodes still hold the shard as primary. And the conformance suite now checks
+> `primary_terms` on the reading side: `ContractNode.Understood` gained `primaryTerms`, per copy, meaning the value
+> the node will fabricate. Your adapter needs to fill it in; until it does, two checks fail, deliberately.
+>
 > **Three things to know on your side.** A new index's first primary is at term 2, not 1. Every assignment is
 > rewritten once when this lands, gaining explicit terms. And the drain flow is not built — promotion here happens
 > only when a primary is lost, not when one is demoted on purpose, because there is nowhere yet to say a drain is

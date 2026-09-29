@@ -1631,4 +1631,104 @@ class ActingTests {
         assertEquals(counterRevision, store.get(Keys.primaryTerms(ACME, UUID)).orElseThrow().revision());
         assertEquals(versions, assignmentOf(NODE).version() + assignmentOf(NODE_B).version());
     }
+
+    @Test
+    void aReturningOldPrimaryIsNotToldItIsPrimaryAtTheNewTerm() {
+        // The case neither side had tested. A was primary at term N and was lost; B was promoted at N+1. A's
+        // assignment was never rewritten while it was lost -- the applier only visits placeable nodes -- so it still
+        // names A as PRIMARY. When A comes back, that entry must not survive to be stamped with N+1, or two nodes are
+        // told they are the primary at the same term, which is the one state the term exists to prevent.
+        FakeNode a = nodeDeclaringTerms(NODE);
+        FakeNode b = nodeDeclaringTerms(NODE_B);
+        a.start();
+        b.start();
+        createDocrepIndex(1, 1);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        for (int pass = 0; pass < 70; pass++) {
+            supervisor.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(ShardRole.PRIMARY, roleHeldBy(b, 0), "precondition: B was promoted");
+        long promotedTerm = counterFor(0);
+
+        // A restarts with its old data, as a real node would after a network partition healed or a slow reboot.
+        FakeNode returned = new FakeNode(store, new Registration(
+            NODE, "placeholder", NODE.value(), POOL, EnumSet.of(NodeRole.DATA),
+            "10.0.0." + NODE.value().charAt(4), 9300, "3.7.0", remoteStoreNode("z1"), 5000, 0L,
+            java.util.Set.of(org.opensearch.supervisor.model.node.ContractFeatures.PRIMARY_TERMS)
+        ), clock, "eph-returned");
+        returned.start();
+        for (int pass = 0; pass < 20; pass++) {
+            supervisor.tick();
+            b.tick();
+            returned.tick();
+            advance();
+            Assignment told = assignmentOf(NODE);
+            ShardRole toldRole = told == null || told.tenants().get(ACME) == null
+                || told.tenants().get(ACME).indices().get(UUID) == null
+                ? null : told.tenants().get(ACME).indices().get(UUID).shards().get(0);
+            if (toldRole == ShardRole.PRIMARY) {
+                long toldAt = told.tenants().get(ACME).indices().get(UUID).primaryTermOf(0);
+                org.junit.jupiter.api.Assertions.assertNotEquals(promotedTerm, toldAt,
+                    "pass " + pass + ": A is told PRIMARY at term " + toldAt + ", the term B was promoted at");
+            }
+        }
+        assertEquals(ShardRole.PRIMARY, roleHeldBy(b, 0), "B is still the primary");
+        assertTrue(roleHeldBy(returned, 0) != ShardRole.PRIMARY,
+            "and A is not a second one: " + roleHeldBy(returned, 0));
+        assertTrue(supervisor.lastDiffOf(POOL).of(FindingKind.PRIMARY_CONFLICT).isEmpty(),
+            "and once A has let go, nothing reports two primaries");
+    }
+
+    @Test
+    void twoNodesReportingOneShardAsPrimaryIsReportedRatherThanSilent() {
+        // Silent until now: the differ only asked whether a shard had no primary.
+        FakeNode a = nodeDeclaringTerms(NODE);
+        FakeNode b = nodeDeclaringTerms(NODE_B);
+        a.start();
+        b.start();
+        createDocrepIndex(1, 1);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        for (int pass = 0; pass < 70; pass++) {
+            supervisor.tick();
+            b.tick();
+            advance();
+        }
+
+        // A comes back holding its old primary copy and has not yet read the assignment that withdraws it.
+        FakeNode returned = new FakeNode(store, new Registration(
+            NODE, "placeholder", NODE.value(), POOL, EnumSet.of(NodeRole.DATA),
+            "10.0.0." + NODE.value().charAt(4), 9300, "3.7.0", remoteStoreNode("z1"), 5000, 0L,
+            java.util.Set.of(org.opensearch.supervisor.model.node.ContractFeatures.PRIMARY_TERMS)
+        ), clock, "eph-returned");
+        returned.start();
+        store.put(Keys.nodeShards(NODE), NodeJson.write(new org.opensearch.supervisor.model.node.ShardInventory(
+            NODE, "eph-returned", clock.millis(), java.util.Map.of(ACME,
+                new org.opensearch.supervisor.model.node.ShardInventory.TenantShards(java.util.Map.of(UUID,
+                    new org.opensearch.supervisor.model.node.ShardInventory.IndexShards("my-index", 3041,
+                        java.util.Map.of(0, org.opensearch.supervisor.model.node.ShardInventory.ShardCopy.of(
+                            ShardRole.PRIMARY, org.opensearch.supervisor.model.node.ShardState.STARTED, 1000)))))))));
+        store.put(Keys.nodeHeartbeat(NODE), NodeJson.write(new org.opensearch.supervisor.model.node.Heartbeat(
+            NODE, "eph-returned", clock.millis(), org.opensearch.supervisor.model.node.Heartbeat.Applied.NONE, null, 1,
+            new org.opensearch.supervisor.model.node.Heartbeat.Capacity(2_000_000L, 1_000_000L, 10, 10, 0.1))));
+        supervisor.tick();
+
+        var conflict = supervisor.lastDiffOf(POOL).of(FindingKind.PRIMARY_CONFLICT);
+        assertEquals(1, conflict.size(), supervisor.lastDiffOf(POOL).findings().toString());
+        assertTrue(conflict.get(0).because().contains(NODE.value()), conflict.get(0).because());
+        assertTrue(conflict.get(0).because().contains(NODE_B.value()), conflict.get(0).because());
+    }
 }

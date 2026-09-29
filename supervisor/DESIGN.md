@@ -2235,6 +2235,14 @@ Three things learned building it, each recorded where it applies:
 Also not tracked, and worth knowing before relying on promotion: the in-sync set. OpenSearch promotes only an
 in-sync replica; `Promoter` promotes any started replica on a node still heartbeating.
 
+**And a returning old primary is withdrawn, not re-stamped.** Found after the data plane implemented its side: a
+node lost while primary keeps its assignment unrewritten, because only placeable nodes are visited, so when it came
+back its stale `PRIMARY` entry was stamped with the *new* term — two nodes told they were primary at the term that
+exists to tell them apart. The entry carries its own evidence: a `PRIMARY` entry recorded below the shard's current
+term, which this pass is not placing, has been superseded, and the applier drops it (`dropSupersededPrimaries`).
+While the returning node still holds its old copy, `PRIMARY_CONFLICT` reports two primaries; the differ used to ask
+only whether a shard had none.
+
 Four fields and one registration field. The design choices that matter are why there are only four.
 
 ### 28.1 The term and the pin are one field

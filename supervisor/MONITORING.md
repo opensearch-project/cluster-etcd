@@ -281,6 +281,7 @@ place is most of the value.
 | finding | fire at | severity | note |
 |---|---|---|---|
 | `UNASSIGNED_PRIMARY` | 30 passes | CRITICAL | data is unreachable, not merely un-redundant |
+| `PRIMARY_CONFLICT` | 10 passes | CRITICAL | two nodes acting as one shard's primary; brief when a lost primary returns, a split if it persists |
 | `UNPLACEABLE` | 30 passes | CRITICAL | `because` names the decider; it is the actionable one |
 | `FOREIGN_COPY`, `POOL_REPOSITORY_MISMATCH` | 5 passes | CRITICAL | a configuration error, never a race |
 | `NODE_UNREGISTERED` | 2 passes | CRITICAL | see below — never normal, never self-heals |

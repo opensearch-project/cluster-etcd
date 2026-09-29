@@ -263,6 +263,7 @@ public final class Applier {
         }
 
         applyCoordinatorMembership(observed, observation, tenants);
+        dropSupersededPrimaries(observed, changes, tenants, terms);
         applyPrimaryTerms(tenants, terms);
         applyIngestionResets(observation, tenants);
 
@@ -388,6 +389,94 @@ public final class Applier {
             }
         }
         return null;
+    }
+
+    /**
+     * Removes a {@code PRIMARY} entry that a newer term has superseded, before the terms are stamped.
+     *
+     * <p><b>The bug this closes would have defeated the term entirely.</b> A node that was primary at N and then lost
+     * keeps its assignment unrewritten for as long as it is lost, because only placeable nodes are visited. Its
+     * replacement is promoted at N+1. When the old node comes back, its stale entry still says {@code PRIMARY} — and
+     * {@link #applyPrimaryTerms} would stamp it with N+1, telling two nodes they are primary at the same term. That is
+     * the exact state the term exists to prevent, arrived at by the machinery that issues it.
+     *
+     * <p>The entry carries its own evidence, so no memory is needed: it was written at the term it recorded, and a
+     * {@code PRIMARY} entry recorded below the shard's current term that this pass is not placing has been superseded.
+     * An entry from before terms existed records none and reads as 1, which is correct: if the counter is above 1, a
+     * primary has been placed since.
+     *
+     * <p>Dropped rather than demoted to a replica. OpenSearch has no in-place demotion — a primary becoming a replica
+     * goes through recovery either way — and the planner places a replica again by the ordinary path if the shard
+     * wants one, after which the node recovers from the real primary instead of trusting its own diverged copy.
+     */
+    private static void dropSupersededPrimaries(
+        Observation.NodeObservation observed,
+        List<Instruction> changes,
+        Map<TenantId, Assignment.TenantAssignment> tenants,
+        TermLedger.Resolution terms
+    ) {
+        Set<String> placedHere = new java.util.HashSet<>();
+        for (Instruction instruction : changes) {
+            if (instruction instanceof Instruction.PlaceCopy place && place.role() == ShardRole.PRIMARY) {
+                placedHere.add(place.tenant() + "/" + place.indexUuid() + "/" + place.shard());
+            }
+        }
+
+        for (var tenantEntry : Set.copyOf(tenants.entrySet())) {
+            TenantId tenant = tenantEntry.getKey();
+            Assignment.TenantAssignment entry = tenantEntry.getValue();
+            Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>(entry.indices());
+            boolean changed = false;
+
+            for (var indexEntry : entry.indices().entrySet()) {
+                String uuid = indexEntry.getKey();
+                var resolved = terms.termsOf(tenant, uuid);
+                if (resolved.isEmpty()) {
+                    // An unreadable counter says nothing about which primary is current; leave it to be read again.
+                    continue;
+                }
+                Map<Integer, ShardRole> shards = new LinkedHashMap<>(indexEntry.getValue().shards());
+                for (var shardEntry : indexEntry.getValue().shards().entrySet()) {
+                    int shard = shardEntry.getKey();
+                    if (shardEntry.getValue() != ShardRole.PRIMARY || placedHere.contains(tenant + "/" + uuid + "/" + shard)) {
+                        continue;
+                    }
+                    if (recordedTerm(observed, tenant, uuid, shard) < resolved.get().termOf(shard)) {
+                        shards.remove(shard);
+                    }
+                }
+                if (shards.size() != indexEntry.getValue().shards().size()) {
+                    changed = true;
+                    if (shards.isEmpty()) {
+                        indices.remove(uuid);
+                    } else {
+                        Assignment.IndexAssignment index = indexEntry.getValue();
+                        indices.put(uuid, new Assignment.IndexAssignment(
+                            index.name(), index.configRevision(), shards, index.ingestionReset()));
+                    }
+                }
+            }
+
+            if (changed == false) {
+                continue;
+            }
+            if (indices.isEmpty()) {
+                entry.withIndices(indices).without(NodeRole.DATA)
+                    .ifPresentOrElse(remaining -> tenants.put(tenant, remaining), () -> tenants.remove(tenant));
+            } else {
+                tenants.put(tenant, entry.withIndices(indices));
+            }
+        }
+    }
+
+    /** The term this node was last told for a shard: its observed entry's, or 1 when that carried none. */
+    private static long recordedTerm(Observation.NodeObservation observed, TenantId tenant, String uuid, int shard) {
+        if (observed.assignment() == null) {
+            return 1L;
+        }
+        var tenantAssignment = observed.assignment().tenants().get(tenant);
+        var index = tenantAssignment == null ? null : tenantAssignment.indices().get(uuid);
+        return index == null ? 1L : index.primaryTermOf(shard);
     }
 
     /**

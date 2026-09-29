@@ -17,6 +17,18 @@ public enum FindingKind {
     /** An open index's shard has no primary anywhere in the pool. */
     UNASSIGNED_PRIMARY(CRITICAL),
 
+    /**
+     * More than one node reports a copy of one shard as {@code PRIMARY}.
+     *
+     * <p>Silent until now, because the differ only ever asked whether a shard had <em>no</em> primary. The ordinary
+     * way to reach it is an old primary returning after its replacement was promoted: until it applies its rewritten
+     * assignment, it still holds the copy it had. That is transient and the applier resolves it, but it is also the
+     * shape of a genuine split brain, and a state that can mean either must be visible rather than inferred.
+     * {@code DESIGN.md} §28.9's dual-run will make two primaries intentional; it will need to say so, and this finding
+     * is what it will have to be exempted from.
+     */
+    PRIMARY_CONFLICT(CRITICAL),
+
     /** Fewer {@code REPLICA} copies than desired state asks for. */
     UNASSIGNED_REPLICA(WARNING),
 

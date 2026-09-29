@@ -97,16 +97,34 @@ public interface ContractNode {
      *     whole seam exists to catch.
      * @param copies every shard copy the document asks for, carrying the index name and config revision, because
      *     those are what a node builds against and a format change can lose them without losing anything else.
+     * @param primaryTerms the term the node will fabricate for each of those copies, 1 where the document gave none.
+     *     Every copy must appear. It is the value the node <em>acts on</em>, not the parse: a node that read the field
+     *     and then fabricated 1 regardless is the failure {@code contract_features} exists to rule out, and only
+     *     reporting what it will use can catch it.
      */
     record Understood(
         java.util.Map<org.opensearch.supervisor.model.TenantId,
             java.util.Set<org.opensearch.supervisor.model.node.NodeRole>> roles,
-        List<ContractCopy> copies
+        List<ContractCopy> copies,
+        java.util.Map<ContractCopy, Long> primaryTerms
     ) {
 
         public Understood {
             roles = java.util.Map.copyOf(roles);
             copies = List.copyOf(copies);
+            primaryTerms = java.util.Map.copyOf(primaryTerms);
+        }
+
+        /**
+         * Without terms, for an implementation that has not been extended yet. It fails the term checks rather than
+         * passing them, deliberately: an implementation that says nothing about terms is one nobody has checked.
+         */
+        public Understood(
+            java.util.Map<org.opensearch.supervisor.model.TenantId,
+                java.util.Set<org.opensearch.supervisor.model.node.NodeRole>> roles,
+            List<ContractCopy> copies
+        ) {
+            this(roles, copies, java.util.Map.of());
         }
 
         /** Copies sorted, so two implementations that agree are not reported as differing on iteration order. */

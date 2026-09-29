@@ -443,7 +443,39 @@ public final class NodeContractChecks {
                 "every field a node builds against must survive: index name, config revision and shard role");
         }));
 
+        // ------------------------------------------------------------ primary terms (DESIGN.md §28)
+
+        checks.add(new Check("primaryTermsAreUnderstoodPerCopy", harness -> {
+            // The value a node fabricates for each copy, fed by the supervisor's writer. The plugin parses this field
+            // itself, which makes it a second reader of one format -- exactly what this suite exists to hold together.
+            List<ContractCopy> asked = exampleCopies();
+            ContractNode.Understood understood = harness.node().readAssignment(
+                assignmentWith(harness, Set.of(NodeRole.DATA), asked, Map.of(0, 4L, 1, 7L)));
+
+            for (ContractCopy copy : asked) {
+                assertEquals(copy.shard() == 0 ? 4L : 7L, understood.primaryTerms().get(copy),
+                    "shard " + copy.shard() + " must be fabricated at the term it was issued: " + understood.primaryTerms());
+            }
+        }));
+
+        checks.add(new Check("aDocumentWithoutTermsIsUnderstoodAsTermOne", harness -> {
+            // Every assignment written before terms existed, and every one from a supervisor that issues none. Absent
+            // must mean 1 -- today's constant -- and not "unknown", or an upgrade stalls every shard until rewritten.
+            List<ContractCopy> asked = exampleCopies();
+            ContractNode.Understood understood = harness.node().readAssignment(
+                assignmentWith(harness, Set.of(NodeRole.DATA), asked, null));
+
+            for (ContractCopy copy : asked) {
+                assertEquals(1L, understood.primaryTerms().get(copy),
+                    "an absent term is 1, for every copy: " + understood.primaryTerms());
+            }
+        }));
+
         return List.copyOf(checks);
+    }
+
+    private static byte[] assignmentWith(Harness harness, Set<NodeRole> roles, List<ContractCopy> copies) {
+        return assignmentWith(harness, roles, copies, null);
     }
 
     /**
@@ -454,7 +486,12 @@ public final class NodeContractChecks {
      * change on the writing side reaches the reading side as a failing check rather than as a node that has
      * quietly stopped doing its job.
      */
-    private static byte[] assignmentWith(Harness harness, Set<NodeRole> roles, List<ContractCopy> copies) {
+    private static byte[] assignmentWith(
+        Harness harness,
+        Set<NodeRole> roles,
+        List<ContractCopy> copies,
+        Map<Integer, Long> terms
+    ) {
         Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>();
         Map<String, Map<Integer, ShardRole>> shardsByIndex = new LinkedHashMap<>();
         for (ContractCopy copy : copies) {
@@ -463,7 +500,7 @@ public final class NodeContractChecks {
         }
         for (ContractCopy copy : copies) {
             indices.put(copy.indexUuid(), new Assignment.IndexAssignment(
-                copy.indexName(), copy.configRevision(), shardsByIndex.get(copy.indexUuid())));
+                copy.indexName(), copy.configRevision(), shardsByIndex.get(copy.indexUuid()), null, terms));
         }
 
         return NodeJson.write(new Assignment(

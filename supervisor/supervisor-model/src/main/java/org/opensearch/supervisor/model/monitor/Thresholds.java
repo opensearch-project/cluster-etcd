@@ -40,6 +40,10 @@ public final class Thresholds {
         rules.put(FindingKind.UNASSIGNED_PRIMARY, new Rule(30, Alert.Severity.CRITICAL));
         // The actionable one: `unplaceable_because` names the decider that refused.
         rules.put(FindingKind.UNPLACEABLE, new Rule(30, Alert.Severity.CRITICAL));
+        // Two nodes both acting as a shard's primary. Clears within a pass or two when a lost primary returns and
+        // applies the assignment withdrawing its copy, so it gets a little patience -- and persisting past that is a
+        // split, whose cost grows with every write, so not much.
+        rules.put(FindingKind.PRIMARY_CONFLICT, new Rule(10, Alert.Severity.CRITICAL));
 
         // Configuration errors, never races, so they do not need patience.
         rules.put(FindingKind.FOREIGN_COPY, new Rule(5, Alert.Severity.CRITICAL));
