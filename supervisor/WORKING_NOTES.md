@@ -8,12 +8,19 @@ are done here, and the open threads. Start there; this file is the long form of 
 
 ## The sandbox blocks more than it looks like it does
 
-- **Gradle cannot run.** It fails creating its file-lock service, because binding a socket is denied.
+> **Mostly fixed, 2026-09-29.** The Gradle and Docker failures below came from a sandbox misconfiguration, which has
+> been corrected. Checked by running rather than assumed: `./gradlew test --rerun-tasks` executes all 719 tests,
+> including the 26 integration tests, which start etcd and ZooKeeper under Testcontainers and pass. So sockets bind,
+> the Docker socket is reachable, and containers run. **Maven Central is still unreachable** (`HTTP 000`), so builds
+> depend on the local caches. The bullets are kept for the diagnosis, marked where they no longer hold.
+
+- ~~**Gradle cannot run.**~~ *No longer true; see above.* It failed creating its file-lock service, because
+  binding a socket was denied.
   Compile and test with `javac` and a hand-rolled JUnit launcher instead; every dependency is already in
   `~/.gradle/caches/modules-2/files-2.1` and `~/.m2/repository`. Ask a human to run `./gradlew build`, and
   report honestly that the Gradle build is unverified.
 
-  **Now solved for this repository: `tools/jbuild.sh`.** It resolves jars from both local caches, compiles
+  **`tools/jbuild.sh` was the workaround and is kept as a fallback**, for an environment where Gradle cannot run. It resolves jars from both local caches, compiles
   every module in dependency order with `--release 21`, and runs the tests through `tools/JUnitRunner.java`.
   `./gradlew --version` does work, which is misleading — the failure only appears once a task needs the
   lock service:
@@ -35,14 +42,14 @@ are done here, and the open threads. Start there; this file is the long form of 
   `--release 21` on a newer `javac` — `--release` gets the language level and the API surface right but
   still runs a newer compiler and a newer JVM, which is approximately the build rather than the build.
 
-- **No listening sockets.** `bind()` is `EPERM`, so the service cannot be started locally and no embedded
+- ~~**No listening sockets.**~~ *No longer true.* `bind()` was `EPERM`, so the service cannot be started locally and no embedded
   test server (ZooKeeper's `TestingServer`, an etcd test container) can run either.
-- **No raw TCP, even to localhost.** `connect()` to `127.0.0.1` on any port is `EPERM`. Outbound traffic is
+- ~~**No raw TCP, even to localhost.**~~ *No longer true for local connections; the integration tests connect to
+  their containers.* `connect()` to `127.0.0.1` on any port was `EPERM`. Outbound traffic is
   forced through a local HTTP forwarding proxy, which is why `curl` to `localhost:9200` works and a socket
   to the same port does not.
-- **No Unix-domain sockets either.** `connect()` to an `AF_UNIX` path is also `EPERM`, so the Docker socket
-  is out of reach even when you know exactly where it is. **No amount of cleverness runs a container from
-  in here.** Container-based tests are for CI and for a human, and must skip cleanly without one.
+- ~~**No Unix-domain sockets either.**~~ *No longer true: Docker works.* `connect()` to an `AF_UNIX` path was
+  also `EPERM`. Container-based tests must still skip cleanly where there is no Docker.
 - **That proxy silently truncates response bodies** and rewrites `Content-Length` to match, so a truncated
   body parses like a complete one. The cut-off varies wildly — 115 bytes in one request, 11,637 in
   another — so verify rather than trusting a body that happens to be valid JSON. `?filter_path=` to shrink

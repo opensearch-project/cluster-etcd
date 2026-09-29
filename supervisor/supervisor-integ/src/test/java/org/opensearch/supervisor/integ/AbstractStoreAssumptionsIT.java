@@ -224,8 +224,12 @@ abstract class AbstractStoreAssumptionsIT extends StoreIntegBase {
      *
      * <pre>
      *   etcd       200 snapshot-consistent,   0 torn, widest generation spread 2
-     *   ZooKeeper   11 snapshot-consistent, 189 torn, widest generation spread 3
+     *   ZooKeeper   11 snapshot-consistent, 189 torn, widest generation spread 3   (first run)
+     *   ZooKeeper   39 snapshot-consistent, 161 torn, widest generation spread 3   (2026-09-29)
      * </pre>
+     *
+     * <p>The ZooKeeper figure varies between runs, since it depends on how the reader and writer interleave, but it
+     * has stayed far from zero. An atomic backend reports zero every time.
      *
      * <p>Those two signatures are exactly what the model predicts and are worth reading carefully. A spread of
      * <b>2</b> is not evidence of tearing — it is the <em>expected</em> state of an atomic scan taken mid-sweep,
@@ -233,14 +237,14 @@ abstract class AbstractStoreAssumptionsIT extends StoreIntegBase {
      * <b>3</b> is impossible for a snapshot, because one instant cannot contain three of the writer's
      * generations, and it is the unambiguous fingerprint of a walk.
      *
-     * <p>The key count is raised to 200 here so that detection is <b>structural rather than incidental</b>. At 40
-     * keys ZooKeeper still tore on 94.5% of scans, so nothing was broken — but the eleven that looked consistent
-     * are a reminder that a walking read can be mistaken for a snapshot when it happens to fetch the high keys
-     * first and the low keys last, since that produces the same newer-on-a-prefix shape a staircase does. The
-     * costs scale differently in a way that removes the ambiguity: an atomic range request is one round trip
-     * whatever the key count, while a walk is at least one per key, so at 200 keys a walk spans several sweeps and
-     * cannot come back with a spread of 2. Attempts drop from 200 to 30 to suit, which is fewer round trips than
-     * before rather than more.
+     * <p><b>And a correction, measured.</b> This test once raised the key count to 200 and cut the attempts to 30,
+     * on the argument that a walk costs a round trip per key while an atomic range request costs one in total, so
+     * more keys would make a walk span several sweeps and never come back with a spread of 2. Run for real, it did
+     * exactly that: 12 snapshot-consistent, 18 torn, widest spread 2 on ZooKeeper. The argument forgot that the
+     * writer's sweep also costs a round trip per key, so adding keys slows the writer as much as the reader and the
+     * ratio between them does not move. Forty keys and two hundred attempts detects better, so it is back. Tearing is
+     * still caught at spread 2, by the ordering check — a newer value above an older one — which is why a verdict of
+     * "torn" does not depend on seeing three generations.
      *
      * <p>The earlier version of this test asserted that all values in a scan were equal, and failed against etcd.
      * That was the test being wrong: the SPI has no multi-key transaction, so the writer's forty puts are forty
@@ -250,9 +254,8 @@ abstract class AbstractStoreAssumptionsIT extends StoreIntegBase {
     @Test
     void aPrefixScanIsCharacterisedForThisBackend() throws Exception {
         String prefix = "torn/";
-        // Enough that a walking scan provably outlasts several writer sweeps; see the class comment. An atomic
-        // range request does not care how many there are.
-        int keys = 200;
+        // Forty: raising it was tried and measured worse, because the writer's sweep slows as much as the scan does.
+        int keys = 40;
         for (int i = 0; i < keys; i++) {
             store.put(prefix + String.format("%03d", i), generation(0));
         }
@@ -277,7 +280,7 @@ abstract class AbstractStoreAssumptionsIT extends StoreIntegBase {
         int torn = 0;
         int worstGenerationSpread = 1;
         try {
-            for (int attempt = 0; attempt < 30; attempt++) {
+            for (int attempt = 0; attempt < 200; attempt++) {
                 NavigableMap<String, KeyValueStore.Versioned> scanned = store.scanPrefix(prefix);
 
                 assertEquals(keys, scanned.size(),

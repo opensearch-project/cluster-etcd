@@ -44,13 +44,16 @@ Ownership decisions already made. Don't reopen them without a reason:
 
 ## How work is done here
 
-- **Building.** The sandbox cannot run Gradle or Docker. `./tools/jbuild.sh` compiles everything, runs every
-  unit test, and typechecks `supervisor-integ`. Michael runs `./gradlew build` and
-  `./gradlew :supervisor-integ:test`, which runs Testcontainers against etcd and ZooKeeper.
-- **Committing.** Commits are signed, which hangs in the sandbox. Stage exactly your own
-  files, write the message to `.git/<TOPIC>_MSG`, and ask Michael to run `git commit -F .git/<TOPIC>_MSG`. Message
-  style: prose explaining *why*, the problem before the change, and what was verified and how. End with
-  `Signed-off-by: Michael Froh <m_froh@apple.com>`.
+- **Building.** Gradle and Docker both work in the sandbox, which the session that crashed never knew:
+  `./gradlew build --offline`, and `./gradlew test` runs everything, including the integration tests against etcd
+  and ZooKeeper under Testcontainers (about two minutes). Use `--offline`: Maven Central is unreachable, and the
+  local caches have everything. `./tools/jbuild.sh` is a fallback for an environment where Gradle cannot run.
+  Don't report a change as green without running the Gradle build.
+- **Committing.** Commits are signed. A plain `git commit` works from the sandbox now, but
+  signing has hung here before, waiting on an approval that never arrived. So commit with a two-minute timeout, and
+  if it hangs, stop it, leave the change staged with the message in `.git/<TOPIC>_MSG`, and ask Michael to run
+  `git commit -F .git/<TOPIC>_MSG`. Commit only when asked. Message style: prose explaining *why*, the problem
+  before the change, and what was verified and how. End with `Signed-off-by: Michael Froh <m_froh@apple.com>`.
 - **Several sessions share one checkout.** Never move HEAD: no `git checkout`, no `git checkout -b`. To put work
   on a branch, build the commit with a temporary index (`GIT_INDEX_FILE`, `read-tree`, `write-tree`,
   `commit-tree`, `git branch`). That commit is unsigned, so say so.
