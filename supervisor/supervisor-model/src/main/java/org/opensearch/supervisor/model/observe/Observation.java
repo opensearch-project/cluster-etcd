@@ -10,6 +10,7 @@ import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
 import org.opensearch.supervisor.model.settings.ClusterSettings;
 import org.opensearch.supervisor.model.status.Liveness;
+import org.opensearch.supervisor.model.supervisor.PrimaryTerms;
 import org.opensearch.supervisor.model.task.TaskRecord;
 
 import java.time.Instant;
@@ -38,8 +39,23 @@ public record Observation(
     PoolId pool,
     Map<TenantId, DesiredState> tenants,
     Map<NodeId, NodeObservation> nodes,
-    List<String> unreadable
+    List<String> unreadable,
+    Map<TenantId, Map<String, TermCounter>> terms
 ) {
+
+    /**
+     * One index's primary-term counter as read, with the revision a compare-and-set must name.
+     *
+     * @param terms null when the document exists and cannot be read. <b>Unreadable is not absent</b>: an absent
+     *     counter is rebuilt from what nodes were last told, and doing that to one that merely failed to parse would
+     *     overwrite the only record of which terms have been issued.
+     */
+    public record TermCounter(PrimaryTerms terms, long revision) {
+
+        public boolean readable() {
+            return terms != null;
+        }
+    }
 
     public Observation {
         Objects.requireNonNull(pool, "pool");
@@ -47,6 +63,28 @@ public record Observation(
         tenants = tenants == null ? Map.of() : Map.copyOf(tenants);
         nodes = nodes == null ? Map.of() : Map.copyOf(nodes);
         unreadable = unreadable == null ? List.of() : List.copyOf(unreadable);
+        Map<TenantId, Map<String, TermCounter>> copied = new java.util.LinkedHashMap<>();
+        (terms == null ? Map.<TenantId, Map<String, TermCounter>>of() : terms)
+            .forEach((tenant, counters) -> copied.put(tenant, Map.copyOf(counters)));
+        terms = Map.copyOf(copied);
+    }
+
+    /** Without term counters: an observation taken before any were issued, and most tests. */
+    public Observation(
+        long pass,
+        Instant observedAt,
+        PoolId pool,
+        Map<TenantId, DesiredState> tenants,
+        Map<NodeId, NodeObservation> nodes,
+        List<String> unreadable
+    ) {
+        this(pass, observedAt, pool, tenants, nodes, unreadable, Map.of());
+    }
+
+    /** The counter for one index, or empty if none has been written. */
+    public Optional<TermCounter> termCounter(TenantId tenant, String indexUuid) {
+        Map<String, TermCounter> counters = terms.get(tenant);
+        return counters == null ? Optional.empty() : Optional.ofNullable(counters.get(indexUuid));
     }
 
     /** Nodes that can be placed on: registered, in this pool, and not presumed gone. */

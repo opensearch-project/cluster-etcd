@@ -12,6 +12,7 @@ import org.opensearch.supervisor.model.node.NodeJson;
 import org.opensearch.supervisor.model.node.Registration;
 import org.opensearch.supervisor.model.node.ShardInventory;
 import org.opensearch.supervisor.model.observe.Observation;
+import org.opensearch.supervisor.model.supervisor.PrimaryTerms;
 import org.opensearch.supervisor.model.status.Liveness;
 
 import java.time.Clock;
@@ -55,6 +56,7 @@ public final class Observer {
     private final RevisionCache<Heartbeat> heartbeats = new RevisionCache<>();
     private final RevisionCache<IndexConfig> indices = new RevisionCache<>();
     private final RevisionCache<Assignment> assignments = new RevisionCache<>();
+    private final RevisionCache<PrimaryTerms> primaryTerms = new RevisionCache<>();
     private final RevisionCache<org.opensearch.supervisor.model.settings.ClusterSettings> settings =
         new RevisionCache<>();
 
@@ -84,8 +86,12 @@ public final class Observer {
 
         Map<NodeId, Observation.NodeObservation> nodes = observeNodes(pool, pools, now, unreadable);
         Map<TenantId, Observation.DesiredState> tenants = observeTenants(pool, pools, knownTenants, unreadable);
+        Map<TenantId, Map<String, Observation.TermCounter>> terms = new LinkedHashMap<>();
+        for (TenantId tenant : tenants.keySet()) {
+            terms.put(tenant, termsOf(tenant, unreadable));
+        }
 
-        return new Observation(currentPass, now, pool, tenants, nodes, unreadable);
+        return new Observation(currentPass, now, pool, tenants, nodes, unreadable, terms);
     }
 
     // ---------------------------------------------------------------- nodes
@@ -351,6 +357,38 @@ public final class Observer {
             unreadable.add(key);
             return org.opensearch.supervisor.model.settings.ClusterSettings.EMPTY;
         }
+    }
+
+    /**
+     * The tenant's primary-term counters, one scan per tenant per pass.
+     *
+     * <p>An unreadable counter is kept, with its revision and no terms, rather than dropped. Dropped, it would look
+     * absent, and an absent counter is rebuilt from what nodes were last told — overwriting the only record of which
+     * terms have been issued, on the strength of a parse failure.
+     */
+    private Map<String, Observation.TermCounter> termsOf(TenantId tenant, List<String> unreadable) {
+        String prefix = Keys.primaryTermsPrefix(tenant);
+        Map<String, Observation.TermCounter> byUuid = new LinkedHashMap<>();
+        for (var entry : store.scanPrefix(prefix).entrySet()) {
+            String uuid;
+            try {
+                uuid = Keys.idAfter(prefix, entry.getKey());
+            } catch (RuntimeException e) {
+                unreadable.add(entry.getKey());
+                continue;
+            }
+            try {
+                PrimaryTerms counter = primaryTerms.get(
+                    entry.getKey(), entry.getValue().revision(), ignored -> PrimaryTerms.from(entry.getValue().value())
+                );
+                byUuid.put(uuid, new Observation.TermCounter(counter, entry.getValue().revision()));
+            } catch (RuntimeException e) {
+                primaryTerms.forget(entry.getKey());
+                unreadable.add(entry.getKey());
+                byUuid.put(uuid, new Observation.TermCounter(null, entry.getValue().revision()));
+            }
+        }
+        return byUuid;
     }
 
     // ---------------------------------------------------------------- helpers

@@ -1104,6 +1104,20 @@ lives in the store's own conformance suite, which is where it belongs.
 
 ## 11. Promoting a replica needs a primary term in the assignment, and that term is the fence
 
+> **Supervisor half done.** `primary_terms` is in every assignment, from a per-index counter at
+> `supervisor/terms/<tenant>/<index-uuid>`, advanced by one each time a primary is placed. A lost
+> document-replication primary is now replaced by promoting its replica in place — only onto a node declaring
+> `contract_features: ["primary_terms"]` in its registration, which is how this side knows the term will be honoured
+> rather than ignored with an `applied` anyway. Your three tests: the term advances by one per promotion and never
+> repeats; every copy of the shard, the promoted one included, is told the new term in the same pass; and a
+> restarted supervisor does not reissue a term. Format and reasoning: `NODE_CONTRACT.md`, *Proposed: primary terms*,
+> and `DESIGN.md` §28.
+>
+> **Three things to know on your side.** A new index's first primary is at term 2, not 1. Every assignment is
+> rewritten once when this lands, gaining explicit terms. And the drain flow is not built — promotion here happens
+> only when a primary is lost, not when one is demoted on purpose, because there is nowhere yet to say a drain is
+> in progress.
+
 **The blocker for the deployment flow this design is aimed at**, and the first time D8.2's "no per-primary
 generation" has been a concrete requirement rather than a recorded risk.
 

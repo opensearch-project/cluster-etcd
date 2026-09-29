@@ -2210,8 +2210,30 @@ and no data has to flow back to it.
 
 ## 28. The assignment fields for terms, pins and retention
 
-**Status: designed, not implemented.** §27.5 listed the instruction vocabulary as open; this is it. The wire format is
+**Status: partly implemented.** §27.5 listed the instruction vocabulary as open; this is it. The wire format is
 in `NODE_CONTRACT.md`, *Proposed: primary terms and remote-store history*. This section is the reasoning.
+
+**Built on the supervisor side:** `contract_features` (§28.3), `primary_terms` on every assignment (§28.1–28.2),
+the counter (§28.6), and promotion (§28.7's first sequence, finding 11) — `TermLedger`, `Promoter`. **Not built:**
+retention (§28.4), abandonment (§28.5), and the dual-run. **Not built on the data plane side:** any of it, so until
+a node declares `primary_terms` no primary is promoted and every node carries on at term 1.
+
+Three things learned building it, each recorded where it applies:
+
+- **Promotion was also a data-loss fix.** Under document replication a lost primary used to be replaced by a
+  fresh, empty primary elsewhere — the allocator refuses the replica's node because it already holds the shard —
+  and the surviving replica would then recover from it. `Promoter` makes the replica the primary where it stands,
+  and when it cannot (the node does not declare `primary_terms`) it **refuses** rather than letting the allocator
+  place an empty one. A shard that cannot take writes is recoverable; a wiped replica is not.
+- **A promotion in flight must not be repeated.** A node reports what it holds, and that beats what it was told,
+  so a replica told `PRIMARY` still reads as a replica until it applies the change. Without a guard the planner
+  would promote again every pass and advance the term each time.
+- **A new index's first primary is at term 2**, because the counter is created at 1 and placing a primary always
+  advances it. No special case for "first": a shard with no primary cannot be told apart from one whose primary is
+  on a node now lost, and that second case is exactly the one the new term fences.
+
+Also not tracked, and worth knowing before relying on promotion: the in-sync set. OpenSearch promotes only an
+in-sync replica; `Promoter` promotes any started replica on a node still heartbeating.
 
 Four fields and one registration field. The design choices that matter are why there are only four.
 

@@ -90,7 +90,10 @@ public final class FakeNode {
             template.version(),
             template.attributes(),
             template.heartbeatIntervalMillis(),
-            clock.millis()
+            clock.millis(),
+            // Carried through, not rebuilt: a node that dropped its own declared features on the way to the store
+            // would be one the supervisor never promotes, for a reason nobody would think to look for.
+            template.contractFeatures()
         );
         store.put(Keys.nodeRegistration(nodeId), NodeJson.write(registration));
     }

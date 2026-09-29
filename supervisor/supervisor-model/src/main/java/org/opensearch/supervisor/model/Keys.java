@@ -184,6 +184,23 @@ public final class Keys {
     /** Chores that belong to no pool: unbound tenants, unpooled nodes, unowned pools, dead members. */
     public static final String HOUSEKEEPING_LEASE = "supervisor/leases/housekeeping";
 
+    /** Every term counter this service holds for one tenant, scanned once per tenant per pass. */
+    public static final String PRIMARY_TERMS_PREFIX = "supervisor/terms/";
+
+    public static String primaryTermsPrefix(TenantId tenant) {
+        return PRIMARY_TERMS_PREFIX + tenant.value() + "/";
+    }
+
+    /**
+     * The highest primary term ever issued for each shard of one index ({@code DESIGN.md} §28.6).
+     *
+     * <p>Outside {@code tenant/<t>/} because the control plane has no business reading or writing it, and keyed by
+     * index uuid rather than pool so that it survives a pool handover.
+     */
+    public static String primaryTerms(TenantId tenant, String indexUuid) {
+        return primaryTermsPrefix(tenant) + require(indexUuid, "indexUuid");
+    }
+
     public static String member(String supervisorId) {
         return MEMBERS_PREFIX + require(supervisorId, "supervisorId");
     }

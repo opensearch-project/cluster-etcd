@@ -519,7 +519,14 @@ The node's full desired state. Written only when it changes.
 
 ### Proposed: primary terms and remote-store history
 
-**Status: proposed, not implemented by either side.** The reasoning is `DESIGN.md` §28; this is the format.
+**Status: partly implemented, on the supervisor side only.** The reasoning is `DESIGN.md` §28; this is the format.
+The supervisor reads `contract_features` and writes `primary_terms` into every assignment it produces. It promotes
+a document-replication replica only onto a node that declares `primary_terms`, so a node that has not implemented
+it keeps today's behaviour. `retain_remote_history` and `abandon_remote_terms` are not written yet.
+
+Two consequences for a node, before it implements anything: **every assignment is rewritten once** when this lands,
+because entries gain explicit terms; and **a new index's first primary is told term 2**, not 1, because the
+supervisor's counter starts at 1 and placing a primary always advances it.
 
 Registration gains one optional field:
 

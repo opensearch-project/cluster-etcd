@@ -52,6 +52,7 @@ decidable from the key alone.
 | `supervisor/members/<supervisor-id>` | that supervisor | supervisors, operators | R6.1 |
 | `supervisor/pools/<pool-id>/lease` | supervisors | supervisors, operators | R6.1, R6.2 |
 | `supervisor/leases/housekeeping` | supervisors | supervisors | `DESIGN.md` §3 |
+| `supervisor/terms/<tenant-id>/<index-uuid>` | the pool's lease holder | supervisors, operators | `DESIGN.md` §28.6 |
 | `supervisor/status/pools/<pool-id>/convergence` | that pool's owner | operators | R7.2 |
 | `supervisor/status/pools/<pool-id>/oscillation` | that pool's owner | operators | R7.3 |
 | `supervisor/status/diff/<tenant-id>` | that tenant's pool owner | operators | R7.1 |
@@ -437,6 +438,34 @@ supervisors ever contend, and in steady state they do not.
 
 `supervisor/leases/housekeeping` has the same shape and covers the chores that belong to no pool: unbound
 tenants, unpooled nodes, unowned pools, and reaping long-dead member records.
+
+### `supervisor/terms/<tenant-id>/<index-uuid>` — the one thing here that cannot be recomputed
+
+```json
+{ "shards": { "0": 3, "1": 1, "2": 2 } }
+```
+
+The highest primary term ever issued for each shard of one index. Every assignment carries the term its shards
+are at (`NODE_CONTRACT.md`, *Proposed: primary terms*), and this is where those numbers come from.
+
+It is the first state this service owns that is not derived from an observation, and the rules follow from that
+(`DESIGN.md` §28.6):
+
+- **Written before any assignment that carries a new term**, compare-and-set on the observed revision. A counter
+  write lost after the assignment went out would let the next pass issue the same term again.
+- **Advanced by one each time a primary is placed for a shard, and at no other time.** A fresh primary replacing a
+  lost one gets a new term as well as a promoted replica does: the lost node may be alive, and the term is what
+  makes its writes refusable. So a new index's first primary is at 2, because the counter is created at 1.
+- **Never lowered.** An absent counter is rebuilt no lower than the highest term any observed assignment carries,
+  lost nodes included.
+- **Unreadable is not absent.** A counter that exists and does not parse is left alone, and no primary is placed
+  for its index until it reads again — rebuilding it would overwrite the only record of which terms were issued.
+- **Keyed by tenant and index uuid, not pool**, so it survives a pool handover. Outside `tenant/<t>/`, because the
+  control plane has no business with it.
+
+One writer by construction — the lease holder for the tenant's pool — like every other key here but the leases.
+The compare-and-set is the same defence against a stale writer that assignments use, not a second place
+supervisors contend.
 
 ## 4. Observability, projected rather than served
 

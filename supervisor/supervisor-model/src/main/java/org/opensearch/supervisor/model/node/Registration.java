@@ -22,6 +22,9 @@ import java.util.Set;
  *     from both is {@code NODE_UNPOOLED} — a finding, never a default.
  * @param ephemeralId changes on every process start, which is how a restart is detected without comparing
  *     anything else
+ * @param contractFeatures the optional parts of {@code NODE_CONTRACT.md} this node acts on. The supervisor uses it to
+ *     decide what it may safely ask, because {@code applied} cannot: a node that ignores an unknown assignment field
+ *     still reports {@code applied}. Unknown strings are kept and ignored, so a newer node is not misread.
  */
 public record Registration(
     NodeId nodeId,
@@ -34,7 +37,8 @@ public record Registration(
     String version,
     Map<String, String> attributes,
     long heartbeatIntervalMillis,
-    long registeredAt
+    long registeredAt,
+    Set<String> contractFeatures
 ) {
 
     /** The contract's bound on awareness attributes, because the control plane renders them in a response. */
@@ -42,8 +46,27 @@ public record Registration(
 
     public static final int MAX_ATTRIBUTE_LENGTH = 128;
 
+    /** Without contract features: a node that implements none of the optional parts of the contract. */
+    public Registration(
+        NodeId nodeId,
+        String ephemeralId,
+        String name,
+        PoolId pool,
+        Set<NodeRole> roles,
+        String address,
+        int port,
+        String version,
+        Map<String, String> attributes,
+        long heartbeatIntervalMillis,
+        long registeredAt
+    ) {
+        this(nodeId, ephemeralId, name, pool, roles, address, port, version, attributes, heartbeatIntervalMillis,
+            registeredAt, Set.of());
+    }
+
     public Registration {
         Objects.requireNonNull(nodeId, "nodeId");
+        contractFeatures = contractFeatures == null ? Set.of() : Set.copyOf(new java.util.TreeSet<>(contractFeatures));
         Objects.requireNonNull(ephemeralId, "ephemeralId");
         roles = roles == null || roles.isEmpty() ? EnumSet.noneOf(NodeRole.class) : EnumSet.copyOf(roles);
         attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
@@ -74,5 +97,15 @@ public record Registration(
 
     public boolean hasRole(NodeRole role) {
         return roles.contains(role);
+    }
+
+    public boolean declares(String contractFeature) {
+        return contractFeatures.contains(contractFeature);
+    }
+
+    /** The same registration declaring these features, for a node that implements them. */
+    public Registration withContractFeatures(Set<String> features) {
+        return new Registration(nodeId, ephemeralId, name, pool, roles, address, port, version, attributes,
+            heartbeatIntervalMillis, registeredAt, features);
     }
 }

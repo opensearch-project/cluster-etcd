@@ -184,6 +184,37 @@ public final class Planner {
 
             ShardRole role = roleWantedBy(finding.kind());
 
+            if (role == ShardRole.PRIMARY) {
+                // A primary needs a term, and a term needs a counter that can be read: placing one without knowing
+                // which terms have been issued is how a term gets issued twice. So this index takes no new primary
+                // until the counter reads again, and says why.
+                var counter = observation.termCounter(tenant, indexUuid);
+                if (counter.isPresent() && counter.get().readable() == false) {
+                    refusals.put(finding.refusalKey(), "the primary-term counter for this index cannot be read, and"
+                        + " a primary placed without it could be told a term already issued; nothing places a primary"
+                        + " for this index until [" + org.opensearch.supervisor.model.Keys.primaryTerms(tenant, indexUuid)
+                        + "] reads again");
+                    continue;
+                }
+
+                Promoter.Outcome promotion = Promoter.propose(observation, tenant, index, shard);
+                if (promotion.refusing()) {
+                    refusals.put(finding.refusalKey(), promotion.refusal());
+                    continue;
+                }
+                if (promotion.promoting()) {
+                    NodeId node = promotion.promote();
+                    planned.add(new AllocationContext.PlannedCopy(tenant, indexUuid, shard, ShardRole.PRIMARY, node));
+                    perTenant.merge(tenant, 1, Integer::sum);
+                    instructions.add(new Instruction.PlaceCopy(
+                        tenant, indexUuid, index.name(), shard, ShardRole.PRIMARY, node, index.configRevision(),
+                        finding.because() + "; promoting the started replica on [" + node + "] in place, with a new"
+                            + " primary term, because under document replication that replica is the data"
+                    ));
+                    continue;
+                }
+            }
+
             // How many copies of this shard already exist or are on their way. The allocator's same-shard rule
             // stops a duplicate landing on one node; this stops planning a copy the shard does not want.
             AllocationContext context = new AllocationContext(

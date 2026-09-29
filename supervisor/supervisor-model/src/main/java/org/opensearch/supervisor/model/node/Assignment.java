@@ -204,16 +204,42 @@ public record Assignment(
     /**
      * @param ingestionReset an outstanding consumer-pointer reset, or null. Absent on almost every assignment ever
      *     written, and a reader must treat it as optional.
+     * @param primaryTerms the primary term this node's cluster state names for each shard ({@code DESIGN.md} §28).
+     *     A sibling of {@code shards} rather than part of each value, so an older reader ignores it and stays at 1.
+     *     Either every shard in {@code shards} has one or none does, and a term for a shard not in {@code shards} is
+     *     refused: two maps that can disagree must not be allowed to.
      */
     public record IndexAssignment(
         String name,
         long configRevision,
         Map<Integer, ShardRole> shards,
-        IngestionReset ingestionReset
+        IngestionReset ingestionReset,
+        Map<Integer, Long> primaryTerms
     ) {
 
         public IndexAssignment {
             shards = shards == null ? Map.of() : Map.copyOf(shards);
+            // Null rather than empty when there are none, so the field is omitted from the bytes: an assignment
+            // written by a supervisor that issues no terms must be byte-identical to one written before terms existed.
+            primaryTerms = primaryTerms == null || primaryTerms.isEmpty()
+                ? null
+                : Collections.unmodifiableMap(new java.util.TreeMap<>(primaryTerms));
+            if (primaryTerms != null) {
+                if (primaryTerms.keySet().equals(shards.keySet()) == false) {
+                    throw new IllegalArgumentException(
+                        "assignment for index [" + name + "] carries primary terms for shards " + primaryTerms.keySet()
+                            + " but holds shards " + shards.keySet() + "; terms are given for every shard or none"
+                    );
+                }
+                primaryTerms.forEach((shard, term) -> {
+                    if (term == null || term < 1) {
+                        throw new IllegalArgumentException(
+                            "assignment for index [" + name + "] shard " + shard + " has primary term " + term
+                                + "; terms start at 1"
+                        );
+                    }
+                });
+            }
             shards.forEach((shard, role) -> {
                 if (role == null || role == ShardRole.UNKNOWN) {
                     throw new IllegalArgumentException(
@@ -226,11 +252,30 @@ public record Assignment(
 
         /** Without a reset, which is every assignment but the handful that carry one. */
         public IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards) {
-            this(name, configRevision, shards, null);
+            this(name, configRevision, shards, null, null);
+        }
+
+        public IndexAssignment(
+            String name,
+            long configRevision,
+            Map<Integer, ShardRole> shards,
+            IngestionReset ingestionReset
+        ) {
+            this(name, configRevision, shards, ingestionReset, null);
         }
 
         public IndexAssignment withIngestionReset(IngestionReset reset) {
-            return new IndexAssignment(name, configRevision, shards, reset);
+            return new IndexAssignment(name, configRevision, shards, reset, primaryTerms);
+        }
+
+        /** The same entry with these terms, or with none. Pass only terms for shards this entry holds. */
+        public IndexAssignment withPrimaryTerms(Map<Integer, Long> terms) {
+            return new IndexAssignment(name, configRevision, shards, ingestionReset, terms);
+        }
+
+        /** The term this node is told for a shard: its entry, or 1 when the supervisor issued none. */
+        public long primaryTermOf(int shard) {
+            return primaryTerms == null ? 1L : primaryTerms.getOrDefault(shard, 1L);
         }
     }
 

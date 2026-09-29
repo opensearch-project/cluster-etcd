@@ -138,7 +138,7 @@ class KeysTests {
      * that protection gets bypassed by accident.
      *
      * <p>Two exemptions, both checked rather than assumed: {@code indexUuid} and {@code supervisorId} have
-     * no type yet and are validated inline instead.
+     * no type yet and are validated inline instead. Every builder exempted here is also in the escape test below.
      */
     @Test
     void keyBuildersTakeIdentifierTypes() {
@@ -154,7 +154,8 @@ class KeysTests {
                 if (parameter.getType() != String.class) {
                     continue;
                 }
-                if (method.getName().equals("indexStatus") || method.getName().startsWith("member")) {
+                if (method.getName().equals("indexStatus") || method.getName().equals("primaryTerms")
+                    || method.getName().startsWith("member")) {
                     continue;
                 }
                 offenders.add(method.getName() + "(" + parameter.getType().getSimpleName() + ")");
@@ -169,6 +170,7 @@ class KeysTests {
         // A slash is the only character that can put a key somewhere it was not supposed to be, and an
         // index uuid arriving from a torn document must not be able to do that.
         assertThrows(IllegalArgumentException.class, () -> Keys.indexStatus(ACME, bad));
+        assertThrows(IllegalArgumentException.class, () -> Keys.primaryTerms(ACME, bad));
         assertThrows(IllegalArgumentException.class, () -> Keys.member(bad));
     }
 

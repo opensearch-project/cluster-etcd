@@ -15,6 +15,7 @@ import org.opensearch.supervisor.model.task.TaskState;
 import org.opensearch.supervisor.model.task.TaskType;
 import org.opensearch.supervisor.model.plan.Instruction;
 import org.opensearch.supervisor.model.plan.Plan;
+import org.opensearch.supervisor.model.plan.TermLedger;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -109,6 +110,25 @@ public final class Applier {
         int rejected = 0;
         int skipped = 0;
 
+        // Counters before assignments, always. An assignment carrying a new term written first, with the counter
+        // write then lost, would let the next pass issue that term again -- two primaries of one shard told the
+        // same one. Written in this order the worst case is a skipped term, which costs nothing.
+        TermLedger.Resolution terms = TermLedger.resolve(plan, observation);
+        for (TermLedger.Write write : terms.writes()) {
+            if (stillHoldsLease.getAsBoolean() == false) {
+                return Outcome.abandoned("lease lost before primary-term counters were written");
+            }
+            try {
+                store.put(Keys.primaryTerms(write.tenant(), write.indexUuid()), write.next().toBytes(),
+                    write.expectedRevision());
+            } catch (RevisionConflictException e) {
+                // Not dropped per node like an assignment conflict: every assignment below would carry terms
+                // derived from a counter this pass no longer knows the value of.
+                return Outcome.abandoned("primary-term counter for " + write.tenant() + "/" + write.indexUuid()
+                    + " changed since it was observed; recomputing rather than risk issuing a term twice");
+            }
+        }
+
         // Plan-touched nodes first, then every other node whose coordinator entries are wrong. The second set is
         // usually empty; when it is not, nothing in it consumes the plan's work ceiling. A pass that spent its
         // budget placing shards should still be able to tell a new coordinator what it serves, because nothing is
@@ -132,7 +152,7 @@ public final class Applier {
                 return new Outcome(applied, rejected, skipped, true, "lease lost partway through the plan");
             }
 
-            Assignment next = merge(observed, entry.getValue(), plan, observation);
+            Assignment next = merge(observed, entry.getValue(), plan, observation, terms);
 
             // Nothing to say. Worth checking explicitly now that every placeable node is considered every pass:
             // writing an identical assignment would bump its version and revision, which the node reads as a
@@ -172,7 +192,8 @@ public final class Applier {
         Observation.NodeObservation observed,
         List<Instruction> changes,
         Plan plan,
-        Observation observation
+        Observation observation,
+        TermLedger.Resolution terms
     ) {
         Assignment existing = observed.assignment();
         Map<TenantId, Assignment.TenantAssignment> tenants = new LinkedHashMap<>(
@@ -242,6 +263,7 @@ public final class Applier {
         }
 
         applyCoordinatorMembership(observed, observation, tenants);
+        applyPrimaryTerms(tenants, terms);
         applyIngestionResets(observation, tenants);
 
         long version = existing == null ? 1 : existing.version() + 1;
@@ -366,6 +388,38 @@ public final class Applier {
             }
         }
         return null;
+    }
+
+    /**
+     * Stamps every index entry with the terms its shards are at ({@code DESIGN.md} §28).
+     *
+     * <p>A property of assembling the assignment rather than an instruction, like coordinator membership: every copy
+     * of a shard must be told a new term in the same pass as the primary that caused it, and the applier already
+     * visits every placeable node every pass. An index whose counter cannot be read keeps the terms its entries
+     * already carry, and a shard new to such an entry takes the highest term observed for it anywhere — never lower
+     * than what that shard has been told before.
+     */
+    private static void applyPrimaryTerms(
+        Map<TenantId, Assignment.TenantAssignment> tenants,
+        TermLedger.Resolution terms
+    ) {
+        for (var tenantEntry : Set.copyOf(tenants.entrySet())) {
+            TenantId tenant = tenantEntry.getKey();
+            Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>();
+            tenantEntry.getValue().indices().forEach((uuid, index) -> {
+                java.util.Optional<org.opensearch.supervisor.model.supervisor.PrimaryTerms> resolved =
+                    terms.termsOf(tenant, uuid);
+                Map<Integer, Long> stamped = new java.util.TreeMap<>();
+                if (resolved.isPresent()) {
+                    index.shards().keySet().forEach(shard -> stamped.put(shard, resolved.get().termOf(shard)));
+                } else if (index.primaryTerms() != null) {
+                    index.shards().keySet().forEach(shard -> stamped.put(shard,
+                        index.primaryTerms().getOrDefault(shard, terms.floorOf(tenant, uuid, shard))));
+                }
+                indices.put(uuid, index.withPrimaryTerms(stamped.isEmpty() ? null : stamped));
+            });
+            tenants.put(tenant, tenantEntry.getValue().withIndices(indices));
+        }
     }
 
     /**

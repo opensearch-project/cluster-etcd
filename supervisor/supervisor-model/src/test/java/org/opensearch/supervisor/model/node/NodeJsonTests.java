@@ -514,4 +514,71 @@ class NodeJsonTests {
 
         org.junit.jupiter.api.Assertions.assertArrayEquals(NodeJson.write(one), NodeJson.write(other));
     }
+
+    // ------------------------------------------------------------ primary terms (DESIGN.md §28)
+
+    private static Assignment withTerms(Map<Integer, Long> terms) {
+        return new Assignment(1, PoolId.of("shared-a"), 7, NODE, 1L, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
+                "uzKxLWZu4nPSrTknEcDpoA", new Assignment.IndexAssignment("my-index", 3041,
+                    Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA), null, terms)))));
+    }
+
+    @Test
+    void primaryTermsRoundTripAsASiblingOfShards() throws Exception {
+        byte[] bytes = NodeJson.write(withTerms(Map.of(0, 4L, 1, 4L)));
+        JsonNode index = parse(bytes).get("tenants").get("acme").get("indices").get("uzKxLWZu4nPSrTknEcDpoA");
+
+        // Shards stay bare strings, so an older reader is unaffected; terms are beside them.
+        assertEquals("PRIMARY", index.get("shards").get("0").asText());
+        assertEquals(4, index.get("primary_terms").get("0").asLong());
+
+        Assignment back = NodeJson.readAssignment(bytes);
+        assertEquals(4L, back.tenants().get(ACME).indices().get("uzKxLWZu4nPSrTknEcDpoA").primaryTermOf(1));
+    }
+
+    @Test
+    void noTermsMeansNoFieldAndNoChangeToTheBytes() throws Exception {
+        // A supervisor that issues no terms must write exactly what it wrote before terms existed, or every node's
+        // assignment would change for nothing.
+        JsonNode index = parse(NodeJson.write(withTerms(null)))
+            .get("tenants").get("acme").get("indices").get("uzKxLWZu4nPSrTknEcDpoA");
+
+        assertTrue(index.get("primary_terms") == null, index.toString());
+        assertEquals(1L, NodeJson.readAssignment(NodeJson.write(withTerms(null)))
+            .tenants().get(ACME).indices().get("uzKxLWZu4nPSrTknEcDpoA").primaryTermOf(0), "absent means 1");
+    }
+
+    @Test
+    void termsAreGivenForEveryShardOrNone() {
+        // Two maps that can disagree must not be allowed to: a node would have to guess which shard is at which term.
+        assertThrows(IllegalArgumentException.class, () -> withTerms(Map.of(0, 4L)));
+        assertThrows(IllegalArgumentException.class, () -> withTerms(Map.of(0, 4L, 1, 4L, 2, 4L)));
+        assertThrows(IllegalArgumentException.class, () -> withTerms(Map.of(0, 0L, 1, 4L)));
+    }
+
+    @Test
+    void contractFeaturesRoundTripAndKeepWhatThisBuildDoesNotKnow() {
+        // A node newer than this supervisor declares features it has no name for. Dropping them on the way in would
+        // be harmless today and wrong the day this build is the one reading a registration it later rewrites.
+        Registration declared = new Registration(NODE, "eph", "data-3", PoolId.of("shared-a"),
+            Set.of(NodeRole.DATA), "10.0.3.14", 9300, "3.7.0", Map.of(), 5000, 1L,
+            Set.of(ContractFeatures.PRIMARY_TERMS, "some_future_feature"));
+
+        Registration back = NodeJson.readRegistration(NodeJson.write(declared));
+
+        assertTrue(back.declares(ContractFeatures.PRIMARY_TERMS));
+        assertTrue(back.declares("some_future_feature"));
+    }
+
+    @Test
+    void aRegistrationWithoutFeaturesDeclaresNone() {
+        byte[] old = ("{\"node_id\":\"" + NODE.value() + "\",\"ephemeral_id\":\"eph\",\"name\":\"data-3\","
+            + "\"roles\":[\"data\"],\"address\":\"10.0.3.14\",\"port\":9300,\"version\":\"3.7.0\","
+            + "\"attributes\":{},\"heartbeat_interval_millis\":5000,\"registered_at\":1}")
+            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        assertTrue(NodeJson.readRegistration(old).contractFeatures().isEmpty(),
+            "a node that says nothing implements nothing optional -- which is what stops a primary being moved to it");
+    }
 }

@@ -1482,4 +1482,153 @@ class ActingTests {
         assertTrue(store.get(Keys.nodeHeartbeat(NODE)).isPresent(), "heartbeat");
         assertEquals(1, data.inventory().copyCount(), "and it still holds its copy");
     }
+
+    // ------------------------------------------- primary terms and promotion (finding 11, DESIGN.md §28)
+
+    private FakeNode nodeDeclaringTerms(NodeId id) {
+        return new FakeNode(store, new Registration(
+            id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.DATA),
+            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", remoteStoreNode("z1"), 5000, 0L,
+            java.util.Set.of(org.opensearch.supervisor.model.node.ContractFeatures.PRIMARY_TERMS)
+        ), clock, "eph-" + id.value());
+    }
+
+    private void createDocrepIndex(int shards, int replicas) {
+        store.put(Keys.indicesPrefix(ACME) + "my-index", IndexConfig.toDocument(
+            "my-index", UUID, true, IndexConfig.settingsOf(shards, replicas, Replication.DOCUMENT)
+        ));
+    }
+
+    private long counterFor(int shard) {
+        return org.opensearch.supervisor.model.supervisor.PrimaryTerms
+            .from(store.get(Keys.primaryTerms(ACME, UUID)).orElseThrow().value()).termOf(shard);
+    }
+
+    private long toldTerm(NodeId node, int shard) {
+        return assignmentOf(node).tenants().get(ACME).indices().get(UUID).primaryTermOf(shard);
+    }
+
+    private ShardRole roleHeldBy(FakeNode node, int shard) {
+        var tenant = node.inventory().tenants().get(ACME);
+        var index = tenant == null ? null : tenant.indices().get(UUID);
+        var copy = index == null ? null : index.shards().get(shard);
+        return copy == null ? null : copy.role();
+    }
+
+    @Test
+    void everyCopyOfAShardIsToldTheTermOfItsPrimary() {
+        FakeNode a = nodeDeclaringTerms(NODE);
+        FakeNode b = nodeDeclaringTerms(NODE_B);
+        a.start();
+        b.start();
+        createDocrepIndex(1, 1);
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        // A brand-new index's first primary is at 2, not 1: the counter is created at 1 and placing a primary always
+        // advances it. No special case for "first", because "no primary before" cannot be told apart from "a primary
+        // on a node now lost" -- and that second case is exactly the one the new term exists to fence.
+        assertEquals(2L, counterFor(0));
+        assertEquals(2L, toldTerm(NODE, 0), "the primary");
+        assertEquals(2L, toldTerm(NODE_B, 0), "and the replica, which must accept the primary's operations");
+    }
+
+    @Test
+    void losingADocumentReplicationPrimaryPromotesItsReplicaWithANewTerm() {
+        FakeNode a = nodeDeclaringTerms(NODE);
+        FakeNode b = nodeDeclaringTerms(NODE_B);
+        a.start();
+        b.start();
+        createDocrepIndex(1, 1);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(ShardRole.PRIMARY, roleHeldBy(a, 0));
+        assertEquals(ShardRole.REPLICA, roleHeldBy(b, 0));
+        long before = counterFor(0);
+
+        // A stops entirely -- no heartbeat, no inventory updates -- and is eventually given up on.
+        for (int pass = 0; pass < 70; pass++) {
+            supervisor.tick();
+            b.tick();
+            advance();
+        }
+
+        assertEquals(ShardRole.PRIMARY, roleHeldBy(b, 0), "the replica was promoted in place, keeping its data");
+        assertEquals(before + 1, counterFor(0), "with exactly one new term, not one per pass");
+        assertEquals(before + 1, toldTerm(NODE_B, 0));
+    }
+
+    @Test
+    void aRestartedSupervisorDoesNotReissueATerm() {
+        FakeNode a = nodeDeclaringTerms(NODE);
+        FakeNode b = nodeDeclaringTerms(NODE_B);
+        a.start();
+        b.start();
+        createDocrepIndex(1, 1);
+        Supervisor first = acting("s1");
+        for (int pass = 0; pass < 14; pass++) {
+            first.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        for (int pass = 0; pass < 70; pass++) {
+            first.tick();
+            b.tick();
+            advance();
+        }
+        long promoted = counterFor(0);
+        first.die();
+
+        // A new process with no memory at all. The counter is in the store, so the next term it could issue is
+        // above every term already issued -- and a settled pool issues none.
+        Supervisor second = acting("s2");
+        for (int pass = 0; pass < 30; pass++) {
+            second.tick();
+            b.tick();
+            advance();
+        }
+
+        assertEquals(promoted, counterFor(0), "a settled shard's term does not move across a restart");
+        assertEquals(promoted, toldTerm(NODE_B, 0));
+    }
+
+    @Test
+    void aSettledPoolDoesNotRewriteTermsEveryPass() {
+        FakeNode a = nodeDeclaringTerms(NODE);
+        FakeNode b = nodeDeclaringTerms(NODE_B);
+        a.start();
+        b.start();
+        createDocrepIndex(1, 1);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        long counterRevision = store.get(Keys.primaryTerms(ACME, UUID)).orElseThrow().revision();
+        long versions = assignmentOf(NODE).version() + assignmentOf(NODE_B).version();
+
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        assertEquals(counterRevision, store.get(Keys.primaryTerms(ACME, UUID)).orElseThrow().revision());
+        assertEquals(versions, assignmentOf(NODE).version() + assignmentOf(NODE_B).version());
+    }
 }
