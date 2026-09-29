@@ -3,6 +3,9 @@
 Not about the supervisor's design — see `REQUIREMENTS.md` for that. This is the set of things that cost
 hours to discover while building the control plane next door, written down so they cost minutes here.
 
+`CLAUDE.md` is the short version for the session that owns this component: what it owns, how commits and builds
+are done here, and the open threads. Start there; this file is the long form of its environment section.
+
 ## The sandbox blocks more than it looks like it does
 
 - **Gradle cannot run.** It fails creating its file-lock service, because binding a socket is denied.
