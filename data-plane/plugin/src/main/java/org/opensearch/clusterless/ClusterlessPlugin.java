@@ -293,7 +293,10 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
             Version.CURRENT.toString(),
             localNode.getAttributes(),
             ClusterlessSettings.HEARTBEAT_INTERVAL.get(settings).millis(),
-            System.currentTimeMillis()
+            System.currentTimeMillis(),
+            // What this build acts on, which is what the supervisor uses to decide what it may ask. Declared here
+            // rather than assembled from settings: it describes the code, not the deployment.
+            Registration.IMPLEMENTED_FEATURES
         );
     }
 

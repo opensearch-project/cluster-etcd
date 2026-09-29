@@ -251,7 +251,8 @@ public final class NodePublisher {
             current.version(),
             current.attributes(),
             current.heartbeatIntervalMillis(),
-            registeredAt
+            registeredAt,
+            current.contractFeatures()
         );
         store.put(Keys.nodeRegistration(nodeId), NodeDocuments.write(stamped));
         writtenRegistration = stamped;

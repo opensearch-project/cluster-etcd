@@ -891,7 +891,7 @@ that a poller left paused does not consume what is published *after* the reset.
 
 ## M9. Document replication
 
-- Peer resolution, primary term handling, push-based ingestion.
+- Peer resolution (done), primary term handling (done), push-based ingestion.
 - **Done when:** an index with `index.replication.type: DOCUMENT` indexes and replicates.
 
 Expect D8.2 to be in the way. Read it before starting, and treat what you learn as a finding.
@@ -993,7 +993,11 @@ announces which nodes are going down, primaries there are **preemptively demoted
 promoted. Zone by zone, so in a three-zone deployment every primary moves twice per deploy. That is the normal path,
 not a failure path.
 
-**This plugin cannot promote, and the reason is the primary term.** `IndexShard.updateShardState` splits on it:
+**This plugin could not promote, and the reason was the primary term. It can now** — the supervisor issues one per
+shard and this side uses it. Read the mechanism below before the implementation, because it is what makes the two
+small changes the whole of it.
+
+`IndexShard.updateShardState` splits on the term:
 
 - **term unchanged** — primary mode is activated only if the current entry is `initializing`. A *started* replica
   whose term did not change falls through both branches: no promotion, no error, and a shard the routing table calls
@@ -1003,7 +1007,7 @@ not a failure path.
   can only go up"`. This is what calls `bumpPrimaryTerm`, resets the engine to the global checkpoint and fills
   sequence-number gaps.
 
-Every term fabricated here is `1`, carried forward and never advanced, so the promotion branch is unreachable.
+Every term fabricated here **was** `1`, carried forward and never advanced, so the promotion branch was unreachable.
 
 **And the term is the fence**, which is the part worth carrying into D8.2. A replica refuses a stale-term operation
 outright — *"operation primary term [N] is too old (current [M])"* — so a demoted primary that keeps writing is
@@ -1012,15 +1016,47 @@ CAS token on the *translog* repository and therefore unreachable in `segments_on
 fencing costs nothing but a number that goes up.** It is the one place in this design where the hard problem is
 cheap, which is an odd thing to discover about the path being discouraged.
 
-Raised as finding 11. It needs a per-shard primary term in the assignment before this side can do anything, and two
-small changes once it exists: use the assigned term rather than the constant, and **reuse the allocation id across a
-role change** so the server sees one copy transitioning rather than a different copy appearing. Today a role change
-mints a fresh allocation id, so `isSameAllocation` fails and `IndicesClusterStateService` removes the shard and
-creates a new one — a full close and recovery instead of a promotion.
+### Promotion, built — a term from the supervisor and two small changes here
 
-**Better that it cannot promote than that it appears to.** A role change "handled" by recreating the shard at the
-same term produces two copies believing they are primary at the same term, which is exactly the state D8.2 exists to
-prevent.
+Raised as finding 11, answered by the supervisor in two commits: a per-index term counter at
+`supervisor/terms/<tenant>/<index-uuid>` advanced by compare-and-set, and a `primary_terms` map written into the
+assignment as a **sibling of `shards`** — every shard or none, absent meaning 1, and never lowered in place. This
+side does what the finding said it would need, and no more:
+
+- **Use the assigned term rather than the constant.** `DataNodeState` fabricates
+  `max(assigned, previous, 1)` per shard. The `previous` floor is not decoration: a term must not go backwards within
+  one node's own history even if a document read does, and `IndexShard` would refuse the state rather than decline the
+  shard.
+- **Reuse the allocation id across the role change**, via `ShardRouting.moveActiveReplicaToPrimary()`, so
+  `isSameAllocation` holds and `IndicesClusterStateService` promotes the shard instead of removing it and creating
+  another. The other path was not merely slower — it produced two copies believing they were primary at one term,
+  which is the state D8.2 exists to prevent. Guarded to a started, non-search-only copy this node holds, because
+  upstream refuses a search replica in place and there is no history there to promote.
+
+**A new index's first primary is at term 2**, which reads like an off-by-one and is not. The supervisor's counter
+starts at 1 and placing a primary always advances it, so 2 is the first term any primary is told. A shard that never
+had a primary and one whose primary is on a lost node would otherwise be indistinguishable, and the second is the
+case the term exists to fence.
+
+**Two rules on this side that the contract asks for, both of which had to be said rather than papered over:**
+
+- **A term below 1 is refused at the boundary, not clamped.** Clamping would turn "the supervisor said something
+  impossible" into "the supervisor said nothing", and those want opposite responses — one is a bug to report, the
+  other is an older supervisor working correctly.
+- **A term below what a *started* copy is running at is declined with a reason**, in a new `PrimaryTerms.reduce`
+  step — the third of the once-per-pass reducers, after `RemoteRecovery` and `PeerRecovery`, and there for the same
+  reason: it needs the live state. The server would refuse the lower term anyway, so the value is entirely in
+  *saying* it: a term that went backwards means the supervisor's counter did, which its compare-and-set is built to
+  prevent. On a copy that is **not** started, the lower term is a stale read of a document about to be rewritten, so
+  it is allowed through rather than stalling a shard that is merely still recovering.
+
+**Registration gained `contract_features`**, because `applied` cannot express this. The supervisor must not promote
+onto a node that would fabricate term 1 regardless, and there is no acknowledgement that distinguishes "used the
+term" from "ignored the field" — so the node declares `primary_terms` up front and the supervisor withholds
+promotion from any node that does not. `NodePublisher` preserves it across a registration rewrite, and it is part of
+`sameAs`, so a node that gains the feature on upgrade republishes once. Two consequences to expect on the first run
+after this lands: every assignment is rewritten once as it gains explicit terms, and the no-op guard holds after
+that.
 
 ## M10. Cluster-manager actions — **the not-hanging half is done**
 

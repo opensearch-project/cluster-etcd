@@ -7,6 +7,7 @@ package org.opensearch.clusterless.contract;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Reading an assignment, including the ways it can be wrong.
@@ -323,6 +324,70 @@ public class AssignmentTests extends OpenSearchTestCase {
         assertNull(index.reset());
         assertEquals(2, index.shards().size());
         assertEquals(3041L, index.configRevision());
+    }
+
+    // ---------------------------------------------------------------- primary terms
+
+    public void testPrimaryTermsAreReadFromTheSiblingMap() {
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 3041, "shards": {"0": "PRIMARY", "1": "SEARCH_REPLICA"},
+                    "primary_terms": {"0": 4, "1": 4}}}}}}""");
+
+        Assignment.IndexAssignment index = assignment.tenants().get(TenantId.of("acme")).indices().get("u");
+        assertEquals(4L, index.primaryTermOf(0));
+        assertEquals(4L, index.primaryTermOf(1));
+    }
+
+    public void testAnAssignmentWithNoTermsPutsEveryShardAtOne() {
+        // What an un-upgraded supervisor writes, and the value this plugin fabricated unconditionally before terms
+        // existed -- so the two agree without either knowing about the other. Absent is not an error.
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"}}}}}}""");
+
+        Assignment.IndexAssignment index = assignment.tenants().get(TenantId.of("acme")).indices().get("u");
+        assertTrue(index.primaryTerms().isEmpty());
+        assertEquals(1L, index.primaryTermOf(0));
+        assertEquals(Assignment.IndexAssignment.TERM_WHEN_UNSTATED, index.primaryTermOf(0));
+    }
+
+    public void testATermForAShardNotHeldIsReportedRatherThanDropped() {
+        // The two maps are siblings and can disagree. A term naming a shard absent from `shards` means the supervisor
+        // believes something about this node it did not say in the part that decides anything, and the contract says
+        // to defer it -- so the reader has to keep it rather than quietly discarding it.
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"},
+                    "primary_terms": {"0": 4, "3": 4}}}}}}""");
+
+        Assignment.IndexAssignment index = assignment.tenants().get(TenantId.of("acme")).indices().get("u");
+        assertEquals(List.of(3), index.termsForShardsNotHeld());
+    }
+
+    public void testATermBelowOneIsRefusedRatherThanClamped() {
+        // Clamping to 1 would turn "the supervisor said something impossible" into "the supervisor said nothing",
+        // and those want opposite responses: one is a bug to report, the other is an older supervisor working fine.
+        MalformedDocumentException e = expectThrows(
+            MalformedDocumentException.class,
+            () -> read("""
+                {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+                  "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"},
+                        "primary_terms": {"0": 0}}}}}}""")
+        );
+        assertTrue(e.getMessage(), e.getMessage().contains("below 1"));
+    }
+
+    public void testATermCanBeAStringAsWellAsANumber() {
+        // Documents.number accepts both for the reason it does everywhere here: the control plane's settings are
+        // string-valued and the supervisor's numbers are not, and a reader that insisted would be brittle about
+        // which document it happened to be reading.
+        Assignment assignment = read("""
+            {"version": 1, "tenants": {"acme": {"roles": ["data"], "indices": {
+              "u": {"name": "logs", "config_revision": 1, "shards": {"0": "PRIMARY"},
+                    "primary_terms": {"0": "9"}}}}}}""");
+
+        assertEquals(9L, assignment.tenants().get(TenantId.of("acme")).indices().get("u").primaryTermOf(0));
     }
 
     public void testAFieldNoContractMentionsIsIgnoredRatherThanFatal() {

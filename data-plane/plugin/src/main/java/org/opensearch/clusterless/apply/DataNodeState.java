@@ -72,17 +72,13 @@ public final class DataNodeState implements NodeState {
     private static final Logger logger = LogManager.getLogger(DataNodeState.class);
 
     /**
-     * Every fabricated primary term is 1, and that is a known gap rather than a simplification.
+     * The term a shard is at when nobody has said otherwise, which is now the only case this constant covers.
      *
-     * <p>A primary term is what lets a superseded primary be fenced: a replica or a remote store can refuse a
-     * write from an older term. Nothing in this contract carries one — there is no per-primary generation
-     * anywhere in the key layout — so there is nothing to fabricate from, and D8.2 records the consequence
-     * plainly: two nodes briefly believing they are primary for a remote-store-backed shard could write to the
-     * same remote path. The supervisor avoids the situation by never moving or failing over a primary, which is
-     * a scheduling constraint standing in for a correctness mechanism.
-     *
-     * <p>Carried forward from the previous state when the index already existed, so that a term never goes
-     * backwards within one process even though it also never advances.
+     * <p>It used to be every case: every fabricated term was 1 and never advanced, which is why nothing could be
+     * fenced and why a promotion was impossible — {@code updateShardState} only promotes on a term that increases.
+     * The supervisor now issues a term per shard in the assignment, so the number comes from there and this is the
+     * floor for an assignment that carries none, which is what an un-upgraded supervisor writes. That agrees with
+     * what this plugin fabricated before, so the two versions interoperate without either knowing.
      */
     private static final long INITIAL_PRIMARY_TERM = 1L;
 
@@ -354,10 +350,16 @@ public final class DataNodeState implements NodeState {
         IndexRoutingTable.Builder indexRouting = IndexRoutingTable.builder(index);
         desiredIndex.shards().forEach((shardNumber, role) -> {
             ShardId shardId = new ShardId(index, shardNumber);
-            long primaryTerm = previousMetadata == null ? INITIAL_PRIMARY_TERM : previousMetadata.primaryTerm(shardNumber);
-            builder.primaryTerm(shardNumber, Math.max(primaryTerm, INITIAL_PRIMARY_TERM));
+            // The supervisor's term where it has issued one, and it may only go up. A term that went backwards would
+            // be refused by the server anyway -- updateShardState asserts terms only increase -- but the contract
+            // asks a node told a lower term than a started copy is running to defer rather than to clamp, and
+            // clamping here silently is what would hide that. PrimaryTerms does the deferring, with the live state
+            // in hand; this max is the belt to its braces and never the thing that decides.
+            long assignedTerm = desiredIndex.primaryTermOf(shardNumber);
+            long previousTerm = previousMetadata == null ? INITIAL_PRIMARY_TERM : previousMetadata.primaryTerm(shardNumber);
+            builder.primaryTerm(shardNumber, Math.max(Math.max(assignedTerm, previousTerm), INITIAL_PRIMARY_TERM));
 
-            ShardRouting shardRouting = routingFor(shardId, role, previousRouting);
+            ShardRouting shardRouting = routingFor(shardId, role, previousRouting, assignedTerm);
             indexRouting.addShard(shardRouting);
 
             // Exactly the copies this pass described, and nothing carried forward. The set says which copies are
@@ -436,7 +438,7 @@ public final class DataNodeState implements NodeState {
      * be something it is not. That cannot happen today, because the supervisor never fails a primary over
      * (D8.1), which is exactly why it is worth handling before it can.
      */
-    private ShardRouting routingFor(ShardId shardId, ShardRole role, IndexRoutingTable previousRouting) {
+    private ShardRouting routingFor(ShardId shardId, ShardRole role, IndexRoutingTable previousRouting, long assignedTerm) {
         boolean primary = role == ShardRole.PRIMARY;
         boolean searchOnly = role == ShardRole.SEARCH_REPLICA;
 
@@ -449,6 +451,30 @@ public final class DataNodeState implements NodeState {
                     boolean sameRole = candidate.primary() == primary && candidate.isSearchOnly() == searchOnly;
                     if (mine && live && sameRole) {
                         return candidate;
+                    }
+                    // A promotion, and it must keep the allocation id or it is not one. The server decides between
+                    // promoting in place and replacing the copy by whether the new routing entry is the same
+                    // allocation: a fresh id makes isSameAllocation false, so IndicesClusterStateService removes the
+                    // shard and creates another -- a full close and recovery, and at the old primary's term, which
+                    // is two copies believing they are primary at one term. moveActiveReplicaToPrimary keeps the id,
+                    // so updateShardState sees a started replica whose term went up and takes the branch that bumps
+                    // the term, resets the engine to the global checkpoint and fills sequence-number gaps.
+                    //
+                    // Only from a started plain replica: a search replica cannot be promoted (upstream refuses it,
+                    // since it has no history to promote), and an initializing copy cannot either -- updateShardState
+                    // asserts a promotion target is not initializing.
+                    boolean promoting = mine
+                        && primary
+                        && candidate.started()
+                        && candidate.primary() == false
+                        && candidate.isSearchOnly() == false;
+                    if (promoting) {
+                        logger.info(
+                            "clusterless: promoting this node's replica of {} to primary at term {}, in place",
+                            shardId,
+                            assignedTerm
+                        );
+                        return candidate.moveActiveReplicaToPrimary();
                     }
                 }
             }

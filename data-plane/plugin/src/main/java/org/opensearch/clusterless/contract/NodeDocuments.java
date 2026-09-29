@@ -76,6 +76,12 @@ public final class NodeDocuments {
             builder.map(registration.attributes());
             builder.field("heartbeat_interval_millis", registration.heartbeatIntervalMillis());
             builder.field("registered_at", registration.registeredAt());
+            // Absent when this build implements none of the optional contract, which is what the field's own
+            // definition says absent means -- so an empty list and no list would say the same thing, and the
+            // shorter one is the one that cannot be misread as "asked and answered nothing".
+            if (registration.contractFeatures().isEmpty() == false) {
+                builder.field("contract_features", new java.util.ArrayList<>(registration.contractFeatures()));
+            }
         }), "registration", REGISTRATION_BUDGET_BYTES);
     }
 

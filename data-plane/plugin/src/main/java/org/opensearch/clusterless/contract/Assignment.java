@@ -102,16 +102,61 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
      *     is otherwise entirely desired state — see {@link IngestionReset} for why it could not live in the
      *     index document with the rest of the ingestion configuration.
      */
-    public record IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards, IngestionReset reset) {
+    public record IndexAssignment(
+        String name,
+        long configRevision,
+        Map<Integer, ShardRole> shards,
+        IngestionReset reset,
+        Map<Integer, Long> primaryTerms
+    ) {
+
+        /**
+         * What a shard is at when the supervisor has not said, which is any assignment written before it issued
+         * terms at all. Not a default the supervisor relies on — it writes a term for every shard or for none.
+         */
+        public static final long TERM_WHEN_UNSTATED = 1L;
 
         public IndexAssignment {
             Objects.requireNonNull(name, "name");
             shards = shards == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(shards));
+            primaryTerms = primaryTerms == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(primaryTerms));
         }
 
         /** An index with no reset outstanding, which is every index almost all of the time. */
         public IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards) {
-            this(name, configRevision, shards, null);
+            this(name, configRevision, shards, null, Map.of());
+        }
+
+        public IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards, IngestionReset reset) {
+            this(name, configRevision, shards, reset, Map.of());
+        }
+
+        /**
+         * The term for one shard, or {@link #TERM_WHEN_UNSTATED}.
+         *
+         * <p>Absent is not an error and not a disagreement: a supervisor that has not started issuing terms writes
+         * none, and every shard is then at 1 — which is the term this plugin fabricated unconditionally before any
+         * of this existed, so an un-upgraded supervisor and an upgraded node agree by construction.
+         */
+        public long primaryTermOf(int shard) {
+            return primaryTerms.getOrDefault(shard, TERM_WHEN_UNSTATED);
+        }
+
+        /**
+         * Terms naming a shard this assignment does not give this node, which the contract says to defer.
+         *
+         * <p>Worth reporting rather than ignoring: the two maps are siblings and can disagree, and a term for a
+         * shard this node was not given means the supervisor believes something about this node that it did not say
+         * in the part that matters. Silently dropping it would leave the disagreement invisible to both sides.
+         */
+        public List<Integer> termsForShardsNotHeld() {
+            List<Integer> orphans = new ArrayList<>();
+            primaryTerms.keySet().forEach(shard -> {
+                if (shards.containsKey(shard) == false) {
+                    orphans.add(shard);
+                }
+            });
+            return List.copyOf(orphans);
         }
     }
 
@@ -262,7 +307,39 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
             shards.put(shardId, ShardRole.from(role == null ? null : String.valueOf(role)));
         });
 
-        return new IndexAssignment(name, configRevision, shards, readReset(document, what));
+        return new IndexAssignment(name, configRevision, shards, readReset(document, what), readPrimaryTerms(document, what));
+    }
+
+    /**
+     * {@code primary_terms}, a sibling of {@code shards} rather than a change to it.
+     *
+     * <p>Additive on purpose, and the reason is a deployment order: turning a shard's value into an object would
+     * break every reader that had not been upgraded yet, and the upgrade that matters is a supervisor ahead of its
+     * nodes. A sibling map leaves an older reader at term 1, which is exactly what it fabricated before.
+     */
+    private static Map<Integer, Long> readPrimaryTerms(Map<String, Object> document, String what) {
+        Map<String, Object> terms = Documents.object(document, "primary_terms");
+        if (terms.isEmpty()) {
+            return Map.of();
+        }
+        Map<Integer, Long> byShard = new TreeMap<>();
+        terms.forEach((shard, value) -> {
+            int shardId;
+            try {
+                shardId = Integer.parseInt(shard);
+            } catch (NumberFormatException e) {
+                throw new MalformedDocumentException(what, "[" + shard + "] is not a shard number");
+            }
+            long term = Documents.number(terms, shard, 0, what);
+            if (term < 1) {
+                // A term below 1 is not a term. Refused rather than clamped, because clamping to 1 would silently
+                // turn "the supervisor said something impossible" into "the supervisor said nothing", and the two
+                // want opposite responses.
+                throw new MalformedDocumentException(what, "primary term for shard [" + shard + "] is [" + term + "], below 1");
+            }
+            byShard.put(shardId, term);
+        });
+        return byShard;
     }
 
     /**

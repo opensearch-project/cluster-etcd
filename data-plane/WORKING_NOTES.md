@@ -590,6 +590,32 @@ metadata files by the same lexicographic order, so it would retain the winner's 
 safe; but I have not traced how the referenced-data-file set is computed, and "reads are ordered, garbage collection
 is argued" is exactly the asymmetry the fence exists for.
 
+### What promotion in place actually requires of the fabricated state, and what is still argued rather than run
+
+Three things have to hold together, and each one is a separate mechanism in the server. Read from
+`../OpenSearch` rather than observed on a node — the promotion has unit coverage here but has **not** been driven on
+a running cluster, because doing that needs the supervisor to demote and promote, which is section 27's work.
+
+- **The term must strictly increase.** `IndexShard.updateShardState` activates primary mode on an unchanged term
+  only if the current entry is `initializing`; a *started* replica whose term did not move falls through both
+  branches, leaving a shard the routing table calls a primary whose `ReplicationTracker` is not in primary mode.
+  Writes then fail with "shard is not in primary mode" and nothing says why. The increased-term branch is guarded by
+  `assert newPrimaryTerm > pendingPrimaryTerm : "primary terms can only go up"`, and is what calls `bumpPrimaryTerm`,
+  resets the engine to the global checkpoint and fills sequence-number gaps.
+- **The allocation id must survive the role change**, or `isSameAllocation` fails and
+  `IndicesClusterStateService` removes the shard and creates another — at which point the term increase is applied to
+  a copy with no history and the old copy may still believe it is primary at the old term.
+  `ShardRouting.moveActiveReplicaToPrimary()` is the upstream method for exactly this transition; it throws on a
+  search-only copy, which is why the fabricator checks.
+- **The metadata term and the routing entry must be published together**, which they are, because both come out of
+  one `buildClusterState` pass. A state carrying the new routing entry at the old term is the "falls through both
+  branches" case above.
+
+What has **not** been established: whether a promoted primary's `ReplicationTracker` ends up tracking the copies the
+supervisor thinks it should, given that the in-sync set fabricated here contains only the local copy. The reasoning in
+MILESTONES' M9 says it will not, and that is the same hole a primary restart opens; promotion does not close it and
+was not expected to.
+
 ### A metadata-only change reaches a running shard, which is what makes the ingestion pause free
 
 Worth knowing generally and not just for ingestion: `IndicesClusterStateService.createOrUpdateShards` iterates

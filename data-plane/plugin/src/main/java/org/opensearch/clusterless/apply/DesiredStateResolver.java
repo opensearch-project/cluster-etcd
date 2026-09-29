@@ -147,6 +147,12 @@ public final class DesiredStateResolver {
             return;
         }
 
+        // A term for a shard this node was not given. Deferred rather than dropped, as the contract asks: the two
+        // maps are siblings and can disagree, and a term naming a shard that is absent from `shards` means the
+        // supervisor believes something about this node it did not say in the part that decides anything.
+        assigned.termsForShardsNotHeld()
+            .forEach(shard -> defer(deferred, key + "/" + shard + ": a primary term was given for a shard this node was not assigned"));
+
         Map<Integer, ShardRole> buildable = new LinkedHashMap<>();
         assigned.shards().forEach((shard, role) -> {
             if (shard >= numberOfShards) {
@@ -214,7 +220,9 @@ public final class DesiredStateResolver {
             // something this node holds nothing of.
             return;
         }
-        indices.put(key, new DesiredState.DesiredIndex(key, config, buildable));
+        Map<Integer, Long> terms = new LinkedHashMap<>();
+        buildable.keySet().forEach(shard -> terms.put(shard, assigned.primaryTermOf(shard)));
+        indices.put(key, new DesiredState.DesiredIndex(key, config, buildable, terms));
     }
 
     /**

@@ -37,10 +37,46 @@ public record Registration(
     String version,
     Map<String, String> attributes,
     long heartbeatIntervalMillis,
-    long registeredAt
+    long registeredAt,
+    Set<String> contractFeatures
 ) {
 
     /** Bounded because the control plane renders these in an API response. */
+    /**
+     * What this build implements of the optional contract, and nothing it does not.
+     *
+     * <p>The supervisor reads this to decide what it may safely ask, and the reason it has to exist is that
+     * {@code applied} cannot answer the question: a node that ignores an assignment field it does not understand
+     * applies everything else and reports success, so a term it never read looks exactly like a term it honoured.
+     * For a promotion that difference is two copies believing they are primary at one term.
+     *
+     * <p><b>So a feature goes in here only once this node acts on it.</b> Listing one early is not optimism, it is
+     * an instruction the supervisor will issue and nothing will carry out.
+     */
+    public static final Set<String> IMPLEMENTED_FEATURES = Set.of("primary_terms");
+
+    /**
+     * A registration that declares no optional features, which is what absence means on the wire.
+     *
+     * <p>Kept so that a caller with nothing to say about features does not have to say something, and because the
+     * honest default is none: a build that has not been asked declares nothing rather than guessing.
+     */
+    public Registration(
+        NodeId nodeId,
+        String ephemeralId,
+        String name,
+        PoolId pool,
+        Set<NodeRole> roles,
+        String address,
+        int port,
+        String version,
+        Map<String, String> attributes,
+        long heartbeatIntervalMillis,
+        long registeredAt
+    ) {
+        this(nodeId, ephemeralId, name, pool, roles, address, port, version, attributes, heartbeatIntervalMillis, registeredAt, Set.of());
+    }
+
     public static final int MAX_ATTRIBUTES = 32;
 
     public static final int MAX_ATTRIBUTE_LENGTH = 128;
@@ -58,6 +94,12 @@ public record Registration(
         // document changed at all. An attribute map that iterated differently between two passes would
         // rewrite a document nothing had changed in.
         attributes = attributes == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(attributes));
+        // Sorted for the same reason as the attributes, and it matters more here: this set is what the supervisor
+        // reads to decide what it may safely ask of this node, so a document rewritten because a set iterated
+        // differently would look like the node's capabilities had changed.
+        contractFeatures = contractFeatures == null
+            ? Set.of()
+            : Collections.unmodifiableSet(new java.util.TreeSet<>(contractFeatures));
 
         if (attributes.size() > MAX_ATTRIBUTES) {
             throw new IllegalArgumentException(
@@ -106,6 +148,9 @@ public record Registration(
             && port == other.port
             && version.equals(other.version)
             && attributes.equals(other.attributes)
-            && heartbeatIntervalMillis == other.heartbeatIntervalMillis;
+            && heartbeatIntervalMillis == other.heartbeatIntervalMillis
+            // Included, or an upgrade that gains a feature would not rewrite the document that announces it -- and
+            // the supervisor would go on believing this node cannot be promoted onto until something else changed.
+            && contractFeatures.equals(other.contractFeatures);
     }
 }

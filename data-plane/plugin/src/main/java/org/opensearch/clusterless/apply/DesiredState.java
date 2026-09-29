@@ -81,12 +81,28 @@ public record DesiredState(
      * @param config read from the store, already checked against the uuid the assignment named
      * @param shards the copies this node should hold, and what each should be
      */
-    public record DesiredIndex(IndexKey key, IndexConfig config, Map<Integer, ShardRole> shards) {
+    public record DesiredIndex(
+        IndexKey key,
+        IndexConfig config,
+        Map<Integer, ShardRole> shards,
+        Map<Integer, Long> primaryTerms
+    ) {
 
         public DesiredIndex {
             Objects.requireNonNull(key, "key");
             Objects.requireNonNull(config, "config");
             shards = shards == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(shards));
+            primaryTerms = primaryTerms == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(primaryTerms));
+        }
+
+        /** An index whose terms the supervisor has not stated, which is every one until it issues them. */
+        public DesiredIndex(IndexKey key, IndexConfig config, Map<Integer, ShardRole> shards) {
+            this(key, config, shards, Map.of());
+        }
+
+        /** The term this node's cluster state should name for a shard, or 1 where the supervisor said nothing. */
+        public long primaryTermOf(int shard) {
+            return primaryTerms.getOrDefault(shard, org.opensearch.clusterless.contract.Assignment.IndexAssignment.TERM_WHEN_UNSTATED);
         }
 
         public TenantId tenant() {

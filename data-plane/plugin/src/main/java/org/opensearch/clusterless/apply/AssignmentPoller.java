@@ -256,6 +256,10 @@ public final class AssignmentPoller {
             // RoutingNodes asserts a primary exists for every shard and an assertion on the applier thread exits the
             // node rather than declining a copy. See PeerRecovery.
             desired = PeerRecovery.reduce(desired, coordinated);
+            // And a term that went backwards, which also needs the live state: a copy already running at a higher
+            // term is not rebuilt at a lower one, it is declined with a reason. See PrimaryTerms for why saying so
+            // matters more than the server's own refusal would.
+            desired = PrimaryTerms.reduce(desired, live);
             lastResolved = desired;
             // Fabricated against the live state to decide whether anything needs doing, and fabricated again
             // inside the applier against whatever the server hands over. The two can differ -- a shard may have
