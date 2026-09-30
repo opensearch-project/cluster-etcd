@@ -1,6 +1,6 @@
 # Findings from the data plane
 
-Eleven items wanted in this repository, all found by running the real data plane
+Twelve items wanted in this repository, all found by running the real data plane
 (`../data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
@@ -14,7 +14,9 @@ ninth is the other half of an ask this repository made: the node now rewrites it
 missing, so the reaping that `DESIGN.md` §20.2 declined to do is safe to do. The tenth is not this repository's bug at
 all — a reused store revision froze its desired state on a deleted index's uuid — and is here because two things
 on this side rested on the guarantee that was missing. The eleventh is the one that blocks a milestone: promoting a
-replica needs a primary term in the assignment, and that term is also the only fence document replication gets.
+replica needs a primary term in the assignment, and that term is also the only fence document replication gets. The
+twelfth blocks the rest of that milestone: under document replication the primary and its replicas must agree on
+allocation ids and on the in-sync set, and only the supervisor can carry them between nodes.
 
 Each item says what happened, why the current behaviour is wrong, where the code is, what a fix has to be careful
 about, and the tests worth having. All of them are self-contained.
@@ -1206,6 +1208,145 @@ precisely the state D8.2 exists to prevent.
   per shard and no shard's term ever repeating;
 - the demoted node's assignment names the same new term, so both ends of the handover agree;
 - a supervisor restart mid-handover does not reissue a term already used for that shard.
+
+---
+
+## 12. Document replication needs the primary and its replicas to agree on allocation ids and the in-sync set
+
+> **Open.** Asks for two fields to be carried from the inventory to the index projection, verbatim, for
+> `DOCUMENT` indices only, and recommends one promotion rule that follows from them. The supervisor makes no new
+> decision to carry them. The recommendation is a decision, and it is yours.
+
+**The blocker for M9 on the data plane, and a correction to what this side has said about it.** Earlier writing on
+this side described the in-sync set as a problem only after a primary restarts or is promoted. It is worse: as far
+as the server's source says, a document-replication replica **cannot finish recovering at all** today. Nothing below
+has been observed on a running cluster; it is read from OpenSearch main (3.10.0-SNAPSHOT), with the lines named. A
+run would confirm it cheaply: the primary's node logs `delaying recovery of … as it is not listed as assigned to
+target node`, and the replica stays `INITIALIZING`.
+
+### What happens
+
+Peer recovery is keyed on the replica's **allocation id**, and the two nodes do not share one.
+
+- The replica's node fabricates its own copy with an allocation id it mints (`DataNodeState.routingFor`).
+- The primary's node fabricates the replica's entry from `tenant/<t>/status/indices/<uuid>`, which has no
+  allocation id, so it mints another (`CoordinatorState.routingFor`). Its javadoc says nothing reads that id. For
+  a coordinator that is true. For a docrep primary it is not.
+- The replica sends `StartRecoveryRequest` carrying its own id. The primary waits for that id to appear in its
+  routing table (`RecoverySourceHandler.waitForAssignmentPropagate`, `:205`), backing off five times, and then
+  throws `DelayRecoveryException("source node does not have the shard listed in its state as allocated on the
+  node")` (`:243`). The replica retries, and it never succeeds.
+
+The contract leaves allocation ids out on purpose. The inventory's own section measured them at 37% of the
+document's budget, and warned against reading them back out of the store the way `cluster-etcd` did. Both points
+still hold for segment replication, which needs neither. Document replication is where they stop holding.
+
+### The in-sync set has the same shape
+
+Suppose recovery did complete. The primary marks the replica in sync in its own `ReplicationTracker`
+(`RecoverySourceHandler:894`). But `ReplicationTracker.updateFromClusterManager` (`:1453`) runs on every applied
+state, and it drops any copy that is neither initializing nor in the cluster state's in-sync set (`:1474`). Once
+the primary's view of the replica turns `STARTED`, it is neither, so the replica is **untracked**: skipped by the
+replication group, no longer written to, and never told. It goes on serving reads from what it had. In a real
+cluster, the cluster manager adds the copy to the in-sync set when it is marked started. Here nothing does.
+
+The obvious fix is wrong, and the server says so. Declaring every visible replica in sync trips the assertion at
+`:1463`: in primary mode, every in-sync id handed to the tracker must already be in sync *in the tracker*. The set
+has to come from the primary, which is the only thing that knows.
+
+The same information closes two more gaps.
+
+- **Promotion and restart.** A promoted or restarted primary knows nothing about its replicas and tracks only
+  itself. A replica needs a way to notice that it has fallen out of its primary's in-sync set, so that it can
+  rebuild itself as `INITIALIZING` and recover.
+- **A replica marked stale.** When a write to a replica fails, the primary asks the cluster manager to fail that
+  copy (`TransportWriteAction.failShardIfNeeded`, `:565`, and `markShardCopyAsStaleIfNeeded`, `:587`). In clusterless
+  mode that request waits for a cluster manager that never arrives (`ClusterManagerNodeChangePredicate`, `:76`),
+  and the write hangs. The server-side fix is the user's: handle it locally, as `localShardFailed` now is. But
+  locally, the primary can only stop tracking the copy. The replica's node learns it has been dropped the same way
+  as above, or not at all.
+
+### What the contract needs
+
+**Two fields, published by the node and carried by the supervisor into the index projection, for `DOCUMENT`
+indices only.**
+
+In `nodes/shards/<node-id>`, on each copy of a document-replication index:
+
+```json
+"0": { "role": "PRIMARY", "state": "STARTED", "size_bytes": 4823012,
+       "allocation_id": "ULHF36LvSIa6sReNU-zHoA",
+       "in_sync": ["ULHF36LvSIa6sReNU-zHoA", "3YLXESN2TkSC5FYhEDzvNg"] },
+"1": { "role": "REPLICA", "state": "STARTED", "allocation_id": "yfU2ZTYYQEWWtXEy7SDTZQ" }
+```
+
+- **`allocation_id`** is on every docrep copy: the id of that copy's routing entry on its own node.
+- **`in_sync`** is on a docrep primary only: the ids its own tracker holds in sync, itself included, sorted. It is
+  never empty, because a primary is always in sync with itself. So absent means "this node does not publish it",
+  not "nothing is in sync", and the two need no flag to tell them apart.
+
+In `tenant/<t>/status/indices/<uuid>`, the same two fields on the corresponding copies in `shards`, copied from the
+latest inventory of the node that holds the copy.
+
+Neither field goes on a copy of a `SEGMENT` index, which resolves no peers and needs neither.
+
+### What the supervisor must be careful about
+
+- **Carry, do not construct.** Take each value from the holding node's current inventory. Do not synthesize one,
+  and do not carry one forward once that inventory no longer has the copy. A stale allocation id held for ever is
+  exactly how this side's own in-sync set once grew without bound and killed a node (the data plane's
+  `MILESTONES.md`, M4). If a copy has no `allocation_id`, publish the copy without one. This side then declines to
+  build against it, with a reason.
+- **Torn state is fine.** The `in_sync` list and the replicas' ids come from different nodes' inventories, read
+  at different times. This side has to tolerate them disagreeing for a pass, and will. No atomicity is needed.
+- **Keep the projection quiet.** `in_sync` changes only when a replica joins or leaves the group, and an
+  `allocation_id` only when a copy is created again. Both change at the rate placement does, which is the rate
+  the inventory is already written at. Sorting `in_sync` on the node keeps the bytes stable, and the projection
+  should not be rewritten when neither changed.
+- **Size.** The inventory note says there is no headroom left for another per-copy field. These fields are only on
+  docrep copies: 41 bytes for an `allocation_id`, and about 25 bytes more per in-sync id on a primary. At the
+  measured 93 bytes per copy, a node whose every copy was docrep would fit about 3,900 copies where it fits 5,600
+  today. Document replication is
+  the discouraged path, for small tenants, so this is expected to cost nothing in practice. The same cost at scale
+  is one reason segment replication is the intended path.
+
+### Recommended: promote only a copy the lost primary last called in sync
+
+This is the one decision here, and it is yours. **When a docrep primary is lost, promote only a replica that is
+in the last `in_sync` set you saw from it.** A replica outside that set may be missing acknowledged writes, and
+promoting it silently loses them. OpenSearch's allocator has the same rule, and makes an operator ask explicitly
+(`allocate_stale_primary`) to break it. With no in-sync replica, reporting the shard unassigned with a finding is
+safer than promoting.
+
+The last set seen is the right one, even though it may be a pass old. A replica drops out of the set only when the
+primary stops tracking it. So a replica that is in the last published set was in sync at least that recently, and
+a promotion already races the primary's loss. For a node that has never published `in_sync`, keep today's
+behaviour.
+
+### What this side will do
+
+- Publish both fields, for docrep copies only.
+- Fabricate a peer's entry with its published id (`initialize(node, allocationId, …)`), so recovery can find the
+  replica. It also makes those entries stable across passes, which `CoordinatorState` currently achieves by
+  reusing them.
+- Fabricate a docrep primary's in-sync set from its own tracker: itself, plus whatever the tracker holds in sync
+  that is still in the routing table. This needs nothing from you, and lands first.
+- Rebuild a started replica as `INITIALIZING`, with a fresh id, when its started primary's `in_sync` does not list
+  it. That one rule covers restart, promotion and a replica marked stale. It needs care about ordering: a replica
+  that has just started can read an inventory its primary wrote before it was marked in sync, and must not loop.
+
+### Tests worth having on your side
+
+- a docrep copy's `allocation_id` reaches the projection verbatim, and leaves it when the node's inventory drops
+  the copy;
+- `in_sync` is carried verbatim, and an unchanged inventory leaves the projection unwritten;
+- a `SEGMENT` index's copies carry neither field, even if a node publishes them;
+- with the recommendation: a lost primary whose last `in_sync` named replica A is replaced by A, not by an
+  out-of-sync replica B, and with no in-sync replica the shard is reported rather than promoted.
+
+`cluster-etcd` solved this by having data nodes read each other's heartbeats. That is the coupling the contract's
+*Peer resolution* section declines, and rightly so. The supervisor stays the only writer of anything a node reads
+about another node.
 
 ---
 

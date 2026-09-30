@@ -781,7 +781,7 @@ The two implementations now share a conformance suite (`fake-node/src/testFixtur
 which is how they stay one format: the plugin re-implements the codec on XContent because the server
 exposes Jackson's streaming API and not databind, so nothing but that suite connects them.
 
-**Eight things it found. Five are silences in this document rather than errors, and one is a claim it makes that does not hold.**
+**Nine things it found. Five are silences in this document rather than errors, and one is a claim it makes that does not hold.**
 
 1. **`SPLITTING` is a shard state this document does not enumerate.** OpenSearch 3.x has an in-place shard
    split, so `ShardRoutingState` has five values rather than the four assumed above. The plugin maps it to
@@ -900,6 +900,15 @@ plugin honours it, but a node scheduling at a *fixed delay* — which is what it
 rate against a slow store queues passes that were stale when they were queued — writes every
 `interval + pass duration`. The declared figure is therefore a lower bound rather than the period. Harmless
 at the default multiplier of six, and worth knowing before anyone tightens it.
+
+9. **Document replication needs allocation ids and the in-sync set to cross between nodes, and this document leaves
+   both out.** A docrep replica's recovery is keyed on its allocation id, and the primary's node never learns it:
+   each node mints its own id for the same copy, so, reading the server, recovery cannot complete. The primary's
+   in-sync set can only come from the primary, and without it a started replica is untracked and silently stops
+   receiving writes. Proposed: `allocation_id` on each docrep copy in the inventory, `in_sync` on each docrep
+   primary, both carried verbatim into `tenant/<t>/status/indices/<uuid>`, and neither on a `SEGMENT` copy.
+   Recorded in full as `FINDINGS_FROM_THE_DATA_PLANE.md` item 12, with the size cost and a recommended promotion
+   rule that follows from it.
 
 ## Open questions
 
