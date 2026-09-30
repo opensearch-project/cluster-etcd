@@ -14,6 +14,7 @@ import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.rest.RestStatus;
 import org.opensearch.controlplane.router.Router;
 import org.opensearch.controlplane.store.InMemoryKeyValueStore;
+import org.opensearch.controlplane.store.InterleavingKeyValueStore;
 import org.opensearch.controlplane.tenant.SingleTenantResolver;
 
 import java.nio.charset.StandardCharsets;
@@ -31,18 +32,34 @@ class AliasActionsTests {
     private static final String TENANT_PREFIX = SingleTenantResolver.DEFAULT_TENANT.keyPrefix();
 
     private InMemoryKeyValueStore store;
+    private InterleavingKeyValueStore interleaving;
     private Router router;
 
     @BeforeEach
     void setUp() {
         store = new InMemoryKeyValueStore();
-        router = Router.fromGeneratedRoutes(ControlPlaneHandlers.build(), TestContexts.factory(store));
+        interleaving = new InterleavingKeyValueStore(store);
+        router = Router.fromGeneratedRoutes(ControlPlaneHandlers.build(), TestContexts.factory(interleaving));
         create("logs-v1");
         create("logs-v2");
     }
 
     private void create(String index) {
         router.dispatch("PUT", "/" + index, "/" + index, Map.of(), Map.of(), new byte[0]);
+    }
+
+    private RestResponse create(String index, String body) {
+        return router.dispatch("PUT", "/" + index, "/" + index, Map.of(), Map.of(),
+            body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Another writer's version of an alias, written straight to the store. */
+    private Runnable concurrentWrite(String alias, String definition) {
+        return () -> store.put(TENANT_PREFIX + AliasStore.key(alias), definition.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String aliasKey(String alias) {
+        return TENANT_PREFIX + AliasStore.key(alias);
     }
 
     private RestResponse actions(String body) {
@@ -351,5 +368,107 @@ class AliasActionsTests {
         assertEquals(RestStatus.OK, actions("{\"actions\":[{\"remove_index\":{\"index\":\"logs-v1\"}}]}").status());
         assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/logs-v1").status());
         assertFalse(membersOf("a").contains("logs-v1"));
+    }
+
+    // ------------------------------------------------------------------
+    // concurrent writers
+    // ------------------------------------------------------------------
+
+    /** Each alias write is a compare-and-set, so two requests on one alias cannot both win. */
+    @Test
+    void aConcurrentChangeToTheSameAliasIsAConflictNotALostUpdate() throws Exception {
+        actions("{\"actions\":[{\"add\":{\"index\":\"logs-v1\",\"alias\":\"logs\"}}]}");
+        interleaving.afterNextGet(aliasKey("logs"),
+            concurrentWrite("logs", "{\"indices\":{\"logs-v1\":{},\"other\":{}}}"));
+
+        RestResponse response = actions("{\"actions\":[{\"add\":{\"index\":\"logs-v2\",\"alias\":\"logs\"}}]}");
+        assertEquals(RestStatus.CONFLICT, response.status());
+        assertEquals("alias [logs] was updated concurrently; re-read and retry",
+            body(response).get("error").get("reason").asText());
+        assertEquals(List.of("logs-v1", "other"), membersOf("logs"), "the other writer's change survives");
+    }
+
+    /** Dropping a deleted index from an alias is retried rather than reported: it is still right. */
+    @Test
+    void deletingAnIndexRetriesItsAliasCleanup() throws Exception {
+        actions("{\"actions\":[{\"add\":{\"indices\":[\"logs-v1\",\"logs-v2\"],\"alias\":\"logs\"}}]}");
+        interleaving.afterNextGet(aliasKey("logs"),
+            concurrentWrite("logs", "{\"indices\":{\"logs-v1\":{},\"logs-v2\":{},\"other\":{}}}"));
+
+        assertEquals(RestStatus.OK, router.dispatch("DELETE", "/logs-v1").status());
+        assertEquals(List.of("logs-v2", "other"), membersOf("logs"));
+    }
+
+    // ------------------------------------------------------------------
+    // indices.create runs the same checks
+    // ------------------------------------------------------------------
+
+    /** Upstream's validateIndexName: an index may not take an alias's name and shadow it. */
+    @Test
+    void createRejectsAnIndexNamedAfterAnAlias() throws Exception {
+        actions("{\"actions\":[{\"add\":{\"index\":\"logs-v1\",\"alias\":\"logs\"}}]}");
+
+        RestResponse response = create("logs", "{}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        JsonNode error = body(response).get("error");
+        assertEquals("invalid_index_name_exception", error.get("type").asText());
+        assertEquals("Invalid index name [logs], already exists as alias", error.get("reason").asText());
+        // Not HEAD /logs, which resolves the alias.
+        assertTrue(store.getAsString(TENANT_PREFIX + IndexStore.key("logs")).isEmpty());
+    }
+
+    @Test
+    void createRejectsARequestAliasNamedAfterAnIndex() throws Exception {
+        RestResponse response = create("new", "{\"aliases\":{\"logs-v1\":{}}}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        assertEquals("invalid_alias_name_exception", body(response).get("error").get("type").asText());
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/new").status());
+    }
+
+    /** Upstream's 500 from its metadata builder, reported as a 400 with the same reason. */
+    @Test
+    void createRejectsAnAliasNamedAfterTheIndexItself() throws Exception {
+        RestResponse response = create("new", "{\"aliases\":{\"new\":{}}}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        assertTrue(body(response).get("error").get("reason").asText().startsWith(
+            "index, alias, and data stream names need to be unique, but the following duplicates were found "
+                + "[new (alias of [new/"));
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/new").status());
+    }
+
+    @Test
+    void createRejectsASecondWriteIndex() throws Exception {
+        actions("{\"actions\":[{\"add\":{\"index\":\"logs-v1\",\"alias\":\"w\",\"is_write_index\":true}}]}");
+
+        RestResponse response = create("new", "{\"aliases\":{\"w\":{\"is_write_index\":true}}}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        assertEquals("alias [w] has more than one write index [logs-v1,new]",
+            body(response).get("error").get("reason").asText());
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/new").status());
+        assertEquals(List.of("logs-v1"), membersOf("w"));
+    }
+
+    /** The checks are repeated at write time; one that fails then undoes the create. */
+    @Test
+    void createRollsBackWhenAnAliasChangesUnderIt() throws Exception {
+        interleaving.afterNextGet(aliasKey("w"),
+            concurrentWrite("w", "{\"indices\":{\"logs-v1\":{\"is_write_index\":true}}}"));
+
+        RestResponse response = create("new", "{\"aliases\":{\"w\":{\"is_write_index\":true}}}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        assertEquals(RestStatus.NOT_FOUND, router.dispatch("HEAD", "/new").status());
+        assertEquals(List.of("logs-v1"), membersOf("w"));
+    }
+
+    /** Adding one member is still right after a lost race, so create retries instead of failing. */
+    @Test
+    void createRetriesAnAliasWriteItLost() throws Exception {
+        actions("{\"actions\":[{\"add\":{\"index\":\"logs-v1\",\"alias\":\"all\"}}]}");
+        // The first read is the up-front check; the race is against the second, the write's own read.
+        interleaving.afterNextGet(aliasKey("all"), () -> interleaving.afterNextGet(aliasKey("all"),
+            concurrentWrite("all", "{\"indices\":{\"logs-v1\":{},\"logs-v2\":{}}}")));
+
+        assertEquals(RestStatus.OK, create("new", "{\"aliases\":{\"all\":{}}}").status());
+        assertEquals(List.of("logs-v1", "logs-v2", "new"), membersOf("all"));
     }
 }

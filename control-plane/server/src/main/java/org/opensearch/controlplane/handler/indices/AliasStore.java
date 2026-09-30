@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.resolver.IndexAbstractions;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.RevisionConflictException;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -34,6 +35,10 @@ import java.util.TreeMap;
  *
  * <p>An alias whose last index is removed is deleted outright rather than left as an empty document, so
  * "exists" means "points at something".
+ *
+ * <p>Every write is a compare-and-set on the revision the definition was read at. Each alias mutation is
+ * a read-modify-write of the whole document, so an unconditional write would let two concurrent
+ * requests on one alias both succeed with one change lost.
  */
 final class AliasStore {
 
@@ -52,8 +57,18 @@ final class AliasStore {
         return KEY_PREFIX + alias;
     }
 
+    /** A definition and the revision it was read at; {@link KeyValueStore#ABSENT} for an alias not yet stored. */
+    record Versioned(ObjectNode definition, long revision) {}
+
     Optional<ObjectNode> get(String alias) {
         return store.get(key(alias)).map(versioned -> (ObjectNode) parse(versioned.value()));
+    }
+
+    /** The stored definition, or an empty one at {@link KeyValueStore#ABSENT}, ready to be modified. */
+    Versioned getVersioned(String alias) {
+        return store.get(key(alias))
+            .map(versioned -> new Versioned((ObjectNode) parse(versioned.value()), versioned.revision()))
+            .orElseGet(() -> new Versioned(emptyDefinition(), KeyValueStore.ABSENT));
     }
 
     /** Every alias, in name order. */
@@ -83,17 +98,24 @@ final class AliasStore {
         return matched;
     }
 
-    /** Writes the definition, or deletes it when no indices remain. */
-    void put(String alias, ObjectNode definition) {
-        if (definition.path(INDICES).isEmpty()) {
-            store.delete(key(alias));
-            return;
+    /**
+     * Writes the definition, or deletes it when no indices remain, provided the alias is still at
+     * {@code expectedRevision}.
+     *
+     * @return false if another writer got there first
+     */
+    boolean replace(String alias, ObjectNode definition, long expectedRevision) {
+        try {
+            if (definition.path(INDICES).isEmpty() == false) {
+                store.put(key(alias), Json.toBytes(definition), expectedRevision);
+            } else if (expectedRevision != KeyValueStore.ABSENT) {
+                store.delete(key(alias), expectedRevision);
+            }
+            // Empty and never stored: nothing to write, and nothing that could have been lost.
+            return true;
+        } catch (RevisionConflictException lostTheRace) {
+            return false;
         }
-        store.put(key(alias), Json.toBytes(definition));
-    }
-
-    boolean delete(String alias) {
-        return store.delete(key(alias));
     }
 
     static ObjectNode emptyDefinition() {

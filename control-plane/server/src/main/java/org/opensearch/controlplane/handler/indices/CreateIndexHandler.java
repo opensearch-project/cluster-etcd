@@ -18,6 +18,7 @@ import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.rest.RestStatus;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -87,7 +88,7 @@ public final class CreateIndexHandler implements OperationHandler {
      * <p>Strings because that is what a settings value is — see {@link org.opensearch.controlplane.metadata.Settings}.
      */
     private static final String DEFAULT_NUMBER_OF_SHARDS = "1";
-    private static final String DEFAULT_NUMBER_OF_REPLICAS = "1";
+    static final String DEFAULT_NUMBER_OF_REPLICAS = "1";
 
     /**
      * Replication is per index and chosen by whoever creates it: {@code DOCUMENT} replicates each
@@ -100,7 +101,7 @@ public final class CreateIndexHandler implements OperationHandler {
     private static final String DEFAULT_REPLICATION_TYPE = "DOCUMENT";
 
     private static final String SETTING_SHARDS = "index.number_of_shards";
-    private static final String SETTING_REPLICAS = "index.number_of_replicas";
+    static final String SETTING_REPLICAS = "index.number_of_replicas";
     private static final String SETTING_REPLICATION_TYPE = "index.replication.type";
 
     @Override
@@ -115,6 +116,17 @@ public final class CreateIndexHandler implements OperationHandler {
         Optional<String> invalid = IndexNameValidator.validate(index);
         if (invalid.isPresent()) {
             return ErrorResponses.invalidIndexName(request, index, invalid.get());
+        }
+        // Upstream's validateIndexName, before settings and aliases: an existing index, then an alias the
+        // index would shadow. createIfAbsent below still decides the race.
+        IndexStore indices = new IndexStore(context.store());
+        Optional<JsonNode> alreadyThere = indices.get(index);
+        if (alreadyThere.isPresent()) {
+            return ErrorResponses.indexAlreadyExists(request, index, alreadyThere.get().path("uuid").asText("_na_"));
+        }
+        AliasStore aliasStore = new AliasStore(context.store());
+        if (aliasStore.get(index).isPresent()) {
+            return ErrorResponses.invalidIndexName(request, index, "already exists as alias");
         }
 
         // A body is optional: PUT /my-index with nothing at all is a valid create.
@@ -151,8 +163,12 @@ public final class CreateIndexHandler implements OperationHandler {
             return ErrorResponses.privateSettingsRejected(request, problems.notUserSettable(), null);
         }
 
-        IndexStore indices = new IndexStore(context.store());
         String uuid = IndexStore.newUuid();
+        Optional<RestResponse> aliasRejection =
+            checkAliases(request, indices, aliasStore, index, uuid, effective.aliases());
+        if (aliasRejection.isPresent()) {
+            return aliasRejection.get();
+        }
         ObjectNode metadata = buildMetadata(index, uuid, effective, context.nowEpochMillis());
 
         if (indices.createIfAbsent(metadata, index).isEmpty()) {
@@ -168,7 +184,13 @@ public final class CreateIndexHandler implements OperationHandler {
         // atomic with the index write: a failure here leaves an index without its aliases, which a
         // reconciliation pass can detect. The alternative -- embedding them -- would cost the atomic
         // alias swap that the separate layout buys.
-        applyAliases(new AliasStore(context.store()), index, effective.aliases());
+        aliasRejection = applyAliases(request, indices, aliasStore, index, effective.aliases());
+        if (aliasRejection.isPresent()) {
+            // An alias changed since checkAliases passed. Undo, so a rejected create leaves nothing.
+            new AliasActions(context.store()).removeIndexFromAllAliases(index);
+            indices.delete(index);
+            return aliasRejection.get();
+        }
 
         new IndexManagementTasks(context.store()).submit(
             IndexManagementTasks.TYPE_CREATE_INDEX,
@@ -190,18 +212,88 @@ public final class CreateIndexHandler implements OperationHandler {
     }
 
     /**
+     * The alias checks upstream runs on create, against what is stored now: no alias may share a name
+     * with an index, this one included, and none may end up with two write indices.
+     *
+     * <p>Run before the index is written, so an ordinary rejection writes nothing. {@link #applyAliases}
+     * repeats the per-alias checks against what it actually writes over.
+     *
+     * <p>An alias named after the index being created is <b>a considered divergence</b>, the same one as
+     * two write indices: upstream answers {@code 500 illegal_state_exception} from its metadata builder,
+     * and this answers {@code 400 illegal_argument_exception} with the same reason.
+     */
+    static Optional<RestResponse> checkAliases(
+        RestRequest request,
+        IndexStore indices,
+        AliasStore aliasStore,
+        String index,
+        String uuid,
+        ObjectNode aliases
+    ) {
+        for (Map.Entry<String, JsonNode> alias : aliases.properties()) {
+            if (alias.getKey().equals(index)) {
+                return Optional.of(ErrorResponses.illegalArgument(request,
+                    "index, alias, and data stream names need to be unique, but the following duplicates were found ["
+                        + index + " (alias of [" + index + "/" + uuid + "]) conflicts with index]"));
+            }
+            Optional<RestResponse> rejected = addMember(request, indices, aliasStore.getVersioned(alias.getKey()),
+                alias.getKey(), index, alias.getValue());
+            if (rejected.isPresent()) {
+                return rejected;
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
      * Points each of a template's aliases at a newly created index.
      *
      * <p>Shared with {@code DataStreamHandlers}: verified that a data stream's backing index inherits its
      * template's aliases exactly as an ordinary index does, so a template with
      * {@code aliases: {"logs": {}}} leaves {@code logs} pointing at {@code .ds-...-000001}.
+     *
+     * <p>Each alias is a compare-and-set, retried on a lost race: adding one member is still right
+     * against whatever the alias holds by then, as long as the checks still pass, and they are re-run
+     * on every attempt.
+     *
+     * @return the rejection if an alias no longer passes; the aliases before it have been written
      */
-    static void applyAliases(AliasStore aliasStore, String index, ObjectNode aliases) {
-        aliases.properties().forEach(alias -> {
-            ObjectNode definition = aliasStore.get(alias.getKey()).orElseGet(AliasStore::emptyDefinition);
-            ((ObjectNode) definition.get(AliasStore.INDICES)).set(index, alias.getValue().deepCopy());
-            aliasStore.put(alias.getKey(), definition);
-        });
+    static Optional<RestResponse> applyAliases(
+        RestRequest request,
+        IndexStore indices,
+        AliasStore aliasStore,
+        String index,
+        ObjectNode aliases
+    ) {
+        for (Map.Entry<String, JsonNode> alias : aliases.properties()) {
+            AliasStore.Versioned current;
+            do {
+                current = aliasStore.getVersioned(alias.getKey());
+                Optional<RestResponse> rejected =
+                    addMember(request, indices, current, alias.getKey(), index, alias.getValue());
+                if (rejected.isPresent()) {
+                    return rejected;
+                }
+            } while (aliasStore.replace(alias.getKey(), current.definition(), current.revision()) == false);
+        }
+        return Optional.empty();
+    }
+
+    /** Adds {@code index} to the definition in place, and checks the alias as {@code _aliases} would. */
+    private static Optional<RestResponse> addMember(
+        RestRequest request,
+        IndexStore indices,
+        AliasStore.Versioned current,
+        String alias,
+        String index,
+        JsonNode properties
+    ) {
+        Optional<RestResponse> collision = AliasActions.rejectIfIndexNameCollision(request, indices, alias);
+        if (collision.isPresent()) {
+            return collision;
+        }
+        ((ObjectNode) current.definition().get(AliasStore.INDICES)).set(index, properties.deepCopy());
+        return AliasActions.rejectIfMultipleWriteIndices(request, alias, current.definition());
     }
 
     /**

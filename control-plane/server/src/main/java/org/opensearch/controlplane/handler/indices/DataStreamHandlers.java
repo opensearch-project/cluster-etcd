@@ -137,6 +137,12 @@ public final class DataStreamHandlers {
             String backingIndex = DataStreamStore.backingIndexName(name, FIRST_GENERATION);
             IndexStore indices = new IndexStore(context.store());
             String uuid = IndexStore.newUuid();
+            AliasStore aliases = new AliasStore(context.store());
+            Optional<RestResponse> aliasRejection =
+                CreateIndexHandler.checkAliases(request, indices, aliases, backingIndex, uuid, composed.aliases());
+            if (aliasRejection.isPresent()) {
+                return aliasRejection.get();
+            }
             ObjectNode metadata =
                 CreateIndexHandler.buildMetadata(backingIndex, uuid, composed, context.nowEpochMillis());
 
@@ -160,7 +166,12 @@ public final class DataStreamHandlers {
             }
 
             // A backing index inherits the template's aliases, verified against 3.9.0.
-            CreateIndexHandler.applyAliases(new AliasStore(context.store()), backingIndex, composed.aliases());
+            aliasRejection = CreateIndexHandler.applyAliases(request, indices, aliases, backingIndex, composed.aliases());
+            if (aliasRejection.isPresent()) {
+                // An alias changed since checkAliases passed. The stream and its backing index are left for
+                // reconciliation, as when the stream itself loses a race above.
+                return aliasRejection.get();
+            }
 
             new IndexManagementTasks(context.store()).submit(
                 IndexManagementTasks.TYPE_CREATE_INDEX,

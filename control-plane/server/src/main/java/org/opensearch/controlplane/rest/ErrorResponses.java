@@ -338,7 +338,7 @@ public final class ErrorResponses {
         return structured(
             RestStatus.BAD_REQUEST,
             "illegal_argument_exception",
-            "alias [" + alias + "] has more than one write index [" + String.join(", ", writeIndices) + "]",
+            "alias [" + alias + "] has more than one write index [" + String.join(",", writeIndices) + "]",
             request
         );
     }
@@ -460,6 +460,16 @@ public final class ErrorResponses {
         cause.put("reason", "index [" + index + "] was updated concurrently; re-read and retry");
         cause.put("index", index);
         return structured(RestStatus.CONFLICT, cause, isPretty(request), Map.of());
+    }
+
+    /** {@code 409} for an alias another request changed between our read and our write. Ours, as above. */
+    public static RestResponse concurrentAliasUpdate(RestRequest request, String alias) {
+        return structured(
+            RestStatus.CONFLICT,
+            "version_conflict_engine_exception",
+            "alias [" + alias + "] was updated concurrently; re-read and retry",
+            request
+        );
     }
 
     /**

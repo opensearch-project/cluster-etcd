@@ -636,7 +636,8 @@ is to remember what a client set, in the scope it set it in.
 **Which one wins is the data plane's question**, and it resolves it by merging with transient taking
 precedence — the semantics OpenSearch already has. So there is no need for a precedence rule here, and
 not having one is what keeps this a store rather than a policy. A data plane that implements only the
-merged view is still correct; it just cannot report the two apart, which is a read-side concern.
+merged view is still correct; it just cannot report the two apart, which is a read-side concern. The
+exception is settings that change this service's own behaviour, [below](#cluster-settings-that-shape-later-requests-not-yet-honoured).
 
 One document per tenant rather than one key per setting, because an update is naturally
 read-modify-write over the whole set. That makes it a single-key compare-and-swap — genuinely atomic on
@@ -645,6 +646,36 @@ direction.
 
 Each tenant has its own cluster settings, since the store a handler gets is already tenant-confined.
 Same choice as `cluster_uuid` being per tenant: each tenant sees a coherent virtual cluster of its own.
+
+### Cluster settings that shape later requests: not yet honoured
+
+"Uninterpreted" is true of storage and is **not the goal for behaviour.** Upstream, some cluster settings
+change what later metadata operations do, and a tenant's cluster settings should do the same to later
+calls here. Today none do: every handler uses the built-in default.
+
+Settings upstream reads in operations this service implements:
+
+| setting | upstream effect | here today |
+|---|---|---|
+| `cluster.default_number_of_replicas` | replica count on `indices.create`, and what `put_settings` writes back when `number_of_replicas` is removed on an open index | always `1` |
+| `cluster.indices.replication.strategy` | default `index.replication.type` on create | always `DOCUMENT` |
+| `cluster.index.restrict.replication.type` | rejects a create that overrides the cluster's replication type | not checked |
+| `cluster.minimum.index.refresh_interval` | rejects a `refresh_interval` below it, on create and `put_settings` | not checked |
+| `cluster.max_shards_per_node` / `cluster.max_shards_per_cluster` | shard-limit rejection on create and on replica increases | not checked; per node is also a question of the operator's nodes, see [`docs/tenants-and-operators.md`](docs/tenants-and-operators.md) |
+| `action.destructive_requires_name` | rejects wildcard and `_all` deletes | not checked |
+| `cluster.indices.close.enable` | rejects `indices.close` when false | not checked |
+
+From `MetadataCreateIndexService`, `MetadataUpdateSettingsService`, `ShardLimitValidator`,
+`DestructiveOperations` and `TransportCloseIndexAction`. The list is what those read, not an audit of
+every operation.
+
+To honour them, this service does its own transient-over-persistent merge when it reads a setting for
+its own use. The data plane still resolves the settings it applies itself.
+
+**Concurrency is deliberately loose.** A request running at the same time as a cluster settings update
+may see the settings from before or after it: an index created while `cluster.default_number_of_replicas`
+changes may get either value. There is no ordering guarantee beyond that, and a handler needs no
+cross-key transaction, just a read of the cluster settings document before it acts.
 
 ## Multi-tenancy
 
@@ -871,7 +902,7 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | voting config exclusions | 200 | 400, route absent | a stateless service has no cluster-manager quorum of its own; consensus belongs to etcd or DynamoDB |
 | unknown processor types | rejected | accepted until `--capabilities` is supplied | no accurate built-in list can be shipped; see [Data plane capabilities](#data-plane-capabilities) |
 | `cluster_uuid` | one per cluster | one per tenant | each tenant sees a coherent virtual cluster of its own |
-| two write indices for an alias | 500 `illegal_state_exception` | 400 `illegal_argument_exception`, same reason | a request the client got wrong is a client error; reporting it as a server fault tells the caller to retry something that can never succeed. The type follows the status rather than being left inconsistent with it |
+| two write indices for an alias, or `indices.create` naming an alias after the index itself | 500 `illegal_state_exception` | 400 `illegal_argument_exception`, same reason | a request the client got wrong is a client error; reporting it as a server fault tells the caller to retry something that can never succeed. The type follows the status rather than being left inconsistent with it |
 | nested settings key order | `HashMap` order — neither sorted nor as supplied | sorted | reproducing it would mean reproducing Java's hash iteration order. JSON object order is not semantic, and the harness compares parsed structures. The *flat* rendering is sorted on a real cluster too, so that one agrees |
 | `index.version.created` | written into a created index's settings | absent | it records the Lucene and OpenSearch version the index was built with, which this service does not know. `index.replication.type` is *not* in this category — it is a real index setting, accepted on create and defaulted to `DOCUMENT` |
 | restating an immutable mapping parameter at its default | accepted — the mapper resolves defaults, so `index: true` on a text field is a no-op | rejected | we store mappings as sent and have no defaults to resolve against, so an immutable parameter the stored mapping never declared cannot be told apart from a real change. Erring towards rejection is deliberate: accepting a change to how data is indexed leaves a mapping the data plane cannot honour, while a false rejection is immediate and is worked around by sending only the fields being added |

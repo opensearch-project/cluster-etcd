@@ -70,12 +70,14 @@ import java.util.Set;
  *
  * <p><b>A null removes the setting.</b> Verified: {@code {"index":{"refresh_interval":null}}} leaves the
  * index with no {@code refresh_interval} at all, so it reverts to its default rather than being stored
- * as null. Null keys are excluded from validation for the same reason — removing a setting is not
- * setting it.
+ * as null. A null is validated like any other value, since removing a static or final setting changes
+ * it just as much; a key ending in {@code *} is the exception, and removes only what it matches that
+ * could have been removed by name. {@code index.number_of_replicas} is never left absent: removing it
+ * writes the default back, as upstream does.
  *
  * <p><b>{@code preserve_existing=true} skips keys the index already has</b>, rather than failing on
  * them. Verified in both directions: a key already present keeps its old value, and an absent one is
- * set.
+ * set. It undoes removals too — upstream re-applies the index's own settings over the update.
  *
  * <h2>Atomicity and concurrency</h2>
  *
@@ -117,9 +119,8 @@ public final class PutIndexSettingsHandler implements OperationHandler {
         Set<String> removals = requested.nullKeys();
         Settings assignments = requested.withoutNulls();
 
-        // Removing a setting is not setting it, so nulls are not checked against the registry.
-        SettingsValidation.Problems problems =
-            SettingsValidation.check(assignments, registry, SettingsRegistry.Scope.INDEX, true);
+        SettingsValidation.Problems problems = SettingsValidation.check(
+            SettingsValidation.withoutWildcardRemovals(requested), registry, SettingsRegistry.Scope.INDEX, true);
         if (problems.unknown().isEmpty() == false) {
             String key = problems.unknown().getFirst();
             return ErrorResponses.unknownSetting(request, key,
@@ -151,7 +152,7 @@ public final class PutIndexSettingsHandler implements OperationHandler {
                 // ErrorResponses.nonDynamicSettings for why that matters to the message.
                 openIndices.add("[" + index + "/" + metadata.path("uuid").asText("_na_") + "]");
             }
-            pending.add(new Pending(index, metadata, stored.get().revision()));
+            pending.add(new Pending(index, metadata, stored.get().revision(), IndexStore.isOpen(metadata)));
         }
 
         // Which rejection applies depends on the indices' state, and the split is not cosmetic.
@@ -173,8 +174,14 @@ public final class PutIndexSettingsHandler implements OperationHandler {
         IndexManagementTasks tasks = new IndexManagementTasks(context.store());
         for (Pending each : pending) {
             Settings current = Settings.forIndex(each.metadata().path("settings"));
-            Settings updates = preserveExisting ? withoutKeysAlreadySet(assignments, current) : assignments;
-            Settings merged = current.mergedWith(updates).without(removals);
+            // Removals first, as upstream applies them: a glob must not take a key this request assigns.
+            Settings merged = preserveExisting
+                ? current.mergedWith(withoutKeysAlreadySet(assignments, current))
+                : current.withoutMatching(
+                    removals, SettingsValidation.removable(registry, SettingsRegistry.Scope.INDEX, each.open()))
+                    .mergedWith(assignments);
+            merged = merged.withDefault(
+                CreateIndexHandler.SETTING_REPLICAS, CreateIndexHandler.DEFAULT_NUMBER_OF_REPLICAS);
 
             each.metadata().set("settings", merged.toJson(true));
             if (indices.replace(each.index(), each.metadata(), each.revision()) == false) {
@@ -198,7 +205,7 @@ public final class PutIndexSettingsHandler implements OperationHandler {
     }
 
     /** An index whose merged metadata is ready to write, and the revision it must still be at. */
-    private record Pending(String index, ObjectNode metadata, long revision) {}
+    private record Pending(String index, ObjectNode metadata, long revision, boolean open) {}
 
     private static JsonNode parse(KeyValueStore.Versioned versioned) {
         try {

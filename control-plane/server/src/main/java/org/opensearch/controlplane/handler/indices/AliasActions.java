@@ -53,6 +53,10 @@ import java.util.TreeMap;
  * nothing. Each alias is then written as one document, which makes the canonical swap — remove from one
  * index, add to another, same alias — genuinely atomic, since it touches a single key.
  *
+ * <p>Each alias is written by compare-and-set on the revision it was read at, and losing that race is a
+ * 409 rather than a silently lost update. With several aliases in one request, the ones before the
+ * conflict have already been written.
+ *
  * <p>A request spanning <em>several</em> aliases is still several writes and so not atomic as a whole.
  * That is deliberate rather than overlooked: the shard manager assembles what it pushes to coordinator
  * nodes atomically, and aliases matter for dispatch, so a brief disagreement between our own keys is not
@@ -93,7 +97,7 @@ final class AliasActions {
         IndexNameExpressionResolver resolver = new IndexNameExpressionResolver(abstractions);
 
         // Staged, not applied: nothing is written until every action has been checked.
-        Map<String, ObjectNode> staged = new TreeMap<>();
+        Map<String, AliasStore.Versioned> staged = new TreeMap<>();
         Set<String> indicesToRemove = new LinkedHashSet<>();
 
         for (ObjectNode raw : rawActions) {
@@ -130,14 +134,13 @@ final class AliasActions {
 
             for (String alias : action.aliases()) {
                 if (action.kind() == Action.Kind.ADD) {
-                    Optional<RestResponse> rejected = rejectIfIndexNameCollision(request, alias, abstractions);
+                    Optional<RestResponse> rejected = rejectIfIndexNameCollision(request, indices, alias);
                     if (rejected.isPresent()) {
                         return rejected;
                     }
                 }
-                ObjectNode definition = staged.computeIfAbsent(alias,
-                    name -> aliases.get(name).orElseGet(AliasStore::emptyDefinition));
-                ObjectNode members = (ObjectNode) definition.get(AliasStore.INDICES);
+                ObjectNode members = (ObjectNode) staged.computeIfAbsent(alias, aliases::getVersioned)
+                    .definition().get(AliasStore.INDICES);
 
                 if (action.kind() == Action.Kind.ADD) {
                     resolved.forEach(index -> members.set(index, action.properties().deepCopy()));
@@ -151,14 +154,21 @@ final class AliasActions {
         }
 
         // Write-index uniqueness is a property of the final state, so it is checked after staging.
-        for (Map.Entry<String, ObjectNode> entry : staged.entrySet()) {
-            Optional<RestResponse> rejected = rejectIfMultipleWriteIndices(request, entry.getKey(), entry.getValue());
+        for (Map.Entry<String, AliasStore.Versioned> entry : staged.entrySet()) {
+            Optional<RestResponse> rejected =
+                rejectIfMultipleWriteIndices(request, entry.getKey(), entry.getValue().definition());
             if (rejected.isPresent()) {
                 return rejected;
             }
         }
 
-        staged.forEach(aliases::put);
+        for (Map.Entry<String, AliasStore.Versioned> entry : staged.entrySet()) {
+            // Not retried: the actions were validated against what was read, and an alias another
+            // request has changed since may no longer satisfy them.
+            if (aliases.replace(entry.getKey(), entry.getValue().definition(), entry.getValue().revision()) == false) {
+                return Optional.of(ErrorResponses.concurrentAliasUpdate(request, entry.getKey()));
+            }
+        }
         indicesToRemove.forEach(index -> {
             indices.delete(index);
             removeIndexFromAllAliases(index);
@@ -166,13 +176,22 @@ final class AliasActions {
         return Optional.empty();
     }
 
-    /** Drops an index from every alias naming it. Used by {@code remove_index} and index deletion. */
+    /**
+     * Drops an index from every alias naming it. Used by {@code remove_index} and index deletion.
+     *
+     * <p>Retried on a lost race rather than reported: dropping one member is still right against
+     * whatever the alias holds by then, and the index is already gone.
+     */
     void removeIndexFromAllAliases(String index) {
-        aliases.forIndex(index).keySet().forEach(alias ->
-            aliases.get(alias).ifPresent(definition -> {
-                ((ObjectNode) definition.get(AliasStore.INDICES)).remove(index);
-                aliases.put(alias, definition);
-            }));
+        for (String alias : aliases.forIndex(index).keySet()) {
+            AliasStore.Versioned current;
+            do {
+                current = aliases.getVersioned(alias);
+                if (((ObjectNode) current.definition().get(AliasStore.INDICES)).remove(index) == null) {
+                    break;
+                }
+            } while (aliases.replace(alias, current.definition(), current.revision()) == false);
+        }
     }
 
     private Optional<RestResponse> removeMembers(
@@ -194,17 +213,15 @@ final class AliasActions {
         return Optional.empty();
     }
 
-    private Optional<RestResponse> rejectIfIndexNameCollision(
-        RestRequest request,
-        String alias,
-        IndexAbstractions abstractions
-    ) {
+    /** An alias may not share a name with an index. Also checked by {@code indices.create}. */
+    static Optional<RestResponse> rejectIfIndexNameCollision(RestRequest request, IndexStore indices, String alias) {
         return indices.get(alias)
             .map(metadata -> ErrorResponses.invalidAliasName(
                 request, alias, alias, metadata.path("uuid").asText("_na_")));
     }
 
-    private Optional<RestResponse> rejectIfMultipleWriteIndices(RestRequest request, String alias, ObjectNode definition) {
+    /** At most one member may be the explicit write index. Also checked by {@code indices.create}. */
+    static Optional<RestResponse> rejectIfMultipleWriteIndices(RestRequest request, String alias, ObjectNode definition) {
         List<String> writeIndices = new ArrayList<>();
         definition.path(AliasStore.INDICES).properties().forEach(member -> {
             if (member.getValue().path("is_write_index").asBoolean(false)) {

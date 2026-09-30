@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.TextNode;
 import org.opensearch.controlplane.rest.Json;
+import org.opensearch.controlplane.rest.NameExpression;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -21,6 +22,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 /**
@@ -292,6 +294,24 @@ public final class Settings {
         }
         NavigableMap<String, JsonNode> kept = new TreeMap<>(values);
         keys.forEach(kept::remove);
+        return kept.isEmpty() ? EMPTY : new Settings(kept);
+    }
+
+    /**
+     * This document with a settings update's removals applied, where a removal may be a {@code *} glob:
+     * {@code "index.routing.*": null} removes every key it matches.
+     *
+     * <p>Only keys {@code removable} accepts go. A glob is resolved against what is stored rather than
+     * validated up front, so it can match settings the caller may not remove — upstream skips those
+     * rather than failing, and so does this.
+     */
+    public Settings withoutMatching(Set<String> removals, Predicate<String> removable) {
+        if (removals.isEmpty()) {
+            return this;
+        }
+        List<Pattern> patterns = removals.stream().map(NameExpression::toPattern).toList();
+        NavigableMap<String, JsonNode> kept = new TreeMap<>(values);
+        kept.keySet().removeIf(key -> NameExpression.matchesAny(patterns, key) && removable.test(key));
         return kept.isEmpty() ? EMPTY : new Settings(kept);
     }
 

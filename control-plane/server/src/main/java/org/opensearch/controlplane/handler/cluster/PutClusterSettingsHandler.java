@@ -18,9 +18,10 @@ import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.rest.RestStatus;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.SortedMap;
+import java.util.TreeMap;
 
 /**
  * {@code PUT /_cluster/settings} — sets cluster settings in either scope.
@@ -47,14 +48,19 @@ import java.util.Set;
  *       {@code persistent setting [cluster.totally_bogus], not recognized}</li>
  *   <li>static — {@code settings_exception},
  *       {@code persistent setting [cluster.name], not dynamically updateable}</li>
+ *   <li>final — {@code settings_exception}, {@code final persistent setting [x], not updateable}</li>
  *   <li>nothing to set — {@code action_request_validation_exception},
  *       {@code Validation Failed: 1: no settings to update;}. Reached by an empty body object and,
  *       notably, by a body whose only keys are neither scope: {@code {"bogus":{...}}} is that error
  *       rather than an unknown-scope one.</li>
  * </ul>
  *
- * <p>A null removes a setting rather than storing one, as on the index path, and is therefore not
- * validated — removing a setting is not setting it.
+ * <p>Upstream checks transient before persistent, and within a scope reports the first failing key in
+ * sorted order, whichever of the three it is.
+ *
+ * <p>A null removes a setting rather than storing one, as on the index path, and is validated as on the
+ * index path: removing a static setting changes it as much as setting it does. A key ending in
+ * {@code *} removes whatever dynamic settings it matches.
  */
 public final class PutClusterSettingsHandler implements OperationHandler {
 
@@ -84,16 +90,16 @@ public final class PutClusterSettingsHandler implements OperationHandler {
             return ErrorResponses.parseFailure(request, "settings must be a JSON object");
         }
 
-        Scope[] scopes = {
-            new Scope(ClusterSettingsStore.PERSISTENT, Settings.of(body.path(ClusterSettingsStore.PERSISTENT))),
-            new Scope(ClusterSettingsStore.TRANSIENT, Settings.of(body.path(ClusterSettingsStore.TRANSIENT)))
-        };
-        if (scopes[0].requested().isEmpty() && scopes[1].requested().isEmpty()) {
+        Scope persistentScope =
+            new Scope(ClusterSettingsStore.PERSISTENT, Settings.of(body.path(ClusterSettingsStore.PERSISTENT)));
+        Scope transientScope =
+            new Scope(ClusterSettingsStore.TRANSIENT, Settings.of(body.path(ClusterSettingsStore.TRANSIENT)));
+        if (persistentScope.requested().isEmpty() && transientScope.requested().isEmpty()) {
             // Covers an empty body and one naming neither scope; a real cluster does not distinguish.
             return ErrorResponses.noSettingsToUpdate(request);
         }
 
-        for (Scope scope : scopes) {
+        for (Scope scope : List.of(transientScope, persistentScope)) {
             RestResponse rejection = validate(request, scope);
             if (rejection != null) {
                 return rejection;
@@ -103,8 +109,8 @@ public final class PutClusterSettingsHandler implements OperationHandler {
         ClusterSettingsStore settings = new ClusterSettingsStore(context.store());
         ClusterSettingsStore.Current current = settings.read();
 
-        Settings persistent = apply(current.persistent(), scopes[0]);
-        Settings transientSettings = apply(current.transientSettings(), scopes[1]);
+        Settings persistent = apply(current.persistent(), persistentScope);
+        Settings transientSettings = apply(current.transientSettings(), transientScope);
         if (settings.write(persistent, transientSettings, current.revision()) == false) {
             return ErrorResponses.concurrentUpdate(request, "_cluster/settings");
         }
@@ -113,33 +119,44 @@ public final class PutClusterSettingsHandler implements OperationHandler {
         ObjectNode responseBody = Json.object();
         responseBody.put("acknowledged", true);
         // Only what this request assigned, which is what a real cluster echoes.
-        responseBody.set(ClusterSettingsStore.PERSISTENT, scopes[0].assignments().toJson(flatSettings));
-        responseBody.set(ClusterSettingsStore.TRANSIENT, scopes[1].assignments().toJson(flatSettings));
+        responseBody.set(ClusterSettingsStore.PERSISTENT, persistentScope.assignments().toJson(flatSettings));
+        responseBody.set(ClusterSettingsStore.TRANSIENT, transientScope.assignments().toJson(flatSettings));
         return Json.response(RestStatus.OK, responseBody, request);
     }
 
     private RestResponse validate(RestRequest request, Scope scope) {
         SettingsValidation.Problems problems = SettingsValidation.check(
-            scope.assignments(), registry, SettingsRegistry.Scope.CLUSTER, true);
+            SettingsValidation.withoutWildcardRemovals(scope.requested()),
+            registry,
+            SettingsRegistry.Scope.CLUSTER,
+            true
+        );
 
         // notUserSettable is folded in with unknown here, and only here: PrivateIndex and InternalIndex
         // are index-scoped properties, so a cluster setting never carries them. Handled rather than
         // ignored so a future registry that did mark one cannot slip a rejection.
-        List<String> unrecognized = new ArrayList<>(problems.unknown());
-        unrecognized.addAll(problems.notUserSettable());
-        if (unrecognized.isEmpty() == false) {
-            return ErrorResponses.clusterSettingRejected(
-                request, scope.name(), unrecognized.getFirst(), "not recognized");
+        record Rejection(String scope, String why) {}
+        SortedMap<String, Rejection> rejected = new TreeMap<>();
+        problems.unknown().forEach(key -> rejected.put(key, new Rejection(scope.name(), "not recognized")));
+        problems.notUserSettable().forEach(key -> rejected.put(key, new Rejection(scope.name(), "not recognized")));
+        problems.notDynamic().forEach(
+            key -> rejected.put(key, new Rejection(scope.name(), "not dynamically updateable")));
+        problems.notEverUpdateable().forEach(
+            key -> rejected.put(key, new Rejection("final " + scope.name(), "not updateable")));
+        if (rejected.isEmpty()) {
+            return null;
         }
-        if (problems.notDynamic().isEmpty() == false) {
-            return ErrorResponses.clusterSettingRejected(
-                request, scope.name(), problems.notDynamic().getFirst(), "not dynamically updateable");
-        }
-        return null;
+        String key = rejected.firstKey();
+        Rejection rejection = rejected.get(key);
+        return ErrorResponses.clusterSettingRejected(request, rejection.scope(), key, rejection.why());
     }
 
-    private static Settings apply(Settings current, Scope scope) {
-        return current.mergedWith(scope.assignments()).without(scope.removals());
+    private Settings apply(Settings current, Scope scope) {
+        // Removals first, as upstream applies them: a glob must not take a key this request assigns.
+        return current
+            .withoutMatching(
+                scope.removals(), SettingsValidation.removable(registry, SettingsRegistry.Scope.CLUSTER, true))
+            .mergedWith(scope.assignments());
     }
 
     /** One scope of the request: what it assigns, and what it removes. */

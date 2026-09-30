@@ -13,6 +13,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Checks a settings document against the registry: does every key exist, and may every key be written.
@@ -76,6 +77,41 @@ public final class SettingsValidation {
     }
 
     private SettingsValidation() {}
+
+    /**
+     * An update's settings minus its wildcard removals, which is what {@link #check} should see.
+     *
+     * <p>A null is otherwise checked exactly like an assignment. Removing a final or static setting
+     * changes it as surely as setting it does — {@code {"index.number_of_shards": null}} would leave an
+     * index with no shard count — and upstream validates null keys on both update paths. The exception
+     * is a key ending in {@code *}, which names no one setting: upstream skips validating it and resolves
+     * it against the stored settings instead, through {@link #removable}.
+     */
+    public static Settings withoutWildcardRemovals(Settings update) {
+        Set<String> wildcards = new java.util.TreeSet<>(update.nullKeys());
+        wildcards.removeIf(key -> key.endsWith("*") == false);
+        return update.without(wildcards);
+    }
+
+    /**
+     * Which stored keys an update's removals may take, for {@link Settings#withoutMatching}.
+     *
+     * <p>Upstream's {@code AbstractScopedSettings.isValidDelete}: never a final setting; on an open index
+     * and for cluster settings, only a dynamic one. Concrete removals have already been checked, so this
+     * only bites on what a glob matched. Without a registry nothing is known, so anything matched goes.
+     */
+    public static Predicate<String> removable(SettingsRegistry registry, Scope scope, boolean onlyDynamic) {
+        if (registry.isEnforcing() == false) {
+            return key -> true;
+        }
+        return key -> {
+            if (registry.isKnown(scope, key) == false) {
+                return false;
+            }
+            Updateability updateability = registry.updateabilityOf(scope, key);
+            return onlyDynamic ? updateability == Updateability.DYNAMIC : updateability != Updateability.FINAL;
+        };
+    }
 
     /**
      * @param requireUpdateable reject settings that exist but may not be changed after creation. False

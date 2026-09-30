@@ -299,14 +299,109 @@ class PutIndexSettingsHandlerTests {
         assertTrue(reasonOf(response).contains("non dynamic"), reasonOf(response));
     }
 
-    /** Removing a setting is not setting it, so a null is never checked against the registry. */
+    /** A null is validated like a value: removing an unknown setting is as unknown as setting it. */
     @Test
-    void aNullIsNotValidated(@TempDir Path dir) throws Exception {
+    void aNullOnAnUnknownSettingIsRejected(@TempDir Path dir) throws Exception {
         Router router = enforcing(dir);
         create(router, "my-index", null);
 
+        RestResponse response = put(router, "/my-index/_settings", "{\"index\":{\"totally_bogus\":null}}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        assertTrue(reasonOf(response).startsWith("unknown setting [index.totally_bogus]"), reasonOf(response));
+    }
+
+    /** Removing the shard count would leave the index with none, so it is refused like changing it. */
+    @Test
+    void aNullOnAFinalSettingIsRejectedOnAnOpenIndex(@TempDir Path dir) throws Exception {
+        Router router = enforcing(dir);
+        create(router, "my-index", "{\"settings\":{\"number_of_shards\":3}}");
+
+        RestResponse response = put(router, "/my-index/_settings", "{\"index\":{\"number_of_shards\":null}}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        assertTrue(reasonOf(response).startsWith("Can't update non dynamic settings [[index.number_of_shards]]"),
+            reasonOf(response));
+        assertEquals("3", settings("my-index").get("index.number_of_shards").textValue());
+    }
+
+    @Test
+    void aNullOnAFinalSettingIsRejectedOnAClosedIndex(@TempDir Path dir) throws Exception {
+        Router router = enforcing(dir);
+        create(router, "my-index", "{\"settings\":{\"number_of_shards\":3}}");
+        router.dispatch("POST", "/my-index/_close");
+
+        RestResponse response = put(router, "/my-index/_settings", "{\"index\":{\"number_of_shards\":null}}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        assertEquals("final my-index setting [index.number_of_shards], not updateable", reasonOf(response));
+        assertEquals("3", settings("my-index").get("index.number_of_shards").textValue());
+    }
+
+    @Test
+    void aNullOnAStaticSettingIsAcceptedOnAClosedIndex(@TempDir Path dir) throws Exception {
+        Router router = enforcing(dir);
+        create(router, "my-index", "{\"settings\":{\"codec\":\"best_compression\"}}");
+        router.dispatch("POST", "/my-index/_close");
+
         assertEquals(RestStatus.OK,
-            put(router, "/my-index/_settings", "{\"index\":{\"totally_bogus\":null}}").status());
+            put(router, "/my-index/_settings", "{\"index\":{\"codec\":null}}").status());
+        assertFalse(settings("my-index").has("index.codec"));
+    }
+
+    /** Upstream never leaves an index without a replica count: removing it writes the default back. */
+    @Test
+    void aNullReplicaCountRevertsToTheDefault() throws Exception {
+        create(permissive, "my-index", "{\"settings\":{\"number_of_replicas\":3}}");
+
+        assertEquals(RestStatus.OK,
+            put(permissive, "/my-index/_settings", "{\"index\":{\"number_of_replicas\":null}}").status());
+        assertEquals("1", settings("my-index").get("index.number_of_replicas").textValue());
+    }
+
+    /**
+     * A wildcard names no one setting, so it is not validated; it removes what it matches that could
+     * have been removed by name. On an open index that is the dynamic settings only.
+     */
+    @Test
+    void aWildcardRemovesOnlyDynamicSettingsFromAnOpenIndex(@TempDir Path dir) throws Exception {
+        Router router = enforcing(dir);
+        create(router, "my-index",
+            "{\"settings\":{\"refresh_interval\":\"5s\",\"codec\":\"best_compression\"}}");
+
+        assertEquals(RestStatus.OK, put(router, "/my-index/_settings", "{\"index.*\":null}").status());
+        JsonNode settings = settings("my-index");
+        assertFalse(settings.has("index.refresh_interval"), "dynamic, so removed");
+        assertEquals("best_compression", settings.get("index.codec").textValue(), "static, so kept");
+        assertTrue(settings.has("index.number_of_shards"), "final, so kept");
+        assertEquals("1", settings.get("index.number_of_replicas").textValue(), "removed, then defaulted");
+    }
+
+    @Test
+    void aWildcardRemovesStaticSettingsFromAClosedIndex(@TempDir Path dir) throws Exception {
+        Router router = enforcing(dir);
+        create(router, "my-index", "{\"settings\":{\"codec\":\"best_compression\"}}");
+        router.dispatch("POST", "/my-index/_close");
+
+        assertEquals(RestStatus.OK, put(router, "/my-index/_settings", "{\"index.*\":null}").status());
+        assertFalse(settings("my-index").has("index.codec"), "static, so removed once closed");
+        assertTrue(settings("my-index").has("index.number_of_shards"), "final, so kept even then");
+    }
+
+    /** Upstream applies removals before assignments, so a glob does not take a key the request sets. */
+    @Test
+    void aWildcardDoesNotRemoveWhatTheSameRequestAssigns() throws Exception {
+        create(permissive, "my-index", "{\"settings\":{\"refresh_interval\":\"5s\"}}");
+
+        put(permissive, "/my-index/_settings", "{\"index.refresh_interval\":\"10s\",\"index.refresh*\":null}");
+        assertEquals("10s", settings("my-index").get("index.refresh_interval").textValue());
+    }
+
+    /** Upstream re-applies the index's own settings after the update, which undoes a removal too. */
+    @Test
+    void preserveExistingKeepsASettingANullWouldRemove() throws Exception {
+        create(permissive, "my-index", "{\"settings\":{\"refresh_interval\":\"5s\"}}");
+
+        assertEquals(RestStatus.OK, put(permissive, "/my-index/_settings",
+            Map.of("preserve_existing", List.of("true")), "{\"index\":{\"refresh_interval\":null}}").status());
+        assertEquals("5s", settings("my-index").get("index.refresh_interval").textValue());
     }
 
     /** All or nothing: a rejection must leave every index untouched. */

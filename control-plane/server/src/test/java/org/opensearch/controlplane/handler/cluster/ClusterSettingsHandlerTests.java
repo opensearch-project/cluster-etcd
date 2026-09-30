@@ -48,6 +48,7 @@ class ClusterSettingsHandlerTests {
           - {key: "cluster.max_shards_per_node",       kind: exact, properties: [Dynamic, NodeScope]}
           - {key: "cluster.blocks.read_only",          kind: exact, properties: [Dynamic, NodeScope]}
           - {key: "cluster.name",                      kind: exact, properties: [NodeScope]}
+          - {key: "cluster.remote_store.state.enabled", kind: exact, properties: [NodeScope, Final]}
           - {key: "cluster.remote.*.seeds",            kind: affix, properties: [Dynamic, NodeScope]}
         """;
 
@@ -236,15 +237,50 @@ class ClusterSettingsHandlerTests {
             put(router, "{\"persistent\":{\"cluster.remote.other.seeds\":\"127.0.0.1:9300\"}}").status());
     }
 
-    /** Removing a setting is not setting it, so a null is never checked against the registry. */
+    /** A null is validated like a value, and reported in the same words. */
     @Test
-    void aNullIsNotValidated(@TempDir Path dir) throws Exception {
+    void aNullIsValidated(@TempDir Path dir) throws Exception {
         Router router = enforcing(dir);
 
-        assertEquals(RestStatus.OK, put(router, "{\"persistent\":{\"cluster.totally_bogus\":null}}").status());
+        assertEquals("persistent setting [cluster.totally_bogus], not recognized",
+            reasonOf(put(router, "{\"persistent\":{\"cluster.totally_bogus\":null}}")));
+        assertEquals("persistent setting [cluster.name], not dynamically updateable",
+            reasonOf(put(router, "{\"persistent\":{\"cluster.name\":null}}")));
     }
 
-    /** A rejection in either scope leaves both untouched. */
+    @Test
+    void rejectsAFinalSetting(@TempDir Path dir) throws Exception {
+        RestResponse response = put(enforcing(dir), "{\"persistent\":{\"cluster.remote_store.state.enabled\":true}}");
+        assertEquals(RestStatus.BAD_REQUEST, response.status());
+        assertEquals("final persistent setting [cluster.remote_store.state.enabled], not updateable",
+            reasonOf(response));
+    }
+
+    /** Upstream applies transient first, then the first failing key in sorted order, whatever its kind. */
+    @Test
+    void reportsTransientFirstThenTheFirstKeyInOrder(@TempDir Path dir) throws Exception {
+        Router router = enforcing(dir);
+
+        assertEquals("transient setting [cluster.name], not dynamically updateable", reasonOf(put(router,
+            "{\"persistent\":{\"cluster.bogus\":1},\"transient\":{\"cluster.name\":\"x\"}}")));
+        assertEquals("persistent setting [cluster.name], not dynamically updateable", reasonOf(put(router,
+            "{\"persistent\":{\"cluster.name\":\"x\",\"cluster.zzz\":1}}")));
+    }
+
+    /** A wildcard removal is not validated, and takes only the dynamic settings it matches. */
+    @Test
+    void aWildcardRemovesOnlyDynamicSettings(@TempDir Path dir) throws Exception {
+        store.put("tenant/default/cluster/settings",
+            "{\"persistent\":{\"cluster.max_shards_per_node\":\"5\",\"cluster.name\":\"x\"},\"transient\":{}}"
+                .getBytes(StandardCharsets.UTF_8));
+        Router router = enforcing(dir);
+
+        assertEquals(RestStatus.OK, put(router, "{\"persistent\":{\"cluster.*\":null}}").status());
+        JsonNode persistent = get(router, Map.of("flat_settings", List.of("true"))).get("persistent");
+        assertFalse(persistent.has("cluster.max_shards_per_node"));
+        assertEquals("x", persistent.get("cluster.name").textValue());
+    }
+
     @Test
     void aRejectionWritesNothing(@TempDir Path dir) throws Exception {
         Router router = enforcing(dir);
