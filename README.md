@@ -24,7 +24,7 @@ builds and tests every component. The root is a composite of the four builds, an
 from its directory with `../gradlew`. A single module is addressed by directory name:
 `./gradlew :supervisor:supervisor-core:test`.
 
-It needs Java 21, and the data plane needs OpenSearch 3.9 in mavenLocal:
+It needs Java 21, and the data plane needs OpenSearch main (3.10.0-SNAPSHOT) in mavenLocal:
 `cd /path/to/OpenSearch && ./gradlew publishToMavenLocal`.
 
 ## License

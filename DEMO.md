@@ -23,7 +23,7 @@ Every command runs from the repository root, one terminal per service. The store
 
 ## Before you start
 
-- **Java 21**, and an OpenSearch 3.9 build in mavenLocal: `cd /path/to/OpenSearch && ./gradlew publishToMavenLocal`.
+- **Java 21**, and an OpenSearch main (3.10.0-SNAPSHOT) build in mavenLocal: `cd /path/to/OpenSearch && ./gradlew publishToMavenLocal`.
 - Ports 9200–9204 and 9300–9304 (data nodes) and 9250 (control plane) free.
 - A fresh store, if an earlier run left one:
 

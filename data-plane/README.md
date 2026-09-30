@@ -183,9 +183,10 @@ Note that `PluginBuildPlugin` registers `run` but attaches no cluster to it — 
 automatically — so `plugin/build.gradle` creates and uses one. It also has to set `clusterless.store`, since
 there is no default and a node without one refuses to start.
 
-The plugin targets **OpenSearch 3.9**, the first version carrying the clusterless server path it steers —
-`LocalClusterService`, `LocalDiscovery`, `LocalShardStateAction`. Build an OpenSearch checkout once
-(`cd /path/to/OpenSearch && ./gradlew publishToMavenLocal`) before building here.
+The plugin builds against **OpenSearch main (3.10.0-SNAPSHOT)**. 3.9 was the first release carrying the clusterless
+server path it steers (`LocalClusterService`, `LocalDiscovery`, `LocalShardStateAction`), but fixes to that path
+are on main only. Build an OpenSearch checkout of main once (`cd /path/to/OpenSearch && ./gradlew
+publishToMavenLocal`) before building here. `-Dopensearch.version=` builds against another version.
 
 ### Configuration
 
