@@ -8,6 +8,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.core.index.Index;
 
@@ -35,9 +36,10 @@ import java.util.TreeMap;
  * built to prevent: it points at a lost or rolled-back counter, which is a condition somebody has to know about
  * before it issues a term twice. A node that clamped and carried on would leave the only evidence in a log line.
  *
- * <p>What it costs to decline: that copy is not rebuilt this pass, and the reason reaches the supervisor through
- * {@code applied}. The copy already running is untouched — declining reduces what is *fabricated*, and a started
- * shard whose index stays in the state keeps serving.
+ * <p>What it costs to decline: the assignment for that copy is not applied, and the reason reaches the supervisor
+ * through {@code applied}. The copy already running is untouched. It stays in the fabrication exactly as it is
+ * running, role and term, because a started copy that is left out of the fabrication has no routing entry, and the
+ * server closes it.
  */
 public final class PrimaryTerms {
 
@@ -65,26 +67,32 @@ public final class PrimaryTerms {
                 continue;
             }
 
-            Map<Integer, ShardRole> buildable = new TreeMap<>(index.shards());
+            Map<Integer, ShardRole> roles = new TreeMap<>(index.shards());
+            Map<Integer, Long> terms = new TreeMap<>(index.primaryTerms());
             index.shards().forEach((shard, role) -> {
                 long assigned = index.primaryTermOf(shard);
                 long running = applied.primaryTerm(shard);
                 if (assigned >= running) {
                     return;
                 }
-                if (started(live, built, shard) == false) {
+                ShardRouting here = startedHere(live, built, shard);
+                if (here == null) {
                     // Not serving, so there is nothing in flight at the higher term and the lower one is merely a
                     // stale read of a document the supervisor is about to rewrite. Level-triggering covers it.
                     return;
                 }
-                buildable.remove(shard);
+                // Kept exactly as it is running -- role and term -- rather than left out. Left out, it has no routing
+                // entry, and the server closes it. Kept in its assigned role at the running term, a replica told to
+                // become primary would be promoted with no higher term, which updateShardState refuses.
+                roles.put(shard, roleOf(here));
+                terms.put(shard, running);
                 declined.add(
                     index.key() + "/" + shard + ": the assigned primary term is " + assigned + " and this node is "
                         + "already running that shard at " + running + "; a term must not go backwards, so the copy "
-                        + "was not rebuilt"
+                        + "keeps running as it was and the assignment for it was not applied"
                 );
                 logger.warn(
-                    "clusterless: assigned primary term {} for {}/{} is below the running term {}; not rebuilding it",
+                    "clusterless: assigned primary term {} for {}/{} is below the running term {}; keeping it as it runs",
                     assigned,
                     index.key(),
                     shard,
@@ -92,9 +100,7 @@ public final class PrimaryTerms {
                 );
             });
 
-            if (buildable.isEmpty() == false) {
-                kept.put(index.key(), index.withShards(buildable));
-            }
+            kept.put(index.key(), new DesiredState.DesiredIndex(index.key(), index.config(), roles, terms));
         }
 
         if (declined.isEmpty()) {
@@ -105,16 +111,25 @@ public final class PrimaryTerms {
         return new DesiredState(desired.assignmentVersion(), kept, desired.coordinatorTenants(), deferred);
     }
 
-    private static boolean started(ClusterState live, Index index, int shard) {
+    /** This node's copy of the shard if it is started, else null. Another node's copy is not this node's to keep. */
+    private static ShardRouting startedHere(ClusterState live, Index index, int shard) {
         var routing = live.routingTable().index(index);
         if (routing == null || routing.shard(shard) == null) {
-            return false;
+            return null;
         }
-        for (var copy : routing.shard(shard)) {
-            if (copy.started()) {
-                return true;
+        String localNodeId = live.nodes().getLocalNodeId();
+        for (ShardRouting copy : routing.shard(shard)) {
+            if (copy.started() && copy.currentNodeId() != null && copy.currentNodeId().equals(localNodeId)) {
+                return copy;
             }
         }
-        return false;
+        return null;
+    }
+
+    private static ShardRole roleOf(ShardRouting copy) {
+        if (copy.primary()) {
+            return ShardRole.PRIMARY;
+        }
+        return copy.isSearchOnly() ? ShardRole.SEARCH_REPLICA : ShardRole.REPLICA;
     }
 }

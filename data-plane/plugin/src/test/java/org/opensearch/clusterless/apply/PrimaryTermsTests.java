@@ -124,9 +124,44 @@ public class PrimaryTermsTests extends OpenSearchTestCase {
 
         DesiredState reduced = PrimaryTerms.reduce(desired(Map.of(0, ShardRole.PRIMARY), Map.of(0, 5L)), running);
 
-        assertEquals(0, reduced.copyCount());
         assertEquals(1, reduced.deferred().size());
         assertTrue(reduced.deferred().get(0), reduced.deferred().get(0).contains("must not go backwards"));
+    }
+
+    public void testADeclinedCopyKeepsServingAsItWas() {
+        // What the class says declining costs, and did not: the shard left the desired state, so the fabrication gave
+        // it no routing entry and the server closed the copy. The pass after, nothing was started, so nothing was
+        // declined, and the copy was built again from scratch.
+        ClusterState running = withShardStarted(build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY), Map.of(0, 7L))));
+        ShardRouting before = onlyCopy(running, 0);
+        DesiredState lower = desired(Map.of(0, ShardRole.PRIMARY), Map.of(0, 5L));
+
+        DesiredState reduced = PrimaryTerms.reduce(lower, running);
+        ClusterState next = build(running, reduced);
+
+        assertEquals(1, reduced.deferred().size());
+        assertEquals("the copy must still be routed here, as it was", before, onlyCopy(next, 0));
+        assertEquals(7L, onlyIndex(next).primaryTerm(0));
+        assertTrue("and nothing changes", StateEquivalence.sameContent(running, next));
+
+        DesiredState again = PrimaryTerms.reduce(lower, next);
+        assertEquals("still declined, with its reason, for as long as the term is lower", 1, again.deferred().size());
+        assertTrue(StateEquivalence.sameContent(next, build(next, again)));
+    }
+
+    public void testADeclinedPromotionLeavesTheReplicaAReplica() {
+        // Kept as it is running, role included. Kept as the primary it was assigned, at the running term, it would be
+        // promoted in place without a higher term -- which updateShardState refuses.
+        ClusterState asReplica = withShardStarted(build(ClusterState.EMPTY_STATE, docrep(Map.of(0, ShardRole.REPLICA), Map.of(0, 7L))));
+        ShardRouting before = onlyCopy(asReplica, 0);
+
+        DesiredState reduced = PrimaryTerms.reduce(docrep(Map.of(0, ShardRole.PRIMARY), Map.of(0, 5L)), asReplica);
+        ClusterState next = build(asReplica, reduced);
+
+        assertEquals(1, reduced.deferred().size());
+        assertEquals(before, onlyCopy(next, 0));
+        assertFalse(onlyCopy(next, 0).primary());
+        assertEquals(7L, onlyIndex(next).primaryTerm(0));
     }
 
     public void testTheSameOrAHigherTermIsNotDeclined() {
