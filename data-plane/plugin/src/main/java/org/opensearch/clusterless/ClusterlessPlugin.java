@@ -39,6 +39,7 @@ import org.opensearch.clusterless.rest.ClusterManagerActionFilter;
 import org.opensearch.clusterless.rest.RestClusterlessStatusAction;
 import org.opensearch.clusterless.store.StoreConnection;
 import org.opensearch.clusterless.tenant.TenantIndexNameResolver;
+import org.opensearch.clusterless.tenant.TenantResolver;
 import org.opensearch.common.inject.Inject;
 import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
 import org.opensearch.common.lifecycle.LifecycleComponent;
@@ -60,6 +61,7 @@ import org.opensearch.plugins.Plugin;
 import org.opensearch.repositories.RepositoriesService;
 import org.opensearch.rest.RestController;
 import org.opensearch.rest.RestHandler;
+import org.opensearch.rest.RestHeaderDefinition;
 import org.opensearch.script.ScriptService;
 import org.opensearch.threadpool.ExecutorBuilder;
 import org.opensearch.threadpool.ThreadPool;
@@ -96,6 +98,8 @@ import java.util.function.Supplier;
  *   <li>{@link #getExecutorBuilders} — a dedicated pool for publishing, so a slow store cannot consume
  *       threads that queries need.
  *   <li>{@link #getGuiceServiceClasses} — the ugly, load-bearing one. See {@link GuiceHolder}.
+ *   <li>{@link #getRestHeaders} — the tenant header, which the server otherwise never copies into the thread
+ *       context.
  *   <li>{@link #onNodeStarted} rather than {@code createComponents}, because publishing needs the local
  *       node's identity and address, and those do not exist yet when components are created.
  * </ul>
@@ -349,6 +353,18 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         Supplier<DiscoveryNodes> nodesInCluster
     ) {
         return List.of(new RestClusterlessStatusAction(() -> publisher, () -> poller));
+    }
+
+    /**
+     * The tenant header, without which header-based tenancy does not happen at all.
+     *
+     * <p>{@code RestController} copies into the thread context only the headers some plugin declares here, and
+     * drops the rest without a word, so an undeclared {@code x-tenant-id} is invisible to {@link TenantResolver}.
+     * Single-valued, so that the server refuses a request naming two tenants instead of joining them with a comma.
+     */
+    @Override
+    public Collection<RestHeaderDefinition> getRestHeaders() {
+        return List.of(new RestHeaderDefinition(TenantResolver.HEADER, false));
     }
 
     /**
