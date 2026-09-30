@@ -42,7 +42,7 @@ error naming the operation group, so the routing surface is complete from day on
 clients get an honest answer rather than a 404.
 
 ```bash
-./gradlew :server:run --args="--port 9400 --data-path /tmp/cp"
+../gradlew :server:run --args="--port 9400 --data-path /tmp/cp"
 
 curl -XPUT localhost:9400/_ingest/pipeline/p -H 'Content-Type: application/json' \
      -d '{"description":"noop","processors":[]}'
@@ -141,7 +141,7 @@ and `zone` is a fact about a rack in a building. The supervisor has verified tha
 nothing there reads those settings, so a tenant setting them changes nothing about
 where copies go.
 
-The rule is `../opensearch-supervisor/DESIGN.md` §25, with one companion clause
+The rule is `../supervisor/DESIGN.md` §25, with one companion clause
 this surface forced: **a resource naming a neighbouring service or cloud
 infrastructure may belong to either party, and which one is a property of the
 individual registration rather than of the resource type.** A managed service's
@@ -263,24 +263,22 @@ payloads. Keys are namespaced by resource, e.g. `ingest/pipeline/<id>`.
 ### Backends are pluggable jars
 
 The interface, the two JDK-only implementations, and the shared contract test suite live in **a separate
-build**, [`../opensearch-kv-store`](../opensearch-kv-store), which has no dependencies at all. It is its own
-repository because the supervisor (management plane) shares it: two implementations of the same revision
+build**, [`../kv-store`](../kv-store), which has no dependencies at all. It is its own
+build because the supervisor (management plane) shares it: two implementations of the same revision
 semantics against the same keys is how two planes would silently disagree about state.
 
 ```
-../opensearch-kv-store
+../kv-store
   store-api          KeyValueStore, the provider SPI, FileSystemKeyValueStore,
                      InMemoryKeyValueStore + KeyValueStoreContractTests (test fixtures)
   store-zookeeper    \ separate jars, each bringing its own client library
   store-etcd         /
-this repo
+this build
   :server            depends on store-api only; names no backend
 ```
 
-It is consumed as a Gradle **composite build** — `includeBuild("../opensearch-kv-store")` in
-`settings.gradle.kts` — so editing both services together needs no publish step. The cost is that this
-build depends on a path outside the repository, which CI has to satisfy by checking out both; a submodule
-or a published artifact removes that later without changing the layout.
+It is consumed as a Gradle **composite build** — `includeBuild("../kv-store")` in
+`settings.gradle.kts` — so editing both services together needs no publish step.
 
 An operator selects one by URI scheme:
 
@@ -297,14 +295,14 @@ An operator selects one by URI scheme:
 ```
 
 **"needs … on the classpath" is literal, and it catches everyone once.** `:server` does not depend on any
-backend — that is what makes them pluggable — so a plain `./gradlew :server:run` has only the filesystem
+backend — that is what makes them pluggable — so a plain `../gradlew :server:run` has only the filesystem
 store and `--store zk://…` fails with *no store provider for scheme [zk]*. `--help` lists what the running
 classpath actually provides, so a short list means a missing jar rather than a missing feature.
 
 To run against one, name its coordinate:
 
 ```bash
-./gradlew :server:run -PstoreJars=org.opensearch.controlplane:store-zookeeper:0.1.0-SNAPSHOT \
+../gradlew :server:run -PstoreJars=org.opensearch.controlplane:store-zookeeper:0.1.0-SNAPSHOT \
   --args="--port 9400 --store zk://localhost:2181/controlplane"
 ```
 
@@ -481,7 +479,7 @@ plane can be told what its data plane supports and refuse up front.
 
 ```bash
 tools/dump-capabilities.sh http://localhost:9200 > capabilities.yaml
-./gradlew :server:run --args="--port 9400 --capabilities capabilities.yaml"
+../gradlew :server:run --args="--port 9400 --capabilities capabilities.yaml"
 ```
 
 **Generated, not hand-written.** A cluster already reports exactly this under `GET /_nodes` —
@@ -577,7 +575,7 @@ So it comes from the data plane, which emits it directly — the whole workflow 
 
 ```bash
 curl 'localhost:9200/_cluster/settings_registry?pretty' -o settings_registry.yaml
-./gradlew :server:run --args="--port 9400 --settings-registry settings_registry.yaml"
+../gradlew :server:run --args="--port 9400 --settings-registry settings_registry.yaml"
 ```
 
 ```yaml
@@ -714,11 +712,11 @@ or the isolation above is defeated one layer down.
 Requires JDK 21.
 
 ```bash
-./gradlew build                      # generate routes, compile, test
-./gradlew :server:run --args="--port 9400 --data-path /tmp/cp"
-./gradlew :server:run                # start on 127.0.0.1:9200
-./gradlew :server:run --args="--dump-routes --port 9200"
-./gradlew :server:generateRoutes     # regenerate after editing the scope file
+../gradlew build                      # generate routes, compile, test
+../gradlew :server:run --args="--port 9400 --data-path /tmp/cp"
+../gradlew :server:run                # start on 127.0.0.1:9200
+../gradlew :server:run --args="--dump-routes --port 9200"
+../gradlew :server:generateRoutes     # regenerate after editing the scope file
 ```
 
 `:server:generateRoutes` also writes `server/build/reports/control-plane-scope.md`,
@@ -728,7 +726,7 @@ a readable breakdown of what is in scope and why.
 
 Dependency versions are pinned to what resolves from local caches, and
 `settings.gradle.kts` lists `mavenLocal()` after `mavenCentral()` as a fallback,
-so `./gradlew --offline build` also works. Gradle tries repositories in order, so
+so `../gradlew --offline build` also works. Gradle tries repositories in order, so
 `mavenLocal()` only comes into play for modules `mavenCentral()` cannot supply —
 in practice the JUnit 1.11.4 platform set, which is in `~/.m2` but not in the
 Gradle module cache.
@@ -1370,9 +1368,9 @@ operation groups by what makes them difficult rather than by namespace. The shor
 ## Bumping the spec
 
 ```bash
-cd ../opensearch-api-specification && npm run merge
-cp build/opensearch-openapi.yaml ../opensearch-control-plane/spec/opensearch-openapi.yaml
-cd ../opensearch-control-plane && ./gradlew :server:generateRoutes
+cd /path/to/opensearch-api-specification && npm run merge
+cp build/opensearch-openapi.yaml /path/to/cluster-etcd/control-plane/spec/opensearch-openapi.yaml
+cd /path/to/cluster-etcd/control-plane && ../gradlew :server:generateRoutes
 ```
 
 If OpenSearch added or removed an API, this fails with a list of what needs

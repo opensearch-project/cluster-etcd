@@ -46,7 +46,7 @@ supervisor should see a node that is not doing what it was told, because it is n
 
 The specification is still the point of this directory: `REQUIREMENTS.md` for what the thing must do,
 `MILESTONES.md` for the order to build it in, and `BORROWING_FROM_CLUSTER_ETCD.md` for a survey of the
-implementation next door saying which parts to lift, which to adapt and which are now useless.
+original cluster-etcd plugin (this repository's `main` branch) saying which parts to lift, which to adapt and which are now useless.
 
 ### Building it
 
@@ -90,13 +90,13 @@ that is the next milestone.
 ### Running a real node
 
 ```
-./gradlew run                              # a node with the plugin installed, applying what it is assigned
-./gradlew run -Pclusterless.apply=false    # the same, read-only
-./gradlew run -Pclusterless.nodes=2        # two of them, sharing one store
-./gradlew run -Pclusterless.remote_store=false   # no remote store, so search replicas are declined
-./gradlew run -Pclusterless.segments_only=true   # segments in the repository, translog on local disk
-./gradlew run -Pclusterless.coordinating=true    # every node also coordinates, which is how to test routing today
-./gradlew runCoordinator                   # a dedicated coordinator -- see the caveat below
+../gradlew run                              # a node with the plugin installed, applying what it is assigned
+../gradlew run -Pclusterless.apply=false    # the same, read-only
+../gradlew run -Pclusterless.nodes=2        # two of them, sharing one store
+../gradlew run -Pclusterless.remote_store=false   # no remote store, so search replicas are declined
+../gradlew run -Pclusterless.segments_only=true   # segments in the repository, translog on local disk
+../gradlew run -Pclusterless.coordinating=true    # every node also coordinates, which is how to test routing today
+../gradlew runCoordinator                   # a dedicated coordinator -- see the caveat below
 ```
 
 **To exercise coordinator routing on one machine, use `-Pclusterless.coordinating=true`.** Each node then holds
@@ -105,14 +105,14 @@ configuration rather than a workaround — OpenSearch's own default is that ever
 assignment's tenant roles are a set precisely so a node can be told it does both.
 
 `runCoordinator` is the dedicated-coordinator shape, which is where coordinators belong in production. It cannot
-currently run *alongside* `./gradlew run`: `RunTask.beforeStart()` hardcodes 9200 and 9300 and overwrites whatever
+currently run *alongside* `../gradlew run`: `RunTask.beforeStart()` hardcodes 9200 and 9300 and overwrites whatever
 the build file sets, so two invocations collide. `WORKING_NOTES.md` has the patch that would fix it.
 
 `runCoordinator` is a **separate cluster**, not an extra node, and that is the natural shape rather than a
 workaround: clusterless nodes never discover each other, the transport does not compare cluster names, and
 everything they share they share through the store — so two testClusters clusters are peers in the only sense that
 matters. It also matches where coordinators belong, which is their own capacity. Run it in a second terminal
-alongside `./gradlew run`.
+alongside `../gradlew run`.
 
 The run cluster also configures a remote store by default — an `fs` repository under
 `plugin/build/clusterless-remote-store`, shared by every node in the run, declared through
@@ -124,11 +124,10 @@ an index with `index.replication.type: SEGMENT` and one replica, and run two nod
 ### Pull-based ingestion, with the file source
 
 Kafka is the production source; `ingestion-fs` is the one a laptop can run. It is an OpenSearch plugin rather than
-part of the server, so build it there and point this build at it:
+part of the server, published only as a jar, so the build packages that jar as a plugin and installs it:
 
 ```
-cd ../OpenSearch && ./gradlew :plugins:ingestion-fs:bundlePlugin
-cd - && ./gradlew run -Pclusterless.ingestion=true -Pclusterless.segments_only=true
+../gradlew run -Pclusterless.ingestion=true -Pclusterless.segments_only=true
 ```
 
 Create the index through the control plane with these settings, and it needs no writes at all — the shard pulls:
@@ -165,7 +164,7 @@ The run cluster points at `plugin/build/clusterless-store`, and a supervisor poi
 the other half of the loop:
 
 ```
-cd ../opensearch-supervisor && ./gradlew :supervisor-app:installDist
+cd ../supervisor && ../gradlew :supervisor-app:installDist
 SUP=./supervisor-app/build/install/supervisor-app/bin/supervisor-app
 STORE=file://<repo>/plugin/build/clusterless-store
 
@@ -197,7 +196,7 @@ The plugin targets **OpenSearch 3.9**, the first version carrying the clusterles
 | `clusterless.node.roles` | `data`, `coordinator`, or both. Defaults to a derivation from OpenSearch's own `node.roles`. |
 | `clusterless.heartbeat.interval` | default 5s. Published in the registration, and the supervisor derives this node's staleness threshold from it, so it must be the interval the node really writes at. |
 | `clusterless.poll.interval` | default: the heartbeat interval. Separate because the costs are different — one is a write by every node in the fleet, the other a read of one small key. |
-| `clusterless.apply` | default **false**. Whether to act on the assignment, or only to log what acting on it would do. `./gradlew run` sets it true. |
+| `clusterless.apply` | default **false**. Whether to act on the assignment, or only to log what acting on it would do. `../gradlew run` sets it true. |
 | `clusterless.retention.passes` | default 12. How many consecutive passes an index must be absent from the store before this node releases its data. A node keeps the files of an index it no longer holds a copy of, so that "stop serving this" is not "destroy this"; this is how patient the decision to finally delete them is. |
 | `node.attr.remote_store.*` | not this plugin's settings, and read by it. OpenSearch's own remote-store node attributes say where this node's segments live; the plugin registers the repository they name and points segment-replication indices at it. A node with none declines search replicas, because there would be nothing for them to read. Every node holding a copy of the same shard must name the same repository — the copies share one remote path, and nothing here can check that from one node. |
 | `node.attr.remote_store.mode` | `segments_only` keeps segments in the repository and the translog on local disk, and needs no translog or cluster-state repository. Right where the ingestion source holds every operation, since a transaction log is then a second copy of something already durable. It costs the ability to recover a primary from the remote store — that path restores through the remote translog — so a primary of such an index that has lost its disk is declined with a reason rather than started empty over its own data. |
@@ -217,8 +216,8 @@ where the unimplemented half begins.
 
 | plane | repository | lifetime of its work | owns |
 |---|---|---|---|
-| control | `../opensearch-control-plane` | milliseconds — a CRUD request | what the user asked for |
-| management | `../opensearch-supervisor` | seconds — a reconciliation pass | where shards should be |
+| control | `../control-plane` | milliseconds — a CRUD request | what the user asked for |
+| management | `../supervisor` | seconds — a reconciliation pass | where shards should be |
 | **data** | **here** | continuous | shards, queries, and the truth about both |
 
 They communicate **only** through the store. No plane calls another. That is the property that lets any of
@@ -226,7 +225,7 @@ them be restarted, scaled or replaced without the others noticing, and it is wor
 convenience that would break it.
 
 This one is specified last on purpose. The seam it implements —
-[`../opensearch-supervisor/NODE_CONTRACT.md`](../opensearch-supervisor/NODE_CONTRACT.md) — was written from the
+[`../supervisor/NODE_CONTRACT.md`](../supervisor/NODE_CONTRACT.md) — was written from the
 document first and then implemented twice: once by the supervisor's observer, and once by `fake-node`, which
 was deliberately written *from the document rather than from the supervisor* so that the contract had a second
 independent reader before it had a real one. Several gaps were found that way. **You are the third reader, and
@@ -238,14 +237,14 @@ finding to report back, not something to paper over.
 1. **[`REQUIREMENTS.md`](REQUIREMENTS.md)** — this document's own requirements, numbered `D*`.
 2. **[`MILESTONES.md`](MILESTONES.md)** — an order of work. Start with its fifteen-minute orientation: run the
    supervisor against a directory and read what it writes.
-3. **[`../opensearch-supervisor/NODE_CONTRACT.md`](../opensearch-supervisor/NODE_CONTRACT.md)** — *the*
+3. **[`../supervisor/NODE_CONTRACT.md`](../supervisor/NODE_CONTRACT.md)** — *the*
    authoritative specification of every document this plugin writes and reads. It is long and every paragraph
    in it is load-bearing. If this README and that document disagree, that document wins.
-4. **[`../opensearch-supervisor/KEY_LAYOUT.md`](../opensearch-supervisor/KEY_LAYOUT.md)** — the key space,
+4. **[`../supervisor/KEY_LAYOUT.md`](../supervisor/KEY_LAYOUT.md)** — the key space,
    including the rules about uuids versus names that a reconciler keyed on the wrong one gets subtly wrong.
 5. **[`BORROWING_FROM_CLUSTER_ETCD.md`](BORROWING_FROM_CLUSTER_ETCD.md)** — what is reusable from
-   `../cluster-etcd/plugin` and what is not.
-6. **[`../opensearch-kv-store/README.md`](../opensearch-kv-store/README.md)** — the store SPI.
+   the original cluster-etcd plugin (`plugin/` on this repository's `main` branch) and what is not.
+6. **[`../kv-store/README.md`](../kv-store/README.md)** — the store SPI.
 
 [`WORKING_NOTES.md`](WORKING_NOTES.md) is not part of that sequence and is worth reading before writing
 code anyway: what OpenSearch 3.9 actually does where this plugin touches it, and what the development
@@ -253,7 +252,7 @@ sandbox does not allow. The first entry — index settings being strictly valida
 than ignored — is the one that would otherwise be discovered at milestone 4, as a server-side exception on
 every index.
 
-`../opensearch-supervisor/fake-node/` is a working implementation of the node side of the contract in about 300
+`../supervisor/fake-node/` is a working implementation of the node side of the contract in about 300
 lines. It holds no data and serves nothing, so it is not a model for the real thing — but it is an executable
 answer to "what exactly is this document asking me to write", and it is what the supervisor's own tests drive.
 

@@ -22,7 +22,7 @@ Components talk only through documents, never through each other's code:
   status block at the top of the item (`> **Closed.** …`, `> **Supervisor half done.** …`), saying what was done
   and anything the other side must do next.
 - **Proposals for another component are written as a document in its tree**, not as code changes. See
-  `../opensearch-control-plane/docs/proposed-tenant-registry.md`, and the data plane's `REQUIREMENTS.md` and
+  `../control-plane/docs/proposed-tenant-registry.md`, and the data plane's `REQUIREMENTS.md` and
   `MILESTONES.md`, which this session wrote.
 - Another session's uncommitted edits to a shared file are theirs. Leave them out of your commit. Check
   `git diff` on every file before staging it.
@@ -58,7 +58,7 @@ Ownership decisions already made. Don't reopen them without a reason:
   on a branch, build the commit with a temporary index (`GIT_INDEX_FILE`, `read-tree`, `write-tree`,
   `commit-tree`, `git branch`). That commit is unsigned, so say so.
 - **Verify, don't assume.** Check each new regression test by reverting the fix and watching it fail. Check
-  claims about OpenSearch against `../OpenSearch` source, including claims from the data plane's notes. Where
+  claims about OpenSearch against its source (an OpenSearch checkout, outside this repository), including claims from the data plane's notes. Where
   numbers can be measured, measure them and record them in the doc (see `DESIGN.md` §12.1).
 - **This is headed for open source.** No company-internal or vendor product names in code, docs or commit
   messages. The sign-off address is the only exception.

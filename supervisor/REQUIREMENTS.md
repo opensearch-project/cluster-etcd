@@ -172,12 +172,12 @@ The etcd and ZooKeeper backends are separate jars, each verified against a real 
 **The supervisor must use exactly this code, not a reimplementation.** Two implementations of the same
 revision semantics against the same keys is how the planes would silently disagree.
 
-**Done.** It now lives at [`../opensearch-kv-store`](../opensearch-kv-store) as its own build and its own
+**Done.** It now lives at [`../kv-store`](../kv-store) as its own build and its own
 git repository, consumed by the control plane as a Gradle **composite build**. Add the same two lines here:
 
 ```kotlin
 // settings.gradle.kts
-includeBuild("../opensearch-kv-store")
+includeBuild("../kv-store")
 
 // build.gradle.kts
 implementation("org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT")
@@ -192,7 +192,7 @@ from day one, so the supervisor's own tests run against the same in-memory store
 
 The cost, recorded so nobody rediscovers it: each consumer's build depends on a path outside itself, so CI
 must check out both repositories. A submodule or a published artifact removes that later without changing
-the layout.
+the layout. *Since the move to one repository, the path is inside it and the cost is gone.*
 
 **What is already there**, so the supervisor need not build any of it:
 

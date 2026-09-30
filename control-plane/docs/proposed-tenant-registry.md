@@ -16,7 +16,7 @@ Implemented as proposed, with two deltas and one correction:
 - **The proposal missed a test it breaks.** `TenantIsolationTests.keysAreLaidOutUnderTheTenantPrefix`
   asserts the exact contents of `scanPrefix("")`. It now includes `tenants/acme`, which is a feature: that
   assertion is what keeps this the *only* root key.
-**Requested by:** `../opensearch-supervisor` — see its `SUPERVISOR_KEYS.md` §6 and `DESIGN.md` §3.
+**Requested by:** `../supervisor` — see its `SUPERVISOR_KEYS.md` §6 and `DESIGN.md` §3.
 **Size:** one new key, one call site, no new dependency, no API change.
 
 ## The problem

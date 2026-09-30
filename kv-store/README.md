@@ -24,7 +24,7 @@ developed together:
 
 ```kotlin
 // settings.gradle.kts
-includeBuild("../opensearch-kv-store")
+includeBuild("../kv-store")
 
 // build.gradle.kts
 implementation("org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT")
@@ -77,9 +77,9 @@ Each backend's contract tests need a real server, and find one in this order:
    carries most of the risk.
 
 ```bash
-./gradlew test                                          # containers, if Docker is up
-./gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379   # a server you already have
-./gradlew :store-zookeeper:test -Dcontrolplane.zookeeper.image=zookeeper:3.8   # a different version
+../gradlew test                                          # containers, if Docker is up
+../gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379   # a server you already have
+../gradlew :store-zookeeper:test -Dcontrolplane.zookeeper.image=zookeeper:3.8   # a different version
 ```
 
 One container per JVM, started lazily and left for Ryuk to reap. Every test isolates itself in a fresh
@@ -101,8 +101,8 @@ stack trace. Two escapes worth knowing:
 
 ```bash
 # Ryuk cannot always talk to a non-Docker-Desktop daemon. Containers then need reaping by hand.
-TESTCONTAINERS_RYUK_DISABLED=true ./gradlew test
+TESTCONTAINERS_RYUK_DISABLED=true ../gradlew test
 
 # Or skip containers entirely and use a server you are already running.
-./gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379
+../gradlew :store-etcd:test -Dcontrolplane.etcd=localhost:2379
 ```

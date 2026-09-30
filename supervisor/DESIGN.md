@@ -12,7 +12,7 @@ in ways only the code found.
 
 | decision | alternative rejected | what it costs |
 |---|---|---|
-| **Independent of `../cluster-etcd`** | port its controller onto `store-api` | rebuilding allocation, health and election; its prior art informs, its schema does not |
+| **Independent of `cluster-etcd`** (this repository's `main` branch) | port its controller onto `store-api` | rebuilding allocation, health and election; its prior art informs, its schema does not |
 | **The node pool is the unit of ownership** | the tenant, or the whole cluster | a pool must fit inside one supervisor, and a tenant cannot span pools |
 | **Horizontally scalable, one lease per pool** | a single leader | a balancer, member records, and a failover window |
 | **Multi-tenant data model from day one** | single `default` tenant | every structure is tenant-keyed; tenant discovery needs a change to the control plane |
@@ -449,7 +449,7 @@ Java 21 toolchain and Gradle Kotlin DSL, matching the control plane, with the co
 `REQUIREMENTS.md`:
 
 ```kotlin
-includeBuild("../opensearch-kv-store")
+includeBuild("../kv-store")
 implementation("org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT")
 testImplementation(testFixtures("org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT"))
 ```
@@ -782,7 +782,7 @@ wants the same fix.
 3. **The dedicated-pool ceiling** — a single tenant too large for one supervisor has no answer short of
    index-pattern binding, which costs the single-writer property on `tenant/<t>/status/cluster`.
 4. **Tenant discovery** needs the control plane to write a `tenants/<id>` registry; proposal handed over at
-   `../opensearch-control-plane/docs/proposed-tenant-registry.md`. Configuration is the fallback.
+   `../control-plane/docs/proposed-tenant-registry.md`. Configuration is the fallback.
 5. **Two contradictions in `REQUIREMENTS.md`**, both resolved in `SUPERVISOR_KEYS.md`, both worth
    confirming: R5.5 versus the control plane's tenant-scoped store, and R5.5 versus R4.3's requirement to
    reap tasks the control plane owns.
@@ -835,7 +835,7 @@ wants the same fix.
     exists for.
 
     Found by the control plane while acknowledging the `status/awareness` narrowing
-    (`../opensearch-control-plane/docs/proposed-awareness-attribute-narrowing.md`): it validates weighted routing
+    (`../control-plane/docs/proposed-awareness-attribute-narrowing.md`): it validates weighted routing
     against the tenant's setting, so a weight can be accepted for an axis nothing spreads along.
 
     **Answered: no.** `zone` is a fact about a rack in a building — a statement about the machines, which a tenant
@@ -1930,7 +1930,7 @@ point of this section.
 
 Open question 1 is the largest gap here, and there is a concrete proposal for it: the
 `index.remote_store.segment.path_prefix` setting — added upstream in response to an issue filed during the
-`../cluster-etcd` work — with a unique value per primary incarnation, so a new primary writes somewhere the old one
+`cluster-etcd` work — with a unique value per primary incarnation, so a new primary writes somewhere the old one
 was not. Search replicas are told the same value and are rolling-replaced onto the new prefix when it changes.
 
 The idea is sound and this section is mostly about what has to go with it, plus one change to who chooses the value

@@ -1,8 +1,8 @@
 # What to take from `cluster-etcd`, and what to leave
 
-A survey of `../cluster-etcd/plugin`, written by reading it against the requirements here. The split is
-roughly: **how to talk to OpenSearch is solved and should be lifted; what to read and where from is not, and
-almost none of it survives.**
+A survey of the original cluster-etcd plugin, `plugin/` on this repository's `main` branch, written by reading it
+against the requirements here. The split is roughly: **how to talk to OpenSearch is solved and should be lifted; what
+to read and where from is not, and almost none of it survives.**
 
 Read this before writing code, and treat the "lift" column as the reason this project is weeks rather than
 months.

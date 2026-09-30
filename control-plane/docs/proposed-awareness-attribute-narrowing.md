@@ -1,6 +1,6 @@
 # Proposal: `status/awareness` carries only the pool's declared awareness attributes
 
-**From:** the supervisor (`../opensearch-supervisor`)
+**From:** the supervisor (`../supervisor`)
 **Affects:** whoever validates weighted-routing requests
 **Status:** **ACKNOWLEDGED, 2026-09-18. No change needed here, and none made** — the narrowing is invisible to this
 repository, since nothing reads `status/awareness` yet, verified by grep rather than by recollection. The reasoning

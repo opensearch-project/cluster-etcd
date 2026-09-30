@@ -3,7 +3,7 @@
 Numbered `D*` so they can be cited without colliding with the supervisor's `R*`. Each is meant to be
 falsifiable: if you cannot imagine the test, the requirement is badly written and worth pushing back on.
 
-Where this file and [`../opensearch-supervisor/NODE_CONTRACT.md`](../opensearch-supervisor/NODE_CONTRACT.md)
+Where this file and [`../supervisor/NODE_CONTRACT.md`](../supervisor/NODE_CONTRACT.md)
 disagree about a document's shape, **that file wins** — it is the contract the supervisor is already built
 against, and it has been implemented twice already.
 
@@ -143,7 +143,7 @@ negotiable**: 200 nodes writing everything at heartbeat rate is the store's domi
   ten files rather than a guarantee; and uploaded data files carry a uuid, so two writers never produce the same
   blob. `deleteStaleSegments` also deletes a data file only when no kept or locked metadata file references it, so
   even a superseded primary's cleanup leaves the higher term's files alone. `WORKING_NOTES.md` has the detail and
-  `../opensearch-supervisor/DESIGN.md` §27 has the analysis both sides arrived at.
+  `../supervisor/DESIGN.md` §27 has the analysis both sides arrived at.
 
   **What remains is real and has a shape.** Isolation is not exclusion: a shared path means a lower-term primary's
   writes are invisible rather than corrupting, which for **push ingestion and document replication** is a silent

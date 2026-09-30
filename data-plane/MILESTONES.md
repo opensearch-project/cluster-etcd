@@ -9,8 +9,8 @@ milestone below leaves something an operator could look at and something a test 
 Run the supervisor against a directory. It needs no store, no Docker, and no data plane:
 
 ```
-cd ../opensearch-supervisor
-./gradlew :supervisor-app:installDist
+cd ../supervisor
+../gradlew :supervisor-app:installDist
 ./supervisor-app/build/install/supervisor-app/bin/supervisor-app \
     --store=file:///tmp/dp-demo --max-passes=5 --interval=200ms --log-level=debug
 ```
@@ -18,7 +18,7 @@ cd ../opensearch-supervisor
 Then look at what appeared under `/tmp/dp-demo`. That is the other half of the conversation you are about to
 join, and reading its output is faster than reading its source.
 
-Then read `../opensearch-supervisor/fake-node/src/main/java/org/opensearch/supervisor/fakenode/FakeNode.java` end to end. It is about 300
+Then read `../supervisor/fake-node/src/main/java/org/opensearch/supervisor/fakenode/FakeNode.java` end to end. It is about 300
 lines and it is a complete, working implementation of the node side of the contract. **You are building the same
 thing with a real OpenSearch node behind it**, and the places where `FakeNode` cheats are marked.
 
@@ -267,7 +267,7 @@ node's data directory rather than its cluster state, which is the dangling-index
 machinery for, and is deliberately not attempted yet.
 - **Done when:** the supervisor's rebalancer completes a move. Its `SurplusReaper` drops the source copy by
   removing it from that node's assignment; this milestone is what makes the second half of a move actually
-  happen. `../opensearch-supervisor/DESIGN.md` §14.5 explains why the two halves are deliberately unaware of
+  happen. `../supervisor/DESIGN.md` §14.5 explains why the two halves are deliberately unaware of
   each other, and it is worth reading before implementing this one.
 
 ## M7. Replicas, and waiting for a peer — **done, and confirmed on two real nodes**
@@ -1098,7 +1098,7 @@ Last, deliberately. The poll loop must already be correct (D2.1), so this is pur
 ## The shared conformance suite — **done, at M2 as recommended**
 
 `NodeContractTests` and its `ContractNode` adapter live in
-`../opensearch-supervisor/fake-node/src/testFixtures`, published as test fixtures and consumed here in test
+`../supervisor/fake-node/src/testFixtures`, published as test fixtures and consumed here in test
 scope. Thirteen assertions, both implementations passing. Two notes for whoever extends it:
 
 - **It reads with the supervisor's parser, never with each implementation's own.** A suite that let each
@@ -1118,7 +1118,7 @@ The original note follows.
 implementations of one document format tested separately are two formats that will drift.
 
 The recommendation (D9.1) is to extract the contract assertions into a suite both run, in the manner of
-`KeyValueStoreContractTests` in `../opensearch-kv-store/store-api/src/testFixtures`. It belongs in the
+`KeyValueStoreContractTests` in `../kv-store/store-api/src/testFixtures`. It belongs in the
 **supervisor** repository, which owns the contract, published as test fixtures for this one to consume — the
 same arrangement the store SPI already uses and which both other services already depend on.
 

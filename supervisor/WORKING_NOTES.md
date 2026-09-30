@@ -34,7 +34,7 @@ are done here, and the open threads. Start there; this file is the long form of 
 
   Two things the runner does on purpose: it **fails when it discovers zero tests**, because silently
   passing nothing looks exactly like a green build and there is no working Gradle here to contradict it;
-  and it compiles `store-api` from `../opensearch-kv-store/store-api/src` rather than using that build's
+  and it compiles `store-api` from `../kv-store/store-api/src` rather than using that build's
   jars, so a change over there cannot go stale here.
 
 - **The Java 21 toolchain is `temurin-21.0.12.1`.** With several JDKs installed and a newer default
@@ -84,7 +84,7 @@ that is how `DOCKER_HOST` gets resolved — see below.
 
 ### Integration tests: copy the pattern from the store backends
 
-`../opensearch-kv-store` has this solved, and the supervisor will want the same shape the moment it tests
+`../kv-store` has this solved, and the supervisor will want the same shape the moment it tests
 against a real etcd, ZooKeeper or OpenSearch. Three sources in order:
 
 1. `-Dcontrolplane.<thing>=host:port` if set — a server already running.
@@ -149,9 +149,9 @@ on purpose.
 
 Read these before assuming anything about the other side of the store:
 
-- `../opensearch-control-plane/README.md` — architecture, the three-plane model, persistence, and a
+- `../control-plane/README.md` — architecture, the three-plane model, persistence, and a
   "Considered divergences" table explaining every place it deliberately differs from OpenSearch. Also a
   "Still unverified" list, which is the honest inventory of what is not known.
-- `../opensearch-control-plane/docs/where-the-hard-parts-are.md` — the remaining operations sorted by what
+- `../control-plane/docs/where-the-hard-parts-are.md` — the remaining operations sorted by what
   makes them hard, with several "this looked easy and is not" write-ups.
 - `git log` in that repo — commit messages carry the reasoning at length, deliberately.

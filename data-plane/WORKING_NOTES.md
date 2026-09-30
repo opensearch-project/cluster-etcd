@@ -926,7 +926,7 @@ state froze on the dead index's uuid for ever. This node was right and said so o
 which is exactly what `IndexConfig.matches` is for. **The node's refusal was correct and the diagnosis still took
 reading three repositories**, because nothing in the store or the supervisor pointed at a reused revision.
 
-Fixed in `../opensearch-kv-store`: the contract now states that a revision is never reused for a key including
+Fixed in `../kv-store`: the contract now states that a revision is never reused for a key including
 after deletion and says why, the conformance suite has two cases for it, and `FileSystemKeyValueStore` issues
 store-wide revisions from a persisted counter. etcd's `mod_revision` and ZooKeeper's `mzxid` already satisfied it —
 `ZooKeeperKeyValueStore` rejects `Stat.getVersion()` in its javadoc for this very hazard — so **the trap existed

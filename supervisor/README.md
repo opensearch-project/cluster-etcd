@@ -30,7 +30,7 @@ What does not, in rough order of how much it matters:
 ## Running it
 
 ```
-./gradlew :supervisor-app:installDist
+../gradlew :supervisor-app:installDist
 ./supervisor-app/build/install/supervisor-app/bin/supervisor-app --help
 ```
 
@@ -57,7 +57,7 @@ That writes `supervisor/status/pools/<pool>/convergence` and a diff per tenant, 
 live. Against a real backend, name its scheme and put that backend's jar on the runtime classpath:
 
 ```
-./gradlew :supervisor-app:installDist -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT
+../gradlew :supervisor-app:installDist -PstoreJars=org.opensearch.controlplane:store-etcd:0.1.0-SNAPSHOT
 ./supervisor-app/build/install/supervisor-app/bin/supervisor-app \
     --store=etcd://localhost:2379/opensearch --max-passes=5
 ```
@@ -102,7 +102,7 @@ observe. The module graph is what makes that claim checkable at build time rathe
 ## Building
 
 ```bash
-./gradlew build
+../gradlew build
 ```
 
 Verified green on a Java 21 toolchain — Temurin 21.0.12.1. Gradle's auto-detection usually finds it without
@@ -123,8 +123,8 @@ instead of the local project, and fails.
 Curator, gRPC and a Docker client stay off every other module's classpath.
 
 ```
-./gradlew :supervisor-integ:test                      # starts both in Docker
-./gradlew :supervisor-integ:test \
+../gradlew :supervisor-integ:test                      # starts both in Docker
+../gradlew :supervisor-integ:test \
     -Dsupervisor.etcd=localhost:2379 \
     -Dsupervisor.zookeeper=localhost:2181             # use servers you already have
 ```

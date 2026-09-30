@@ -63,7 +63,7 @@ What the sandbox can do, since that premise was wrong for a long time:
 - **A local server change needs `publishToMavenLocal`** in the OpenSearch checkout before this build sees it.
 - **Test classes must be named `*Tests`.** The test task includes only `**/*Tests.class`; an `*IT` class is silently
   never run and the build stays green.
-- Multi-node runs (`./gradlew run -Pclusterless.nodes=5 ...`) are the user's, on their machine.
+- Multi-node runs (`../gradlew run -Pclusterless.nodes=5 ...`) are the user's, on their machine.
 
 ### Test the second pass, and prove the test fails without the fix
 

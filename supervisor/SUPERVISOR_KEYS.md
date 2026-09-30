@@ -753,7 +753,7 @@ second is entirely unmanaged**, and nothing else in the system reports it — no
 tasks reaped, all of which look exactly like an idle tenant. Detecting that needs both lists, which is why
 the registry is worth a change to another service rather than a configuration file here.
 
-**Proposal handed over** at `../opensearch-control-plane/docs/proposed-tenant-registry.md`: one root key
+**Proposal handed over** at `../control-plane/docs/proposed-tenant-registry.md`: one root key
 `tenants/<tenant-id>`, written by `OperationContextFactory` on a tenant's first *write*, best-effort, never
 deleted. The control plane already writes exactly this shape of key — the three `*-initialized` markers —
 so the mechanism exists and the change is one call site.

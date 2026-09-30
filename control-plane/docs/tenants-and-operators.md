@@ -1,6 +1,6 @@
 # Tenants and operators: the second axis of scope
 
-**Where the rule comes from:** `../opensearch-supervisor/DESIGN.md` §25, added in `f14f3d4`. The classifier is one
+**Where the rule comes from:** `../supervisor/DESIGN.md` §25, added in `f14f3d4`. The classifier is one
 sentence:
 
 > A setting is the **tenant's** if it describes what they want to exist. It is the **operator's** if it describes

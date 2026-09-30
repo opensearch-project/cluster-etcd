@@ -1,7 +1,7 @@
 # Findings from the data plane
 
 Eleven items wanted in this repository, all found by running the real data plane
-(`../opensearch-data-plane`) against a real supervisor, a real control plane and one store. None loses data.
+(`../data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
 design spends most of its effort trying to avoid — so they are worth closing properly rather than patching. The
@@ -1008,7 +1008,7 @@ one, which needs a reader on this side for a document this node otherwise only w
 
 ## 10. Desired state froze on a deleted index's uuid, because a revision was reused
 
-**The root cause is in `../opensearch-kv-store` and is fixed there.** This item exists because it presented as a
+**The root cause is in `../kv-store` and is fixed there.** This item exists because it presented as a
 supervisor bug, and because two things on this side rested on the same unstated guarantee.
 
 ### What happened
@@ -1046,7 +1046,7 @@ stated, and one backend of three did not provide it.
 
 ### What was fixed, and where
 
-In `../opensearch-kv-store`:
+In `../kv-store`:
 
 - **`KeyValueStore` now states it** — a revision is never reused for a key, including after deletion, *because*
   readers use equality as a change signal — and also says what is still not promised: revisions need not be dense
