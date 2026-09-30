@@ -146,6 +146,34 @@ public class PeerRecoveryTests extends OpenSearchTestCase {
         assertEquals(1, reduced.deferred().size());
     }
 
+    public void testDecliningOneShardKeepsTheOthersTerms() {
+        // Rebuilding the index around the declined shard once dropped every term, so a primary promoted to term 3
+        // went into the fabrication at term 1 -- and PrimaryTerms, which runs next, then declined it as a term going
+        // backwards.
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        DesiredState desired = new DesiredState(
+            42,
+            Map.of(
+                key,
+                new DesiredState.DesiredIndex(
+                    key,
+                    documentReplicated(),
+                    Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA),
+                    Map.of(0, 3L, 1, 2L)
+                )
+            ),
+            List.of(),
+            List.of()
+        );
+
+        DesiredState reduced = PeerRecovery.reduce(desired, new CoordinatorView(List.of(), Map.of(), List.of()));
+
+        DesiredState.DesiredIndex kept = reduced.indices().get(key);
+        assertEquals(Map.of(0, ShardRole.PRIMARY), kept.shards());
+        assertEquals(3L, kept.primaryTermOf(0));
+        assertEquals(1, reduced.deferred().size());
+    }
+
     // ---------------------------------------------------------------- fixtures
 
     private static DesiredState holding(Map<Integer, ShardRole> shards, IndexConfig config) {

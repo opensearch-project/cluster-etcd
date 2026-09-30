@@ -100,6 +100,19 @@ public record DesiredState(
             this(key, config, shards, Map.of());
         }
 
+        /**
+         * The same index holding only {@code kept}, with the terms of those shards.
+         *
+         * <p>How a step that declines some copies must rebuild the index. The three-argument constructor states
+         * no terms, which is a claim that the supervisor issued none, and a promoted primary rebuilt that way went
+         * into the fabrication at term 1.
+         */
+        public DesiredIndex withShards(Map<Integer, ShardRole> kept) {
+            Map<Integer, Long> terms = new TreeMap<>(primaryTerms);
+            terms.keySet().retainAll(kept.keySet());
+            return new DesiredIndex(key, config, kept, terms);
+        }
+
         /** The term this node's cluster state should name for a shard, or 1 where the supervisor said nothing. */
         public long primaryTermOf(int shard) {
             return primaryTerms.getOrDefault(shard, org.opensearch.clusterless.contract.Assignment.IndexAssignment.TERM_WHEN_UNSTATED);

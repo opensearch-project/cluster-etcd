@@ -96,7 +96,7 @@ public final class PeerRecovery {
             });
 
             if (buildable.isEmpty() == false) {
-                kept.put(index.key(), new DesiredState.DesiredIndex(index.key(), index.config(), buildable));
+                kept.put(index.key(), index.withShards(buildable));
             }
         }
 

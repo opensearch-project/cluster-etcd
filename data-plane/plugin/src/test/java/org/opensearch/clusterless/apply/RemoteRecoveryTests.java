@@ -329,6 +329,39 @@ public class RemoteRecoveryTests extends OpenSearchTestCase {
         );
     }
 
+    public void testDecliningOneShardKeepsTheOthersTerms() {
+        // As in PeerRecovery: the index rebuilt around a declined shard must keep what the supervisor said about
+        // the rest, or a promoted primary goes into the fabrication at term 1.
+        RemoteRecovery recovery = new RemoteRecovery(
+            withTranslog(),
+            LocalShardStore.EMPTY,
+            (shardId, repository) -> shardId.id() == 0 ? RemoteShardData.Answer.HAS_DATA : RemoteShardData.Answer.UNKNOWN,
+            LOCAL
+        );
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        DesiredState desired = new DesiredState(
+            42,
+            Map.of(
+                key,
+                new DesiredState.DesiredIndex(
+                    key,
+                    TestFixtures.segmentReplicatedIndexConfig(UUID),
+                    Map.of(0, ShardRole.PRIMARY, 1, ShardRole.PRIMARY),
+                    Map.of(0, 3L, 1, 3L)
+                )
+            ),
+            List.of(),
+            List.of()
+        );
+
+        RemoteRecovery.Plan plan = recovery.planFor(desired, ClusterState.EMPTY_STATE);
+
+        DesiredState.DesiredIndex kept = plan.desired().indices().get(key);
+        assertEquals(Map.of(0, ShardRole.PRIMARY), kept.shards());
+        assertEquals(3L, kept.primaryTermOf(0));
+        assertEquals(1, plan.desired().deferred().size());
+    }
+
     private static RemoteShardData failIfAsked() {
         return (shardId, repository) -> {
             throw new AssertionError("the repository must not be asked about " + shardId);

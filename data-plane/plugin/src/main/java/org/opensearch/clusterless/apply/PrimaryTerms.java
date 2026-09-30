@@ -66,7 +66,6 @@ public final class PrimaryTerms {
             }
 
             Map<Integer, ShardRole> buildable = new TreeMap<>(index.shards());
-            Map<Integer, Long> terms = new TreeMap<>(index.primaryTerms());
             index.shards().forEach((shard, role) -> {
                 long assigned = index.primaryTermOf(shard);
                 long running = applied.primaryTerm(shard);
@@ -79,7 +78,6 @@ public final class PrimaryTerms {
                     return;
                 }
                 buildable.remove(shard);
-                terms.remove(shard);
                 declined.add(
                     index.key() + "/" + shard + ": the assigned primary term is " + assigned + " and this node is "
                         + "already running that shard at " + running + "; a term must not go backwards, so the copy "
@@ -95,7 +93,7 @@ public final class PrimaryTerms {
             });
 
             if (buildable.isEmpty() == false) {
-                kept.put(index.key(), new DesiredState.DesiredIndex(index.key(), index.config(), buildable, terms));
+                kept.put(index.key(), index.withShards(buildable));
             }
         }
 

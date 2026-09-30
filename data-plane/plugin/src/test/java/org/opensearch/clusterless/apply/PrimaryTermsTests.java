@@ -139,6 +139,38 @@ public class PrimaryTermsTests extends OpenSearchTestCase {
 
     // ---------------------------------------------------------------- fixtures
 
+    public void testAPromotionReachesItsTermWhenASiblingReplicaIsDeclined() {
+        // The steps in the order AssignmentPoller runs them. PeerRecovery declined the replica of shard 1 and rebuilt
+        // the index with no terms at all. This step then had nothing to check, and the fabrication took the larger
+        // of 1 and the running term -- so the replica of shard 0, promoted to 3, stayed a primary at 2: the old
+        // primary's term, which is the one thing a promotion must not keep. For as long as the sibling stayed
+        // declined.
+        IndexConfig twoShards = new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            Map.of("index.number_of_shards", "2", "index.number_of_replicas", "1", "index.replication.type", "DOCUMENT"),
+            Map.of(),
+            3041
+        );
+        ClusterState asReplica = withShardStarted(
+            build(ClusterState.EMPTY_STATE, desiredWith(twoShards, Map.of(0, ShardRole.REPLICA), Map.of(0, 2L)))
+        );
+        DesiredState promoted = desiredWith(twoShards, Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA), Map.of(0, 3L, 1, 2L));
+        CoordinatorView nothingVisible = new CoordinatorView(List.of(), Map.of(), List.of());
+
+        DesiredState reduced = PrimaryTerms.reduce(PeerRecovery.reduce(promoted, nothingVisible), asReplica);
+        ClusterState next = build(asReplica, reduced);
+
+        assertEquals("only the replica is declined: " + reduced.deferred(), 1, reduced.deferred().size());
+        assertTrue(onlyCopy(next, 0).primary());
+        assertEquals("the promotion's term, not the old primary's", 3L, onlyIndex(next).primaryTerm(0));
+
+        DesiredState again = PrimaryTerms.reduce(PeerRecovery.reduce(promoted, nothingVisible), next);
+        assertTrue("and the pass after changes nothing", StateEquivalence.sameContent(next, build(next, again)));
+    }
+
     private static ClusterState build(ClusterState previous, DesiredState desired) {
         return new DataNodeState(
             new org.opensearch.cluster.ClusterName("clusterless"),
