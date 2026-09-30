@@ -24,7 +24,10 @@ import org.opensearch.core.index.shard.ShardId;
  * <p>The consequence if this answers wrongly is asymmetric, which is why it is a seam with a conservative
  * default rather than an inline check. Answering "no data" when there is some means recovering a shard from
  * empty and discarding what was on disk. Answering "there is data" when there is none means an existing-store
- * recovery that finds nothing and fails the shard — visible, reported, and recoverable.
+ * recovery that finds nothing and fails the shard. Nothing is lost, but it is less graceful than it sounds. The
+ * failed copy is rebuilt on the next pass (see {@code DataNodeState.routingFor}), and this answer is still wrong
+ * then, so it fails again every pass. In the inventory it alternates between initializing and absent, and never
+ * starts. The server's reason does not reach {@code applied}.
  */
 @FunctionalInterface
 public interface LocalShardStore {

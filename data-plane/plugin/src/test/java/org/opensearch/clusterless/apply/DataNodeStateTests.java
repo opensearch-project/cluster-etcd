@@ -140,6 +140,24 @@ public class DataNodeStateTests extends OpenSearchTestCase {
         assertEquals(before, after);
     }
 
+    public void testACopyTheServerFailedIsBuiltAgainAsANewAllocation() {
+        // The server keeps a failed shard in IndicesClusterStateService's failedShardsCache until its routing entry
+        // names a different allocation, so the copy has to come back with a new one or it never comes back at all.
+        ClusterState serving = withShardStarted(build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY))));
+        ShardRouting before = onlyCopy(serving, 0);
+
+        ClusterState rebuilt = build(withShardFailed(serving, 0), desired(Map.of(0, ShardRole.PRIMARY)));
+
+        ShardRouting after = onlyCopy(rebuilt, 0);
+        assertTrue(after.initializing());
+        assertEquals(LOCAL, after.currentNodeId());
+        assertNotEquals("a new allocation, or the server skips it", before.allocationId().getId(), after.allocationId().getId());
+
+        ClusterState again = build(rebuilt, desired(Map.of(0, ShardRole.PRIMARY)));
+        assertEquals("and then it is kept", after.allocationId().getId(), onlyCopy(again, 0).allocationId().getId());
+        assertTrue(StateEquivalence.sameContent(rebuilt, again));
+    }
+
     public void testApplyingTheSameDesiredStateRepeatedlyChangesNothingButTheVersion() {
         ClusterState state = withShardStarted(build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY))));
         ShardRouting first = onlyCopy(state, 0);
@@ -781,6 +799,34 @@ public class DataNodeStateTests extends OpenSearchTestCase {
     private static ShardRouting onlyCopy(ClusterState state, int shard) {
         Index index = onlyIndex(state).getIndex();
         return state.routingTable().index(index).shard(shard).shards().get(0);
+    }
+
+    /**
+     * What {@code LocalShardStateAction.localShardFailed} leaves in the state: the copy unassigned, as a cluster manager
+     * would leave it. Before that, the entry stayed as it was and a pass reused it, allocation id and all, so the server
+     * never recreated the shard it had failed.
+     */
+    private static ClusterState withShardFailed(ClusterState state, int shard) {
+        org.opensearch.core.index.Index index = onlyIndex(state).getIndex();
+        org.opensearch.cluster.routing.IndexRoutingTable.Builder routing =
+            org.opensearch.cluster.routing.IndexRoutingTable.builder(index);
+        for (org.opensearch.cluster.routing.IndexShardRoutingTable table : state.routingTable().index(index)) {
+            for (ShardRouting copy : table) {
+                routing.addShard(
+                    table.shardId().id() == shard
+                        ? copy.moveToUnassigned(
+                            new org.opensearch.cluster.routing.UnassignedInfo(
+                                org.opensearch.cluster.routing.UnassignedInfo.Reason.ALLOCATION_FAILED,
+                                "failed shard on node [" + copy.currentNodeId() + "]: engine failure"
+                            )
+                        )
+                        : copy
+                );
+            }
+        }
+        return ClusterState.builder(state)
+            .routingTable(org.opensearch.cluster.routing.RoutingTable.builder().add(routing).build())
+            .build();
     }
 
     /** What the server would have done to the state once the shard finished recovering. */

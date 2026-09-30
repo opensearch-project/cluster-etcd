@@ -84,6 +84,22 @@ public class PrimaryTermsTests extends OpenSearchTestCase {
         assertTrue("and still started, since a promotion does not re-recover", primary.started());
     }
 
+    public void testAFailedReplicaIsNotPromotedInPlace() {
+        // Promoting in place keeps the allocation id, and the server skips a failed shard until the id changes. So a
+        // replica the server has failed becomes a new primary, recovering from what is on disk, rather than a promotion
+        // of a copy that no longer exists.
+        ClusterState asReplica = withShardStarted(build(ClusterState.EMPTY_STATE, docrep(Map.of(0, ShardRole.REPLICA), Map.of(0, 4L))));
+        ShardRouting replica = onlyCopy(asReplica, 0);
+
+        ClusterState promoted = build(withShardFailed(asReplica, 0), docrep(Map.of(0, ShardRole.PRIMARY), Map.of(0, 5L)));
+
+        ShardRouting primary = onlyCopy(promoted, 0);
+        assertTrue(primary.primary());
+        assertTrue(primary.initializing());
+        assertNotEquals(replica.allocationId().getId(), primary.allocationId().getId());
+        assertEquals(5L, onlyIndex(promoted).primaryTerm(0));
+    }
+
     public void testASearchReplicaIsNotPromotedInPlace() {
         // Upstream refuses it -- moveActiveReplicaToPrimary throws on a search-only copy, which has no history to
         // promote -- so the fabrication must not attempt it. A fresh entry is the honest outcome here.
@@ -217,6 +233,34 @@ public class PrimaryTermsTests extends OpenSearchTestCase {
 
     private static ShardRouting onlyCopy(ClusterState state, int shard) {
         return state.routingTable().index(onlyIndex(state).getIndex()).shard(shard).shards().get(0);
+    }
+
+    /**
+     * What {@code LocalShardStateAction.localShardFailed} leaves in the state: the copy unassigned, as a cluster manager
+     * would leave it. Before that, the entry stayed as it was and a pass reused it, allocation id and all, so the server
+     * never recreated the shard it had failed.
+     */
+    private static ClusterState withShardFailed(ClusterState state, int shard) {
+        org.opensearch.core.index.Index index = onlyIndex(state).getIndex();
+        org.opensearch.cluster.routing.IndexRoutingTable.Builder routing =
+            org.opensearch.cluster.routing.IndexRoutingTable.builder(index);
+        for (org.opensearch.cluster.routing.IndexShardRoutingTable table : state.routingTable().index(index)) {
+            for (ShardRouting copy : table) {
+                routing.addShard(
+                    table.shardId().id() == shard
+                        ? copy.moveToUnassigned(
+                            new org.opensearch.cluster.routing.UnassignedInfo(
+                                org.opensearch.cluster.routing.UnassignedInfo.Reason.ALLOCATION_FAILED,
+                                "failed shard on node [" + copy.currentNodeId() + "]: engine failure"
+                            )
+                        )
+                        : copy
+                );
+            }
+        }
+        return ClusterState.builder(state)
+            .routingTable(org.opensearch.cluster.routing.RoutingTable.builder().add(routing).build())
+            .build();
     }
 
     private static ClusterState withShardStarted(ClusterState state) {

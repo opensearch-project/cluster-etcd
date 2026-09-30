@@ -432,11 +432,15 @@ public final class DataNodeState implements NodeState {
     /**
      * The routing entry for one copy: the previous one where it still applies, a fresh one where it does not.
      *
-     * <p>Reused only when the previous entry is on <em>this</em> node, in a state that is going somewhere, and
-     * for the same role. A role change is a different copy as far as the server is concerned — a promotion has
-     * to re-open the shard as a primary — so reusing across one would leave a started routing entry claiming to
-     * be something it is not. That cannot happen today, because the supervisor never fails a primary over
-     * (D8.1), which is exactly why it is worth handling before it can.
+     * <p>Reused only when the previous entry is on <em>this</em> node, initializing or started, and for the same
+     * role — or promoted in place, from a started replica to a primary, which keeps its allocation id; see below.
+     * Any other role change is a new copy.
+     *
+     * <p>A copy the server failed is not reused, because it is no longer on this node:
+     * {@code LocalShardStateAction.localShardFailed} moves it to unassigned, as a cluster manager would. That is what
+     * brings it back. The server skips a failed shard until its routing entry names a different allocation, so the
+     * fresh entry built here is the only way it is created again. Before that server change, the entry stayed as it
+     * was, was reused with its allocation id, and the copy stayed absent while this state reported it started.
      */
     private ShardRouting routingFor(ShardId shardId, ShardRole role, IndexRoutingTable previousRouting, long assignedTerm) {
         boolean primary = role == ShardRole.PRIMARY;
