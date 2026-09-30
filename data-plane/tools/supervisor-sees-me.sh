@@ -20,47 +20,24 @@
 #     supervisor-app --store=<uri> --define-pool=shared-a
 #
 # Usage:
-#   OPENSEARCH=/path/to/OpenSearch tools/supervisor-sees-me.sh [store-directory] [node-count]
+#   tools/supervisor-sees-me.sh [store-directory] [node-count]
 #
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-SUPERVISOR="${SUPERVISOR:-$ROOT/../supervisor}"
+REPO="$(cd .. && pwd)"
 STORE_DIR="${1:-/tmp/dp-demo}"
 NODES="${2:-2}"
-OUT="$ROOT/build/jbuild"
+JAVA_HOME="$(/usr/libexec/java_home -v 21 2>/dev/null || echo "${JAVA_HOME:-}")"
+export JAVA_HOME
+JAVA="${JAVA_HOME:+$JAVA_HOME/bin/}java"
 
-JAVA="$(/usr/libexec/java_home -v 21 2>/dev/null || echo "")/bin/java"
-[[ -x "$JAVA" ]] || JAVA=java
-
-if [[ ! -d "$OUT/plugin/main" ]]; then
-    echo "Build first: tools/jbuild.sh --no-tests" >&2
-    exit 1
-fi
-if [[ ! -d "$SUPERVISOR/build/jbuild/supervisor-app/main" ]]; then
-    echo "Build the supervisor first: (cd $SUPERVISOR && tools/jbuild.sh --no-tests)" >&2
-    exit 1
-fi
-
-jars() { find "$@" -name '*.jar' ! -name '*-sources.jar' 2>/dev/null | tr '\n' ':'; }
-
-OPENSEARCH="${OPENSEARCH:?set OPENSEARCH to an OpenSearch checkout, built once with ./gradlew assemble}"
-PLUGIN_CP="$OUT/plugin/main:$OUT/tools:$OUT/store-api/main:$(jars \
-    "$OPENSEARCH/server/build/distributions" \
-    "$OPENSEARCH/libs/core/build/distributions" \
-    "$OPENSEARCH/libs/common/build/distributions" \
-    "$OPENSEARCH/libs/x-content/build/distributions")$(jars \
-    "$HOME/.gradle/caches/modules-2/files-2.1/org.apache.logging.log4j/log4j-api/2.25.4" \
-    "$HOME/.gradle/caches/modules-2/files-2.1/tools.jackson.core/jackson-core/3.2.2")$(find \
-    "$HOME/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core" -name 'lucene-core-*.jar' \
-    ! -name '*-sources.jar' | sort | tail -1)"
-
-S="$SUPERVISOR/build/jbuild"
-SUPERVISOR_CP="$S/supervisor-app/main:$S/supervisor-core/main:$S/supervisor-model/main:$S/store-api/main:$(find \
-    "$HOME/.gradle/caches/modules-2/files-2.1/com.fasterxml.jackson.core" \
-    \( -name 'jackson-databind-2.22.1.jar' -o -name 'jackson-core-2.22.1.jar' -o -name 'jackson-annotations-2.22.jar' \) \
-    | tr '\n' ':')"
+# One build, from the repository root: the plugin's tools and their classpath, and the supervisor's launcher.
+echo "==> building the plugin's tools and the supervisor"
+(cd "$REPO" && ./gradlew -q :data-plane:plugin:toolsClasspath :supervisor:supervisor-app:installDist)
+PLUGIN_CP="$(cat "$ROOT/plugin/build/tools/classpath.txt")"
+SUPERVISOR_APP="$REPO/supervisor/supervisor-app/build/install/supervisor-app/bin/supervisor-app"
 
 echo "==> a clean store at $STORE_DIR"
 rm -rf "$STORE_DIR"
@@ -71,7 +48,7 @@ echo "==> publishing $NODES node(s) with the plugin's publisher"
 
 echo
 echo "==> running a real supervisor, read-only"
-"$JAVA" -cp "$SUPERVISOR_CP" org.opensearch.supervisor.app.Main \
+"$SUPERVISOR_APP" \
     --store="file://$STORE_DIR" --max-passes=3 --interval=200ms
 
 echo

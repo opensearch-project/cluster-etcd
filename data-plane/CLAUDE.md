@@ -49,19 +49,18 @@ later message when they turn out wrong — a committed message is what a later r
 
 ### Say which tool produced a result
 
-Separate what was verified from what was argued, every time, and name the source: `./gradlew`, `tools/jbuild.sh`, a
+Separate what was verified from what was argued, every time, and name the source: `../gradlew`, a tool's own output, a
 file and line in OpenSearch, or the user's own output. Never present a reading of the server's source as an
 observation of its behaviour. The "what is not proven" paragraph has repeatedly been the useful one — the user's next
 run tends to go straight at it.
 
 What the sandbox can do, since that premise was wrong for a long time:
 
-- **Gradle runs** (`./gradlew build`, `./gradlew :plugin:test --tests "*Foo*"`). Prefer it when a claim needs proving:
-  it runs javadoc, forbidden-APIs and packaging as well as the tests.
+- **Gradle runs** (`../gradlew build`, `../gradlew :plugin:test --tests "*Foo*"`). It is the only build: it runs javadoc,
+  forbidden-APIs and packaging as well as the tests.
 - **A real node starts** under `OpenSearchSingleNodeTestCase` — index creation, search, recovery and pull-based
   ingestion all work. `IndicesServiceIngestionPollersTests` is the example.
-- `tools/jbuild.sh` is faster and compiles against a locally built OpenSearch; use it when depending on an unpublished
-  server change.
+- **A local server change needs `publishToMavenLocal`** in the OpenSearch checkout before this build sees it.
 - **Test classes must be named `*Tests`.** The test task includes only `**/*Tests.class`; an `*IT` class is silently
   never run and the build stays green.
 - Multi-node runs (`./gradlew run -Pclusterless.nodes=5 ...`) are the user's, on their machine.
@@ -135,17 +134,19 @@ for search replicas *and* for docrep replicas, see `PeerRecovery`); the `Interna
 ingestion engines (submitted); a search-replica term pin for rollback. The user's `AbstractScopedSettings` change
 is pending upstream, kept apart deliberately.
 
-## Paths after the move to one repository
+## Paths in the one repository
 
-Written before the move. The tooling assumes sibling repositories and will need adjusting — the session doing the
-merge may already have done it:
-
-- `settings.gradle` has `includeBuild('../opensearch-kv-store')` and `includeBuild('../opensearch-supervisor')`.
-- `tools/jbuild.sh`, `tools/supervisor-sees-me.sh` and `tools/supervisor-assigns-me.sh` default `KV_STORE`,
-  `SUPERVISOR` and `OPENSEARCH` to `$ROOT/../<repo>`; each is overridable by environment variable.
-- `build.gradle` and `plugin/build.gradle` refer to `../OpenSearch` for the server snapshot and the `ingestion-fs`
-  plugin distribution.
+- This component is `data-plane/` in a repository whose root builds every component (`./gradlew build` there).
+  From this directory, the wrapper is `../gradlew`; `settings.gradle` includes `../kv-store` and `../supervisor`.
+- The OpenSearch server comes from mavenLocal, so a local server change reaches this build through
+  `cd /path/to/OpenSearch && ./gradlew publishToMavenLocal`. The `ingestion-fs` plugin comes the same way, as a jar
+  that `plugin/build.gradle` packages into a plugin zip.
+- `tools/supervisor-sees-me.sh` and `tools/supervisor-assigns-me.sh` build what they run through Gradle, from the
+  repository root. In the sandbox that call fails ("Could not create service of type FileLockContentionHandler"):
+  Gradle runs when a session invokes `./gradlew` directly, not when a script does. So a session cannot run these
+  two scripts itself; it can run their build (`./gradlew :data-plane:plugin:toolsClasspath
+  :supervisor:supervisor-app:installDist` at the root), and a human runs the script.
 - The conformance suite is the supervisor's `fake-node` test fixtures (`NodeContractChecks`), run here by
   `PluginNodeContractTests`. When another session's tree is mid-refactor and does not compile, it breaks this build
-  too; isolate against their last commit (`git archive HEAD | tar -x -C /tmp/sup-head`, then
-  `SUPERVISOR=/tmp/sup-head ./tools/jbuild.sh`) rather than touching their files.
+  too; build against the last commit in a worktree (`git worktree add /tmp/head HEAD`) rather than touching their
+  files.

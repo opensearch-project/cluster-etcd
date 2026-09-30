@@ -4,6 +4,7 @@
  */
 package tools;
 
+import org.opensearch.cli.SuppressForbidden;
 import org.opensearch.Version;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
@@ -46,6 +47,7 @@ import java.util.Map;
  * milestone after this. The local node is fabricated too, which is honest for a check about reading rather than
  * applying: it is the identity the assignment is keyed on, and nothing here uses it for anything else.
  */
+@SuppressForbidden(reason = "A command-line tool: prints its results and sets its exit status")
 public final class PollAssignment {
 
     private PollAssignment() {}

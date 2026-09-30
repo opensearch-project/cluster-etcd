@@ -26,9 +26,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p><b>The one part of the reset path that had no test</b>, for a reason that turned out to be wrong: every
  * "what is not proven" note about this seam assumed a node could not be started in this sandbox, which was true of
- * {@code tools/jbuild.sh} and is not true of Gradle. Everything above the seam is a pure function and tested as
- * one in {@code IngestionResetsTests}; this is the part that touches a poller, and it is where the two obligations
- * that cost a real debugging session live:
+ * the javac harness used before Gradle could run here, and is not true of Gradle. Everything above the seam is a
+ * pure function and tested as one in {@code IngestionResetsTests}; this is the part that touches a poller, and it
+ * is where the two obligations that cost a real debugging session live:
  *
  * <ul>
  *   <li><b>pause before resetting.</b> {@code IngestionEngine.resetStreamPoller} throws

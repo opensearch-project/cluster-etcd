@@ -51,11 +51,10 @@ implementation next door saying which parts to lift, which to adapt and which ar
 ### Building it
 
 ```
-./gradlew build                    # the build; needs ../OpenSearch installed to mavenLocal first
-tools/jbuild.sh                    # compile and test with javac, for environments where Gradle cannot run
+../gradlew build                   # the build; needs OpenSearch installed to mavenLocal first
 tools/supervisor-sees-me.sh        # milestone 2's acceptance check: the supervisor sees this node
 tools/supervisor-assigns-me.sh     # milestone 3's: it assigns a shard, and the node explains what it would do
-./gradlew :plugin:schemes          # which store backends this build can see
+../gradlew :plugin:schemes         # which store backends this build can see
 ```
 
 `tools/supervisor-sees-me.sh` is the one worth running first. It publishes node documents into a scratch
@@ -186,18 +185,8 @@ automatically — so `plugin/build.gradle` creates and uses one. It also has to 
 there is no default and a node without one refuses to start.
 
 The plugin targets **OpenSearch 3.9**, the first version carrying the clusterless server path it steers —
-`LocalClusterService`, `LocalDiscovery`, `LocalShardStateAction`. Build the sibling checkout once
-(`cd ../OpenSearch && ./gradlew publishToMavenLocal`) before building here.
-
-`tools/jbuild.sh` exists because Gradle cannot run in the sandbox much of this was written in: it fails
-creating its file-lock service, since binding a socket is denied. It compiles every module against the
-OpenSearch jars in `../OpenSearch` and runs the tests with JUnit 4 under `RandomizedRunner`, which is the
-framework the real build uses — matching it is the whole point, since a launcher that discovered tests Gradle
-would not, or the reverse, reports a green build for a suite nobody runs.
-
-**`./gradlew build` passes**, and the two agree test for test. It remains the authority, because
-it also runs plugin packaging, forbidden-APIs, `testingConventions` and the license checks, none of which
-`jbuild.sh` reproduces. Three of those four have already caught something the script could not.
+`LocalClusterService`, `LocalDiscovery`, `LocalShardStateAction`. Build an OpenSearch checkout once
+(`cd /path/to/OpenSearch && ./gradlew publishToMavenLocal`) before building here.
 
 ### Configuration
 

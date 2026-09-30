@@ -20,6 +20,8 @@ are done here, and the open threads. Start there; this file is the long form of 
   `~/.gradle/caches/modules-2/files-2.1` and `~/.m2/repository`. Ask a human to run `./gradlew build`, and
   report honestly that the Gradle build is unverified.
 
+  *2026-09-29: `tools/jbuild.sh` and `tools/JUnitRunner.java` are removed; Gradle is the only build.*
+
   **`tools/jbuild.sh` was the workaround and is kept as a fallback**, for an environment where Gradle cannot run. It resolves jars from both local caches, compiles
   every module in dependency order with `--release 21`, and runs the tests through `tools/JUnitRunner.java`.
   `./gradlew --version` does work, which is misleading — the failure only appears once a task needs the
@@ -37,8 +39,8 @@ are done here, and the open threads. Start there; this file is the long form of 
 
 - **The Java 21 toolchain is `temurin-21.0.12.1`.** With several JDKs installed and a newer default
   `java` on the path, both builds have to be
-  explicit about which one they want. Gradle's auto-detection finds an installed 21 without configuration;
-  `jbuild.sh` asks `/usr/libexec/java_home -v 21`, or honours `JAVA21_HOME`. Prefer a real 21 toolchain to
+  explicit about which one they want. Gradle's auto-detection finds an installed 21 without configuration.
+  Prefer a real 21 toolchain to
   `--release 21` on a newer `javac` — `--release` gets the language level and the API surface right but
   still runs a newer compiler and a newer JVM, which is approximately the build rather than the build.
 

@@ -260,3 +260,27 @@ tasks.register('schemes', JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'org.opensearch.clusterless.store.StoreSchemes'
 }
+
+// The mains that tools/supervisor-sees-me.sh and tools/supervisor-assigns-me.sh run: the plugin's publisher and
+// poller, driven from a command line against a store, with no node. A source set of their own, so nothing they
+// need reaches the plugin's classpath or its zip. The server is compileOnly for a plugin -- a node provides it --
+// so here it comes from the compile classpath at runtime as well.
+sourceSets {
+    tools {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.compileClasspath + sourceSets.main.runtimeClasspath
+    }
+}
+
+// The scripts run the tools with a plain java rather than through Gradle, so each pass is a JVM start rather than a
+// build; this is the classpath they use.
+tasks.register('toolsClasspath') {
+    description = 'Compiles the command-line tools and writes their runtime classpath to build/tools/classpath.txt'
+    def classpath = sourceSets.tools.runtimeClasspath
+    def output = layout.buildDirectory.file('tools/classpath.txt')
+    inputs.files(classpath)
+    outputs.file(output)
+    doLast {
+        output.get().asFile.text = classpath.asPath
+    }
+}

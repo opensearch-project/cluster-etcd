@@ -113,8 +113,8 @@ public class ClusterStateInventorySourceTests extends OpenSearchTestCase {
         //
         // Shard 1's copy is a primary rather than a replica, because a replica with no primary anywhere is
         // not a state OpenSearch will build: RoutingNodes asserts "Primary shard routing can't be null for
-        // non-search-only indices" in its constructor. Assertions are on under Gradle and under
-        // tools/jbuild.sh, so an invalid fixture fails rather than quietly testing something impossible.
+        // non-search-only indices" in its constructor. Assertions are on under Gradle, so an invalid
+        // fixture fails rather than quietly testing something impossible.
         ClusterState state = stateWith(startedPrimary(0, LOCAL), startedPrimary(1, OTHER));
         ClusterStateInventorySource source = source(state, shardId -> 1L);
 

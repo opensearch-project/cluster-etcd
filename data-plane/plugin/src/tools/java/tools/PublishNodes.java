@@ -4,6 +4,7 @@
  */
 package tools;
 
+import org.opensearch.cli.SuppressForbidden;
 import org.opensearch.clusterless.contract.Heartbeat;
 import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.contract.NodeRole;
@@ -28,8 +29,7 @@ import java.util.Map;
  * the part that talks to the store — which is exactly the part the milestone is about.
  *
  * <pre>
- *   tools/jbuild.sh --no-tests
- *   tools/supervisor-sees-me.sh          # runs this, then a supervisor, then prints the projection
+ *   tools/supervisor-sees-me.sh          # builds and runs this, then a supervisor, then prints the projection
  * </pre>
  *
  * <p>Two things that cost time when this was first done by hand, both worth knowing before writing into a
@@ -38,6 +38,7 @@ import java.util.Map;
  * failing; and a node id must match {@code [A-Za-z0-9_-]{1,64}}, so a friendly name with a space in it is
  * rejected at construction.
  */
+@SuppressForbidden(reason = "A command-line tool: prints its results and sets its exit status")
 public final class PublishNodes {
 
     private PublishNodes() {}

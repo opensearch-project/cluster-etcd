@@ -815,6 +815,8 @@ Same environment the supervisor's `WORKING_NOTES.md` describes, and its notes ho
   classes: the two harnesses agree test for test, which is worth knowing when one of them says something
   surprising.
 
+  *2026-09-29: `tools/jbuild.sh` is removed; Gradle is the only build. What follows about it is history.*
+
   **Prefer Gradle now, and keep `jbuild.sh` for the inner loop.** Gradle is the only one that runs javadoc,
   forbidden-APIs, `testingConventions`, packaging and the license checks — and the first run after the
   allowlist change found four things that had been sitting in the tree precisely because nothing could look:
@@ -858,8 +860,8 @@ Same environment the supervisor's `WORKING_NOTES.md` describes, and its notes ho
     an upper-case type name. The server's own `FakeIngestionSource` lives in OpenSearch's test sources and is not
     published, so it cannot be depended on from here; `ListIngestionSource` is the local equivalent, and its
     payloads are rewritable on purpose.
-- **`../OpenSearch` must be built once** (`./gradlew assemble`) for `tools/jbuild.sh` to find jars, and
-  installed to mavenLocal for the Gradle build to resolve. **Do not let a test here depend on an unmerged
+- **An OpenSearch checkout must be installed to mavenLocal** (`./gradlew publishToMavenLocal` there) for the
+  Gradle build to resolve. **Do not let a test here depend on an unmerged
   server change**: `ClusterlessIndexSettingsTests` called `IndexScopedSettings.getRegisteredSettings()`, which
   lives on an OpenSearch branch, and this whole build went red the day that branch stopped being checked out.
   A test that can be broken by which branch a sibling repository is on is a test that will be.

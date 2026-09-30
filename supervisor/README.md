@@ -110,45 +110,12 @@ configuration; if yours cannot, point it at one with
 `-Dorg.gradle.java.installations.paths=...`.
 
 The persistence seam is shared with the control plane and lives in its own build,
-[`../opensearch-kv-store`](../opensearch-kv-store), consumed here as a Gradle **composite build**. So this
-build depends on a path outside itself, and **CI has to check out both repositories.** A submodule or a
-published artifact removes that later without changing the module layout.
+[`../kv-store`](../kv-store), consumed here as a Gradle **composite build**, so editing the store and this
+service together needs no publish step.
 
 Substitution matches on group and name, so the coordinate must stay exactly
 `org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT` — change either and it resolves against a repository
 instead of the local project, and fails.
-
-### Building where Gradle cannot run
-
-Gradle fails in the development sandbox this was written in: it cannot create its file-lock service,
-because binding a socket is denied.
-
-```
-> Could not create service of type FileLockContentionHandler
-   > java.net.SocketException: Operation not permitted
-```
-
-So there is a fallback, which compiles with `javac` against the jars already in `~/.gradle/caches` and
-`~/.m2`, and runs the same tests through a hand-rolled JUnit Platform launcher:
-
-```bash
-tools/jbuild.sh                 # compile everything, run every test
-tools/jbuild.sh --no-tests      # compile only
-tools/jbuild.sh KeysTests       # run tests whose class name matches
-```
-
-It uses the same Java 21 toolchain Gradle does, found via `/usr/libexec/java_home -v 21` or `JAVA21_HOME`,
-rather than `--release 21` on whatever `javac` is first on the path. `--release` gets the language level
-and the API surface right but still runs a newer compiler and a newer JVM, and the point of the script is
-to behave like the Gradle build rather than approximately like it. It falls back to `--release` with a
-warning if no 21 toolchain is found.
-
-**`./gradlew build` is the build; `tools/jbuild.sh` is a way to keep working when it cannot run.** Anything
-the fallback has to special-case is a difference between the two, and the difference is the bug.
-
-The fallback compiles `store-api` from source rather than using
-`../opensearch-kv-store/store-api/build/libs`, so a change over there is picked up immediately. Set
-`KV_STORE=/path/to/opensearch-kv-store` if it is not beside this repository.
 
 ## Integration tests
 

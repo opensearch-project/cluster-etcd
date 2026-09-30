@@ -45,10 +45,10 @@ Ownership decisions already made. Don't reopen them without a reason:
 ## How work is done here
 
 - **Building.** Gradle and Docker both work in the sandbox, which the session that crashed never knew:
-  `./gradlew build --offline`, and `./gradlew test` runs everything, including the integration tests against etcd
-  and ZooKeeper under Testcontainers (about two minutes). Use `--offline`: Maven Central is unreachable, and the
-  local caches have everything. `./tools/jbuild.sh` is a fallback for an environment where Gradle cannot run.
-  Don't report a change as green without running the Gradle build.
+  `../gradlew build --offline` from here (or `./gradlew build --offline` at the repository root, for every
+  component), and `../gradlew test` runs everything, including the integration tests against etcd and ZooKeeper
+  under Testcontainers (about two minutes). Use `--offline`: Maven Central is unreachable, and the local caches
+  have everything. Don't report a change as green without running the Gradle build.
 - **Committing.** Commits are signed. A plain `git commit` works from the sandbox now, but
   signing has hung here before, waiting on an approval that never arrived. So commit with a two-minute timeout, and
   if it hangs, stop it, leave the change staged with the message in `.git/<TOPIC>_MSG`, and ask Michael to run
@@ -95,9 +95,10 @@ the `PRIMARY_CONFLICT` finding. The data plane has implemented its half.
    ordinary replica of a segment-replication index (open question 10), and the heat signal (proposed in
    `NODE_CONTRACT.md`).
 
-## After the move to a single repository
+## Paths in the one repository
 
-This checkout expected its siblings beside it: `../opensearch-kv-store`, `../opensearch-data-plane`,
-`../opensearch-control-plane`, `../OpenSearch`, `../cluster-etcd`. The composite build
-(`settings.gradle.kts`, `includeBuild`), `tools/jbuild.sh` (its `KV_STORE` default) and many cross-references in
-the docs use those paths. The session doing the move may already have fixed some. **Check before assuming a path.**
+This component is `supervisor/` in a repository whose root builds every component. Its neighbours are
+`../kv-store` (included as a composite build), `../data-plane` and `../control-plane`; the wrapper is `../gradlew`.
+An OpenSearch checkout, where one is needed for reading server source, is outside the repository and named by the
+reader rather than assumed. Some docs written before the move still say `../opensearch-*`; read those as the
+directories above.
