@@ -1069,6 +1069,30 @@ exists to know. The supervisor has this on its list as the data plane's M9.
 Not proven: promotion has unit coverage and has not been driven on a running cluster. The supervisor promotes only
 when a primary is *lost*; the drain flow that demotes one on purpose is not built.
 
+### A correction: a docrep replica cannot finish recovering, so M9 is blocked on the contract
+
+Found during the 2026-09-30 review, from the server's source, and **not yet observed on a running cluster**. The
+in-sync gap above is not only a promotion and restart problem. Peer recovery is keyed on the replica's allocation
+id: `RecoverySourceHandler.waitForAssignmentPropagate` waits for that id to appear in the primary's routing table,
+and throws `DelayRecoveryException` after five backoffs. The primary's node never has it. `CoordinatorState` mints
+its own id for a peer's copy, because the contract carries no ids. So the replica retries for ever and stays
+`INITIALIZING`. A run would confirm it: the primary logs `delaying recovery of … as it is not listed as assigned to
+target node`.
+
+And had recovery completed, the replica would be dropped as soon as it started. `ReplicationTracker.
+updateFromClusterManager` removes any copy that is neither initializing nor in the cluster state's in-sync set, and
+this side fabricates a set of only the primary. That set cannot simply list every visible replica either: the same
+method asserts that every in-sync id is already in sync in the primary's tracker.
+
+The design, agreed with the user and written up as the supervisor's finding 12: the supervisor carries
+`allocation_id` (every docrep copy) and `in_sync` (docrep primaries) from inventories into the index projection,
+verbatim, for `DOCUMENT` indices only. This side then fabricates a primary's in-sync set from its own tracker; uses
+a peer's published id for its entry; and rebuilds a started replica as `INITIALIZING` when its primary's `in_sync`
+does not list it. That rule covers restart, promotion and a replica marked stale, and it replaces the
+`ephemeral_id` rule recommended above. The finding also recommends that the supervisor promote only a replica in
+the lost primary's last `in_sync` set. The server-side half, `remoteShardFailed` handled locally so that a failed
+replica write does not hang, is the user's.
+
 ## M10. Cluster-manager actions — **the not-hanging half is done**
 
 - `cluster.health` and `cluster.state` answered from the projections; mutations refused with a reason naming
