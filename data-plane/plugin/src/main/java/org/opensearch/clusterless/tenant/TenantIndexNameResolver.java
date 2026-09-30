@@ -6,12 +6,14 @@ package org.opensearch.clusterless.tenant;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.action.support.IndicesOptions;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.metadata.Metadata;
 import org.opensearch.clusterless.ClusterlessIndexSettings;
 import org.opensearch.clusterless.contract.TenantId;
 import org.opensearch.common.regex.Regex;
+import org.opensearch.index.IndexNotFoundException;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -83,32 +85,53 @@ public final class TenantIndexNameResolver implements IndexNameExpressionResolve
             return expressions;
         }
         Map<String, String> byFriendlyName = indicesOf(context.getState().metadata(), tenant.get());
-        if (byFriendlyName.isEmpty()) {
-            // The tenant has no indices on this node. Returning the expressions unchanged would let a name that
-            // happens to match another tenant's fabricated index resolve to it, so they are dropped instead --
-            // which the server reports as "no indices exist" when the request does not allow that.
-            return List.of();
-        }
+        // The server reads no expressions as _all, and so must this, or the empty list below goes through as-is.
+        List<String> requested = expressions.isEmpty() ? List.of(Metadata.ALL) : expressions;
 
-        List<String> resolved = new ArrayList<>(expressions.size());
-        for (String expression : expressions) {
-            resolve(expression, byFriendlyName, resolved);
+        // Every expression is resolved here to concrete names of this tenant's indices, and nothing else is passed
+        // on: whatever reaches the server's own resolvers is resolved against every tenant's indices.
+        Set<String> resolved = new LinkedHashSet<>();
+        for (String expression : requested) {
+            resolve(context, tenant.get(), expression, byFriendlyName, resolved);
         }
         logger.trace("clusterless: resolved {} to {} for tenant [{}]", expressions, resolved, tenant.get());
-        return resolved;
+        return resolved.isEmpty() ? nothing(context) : new ArrayList<>(resolved);
     }
 
-    private void resolve(String expression, Map<String, String> byFriendlyName, List<String> resolved) {
+    /**
+     * An expression list that the resolvers after this one resolve to no indices.
+     *
+     * <p>Not the empty list: {@code WildcardExpressionResolver} reads that as {@code _all}. "Everything, less
+     * everything" is empty by the server's own exclusion rules, and leaves the server to decide whether an empty
+     * answer is an error for this request ({@code allow_no_indices}), with its own message. When wildcards are not
+     * expanded at all the wildcard resolver passes the list through untouched, and then the empty list is safe
+     * while {@code *} would be taken as an index name.
+     */
+    private static List<String> nothing(IndexNameExpressionResolver.Context context) {
+        IndicesOptions options = context.getOptions();
+        if (options.expandWildcardsOpen() == false && options.expandWildcardsClosed() == false) {
+            return List.of();
+        }
+        return List.of("*", "-*");
+    }
+
+    private void resolve(
+        IndexNameExpressionResolver.Context context,
+        TenantId tenant,
+        String expression,
+        Map<String, String> byFriendlyName,
+        Set<String> resolved
+    ) {
         if (expression == null || expression.isEmpty()) {
             return;
         }
 
-        // An exclusion keeps its sign and has its name mapped, so that -my-index excludes the right index rather
-        // than nothing. Handled here because the resolvers that would otherwise interpret it run after this one.
+        // Applied here rather than passed on with its sign: the server honours an exclusion only after a wildcard
+        // it expanded itself, and every wildcard has been expanded by the time it looks.
         if (expression.charAt(0) == '-' && expression.length() > 1) {
-            List<String> excluded = new ArrayList<>();
-            resolve(expression.substring(1), byFriendlyName, excluded);
-            excluded.forEach(name -> resolved.add("-" + name));
+            Set<String> excluded = new LinkedHashSet<>();
+            resolve(context, tenant, expression.substring(1), byFriendlyName, excluded);
+            resolved.removeAll(excluded);
             return;
         }
 
@@ -124,18 +147,35 @@ public final class TenantIndexNameResolver implements IndexNameExpressionResolve
         }
 
         if (Regex.isSimpleMatchPattern(expression)) {
-            byFriendlyName.forEach((friendly, fabricated) -> {
-                if (Regex.simpleMatch(expression, friendly)) {
-                    resolved.add(fabricated);
+            boolean matched = false;
+            for (Map.Entry<String, String> index : byFriendlyName.entrySet()) {
+                if (Regex.simpleMatch(expression, index.getKey())) {
+                    resolved.add(index.getValue());
+                    matched = true;
                 }
-            });
+            }
+            if (matched == false && context.getOptions().allowNoIndices() == false) {
+                context.addResolutionError(indexNotFound(expression));
+            }
             return;
         }
 
-        // Not one of this tenant's index names. Left alone rather than dropped, because it may be a fabricated
-        // name typed in full, an alias, or something a later resolver understands -- and because a name this node
-        // has never heard of should produce the server's own "no such index" rather than a silence from here.
-        resolved.add(expression);
+        // A fabricated name typed in full, which is how an operator addresses an index directly -- but only one of
+        // this tenant's, ambiguous ones included. Any other name is not found, whether or not the state holds it: another tenant's fabricated
+        // name is not a secret, since it is the _index of every hit. Date math is refused along with the rest; it
+        // would be evaluated after this resolver, against the whole namespace.
+        IndexMetadata index = context.getState().metadata().index(expression);
+        if (index != null && tenant.value().equals(ClusterlessIndexSettings.TENANT.get(index.getSettings()))) {
+            resolved.add(expression);
+        } else if (context.getOptions().ignoreUnavailable() == false) {
+            context.addResolutionError(indexNotFound(expression));
+        }
+    }
+
+    private static IndexNotFoundException indexNotFound(String expression) {
+        IndexNotFoundException e = new IndexNotFoundException(expression);
+        e.setResources("index_or_alias", expression);
+        return e;
     }
 
     /**
