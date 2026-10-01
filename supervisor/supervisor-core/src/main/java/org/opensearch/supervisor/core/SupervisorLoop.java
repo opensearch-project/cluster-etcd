@@ -1,0 +1,330 @@
+package org.opensearch.supervisor.core;
+
+import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.Watches;
+import org.opensearch.supervisor.model.Keys;
+import org.opensearch.supervisor.model.PoolId;
+import org.opensearch.supervisor.model.TenantId;
+import org.opensearch.supervisor.model.diff.Diff;
+import org.opensearch.supervisor.model.diff.Differ;
+import org.opensearch.supervisor.model.diff.FindingAges;
+import org.opensearch.supervisor.model.observe.Observation;
+import org.opensearch.supervisor.model.plan.Plan;
+import org.opensearch.supervisor.model.plan.Planner;
+import org.opensearch.supervisor.model.task.TaskRecord;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.BooleanSupplier;
+
+/**
+ * One pool's reconciliation pass: observe, diff, project, and — only if asked — plan and act.
+ *
+ * <p><b>Read-only unless a lease check is supplied.</b> Constructed without one it behaves exactly as it did
+ * through milestones 3 and 4, which is what let leases and failover be shaken out by a fleet that could not
+ * touch anything. {@code REQUIREMENTS.md} §10 argues that order better than this class can.
+ *
+ * <p>Acting is no longer narrow, and the ordering within a pass is what keeps it safe. Copies are placed, then
+ * orphans withdrawn, then surpluses trimmed, then at most one move proposed; tasks are drained against the state
+ * this pass has just brought about; and {@link NodeReaper} runs last of all, because every decision above is
+ * better made with a departed node still visible. Four separate rules can now delete something, so each one
+ * carries its own argument for why the thing it deletes is not needed.
+ *
+ * <p>{@link #pass()} is explicit rather than a thread, for the same reason {@code FakeNode.tick()} is: a
+ * pass that only advances when asked is a pass a test can reason about, and the balancer tests at milestone
+ * 4 will need to drive several of these in one JVM.
+ *
+ * <p>Note what is <em>not</em> here. No plan survives a pass, and nothing is carried between passes except
+ * the caches — the revision cache, the liveness history, and the finding ages — each of which is safe to
+ * lose. R2.3 is satisfied by having nothing worth keeping.
+ */
+public final class SupervisorLoop {
+
+    private final KeyValueStore store;
+    private final Clock clock;
+    private final PoolId pool;
+    private final String supervisorId;
+    private final Observer observer;
+    private final Projector projector;
+    private final FindingAges ages = new FindingAges();
+    private final TenantDiscovery tenants;
+    private final Applier applier;
+    private final org.opensearch.supervisor.model.allocate.Allocator allocator =
+        new org.opensearch.supervisor.model.allocate.Allocator();
+    private final Planner.Policy policy;
+    private final BooleanSupplier stillHoldsLease;
+    private final long epoch;
+    private final TaskQueue tasks;
+    private final StatusProjector status;
+    private final NodeReaper reaper;
+
+    private Diff lastDiff;
+    private Observation lastObservation;
+    private Plan lastPlan;
+    private Applier.Outcome lastOutcome;
+    private TaskQueue.Outcome lastTaskOutcome;
+    private int lastStatusWrites;
+    private NodeReaper.Report lastReaping = NodeReaper.Report.NOTHING;
+    private boolean reapingWritten;
+
+    /** Read-only: observes, diffs and projects, and writes nothing a node will act on. */
+    public SupervisorLoop(
+        KeyValueStore store,
+        Clock clock,
+        PoolId pool,
+        String supervisorId,
+        Set<TenantId> configuredTenants
+    ) {
+        this(store, clock, pool, supervisorId, configuredTenants, LivenessTracker.Config.defaults());
+    }
+
+    /**
+     * Read-only, with a liveness policy.
+     *
+     * <p>Worth honouring here rather than defaulting: read-only mode exists to be pointed at a live cluster to
+     * see what this service <em>would</em> say about it, and it would say something different about a stale node
+     * under a different policy. A read-only run that reported liveness the acting run would not agree with would
+     * be worse than useless.
+     */
+    public SupervisorLoop(
+        KeyValueStore store,
+        Clock clock,
+        PoolId pool,
+        String supervisorId,
+        Set<TenantId> configuredTenants,
+        LivenessTracker.Config liveness
+    ) {
+        this(store, clock, pool, supervisorId, configuredTenants, null, null, 0, liveness);
+    }
+
+    /**
+     * Acting.
+     *
+     * @param stillHoldsLease evaluated as late as possible, immediately before each write and again between
+     *     writes. Passed as a supplier rather than a boolean precisely so that the caller cannot accidentally
+     *     evaluate it once at the top of a pass and hand over a stale answer.
+     * @param epoch the lease epoch, stamped into every assignment written so that a split brain is
+     *     diagnosable afterwards from data the system already wrote
+     */
+    public SupervisorLoop(
+        KeyValueStore store,
+        Clock clock,
+        PoolId pool,
+        String supervisorId,
+        Set<TenantId> configuredTenants,
+        BooleanSupplier stillHoldsLease,
+        Planner.Policy policy,
+        long epoch
+    ) {
+        this(store, clock, pool, supervisorId, configuredTenants, stillHoldsLease, policy, epoch,
+            LivenessTracker.Config.defaults());
+    }
+
+    public SupervisorLoop(
+        KeyValueStore store,
+        Clock clock,
+        PoolId pool,
+        String supervisorId,
+        Set<TenantId> configuredTenants,
+        BooleanSupplier stillHoldsLease,
+        Planner.Policy policy,
+        long epoch,
+        LivenessTracker.Config liveness
+    ) {
+        this.store = Objects.requireNonNull(store, "store");
+        this.clock = Objects.requireNonNull(clock, "clock");
+        this.pool = Objects.requireNonNull(pool, "pool");
+        this.supervisorId = supervisorId;
+        // One tracker, shared: the reaper compare-and-sets a heartbeat delete against the same revision the
+        // liveness verdict was computed from, so it has to be the same history, not a second copy of it.
+        LivenessTracker tracker = new LivenessTracker(clock.instant(), liveness);
+        this.observer = new Observer(store, clock, tracker);
+        this.reaper = new NodeReaper(store, tracker);
+        this.projector = new Projector(store, supervisorId);
+        this.tenants = new TenantDiscovery(store, configuredTenants);
+        this.applier = new Applier(store, clock);
+        this.stillHoldsLease = stillHoldsLease;
+        this.policy = policy == null ? Planner.Policy.defaults() : policy;
+        this.epoch = epoch;
+        this.tasks = new TaskQueue(store, clock, supervisorId, TaskQueue.Policy.defaults());
+        this.status = new StatusProjector(store);
+    }
+
+    /**
+     * One pass. Reads the store, computes what is wrong, and writes that where an operator can see it.
+     *
+     * @return the diff, so a caller — a test, or a future planner — can act on it without re-reading
+     */
+    public Diff pass() {
+        long startedAt = clock.millis();
+
+        Pools pools = Pools.read(store);
+        Set<TenantId> known = tenants.discover().tenants();
+        Observation observation = observer.observe(pool, pools, known);
+
+        Diff diff = Differ.diff(observation, ages);
+
+        // Projection happens before anything would act, and happens in read-only mode. The observability
+        // surface reports what was seen, not what was done, so it has to be right before there is anything
+        // to be wrong about.
+        // The queue drains after this, so these are the *previous* pass's figures. One pass of lag is the
+        // price of tasks being a hint rather than a driver: draining first would let a task decide what gets
+        // reconciled, which R2.1 forbids. The alternative -- projecting twice per pass -- costs a write.
+        projector.project(
+            diff, observation, clock.millis() - startedAt, watchPollFailures(), taskFigures(),
+            lastPlan == null ? java.util.Map.of() : lastPlan.refusals(),
+            lastPlan == null ? null : lastPlan.balance(),
+            epoch,
+            lastPlan != null && lastPlan.ceilingHit()
+        );
+
+        lastDiff = diff;
+        lastObservation = observation;
+        lastPlan = null;
+        lastOutcome = null;
+
+        if (stillHoldsLease != null) {
+            // The pool's own rules: which attributes a shard's copies are spread across, how many copies one of
+            // its nodes may hold, and whether two copies may share a host. Operator-owned, because every one of
+            // them depends on the deployment rather than on anything the supervisor can observe.
+            var definition = pools.definitionOf(pool);
+            Plan plan = Planner.plan(
+                observation, diff, epoch, policy, allocator,
+                definition.map(org.opensearch.supervisor.model.pool.PoolDefinition::awarenessAttributes)
+                    .orElse(java.util.List.of()),
+                definition.map(org.opensearch.supervisor.model.pool.PoolDefinition::maxShardCopiesPerNode)
+                    .orElse(null),
+                definition.map(org.opensearch.supervisor.model.pool.PoolDefinition::refuseCopiesSharingAHost)
+                    .orElse(false),
+                new org.opensearch.supervisor.model.balance.Rebalancer()
+            );
+            lastPlan = plan;
+            lastOutcome = applier.apply(plan, observation, stillHoldsLease);
+
+            // After reconciling, never before. A task is a hint about where to look, so draining the queue
+            // must not be what decides what gets done -- R2.1. Running it here rather than first also means
+            // a task is judged against the state this pass has just brought about.
+            if (stillHoldsLease.getAsBoolean()) {
+                lastTaskOutcome = tasks.drain(observation, epoch);
+
+                // The projections the control plane reads. Computed from the observation this pass began
+                // with, so they describe what was seen rather than what has just been asked for -- which is
+                // the invariant docrep peer resolution depends on.
+                lastStatusWrites = status.project(observation, definition
+                    .map(org.opensearch.supervisor.model.pool.PoolDefinition::awarenessAttributes)
+                    .orElse(java.util.List.of()));
+
+                // Last of all, and deliberately: reaping is cleanup, and every decision above is better made
+                // with the corpse still visible. A node deleted here is one whose copies this pool has already
+                // replaced, so nothing earlier in the pass was waiting on it.
+                lastReaping = reaper.reap(diff, observation);
+                projectReaping(diff, observation);
+            }
+        }
+        return diff;
+    }
+
+    /**
+     * {@code Watches.pollFailures()} counts polls that threw, and is only non-zero on the filesystem store
+     * — both remote backends watch natively. Published regardless, because a silently dead watch looks
+     * exactly like a quiet keyspace, which is this mechanism's most likely failure.
+     */
+    private long watchPollFailures() {
+        return Watches.pollFailures();
+    }
+
+    public Diff lastDiff() {
+        return lastDiff;
+    }
+
+    public Plan lastPlan() {
+        return lastPlan;
+    }
+
+    public Applier.Outcome lastOutcome() {
+        return lastOutcome;
+    }
+
+    public TaskQueue.Outcome lastTaskOutcome() {
+        return lastTaskOutcome;
+    }
+
+    /** How many projection keys the last pass wrote; zero in steady state. */
+    /**
+     * Publishes what the reaper did, and what it would not do.
+     *
+     * <p>Only once there is something to say, and then until there is not: a pool that has never reaped anything
+     * has no document, which distinguishes "nothing to report" from "not running" — and the key is deleted once a
+     * pass finds nothing, so a stale reaping report cannot outlive the state it described.
+     */
+    private void projectReaping(Diff diff, Observation observation) {
+        String key = Keys.poolReaping(pool);
+        if (lastReaping.reaped().isEmpty() && lastReaping.kept().isEmpty()) {
+            if (reapingWritten) {
+                store.delete(key);
+                reapingWritten = false;
+            }
+            return;
+        }
+        store.put(key, reaper.statusOf(
+            lastReaping, pool, supervisorId, diff.pass(), observation.observedAt().toEpochMilli()
+        ).toBytes());
+        reapingWritten = true;
+    }
+
+    /**
+     * Every node this pool's last pass saw, with its registration.
+     *
+     * <p>Exposed so the member-status document can publish each node's <em>effective</em> liveness thresholds
+     * without a second scan of {@code nodes/registration/}: the observer has already read and parsed them, and a
+     * document written almost never should not add a read to every pass.
+     */
+    public java.util.Map<org.opensearch.supervisor.model.NodeId, org.opensearch.supervisor.model.node.Registration>
+        lastRegistrations() {
+        if (lastObservation == null) {
+            return java.util.Map.of();
+        }
+        java.util.Map<org.opensearch.supervisor.model.NodeId, org.opensearch.supervisor.model.node.Registration>
+            registrations = new java.util.LinkedHashMap<>();
+        lastObservation.nodes().forEach((nodeId, node) -> {
+            if (node.registration() != null) {
+                registrations.put(nodeId, node.registration());
+            }
+        });
+        return registrations;
+    }
+
+    /** What the last pass deleted, and what it declined to delete. Empty on almost every pass. */
+    public NodeReaper.Report lastReaping() {
+        return lastReaping;
+    }
+
+    public int lastStatusWrites() {
+        return lastStatusWrites;
+    }
+
+    private org.opensearch.supervisor.model.projection.Projections.Tasks taskFigures() {
+        if (lastTaskOutcome == null) {
+            return org.opensearch.supervisor.model.projection.Projections.Tasks.NONE;
+        }
+        return new org.opensearch.supervisor.model.projection.Projections.Tasks(
+            lastTaskOutcome.claimed(), lastTaskOutcome.completed(), lastTaskOutcome.failed(),
+            lastTaskOutcome.reaped(), lastTaskOutcome.lost()
+        );
+    }
+
+    public boolean isReadOnly() {
+        return stillHoldsLease == null;
+    }
+
+    public PoolId pool() {
+        return pool;
+    }
+
+    /** How long to wait before the next pass, absent a watch waking it sooner. */
+    public static Duration defaultPassInterval() {
+        return Duration.ofSeconds(2);
+    }
+}
