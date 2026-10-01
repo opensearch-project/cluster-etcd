@@ -39,14 +39,18 @@ public final class IndicesServiceTrackedInSync implements TrackedInSync {
         }
         try {
             IndexService indexService = indices.indexService(shardId.getIndex());
-            IndexShard shard = indexService == null ? null : indexService.getShardOrNull(shardId.id());
-            if (shard == null || shard.isPrimaryMode() == false) {
-                return null;
-            }
-            return Set.copyOf(shard.getReplicationGroup().getInSyncAllocationIds());
+            return of(indexService == null ? null : indexService.getShardOrNull(shardId.id()));
         } catch (Exception e) {
             logger.debug("clusterless: could not read the in-sync set of {}", shardId, e);
             return null;
         }
+    }
+
+    /** The reading itself, from a shard in hand. */
+    public static Set<String> of(IndexShard shard) {
+        if (shard == null || shard.isPrimaryMode() == false) {
+            return null;
+        }
+        return Set.copyOf(shard.getReplicationGroup().getInSyncAllocationIds());
     }
 }

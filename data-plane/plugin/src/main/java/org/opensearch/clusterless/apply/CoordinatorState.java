@@ -148,12 +148,28 @@ public final class CoordinatorState implements NodeState {
         Set<Integer> shards = new java.util.HashSet<>();
         Set<Integer> shardsWithAPrimary = new java.util.HashSet<>();
         Map<Integer, Integer> searchOnlyPerShard = new java.util.HashMap<>();
+        Set<Integer> primariesHere = new java.util.HashSet<>();
         if (existing != null) {
             for (IndexShardRoutingTable shard : existing) {
                 for (ShardRouting copy : shard) {
                     indexRouting.addShard(copy);
                     heldHere |= localNode.getId().equals(copy.currentNodeId());
+                    if (copy.primary() && localNode.getId().equals(copy.currentNodeId())) {
+                        primariesHere.add(copy.id());
+                    }
                     count(shards, shardsWithAPrimary, searchOnlyPerShard, copy.id(), copy.primary(), copy.isSearchOnly());
+                }
+            }
+        }
+
+        // Under document replication, the copies this node's primaries hold in sync, read once per shard so that what is
+        // routed and what is called in sync come from the same reading. Null where the tracker cannot say.
+        Map<Integer, Set<String>> trackedHere = new java.util.HashMap<>();
+        if (documentReplicated(routed)) {
+            for (Integer shardNumber : primariesHere) {
+                Set<String> tracked = trackedInSync.of(new ShardId(index, shardNumber));
+                if (tracked != null) {
+                    trackedHere.put(shardNumber, tracked);
                 }
             }
         }
@@ -173,6 +189,25 @@ public final class CoordinatorState implements NodeState {
                     // what keeps a five-copy shard from putting five entries in five nodes' states -- and the count
                     // below follows the table rather than the projection, so the two cannot disagree.
                     continue;
+                }
+                if (primariesHere.contains(shardNumber) && copy.role() != ShardRole.PRIMARY && copy.state() == ShardState.STARTED
+                    && documentReplicated(routed)) {
+                    Set<String> tracked = trackedHere.get(shardNumber);
+                    if (tracked == null || tracked.contains(copy.allocationId()) == false) {
+                        // A started copy that this node's primary does not hold in sync. ReplicationTracker asserts that
+                        // every copy in the routing table is tracked, and drops a started one that is not in the in-sync
+                        // set -- so routing it is a state the server rejects under -ea and silently mis-tracks without.
+                        // It is left out instead, and its own node rebuilds it when it sees it is no longer in the
+                        // primary's published set. An initializing copy is routed either way, since that is how it is
+                        // recovered and brought into the set.
+                        logger.debug(
+                            "clusterless: not routing {}/{} on [{}] to this primary: started, and not in its in-sync set",
+                            index,
+                            shardNumber,
+                            copy.node()
+                        );
+                        continue;
+                    }
                 }
                 ShardRouting elsewhere = routingFor(new ShardId(index, shardNumber), copy, previous, index, documentReplicated(routed));
                 if (elsewhere == null) {
@@ -214,7 +249,7 @@ public final class CoordinatorState implements NodeState {
                     previous.metadata().index(index),
                     searchOnly,
                     everyShardHasAPrimary && markerIsTheTenants == false,
-                    documentReplicated(routed) ? inSyncOfPrimariesHere(table) : Map.of()
+                    inSyncOfPrimariesHere(table, trackedHere)
                 ),
                 false
             );
@@ -236,27 +271,34 @@ public final class CoordinatorState implements NodeState {
      * node has started it, and {@code ReplicationTracker.updateFromClusterManager} takes such an id as initializing
      * and in sync.
      */
-    private Map<Integer, Set<String>> inSyncOfPrimariesHere(IndexRoutingTable table) {
+    private Map<Integer, Set<String>> inSyncOfPrimariesHere(IndexRoutingTable table, Map<Integer, Set<String>> trackedHere) {
         Map<Integer, Set<String>> inSync = new java.util.TreeMap<>();
         for (IndexShardRoutingTable shard : table) {
-            ShardRouting primary = shard.primaryShard();
-            if (primary == null || localNode.getId().equals(primary.currentNodeId()) == false) {
-                continue;
+            Set<String> ids = inSyncOf(shard, localNode.getId(), trackedHere.get(shard.shardId().id()));
+            if (ids != null) {
+                inSync.put(shard.shardId().id(), ids);
             }
-            Set<String> tracked = trackedInSync.of(shard.shardId());
-            if (tracked == null) {
-                continue;
-            }
-            Set<String> ids = new java.util.TreeSet<>();
-            ids.add(primary.allocationId().getId());
-            for (ShardRouting copy : shard.assignedShards()) {
-                if (tracked.contains(copy.allocationId().getId())) {
-                    ids.add(copy.allocationId().getId());
-                }
-            }
-            inSync.put(shard.shardId().id(), ids);
         }
         return inSync;
+    }
+
+    /**
+     * One shard's part of {@link #inSyncOfPrimariesHere}: null unless its primary is on this node and its tracker could
+     * say, which is what {@code tracked} being non-null means.
+     */
+    public static Set<String> inSyncOf(IndexShardRoutingTable shard, String localNodeId, Set<String> tracked) {
+        ShardRouting primary = shard.primaryShard();
+        if (primary == null || localNodeId.equals(primary.currentNodeId()) == false || tracked == null) {
+            return null;
+        }
+        Set<String> ids = new java.util.TreeSet<>();
+        ids.add(primary.allocationId().getId());
+        for (ShardRouting copy : shard.assignedShards()) {
+            if (tracked.contains(copy.allocationId().getId())) {
+                ids.add(copy.allocationId().getId());
+            }
+        }
+        return ids;
     }
 
     static boolean documentReplicated(CoordinatorView.RoutedIndex routed) {

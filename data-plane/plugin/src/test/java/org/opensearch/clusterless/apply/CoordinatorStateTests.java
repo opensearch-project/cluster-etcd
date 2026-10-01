@@ -626,7 +626,7 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         // silent. A docrep primary's replication group is exactly the copies in its own routing table --
         // ReplicationOperation sends to what ReplicationTracker found there -- so a primary that knows no replicas
         // does not fail to push, it acknowledges writes that only it holds. Nothing logs that.
-        ClusterState state = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.REPLICA, ShardState.STARTED));
+        ClusterState state = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.REPLICA, ShardState.STARTED), holdingPeer());
 
         IndexShardRoutingTable shard = state.routingTable().index(state.metadata().index(indexName()).getIndex()).shard(0);
         assertEquals("a docrep primary must keep the replica it replicates to", 2, shard.size());
@@ -646,7 +646,7 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         assertEquals(replica, peerCopy(second));
         assertTrue("the pass after changes nothing", StateEquivalence.sameContent(first, second));
 
-        ClusterState started = docrepPrimary(second, copy(PEER, ShardRole.REPLICA, ShardState.STARTED));
+        ClusterState started = docrepPrimary(second, copy(PEER, ShardRole.REPLICA, ShardState.STARTED), holdingPeer());
         assertTrue(peerCopy(started).started());
         assertEquals("the same copy once started, so the same id", allocationIdOf(PEER), peerCopy(started).allocationId().getId());
     }
@@ -662,9 +662,10 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
     public void testADocrepPeerBuiltAgainIsANewEntry() {
         // Its node built the copy again -- after a failure, say -- so it has a new id, and the entry reused from the last
         // pass names one that no longer exists.
-        ClusterState before = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.REPLICA, ShardState.STARTED));
+        // Initializing: a copy its node has just built again is recovering, and is routed whether or not it is in sync.
+        ClusterState before = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.REPLICA, ShardState.INITIALIZING));
 
-        ClusterState after = docrepPrimary(before, copy(PEER, ShardRole.REPLICA, ShardState.STARTED, "aid-rebuilt"));
+        ClusterState after = docrepPrimary(before, copy(PEER, ShardRole.REPLICA, ShardState.INITIALIZING, "aid-rebuilt"));
 
         assertEquals("aid-rebuilt", peerCopy(after).allocationId().getId());
     }
@@ -691,6 +692,30 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         ClusterState third = docrepPrimary(second, replica, tracked);
         assertTrue("the pass after changes nothing", StateEquivalence.sameContent(second, third));
         assertEquals(after.getVersion(), third.metadata().index(indexName()).getVersion());
+    }
+
+    public void testAStartedCopyThePrimaryDoesNotHoldInSyncIsNotRouted() {
+        // ReplicationTracker asserts that every copy in the routing table is tracked, and drops a started one that is not
+        // in the in-sync set (TrackedInSyncReplicationTests shows the server rejecting it). So such a copy is left out of
+        // the primary's table, whether the tracker cannot say -- after a restart or a promotion -- or says it is not in sync.
+        IndexStatus.Copy replica = copy(PEER, ShardRole.REPLICA, ShardState.STARTED);
+
+        ClusterState unknown = docrepPrimary(ClusterState.EMPTY_STATE, replica, TrackedInSync.UNKNOWN);
+        assertEquals(1, shardTable(unknown).size());
+
+        String primary = localPrimaryId(unknown);
+        ClusterState notHeld = docrepPrimary(unknown, replica, shardId -> Set.of(primary));
+        assertEquals(1, shardTable(notHeld).size());
+        assertEquals(Set.of(primary), inSync(notHeld));
+        assertTrue("and that is a fixed point", StateEquivalence.sameContent(notHeld, docrepPrimary(notHeld, replica, shardId -> Set.of(primary))));
+    }
+
+    public void testAnInitializingCopyIsRoutedWhetherOrNotThePrimaryHoldsIt() {
+        // That is how a copy is recovered and brought into the set.
+        ClusterState state = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.REPLICA, ShardState.INITIALIZING), TrackedInSync.UNKNOWN);
+
+        assertEquals(2, shardTable(state).size());
+        assertTrue(peerCopy(state).initializing());
     }
 
     public void testACopyTheTrackerHoldsThatIsNotInTheTableIsNotInSync() {
@@ -770,6 +795,15 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
             MappingSource.WRAPPED,
             tracked
         ).buildClusterState(previous);
+    }
+
+    /** A tracker that holds the peer's copy in sync, as a primary does once that copy has recovered from it. */
+    private static TrackedInSync holdingPeer() {
+        return shardId -> Set.of(allocationIdOf(PEER));
+    }
+
+    private static IndexShardRoutingTable shardTable(ClusterState state) {
+        return state.routingTable().index(state.metadata().index(indexName()).getIndex()).shard(0);
     }
 
     private static String localPrimaryId(ClusterState state) {
