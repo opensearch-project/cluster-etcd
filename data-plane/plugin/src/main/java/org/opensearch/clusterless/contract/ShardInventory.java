@@ -98,6 +98,10 @@ public record ShardInventory(NodeId nodeId, String ephemeralId, long generatedAt
      *     node need not invent a figure it does not have.
      * @param reason why a {@code FAILED} copy failed, truncated because an unbounded per-copy field is how
      *     a size budget gets exceeded during exactly the incident that produced the failures (D7.2)
+     * @param allocationId the id of this copy's routing entry, published only for a document-replication copy: peer
+     *     recovery and the primary's tracker are keyed on it, and only this node knows it (finding 12)
+     * @param inSync on a document-replication primary, the copies its own tracker holds in sync, itself included,
+     *     sorted so the bytes do not change while the set does not. Null where it is not known.
      */
     public record HeldCopy(
         TenantId tenant,
@@ -108,7 +112,9 @@ public record ShardInventory(NodeId nodeId, String ephemeralId, long generatedAt
         ShardRole role,
         ShardState state,
         Long sizeBytes,
-        String reason
+        String reason,
+        String allocationId,
+        List<String> inSync
     ) {
 
         public static final int MAX_REASON_LENGTH = 512;
@@ -138,6 +144,30 @@ public record ShardInventory(NodeId nodeId, String ephemeralId, long generatedAt
             if (reason != null && reason.length() > MAX_REASON_LENGTH) {
                 reason = reason.substring(0, MAX_REASON_LENGTH);
             }
+            if (inSync != null) {
+                if (role != ShardRole.PRIMARY) {
+                    throw new IllegalArgumentException("only a primary has an in-sync set, and this is a " + role);
+                }
+                if (inSync.isEmpty()) {
+                    throw new IllegalArgumentException("a primary is always in sync with itself, so the set is never empty");
+                }
+                inSync = inSync.stream().sorted().toList();
+            }
+        }
+
+        /** A copy that publishes neither replication field, which is every copy but a document-replication one. */
+        public HeldCopy(
+            TenantId tenant,
+            String indexUuid,
+            String indexName,
+            long configRevision,
+            int shard,
+            ShardRole role,
+            ShardState state,
+            Long sizeBytes,
+            String reason
+        ) {
+            this(tenant, indexUuid, indexName, configRevision, shard, role, state, sizeBytes, reason, null, null);
         }
 
         public static HeldCopy initializing(TenantId tenant, String indexUuid, String indexName, long configRevision, int shard,

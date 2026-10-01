@@ -183,6 +183,12 @@ public final class NodeDocuments {
                 if (copy.reason() != null) {
                     builder.field("reason", copy.reason());
                 }
+                if (copy.allocationId() != null) {
+                    builder.field("allocation_id", copy.allocationId());
+                }
+                if (copy.inSync() != null) {
+                    builder.array("in_sync", copy.inSync().toArray(new String[0]));
+                }
                 builder.endObject();
             }
             if (openIndex != null) {

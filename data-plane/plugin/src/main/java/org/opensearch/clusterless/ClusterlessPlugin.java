@@ -19,6 +19,7 @@ import org.opensearch.clusterless.apply.DataNodeState;
 import org.opensearch.clusterless.apply.DesiredStateResolver;
 import org.opensearch.clusterless.apply.IndexConfigSource;
 import org.opensearch.clusterless.apply.IndicesServiceIngestionPollers;
+import org.opensearch.clusterless.apply.IndicesServiceTrackedInSync;
 import org.opensearch.clusterless.apply.IngestionResets;
 import org.opensearch.clusterless.apply.RetainedIndexReaper;
 import org.opensearch.clusterless.apply.MapperServiceMappingSource;
@@ -176,7 +177,8 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         ClusterStateInventorySource inventorySource = new ClusterStateInventorySource(
             clusterService::state,
             localNode.getId(),
-            new IndicesServiceShardSizes(this::indicesService)
+            new IndicesServiceShardSizes(this::indicesService),
+            new IndicesServiceTrackedInSync(this::indicesService)
         );
 
         publisher = new NodePublisher(

@@ -18,6 +18,7 @@ import org.opensearch.cluster.routing.RoutingTable;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.UnassignedInfo;
 import org.opensearch.clusterless.ClusterlessIndexSettings;
+import org.opensearch.clusterless.apply.TrackedInSync;
 import org.opensearch.clusterless.contract.ShardInventory;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.clusterless.contract.ShardState;
@@ -170,16 +171,67 @@ public class ClusterStateInventorySourceTests extends OpenSearchTestCase {
         assertTrue(source(state, shardId -> 1L).heldCopies().isEmpty());
     }
 
+    // ---------------------------------------------------------------- document replication (finding 12)
+
+    public void testADocrepPrimaryPublishesItsAllocationIdAndItsTrackersInSyncSet() {
+        ShardRouting primary = startedPrimary(0, LOCAL);
+        ClusterState state = stateWith("DOCUMENT", primary);
+
+        ShardInventory.HeldCopy copy = tracking(state, shardId -> Set.of("zzz-replica", primary.allocationId().getId()))
+            .heldCopies()
+            .get(0);
+
+        assertEquals(primary.allocationId().getId(), copy.allocationId());
+        assertEquals("sorted, so the bytes do not change while the set does not", List.of(primary.allocationId().getId(), "zzz-replica"), copy.inSync());
+    }
+
+    public void testADocrepReplicaPublishesItsAllocationIdAndNoInSyncSet() {
+        ShardRouting replica = startedReplica(0, LOCAL);
+
+        ShardInventory.HeldCopy copy = tracking(stateWith("DOCUMENT", startedPrimary(0, OTHER), replica), shardId -> Set.of("anything")).heldCopies().get(0);
+
+        assertEquals(replica.allocationId().getId(), copy.allocationId());
+        assertNull(copy.inSync());
+    }
+
+    public void testADocrepPrimaryWhoseTrackerCannotSayPublishesNoInSyncSet() {
+        // Not in primary mode yet, say. Absent means "not published", which the supervisor reads as today's behaviour;
+        // an empty set would claim the primary is not even in sync with itself.
+        ShardInventory.HeldCopy copy = tracking(stateWith("DOCUMENT", startedPrimary(0, LOCAL)), TrackedInSync.UNKNOWN).heldCopies().get(0);
+
+        assertNotNull(copy.allocationId());
+        assertNull(copy.inSync());
+    }
+
+    public void testASegmentReplicatedCopyPublishesNeither() {
+        ShardInventory.HeldCopy copy = tracking(stateWith("SEGMENT", startedPrimary(0, LOCAL)), shardId -> Set.of("anything")).heldCopies().get(0);
+
+        assertNull(copy.allocationId());
+        assertNull(copy.inSync());
+    }
+
     // ---------------------------------------------------------------- fixtures
+
+    private static ClusterStateInventorySource tracking(ClusterState state, TrackedInSync inSync) {
+        return new ClusterStateInventorySource(() -> state, LOCAL, ClusterStateInventorySource.ShardSizes.UNKNOWN, inSync);
+    }
 
     private static ClusterStateInventorySource source(ClusterState state, ClusterStateInventorySource.ShardSizes sizes) {
         return new ClusterStateInventorySource(() -> state, LOCAL, sizes);
     }
 
     private static IndexMetadata indexMetadata() {
+        return indexMetadata(null);
+    }
+
+    private static IndexMetadata indexMetadata(String replication) {
+        Settings.Builder settings = Settings.builder();
+        if (replication != null) {
+            settings.put("index.replication.type", replication);
+        }
         return IndexMetadata.builder("acme.my-index")
             .settings(
-                Settings.builder()
+                settings
                     .put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT)
                     .put(IndexMetadata.SETTING_INDEX_UUID, INDEX_UUID)
                     .put(ClusterlessIndexSettings.TENANT.getKey(), "acme")
@@ -193,7 +245,11 @@ public class ClusterStateInventorySourceTests extends OpenSearchTestCase {
     }
 
     private static ClusterState stateWith(ShardRouting... shards) {
-        IndexMetadata metadata = indexMetadata();
+        return stateWith(null, shards);
+    }
+
+    private static ClusterState stateWith(String replication, ShardRouting... shards) {
+        IndexMetadata metadata = indexMetadata(replication);
         IndexRoutingTable.Builder routing = IndexRoutingTable.builder(metadata.getIndex());
         for (ShardRouting shard : shards) {
             routing.addShard(shard);

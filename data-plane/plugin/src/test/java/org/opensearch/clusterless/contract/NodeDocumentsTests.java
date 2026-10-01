@@ -152,6 +152,37 @@ public class NodeDocumentsTests extends OpenSearchTestCase {
         );
     }
 
+    public void testADocrepCopyCarriesItsAllocationIdAndAPrimaryItsInSyncSet() {
+        ShardInventory inventory = inventoryOf(
+            docrep(0, ShardRole.PRIMARY, "ULHF36LvSIa6sReNU-zHoA", List.of("yfU2ZTYYQEWWtXEy7SDTZQ", "ULHF36LvSIa6sReNU-zHoA")),
+            docrep(1, ShardRole.REPLICA, "3YLXESN2TkSC5FYhEDzvNg", null)
+        );
+
+        String json = json(NodeDocuments.write(inventory));
+
+        assertTrue(json, json.contains("\"0\":{\"role\":\"PRIMARY\",\"state\":\"STARTED\",\"size_bytes\":4823012,"
+            + "\"allocation_id\":\"ULHF36LvSIa6sReNU-zHoA\",\"in_sync\":[\"ULHF36LvSIa6sReNU-zHoA\",\"yfU2ZTYYQEWWtXEy7SDTZQ\"]}"));
+        assertTrue(json, json.contains("\"1\":{\"role\":\"REPLICA\",\"state\":\"STARTED\",\"size_bytes\":4823012,"
+            + "\"allocation_id\":\"3YLXESN2TkSC5FYhEDzvNg\"}"));
+    }
+
+    public void testTheInSyncSetIsWrittenInOneOrderWhateverOrderItWasReadIn() {
+        // The inventory is rewritten only when its bytes change, and a set read from the tracker has no order.
+        byte[] one = NodeDocuments.write(inventoryOf(docrep(0, ShardRole.PRIMARY, "b", List.of("b", "a", "c"))));
+        byte[] other = NodeDocuments.write(inventoryOf(docrep(0, ShardRole.PRIMARY, "b", List.of("c", "b", "a"))));
+
+        assertArrayEquals(one, other);
+    }
+
+    public void testOnlyAPrimaryHasAnInSyncSetAndItIsNeverEmpty() {
+        expectThrows(IllegalArgumentException.class, () -> docrep(0, ShardRole.REPLICA, "a", List.of("a")));
+        expectThrows(IllegalArgumentException.class, () -> docrep(0, ShardRole.PRIMARY, "a", List.of()));
+    }
+
+    private static ShardInventory.HeldCopy docrep(int shard, ShardRole role, String allocationId, List<String> inSync) {
+        return new ShardInventory.HeldCopy(ACME, INDEX_UUID, "my-index", 3041, shard, role, ShardState.STARTED, 4_823_012L, null, allocationId, inSync);
+    }
+
     public void testAnInitializingCopyOmitsItsSizeRatherThanReportingZero() {
         // Zero is a real size, and it would tell a disk-aware decider the copy costs nothing. Enforced at
         // construction rather than at serialisation, so the mistake cannot be made anywhere else either.
@@ -263,8 +294,8 @@ public class NodeDocumentsTests extends OpenSearchTestCase {
 
     // ---------------------------------------------------------------- helpers
 
-    private static ShardInventory inventoryOf(ShardInventory.HeldCopy copy) {
-        return new ShardInventory(NODE, "eph", 1L, List.of(copy));
+    private static ShardInventory inventoryOf(ShardInventory.HeldCopy... copies) {
+        return new ShardInventory(NODE, "eph", 1L, List.of(copies));
     }
 
     private static Registration registration(PoolId pool) {

@@ -11,6 +11,7 @@ import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.routing.RoutingNode;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.clusterless.ClusterlessIndexSettings;
+import org.opensearch.clusterless.apply.TrackedInSync;
 import org.opensearch.clusterless.contract.ShardInventory;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.clusterless.contract.ShardState;
@@ -60,14 +61,25 @@ public final class ClusterStateInventorySource implements ShardInventorySource {
     private final Supplier<ClusterState> state;
     private final String localNodeId;
     private final ShardSizes shardSizes;
+    private final TrackedInSync trackedInSync;
 
     /** Indices already complained about, so a misconfigured one costs one log line rather than one per pass. */
     private final Set<String> warnedIndices = new HashSet<>();
 
     public ClusterStateInventorySource(Supplier<ClusterState> state, String localNodeId, ShardSizes shardSizes) {
+        this(state, localNodeId, shardSizes, TrackedInSync.UNKNOWN);
+    }
+
+    public ClusterStateInventorySource(
+        Supplier<ClusterState> state,
+        String localNodeId,
+        ShardSizes shardSizes,
+        TrackedInSync trackedInSync
+    ) {
         this.state = Objects.requireNonNull(state, "state");
         this.localNodeId = Objects.requireNonNull(localNodeId, "localNodeId");
         this.shardSizes = Objects.requireNonNull(shardSizes, "shardSizes");
+        this.trackedInSync = Objects.requireNonNull(trackedInSync, "trackedInSync");
     }
 
     @Override
@@ -123,6 +135,19 @@ public final class ClusterStateInventorySource implements ShardInventorySource {
         // balancer would treat as final.
         Long sizeBytes = shardState == ShardState.STARTED ? shardSizes.sizeOf(routing.shardId()) : null;
 
+        // Finding 12: only under document replication, where a peer's routing entry and recovery are keyed on the id
+        // and the in-sync set has to cross between nodes. Read as IndexConfig.replication() reads it, so that this and
+        // CoordinatorState agree on which indices those are.
+        String allocationId = null;
+        List<String> inSync = null;
+        if ("DOCUMENT".equalsIgnoreCase(indexMetadata.getSettings().get("index.replication.type", "SEGMENT").trim())) {
+            allocationId = routing.allocationId().getId();
+            if (routing.primary()) {
+                Set<String> tracked = trackedInSync.of(routing.shardId());
+                inSync = tracked == null || tracked.isEmpty() ? null : List.copyOf(tracked);
+            }
+        }
+
         return new ShardInventory.HeldCopy(
             TenantId.of(tenant),
             indexMetadata.getIndexUUID(),
@@ -132,7 +157,9 @@ public final class ClusterStateInventorySource implements ShardInventorySource {
             ShardRole.of(routing),
             shardState,
             sizeBytes,
-            null
+            null,
+            allocationId,
+            inSync
         );
     }
 }
