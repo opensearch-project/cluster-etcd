@@ -20,7 +20,7 @@ import java.util.function.Function;
  */
 final class RevisionCache<T> {
 
-    private record Entry<T>(long revision, T value) {}
+    record Entry<T>(long revision, T value) {}
 
     private final Map<String, Entry<T>> entries = new HashMap<>();
     private int hits;
@@ -42,6 +42,11 @@ final class RevisionCache<T> {
     /** Drop anything no longer present, so the cache cannot outgrow the keyspace it mirrors. */
     void retain(Set<String> keys) {
         entries.keySet().retainAll(keys);
+    }
+
+    /** The last value parsed for this key and the revision it was parsed at, or null. Never parses. */
+    Entry<T> peek(String key) {
+        return entries.get(key);
     }
 
     void forget(String key) {

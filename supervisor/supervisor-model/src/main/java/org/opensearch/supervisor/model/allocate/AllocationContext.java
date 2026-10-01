@@ -165,6 +165,12 @@ public final class AllocationContext {
         return index.effectiveAllocationEnable(clusterValue);
     }
 
+    /** False when the tenant's cluster settings document exists and cannot be parsed, which holds allocation. */
+    public boolean clusterSettingsReadable() {
+        Observation.DesiredState desired = observation.tenants().get(tenant);
+        return desired == null || desired.settings().readable();
+    }
+
     /** Total desired copies of this shard: one primary plus its replicas. */
     public int desiredCopiesOfThisShard() {
         return index.copiesAuthorisedFor(shard);

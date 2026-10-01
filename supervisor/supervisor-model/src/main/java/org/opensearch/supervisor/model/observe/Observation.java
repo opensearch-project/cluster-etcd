@@ -87,12 +87,25 @@ public record Observation(
         return counters == null ? Optional.empty() : Optional.ofNullable(counters.get(indexUuid));
     }
 
-    /** Nodes that can be placed on: registered, in this pool, and not presumed gone. */
+    /**
+     * Nodes that can be placed on: registered, in this pool, not presumed gone, and with an assignment that is
+     * either absent or readable. A placement on a node whose assignment cannot be read could never be written, so
+     * the allocator would choose that node every pass and the copy would never land.
+     */
     public Map<NodeId, NodeObservation> placeableNodes() {
         return nodes.entrySet()
             .stream()
-            .filter(entry -> entry.getValue().isPlaceable())
+            .filter(entry -> entry.getValue().isPlaceable() && assignmentUnreadable(entry.getKey()) == false)
             .collect(java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    /**
+     * Whether this node's assignment exists and could not be parsed. Its {@link NodeObservation#assignment()} is then
+     * null, as for an absent one, and its revision is real, so nothing may write it: a write would be computed from
+     * an empty assignment and would pass its compare-and-set.
+     */
+    public boolean assignmentUnreadable(NodeId node) {
+        return unreadable.contains(org.opensearch.supervisor.model.Keys.nodeAssignment(node));
     }
 
     /**

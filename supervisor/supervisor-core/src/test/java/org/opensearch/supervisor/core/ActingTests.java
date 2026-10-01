@@ -36,6 +36,7 @@ import java.util.EnumSet;
 import java.util.Map;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -620,6 +621,57 @@ class ActingTests {
             java.nio.charset.StandardCharsets.UTF_8);
         assertTrue(diff.contains("enable_allocation"), diff);
         assertTrue(diff.contains("somebody asked it to stop"), diff);
+    }
+
+    @Test
+    void anUnreadableSettingsDocumentHoldsAllocationRatherThanReleasingIt() {
+        // Read as "no settings", a document that cannot be parsed released whatever brake it held.
+        FakeNode data = node(NODE);
+        data.start();
+        createIndex(1, 0);
+        store.put(Keys.clusterSettings(ACME), "{ not json".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Supervisor supervisor = acting("s1");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        assertEquals(0, data.inventory().copyCount(), "nothing should have been placed");
+        String diff = new String(store.get(Keys.tenantDiff(ACME)).orElseThrow().value(),
+            java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(diff.contains("cluster settings cannot be read"), "and the diff says why: " + diff);
+    }
+
+    @Test
+    void aNodeWhoseAssignmentCannotBeReadIsNotWrittenOver() {
+        // Read as null, like an absent assignment, but at its real revision: the applier merged onto nothing, the
+        // compare-and-set passed, and one placement replaced everything the node had been told to hold.
+        FakeNode a = node(NODE);
+        FakeNode b = node(NODE_B);
+        a.start();
+        b.start();
+        createIndex(2, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(1, b.inventory().copyCount(), "precondition: one shard on each node");
+
+        byte[] corrupt = "{ not json".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        store.put(Keys.nodeAssignment(NODE_B), corrupt);
+        createIndex(2, 1);
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            advance();
+        }
+
+        assertArrayEquals(corrupt, store.get(Keys.nodeAssignment(NODE_B)).orElseThrow().value(),
+            "nothing is written over an assignment that cannot be read");
     }
 
     @Test

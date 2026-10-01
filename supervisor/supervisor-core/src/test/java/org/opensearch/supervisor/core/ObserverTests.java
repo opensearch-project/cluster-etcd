@@ -284,6 +284,84 @@ class ObserverTests {
         assertTrue(observation.unreadable().contains(Keys.nodeHeartbeat(NODE_B)));
     }
 
+    /** A clock the liveness tests can move, since the shared observer's is fixed. */
+    private static final class MovingClock extends Clock {
+        private Instant now = NOW;
+
+        @Override
+        public java.time.ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(java.time.ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        void advance(java.time.Duration by) {
+            now = now.plus(by);
+        }
+    }
+
+    @Test
+    void aNodeWhoseHeartbeatStopsParsingKeepsItsCopiesThroughTheOrdinaryLadder() {
+        // Dropping the node made its copies vanish from the diff, so they were re-placed or promoted two passes
+        // later -- with none of the stale-then-lost patience a node that merely went silent gets.
+        MovingClock clock = new MovingClock();
+        Observer moving = new Observer(store, clock, new LivenessTracker(NOW));
+        register(NODE_A, POOL);
+        String digest = writeInventory(NODE_A, ShardState.STARTED);
+        heartbeat(NODE_A, digest, 1);
+        Heartbeat readable = moving.observe(POOL, Pools.read(store), Set.of(ACME)).nodes().get(NODE_A).heartbeat();
+
+        // The node keeps writing, and none of it parses. Each write is a new revision, which must not count as
+        // a sign of life: the silence runs from the last heartbeat that could be read.
+        Observation.NodeObservation node = null;
+        for (int pass = 0; pass < 4; pass++) {
+            clock.advance(java.time.Duration.ofSeconds(10));
+            store.put(Keys.nodeHeartbeat(NODE_A), ("{ not json " + pass).getBytes(StandardCharsets.UTF_8));
+            Observation observation = moving.observe(POOL, Pools.read(store), Set.of(ACME));
+            assertTrue(observation.unreadable().contains(Keys.nodeHeartbeat(NODE_A)), "and it is reported");
+            node = observation.nodes().get(NODE_A);
+            assertNotNull(node, "the node is still observed");
+        }
+        assertEquals(readable, node.heartbeat(), "on its last readable heartbeat");
+        assertEquals(1, node.inventory().copyCount(), "with its copies still counted");
+        assertEquals(Liveness.STALE, node.liveness(), "stale after 40s of unreadable heartbeats, not live and not lost");
+
+        clock.advance(java.time.Duration.ofSeconds(70));
+        store.put(Keys.nodeHeartbeat(NODE_A), "{ still not json".getBytes(StandardCharsets.UTF_8));
+        assertEquals(Liveness.LOST,
+            moving.observe(POOL, Pools.read(store), Set.of(ACME)).nodes().get(NODE_A).liveness(),
+            "and lost once the ordinary threshold has passed");
+    }
+
+    @Test
+    void aNodeWhoseHeartbeatHasNeverParsedIsKeptButNotPlacedOnOrReaped() {
+        // A supervisor that starts after the heartbeat went bad has no readable one to fall back on.
+        LivenessTracker liveness = new LivenessTracker(NOW);
+        Observer fresh = new Observer(store, Clock.fixed(NOW, ZoneOffset.UTC), liveness);
+        register(NODE_A, POOL);
+        writeInventory(NODE_A, ShardState.STARTED);
+        store.put(Keys.nodeHeartbeat(NODE_A), "{ not json".getBytes(StandardCharsets.UTF_8));
+
+        Observation.NodeObservation node = fresh.observe(POOL, Pools.read(store), Set.of(ACME)).nodes().get(NODE_A);
+
+        assertNotNull(node, "the node is still observed");
+        assertNull(node.heartbeat());
+        assertEquals(1, node.inventory().copyCount(), "its inventory is read without a digest to check it by");
+        assertEquals(Liveness.UNKNOWN, node.liveness(), "never seen alive");
+        assertTrue(node.copiesCount());
+        assertFalse(node.isPlaceable(), "its capacity is unknown, so nothing new goes there");
+        assertEquals(KeyValueStore.ABSENT, liveness.heartbeatRevisionOf(NODE_A),
+            "the reaper's witness is the absent revision, so its compare-and-set on the existing key fails");
+    }
+
     @Test
     void anUnreadableIndexDocumentCostsOnlyThatIndex() {
         writeIndex(1, 0);

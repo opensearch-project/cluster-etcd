@@ -152,18 +152,32 @@ public final class Observer {
             }
 
             Heartbeat heartbeat;
+            Liveness verdict;
             try {
                 heartbeat = heartbeats.get(
                     entry.getKey(), entry.getValue().revision(),
                     key -> NodeJson.readHeartbeat(entry.getValue().value())
                 );
+                verdict = liveness.observe(nodeId, entry.getValue().revision(), registration, now);
             } catch (RuntimeException e) {
-                heartbeats.forget(entry.getKey());
+                // Dropping the node here made its copies vanish from the diff, and they were re-placed or promoted
+                // two passes later, with none of the stale-then-lost patience a silent node gets. So the node is
+                // kept, on its last readable heartbeat, and its liveness runs from that heartbeat's revision: a
+                // document that cannot be read is no evidence of life, so the node goes stale and then lost on
+                // the ordinary ladder. With no readable heartbeat ever seen, the ladder runs from the store's "absent"
+                // revision, which also keeps the reaper off it: its compare-and-set on the heartbeat fails, since the
+                // key exists. Such a node has not been seen alive, so it is UNKNOWN rather than LIVE until the ladder
+                // says otherwise: its copies count, and nothing new is placed on a node whose capacity is unknown.
                 unreadable.add(entry.getKey());
-                continue;
+                RevisionCache.Entry<Heartbeat> lastReadable = heartbeats.peek(entry.getKey());
+                heartbeat = lastReadable == null ? null : lastReadable.value();
+                verdict = liveness.observe(nodeId,
+                    lastReadable == null ? KeyValueStore.ABSENT : lastReadable.revision(), registration, now);
+                if (lastReadable == null && verdict == Liveness.LIVE) {
+                    verdict = Liveness.UNKNOWN;
+                }
             }
 
-            Liveness verdict = liveness.observe(nodeId, entry.getValue().revision(), registration, now);
             ShardInventory inventory = inventoryOf(nodeId, heartbeat, registration, unreadable);
 
             observed.put(nodeId, new Observation.NodeObservation(
@@ -242,9 +256,10 @@ public final class Observer {
         List<String> unreadable
     ) {
         DigestedInventory cached = inventories.get(nodeId);
-        String announced = heartbeat.shardsDigest();
+        // No heartbeat means nothing announced, so the inventory is read rather than trusted from the cache.
+        String announced = heartbeat == null ? null : heartbeat.shardsDigest();
 
-        if (cached != null && cached.digest().equals(announced)) {
+        if (cached != null && announced != null && cached.digest().equals(announced)) {
             return cached.inventory();
         }
 
@@ -262,8 +277,8 @@ public final class Observer {
             // Straddling a restart: the previous process's heartbeat with the new process's inventory. Both
             // documents carry the ephemeral id, so it is detectable; prefer the inventory, which within a
             // process is never the older of the two.
-            if (registration != null
-                && inventory.ephemeralId().equals(heartbeat.ephemeralId()) == false) {
+            if (heartbeat == null
+                || registration != null && inventory.ephemeralId().equals(heartbeat.ephemeralId()) == false) {
                 inventories.remove(nodeId);
             } else {
                 inventories.put(nodeId, new DigestedInventory(NodeJson.digest(bytes), inventory));
@@ -352,10 +367,11 @@ public final class Observer {
                 ignored -> org.opensearch.supervisor.model.settings.ClusterSettings.parse(versioned.get().value()));
         } catch (RuntimeException e) {
             // An unreadable settings document must not be read as "no settings": that would silently release
-            // an operator's brake. Reported, and the previous cached value is dropped so nothing stale applies.
+            // an operator's brake. So it holds allocation for the tenant until it reads again, and is reported.
+            // The previous cached value is dropped, because what the document says now is not what it said then.
             settings.forget(key);
             unreadable.add(key);
-            return org.opensearch.supervisor.model.settings.ClusterSettings.EMPTY;
+            return org.opensearch.supervisor.model.settings.ClusterSettings.UNREADABLE;
         }
     }
 

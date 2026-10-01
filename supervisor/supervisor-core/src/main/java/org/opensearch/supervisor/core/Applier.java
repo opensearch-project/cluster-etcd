@@ -145,6 +145,13 @@ public final class Applier {
                 skipped++;
                 continue;
             }
+            if (observation.assignmentUnreadable(node)) {
+                // Observed as null, like an absent assignment, but at its real revision: merging onto it would
+                // start from nothing, and the compare-and-set would pass, so one instruction would replace
+                // everything the node holds. Left alone until it reads again; the diff reports it unreadable.
+                skipped++;
+                continue;
+            }
 
             // Re-checked per node rather than once for the batch. A lease lost halfway through a plan should
             // stop the rest of it, not carry on because the check passed before the first write.

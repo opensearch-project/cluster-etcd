@@ -17,17 +17,31 @@ import java.util.Optional;
  * <p><b>Transient wins over persistent</b>, matching OpenSearch. That ordering is the whole point of the
  * distinction — transient is what an operator sets for the duration of an incident, and it would be useless if
  * a persistent value could override it.
+ *
+ * @param readable false for a document that exists and cannot be parsed. Both brakes then read as held, because
+ *     "no settings" would release a brake the document may have set; see {@link #UNREADABLE}.
  */
-public record ClusterSettings(Map<String, String> persistent, Map<String, String> transientSettings) {
+public record ClusterSettings(Map<String, String> persistent, Map<String, String> transientSettings, boolean readable) {
 
     public static final String ALLOCATION_ENABLE = "cluster.routing.allocation.enable";
     public static final String REBALANCE_ENABLE = "cluster.routing.rebalance.enable";
 
     public static final ClusterSettings EMPTY = new ClusterSettings(Map.of(), Map.of());
 
+    /**
+     * A tenant's settings document that is present and cannot be parsed. Allocation and rebalancing are held for
+     * the tenant until it reads again: the document may be the one holding an operator's brake on, and reading it as
+     * empty would release it. Holding is the direction that is visible and costs nothing that cannot wait.
+     */
+    public static final ClusterSettings UNREADABLE = new ClusterSettings(Map.of(), Map.of(), false);
+
     public ClusterSettings {
         persistent = persistent == null ? Map.of() : Map.copyOf(persistent);
         transientSettings = transientSettings == null ? Map.of() : Map.copyOf(transientSettings);
+    }
+
+    public ClusterSettings(Map<String, String> persistent, Map<String, String> transientSettings) {
+        this(persistent, transientSettings, true);
     }
 
     public Optional<String> get(String key) {
@@ -37,6 +51,9 @@ public record ClusterSettings(Map<String, String> persistent, Map<String, String
 
     /** {@link AllocationEnable#ALL} when unset, which is OpenSearch's default and the only safe absence. */
     public AllocationEnable allocationEnable() {
+        if (readable == false) {
+            return AllocationEnable.UNKNOWN;
+        }
         return get(ALLOCATION_ENABLE).map(AllocationEnable::from).orElse(AllocationEnable.ALL);
     }
 
@@ -49,6 +66,9 @@ public record ClusterSettings(Map<String, String> persistent, Map<String, String
      * did, and guessing at it would be ignoring them.
      */
     public RebalanceEnable rebalanceEnable() {
+        if (readable == false) {
+            return RebalanceEnable.UNKNOWN;
+        }
         return get(REBALANCE_ENABLE).map(RebalanceEnable::from).orElse(RebalanceEnable.ALL);
     }
 

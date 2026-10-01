@@ -39,6 +39,12 @@ public final class EnableAllocationDecider implements AllocationDecider {
                 + " (routing.allocation.enable=" + effective.name().toLowerCase(java.util.Locale.ROOT) + ")");
         }
 
+        if (effective == AllocationEnable.UNKNOWN && context.clusterSettingsReadable() == false) {
+            return Decision.no(NAME, "settings_unreadable", "the tenant's cluster settings cannot be read, so nothing"
+                + " is allocated until they can; reading them as empty would release a routing.allocation.enable"
+                + " brake they may hold");
+        }
+
         return switch (effective) {
             case NONE -> Decision.no(NAME, "none", "allocation is disabled by routing.allocation.enable=none;"
                 + " nothing is wrong with this cluster, somebody asked it to stop");
