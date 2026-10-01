@@ -1,0 +1,25 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+rootProject.name = 'opensearch-data-plane'
+
+include 'plugin'
+
+// The persistence seam is shared with the control plane and the supervisor, and lives in its own build.
+// Included as a composite rather than consumed as a published artifact, exactly as the other two services
+// include it, so that editing the store and a service together needs no publish step.
+//
+// Substitution matches on group and name, so the coordinate in plugin/build.gradle must stay exactly
+// "org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT" — change either and it resolves against a remote
+// repository instead of the local project, and fails.
+includeBuild('../kv-store')
+
+// The node contract's shared conformance suite. D9.1: fake-node and this plugin are two implementations of
+// one document format, and two implementations tested separately are two formats. The assertions live in
+// the supervisor, which owns NODE_CONTRACT.md, and are consumed here as test fixtures — the same arrangement
+// KeyValueStoreContractTests already uses.
+//
+// Test-scope only. Nothing in plugin/src/main may reference it, and nothing from it is packaged.
+includeBuild('../supervisor')
