@@ -266,28 +266,13 @@ public final class TemplateComposition {
                 return;
             }
             settings = settings.mergedWith(Settings.forIndex(block.path("settings")));
-            mergeInto(mappings, block.path("mappings"));
-            mergeInto(aliases, block.path("aliases"));
+            Json.deepMerge(mappings, block.path("mappings"));
+            Json.deepMerge(aliases, block.path("aliases"));
         }
 
         Composed composed() {
             return new Composed(settings, mappings, aliases);
         }
-    }
-
-    /** Structural merge, later winning. Objects recurse; anything else replaces. */
-    static void mergeInto(ObjectNode target, JsonNode source) {
-        if (source.isObject() == false) {
-            return;
-        }
-        source.properties().forEach(field -> {
-            JsonNode existing = target.get(field.getKey());
-            if (existing != null && existing.isObject() && field.getValue().isObject()) {
-                mergeInto((ObjectNode) existing, field.getValue());
-            } else {
-                target.set(field.getKey(), field.getValue().deepCopy());
-            }
-        });
     }
 
 }

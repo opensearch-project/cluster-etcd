@@ -200,6 +200,8 @@ public final class DataStreamHandlers {
             List<Pattern> patterns = NameExpression.parse(request.pathParam("name"));
             DataStreamStore streams = new DataStreamStore(context.store());
             IndexStore indices = new IndexStore(context.store());
+            AliasActions aliases = new AliasActions(context.store());
+            IndexManagementTasks tasks = new IndexManagementTasks(context.store());
 
             streams.all().forEach((name, document) -> {
                 if (NameExpression.matchesAny(patterns, name) == false) {
@@ -209,8 +211,16 @@ public final class DataStreamHandlers {
                 // rather than a stream pointing at indices that are gone. Same order OpenSearch uses, and
                 // for the same reason -- a dangling reference is the worse of the two.
                 streams.delete(name);
-                DataStreamStore.backingIndicesOf(document)
-                    .forEach(backing -> indices.delete(backing.name()));
+                // Each backing index goes exactly as indices.delete removes one: its alias memberships too,
+                // since a backing index inherits its template's aliases, and a delete-index task, which is
+                // what tells the supervisor the index was deleted rather than merely not found.
+                DataStreamStore.backingIndicesOf(document).forEach(backing -> {
+                    if (indices.delete(backing.name())) {
+                        aliases.removeIndexFromAllAliases(backing.name());
+                        tasks.submit(IndexManagementTasks.TYPE_DELETE_INDEX, backing.name(), backing.uuid(),
+                            context.nowEpochMillis());
+                    }
+                });
             });
             return Json.acknowledged(request);
         }

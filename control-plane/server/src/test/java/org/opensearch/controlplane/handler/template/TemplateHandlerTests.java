@@ -355,6 +355,43 @@ class TemplateHandlerTests {
         assertEquals("4", composedSettings(body(simulated).get("template")).get("number_of_replicas").textValue());
     }
 
+    /**
+     * Upstream takes a bare string as a one-element list for {@code index_patterns} and
+     * {@code composed_of}, so a template written that way must still match, compose, and read back as
+     * a list.
+     */
+    @Test
+    void aStringIsOnePatternAndOneComponent() throws Exception {
+        component("c1", "{\"settings\":{\"number_of_replicas\":4}}");
+        assertEquals(RestStatus.OK,
+            put("/_index_template/t", "{\"index_patterns\":\"x-*\",\"composed_of\":\"c1\"}").status());
+
+        assertEquals("4", composedSettings(simulateIndex("x-1")).get("number_of_replicas").textValue());
+        JsonNode stored = get("/_index_template/t").get("index_templates").get(0).get("index_template");
+        assertEquals("[\"x-*\"]", stored.get("index_patterns").toString());
+        assertEquals("[\"c1\"]", stored.get("composed_of").toString());
+    }
+
+    @Test
+    void aStringIsOnePatternForALegacyTemplate() throws Exception {
+        assertEquals(RestStatus.OK, put("/_template/lt",
+            "{\"index_patterns\":\"y-*\",\"settings\":{\"number_of_shards\":6}}").status());
+
+        assertEquals(RestStatus.OK, router.dispatch("PUT", "/y-1").status());
+        JsonNode settings = MAPPER.readTree(
+            store.getAsString("tenant/default/indices/y-1").orElseThrow()).get("settings");
+        assertEquals("6", settings.get("index.number_of_shards").textValue());
+        assertEquals("[\"y-*\"]", get("/_template/lt").get("lt").get("index_patterns").toString());
+    }
+
+    /** The overlap check reads the same patterns, so a string cannot slip past it. */
+    @Test
+    void aStringPatternStillConflictsAtTheSamePriority() {
+        put("/_index_template/a", "{\"index_patterns\":[\"z-*\"]}");
+
+        assertEquals(RestStatus.BAD_REQUEST, put("/_index_template/b", "{\"index_patterns\":\"z-*\"}").status());
+    }
+
     // ------------------------------------------------------------------
     // composition applies to index creation
     // ------------------------------------------------------------------

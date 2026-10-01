@@ -36,6 +36,25 @@ public final class Json {
         return MAPPER.createArrayNode();
     }
 
+    /**
+     * Merges {@code source} into {@code target}, the source winning: where both hold an object at a key
+     * the merge recurses, and anything else replaces. Arrays are values, so they replace rather than
+     * concatenate. Does nothing if {@code source} is not an object.
+     */
+    public static void deepMerge(ObjectNode target, JsonNode source) {
+        if (source.isObject() == false) {
+            return;
+        }
+        source.properties().forEach(field -> {
+            JsonNode existing = target.get(field.getKey());
+            if (existing != null && existing.isObject() && field.getValue().isObject()) {
+                deepMerge((ObjectNode) existing, field.getValue());
+            } else {
+                target.set(field.getKey(), field.getValue().deepCopy());
+            }
+        });
+    }
+
     /** Parses JSON, throwing {@link IOException} on malformed input. */
     public static JsonNode parse(byte[] json) throws IOException {
         return MAPPER.readTree(json);

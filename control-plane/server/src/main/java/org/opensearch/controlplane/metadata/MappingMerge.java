@@ -6,6 +6,7 @@ package org.opensearch.controlplane.metadata;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.rest.Json;
 
 import java.util.Optional;
 
@@ -77,7 +78,7 @@ public final class MappingMerge {
         if (conflict.isPresent()) {
             return conflict;
         }
-        apply(existing, update);
+        Json.deepMerge(existing, update);
         return Optional.empty();
     }
 
@@ -147,20 +148,5 @@ public final class MappingMerge {
             ));
         }
         return checkProperties(path, before, after);
-    }
-
-    /** Structural merge, the update winning. Only reached once the whole update has been checked. */
-    private static void apply(ObjectNode target, JsonNode source) {
-        if (source.isObject() == false) {
-            return;
-        }
-        source.properties().forEach(field -> {
-            JsonNode existing = target.get(field.getKey());
-            if (existing != null && existing.isObject() && field.getValue().isObject()) {
-                apply((ObjectNode) existing, field.getValue());
-            } else {
-                target.set(field.getKey(), field.getValue().deepCopy());
-            }
-        });
     }
 }

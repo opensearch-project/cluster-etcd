@@ -292,6 +292,34 @@ class DataStreamHandlerTests {
         assertEquals(RestStatus.NOT_FOUND, dispatch("GET", "/.ds-logs-000001", null).status());
     }
 
+    /**
+     * A backing index goes as {@code indices.delete} removes an index: out of the aliases it inherited,
+     * and with a {@code delete-index} task, which is the supervisor's evidence that the index was deleted.
+     */
+    @Test
+    void deleteDropsBackingIndicesFromAliasesAndRecordsTheirDeletion() throws Exception {
+        String tenant = SingleTenantResolver.DEFAULT_TENANT.keyPrefix();
+        dispatch("PUT", "/_index_template/ds", "{\"index_patterns\":[\"logs*\"],\"data_stream\":{},"
+            + "\"template\":{\"aliases\":{\"all-logs\":{}}}}");
+        createStream("logs");
+        String uuid = MAPPER.readTree(store.get(tenant + "indices/.ds-logs-000001").orElseThrow().value())
+            .get("uuid").asText();
+
+        deleteStream("logs");
+
+        assertTrue(store.get(tenant + "aliases/all-logs").isEmpty(), "its only member is gone, so the alias is");
+        assertTrue(store.scanPrefix(tenant + IndexManagementTasks.KEY_PREFIX).values().stream()
+            .map(task -> {
+                try {
+                    return MAPPER.readTree(task.value());
+                } catch (Exception e) {
+                    throw new AssertionError(e);
+                }
+            })
+            .anyMatch(task -> task.get("type").asText().equals(IndexManagementTasks.TYPE_DELETE_INDEX)
+                && task.get("index_uuid").asText().equals(uuid)));
+    }
+
     /** No not-found check anywhere: a concrete name that does not exist is simply acknowledged. */
     @Test
     void deletingAStreamThatDoesNotExistIsAcknowledged() throws Exception {

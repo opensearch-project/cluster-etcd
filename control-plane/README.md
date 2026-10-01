@@ -1013,7 +1013,8 @@ character for character against the server's response.
   exist, with no not-found check anywhere — `resolveDataStreams` is a bare `Regex.simpleMatch` loop. A
   concrete name that does not exist is `200`, and so is a wildcard matching nothing. Unlike pipelines and
   repositories this is *not* the metadata-presence quirk; it is unconditional. It also deletes the
-  backing indices, which is the one place an index disappears without `indices.delete` being called.
+  backing indices, which is the one place an index disappears without `indices.delete` being called — so
+  it repeats what that does for each one: drops it from its aliases and records a `delete-index` task.
 - **A backing index inherits its template's aliases**, exactly as an ordinary index does, and carries
   `index.hidden: true` on top of whatever the template composed.
 - **Weighted routing is one document, not one per attribute.** The API reads as though

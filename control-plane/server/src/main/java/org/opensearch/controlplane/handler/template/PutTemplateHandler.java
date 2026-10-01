@@ -17,6 +17,7 @@ import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
 
 import java.io.IOException;
+import java.util.List;
 
 /**
  * Creates or updates a template, for any of the three kinds.
@@ -88,6 +89,15 @@ public final class PutTemplateHandler implements OperationHandler {
 
         String name = request.pathParam("name");
         ObjectNode definition = (ObjectNode) parsed;
+        // Upstream accepts a bare string as a one-element list for both -- declareStringArray for the
+        // composable kind, an explicit instanceof String for legacy -- and renders a list either way.
+        // Normalised here so every reader sees one shape and GET answers the list.
+        for (String field : List.of("index_patterns", "composed_of")) {
+            JsonNode value = definition.path(field);
+            if (value.isTextual()) {
+                definition.putArray(field).add(value.asText());
+            }
+        }
 
         // Settings are checked before the overlap check, matching the order a real cluster reports them
         // in. Static settings are permitted -- a template setting number_of_shards is the normal case --
