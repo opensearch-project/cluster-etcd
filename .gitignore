@@ -1,0 +1,8 @@
+# Each component has its own .gitignore; this covers the repository root.
+build/
+.gradle/
+.kotlin/
+.idea/
+*.iml
+.vscode/
+.DS_Store
