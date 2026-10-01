@@ -84,12 +84,24 @@ public final class CoordinatorState implements NodeState {
     private final DiscoveryNode localNode;
     private final CoordinatorView view;
     private final MappingSource mappings;
+    private final TrackedInSync trackedInSync;
 
     public CoordinatorState(NodeState delegate, DiscoveryNode localNode, CoordinatorView view, MappingSource mappings) {
+        this(delegate, localNode, view, mappings, TrackedInSync.UNKNOWN);
+    }
+
+    public CoordinatorState(
+        NodeState delegate,
+        DiscoveryNode localNode,
+        CoordinatorView view,
+        MappingSource mappings,
+        TrackedInSync trackedInSync
+    ) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
         this.localNode = Objects.requireNonNull(localNode, "localNode");
         this.view = Objects.requireNonNull(view, "view");
         this.mappings = Objects.requireNonNull(mappings, "mappings");
+        this.trackedInSync = Objects.requireNonNull(trackedInSync, "trackedInSync");
     }
 
     @Override
@@ -182,6 +194,7 @@ public final class CoordinatorState implements NodeState {
         // business overwriting that. If it holds none, the metadata is the coordinator's own, and it has to be
         // rebuilt each pass rather than left alone: DataNodeState *retains* the metadata of an index it holds no
         // copy of, so a settings change would otherwise never reach the routing view.
+        IndexRoutingTable table = indexRouting.build();
         if (heldHere == false) {
             metadata.put(metadataFor(routed, index, replicas, searchReplicas, held.metadata().index(index)), false);
         } else {
@@ -200,12 +213,50 @@ public final class CoordinatorState implements NodeState {
                     held.metadata().index(index),
                     previous.metadata().index(index),
                     searchOnly,
-                    everyShardHasAPrimary && markerIsTheTenants == false
+                    everyShardHasAPrimary && markerIsTheTenants == false,
+                    documentReplicated(routed) ? inSyncOfPrimariesHere(table) : Map.of()
                 ),
                 false
             );
         }
-        routing.add(indexRouting);
+        routing.add(table);
+    }
+
+    /**
+     * For each shard whose document-replication primary is on this node, the copies to call in sync: the primary, and
+     * the copies in this routing table that the primary's own tracker holds in sync. Absent for a shard whose tracker
+     * cannot say, which leaves the data path's set of the primary alone.
+     *
+     * <p>Built here rather than in {@link DataNodeState} because this is where the whole table is, and the intersection
+     * with it is the part that must not be skipped. The tracker keeps a copy for as long as the cluster state calls it
+     * in sync, so a set fed back from the tracker alone would keep a copy that has left the table in it for ever, and
+     * with it the global checkpoint. That is the shape of the in-sync set that grew without bound in M4.
+     *
+     * <p>Initializing copies count: the primary marks a copy in sync as its recovery finishes, before the copy's own
+     * node has started it, and {@code ReplicationTracker.updateFromClusterManager} takes such an id as initializing
+     * and in sync.
+     */
+    private Map<Integer, Set<String>> inSyncOfPrimariesHere(IndexRoutingTable table) {
+        Map<Integer, Set<String>> inSync = new java.util.TreeMap<>();
+        for (IndexShardRoutingTable shard : table) {
+            ShardRouting primary = shard.primaryShard();
+            if (primary == null || localNode.getId().equals(primary.currentNodeId()) == false) {
+                continue;
+            }
+            Set<String> tracked = trackedInSync.of(shard.shardId());
+            if (tracked == null) {
+                continue;
+            }
+            Set<String> ids = new java.util.TreeSet<>();
+            ids.add(primary.allocationId().getId());
+            for (ShardRouting copy : shard.assignedShards()) {
+                if (tracked.contains(copy.allocationId().getId())) {
+                    ids.add(copy.allocationId().getId());
+                }
+            }
+            inSync.put(shard.shardId().id(), ids);
+        }
+        return inSync;
     }
 
     static boolean documentReplicated(CoordinatorView.RoutedIndex routed) {
@@ -347,7 +398,8 @@ public final class CoordinatorState implements NodeState {
         IndexMetadata held,
         IndexMetadata applied,
         int searchOnlyInTable,
-        boolean everyShardHasAPrimary
+        boolean everyShardHasAPrimary,
+        Map<Integer, Set<String>> inSync
     ) {
         Settings.Builder settings = Settings.builder().put(held.getSettings());
         settings.put(IndexMetadata.SETTING_NUMBER_OF_SEARCH_REPLICAS, searchOnlyInTable);
@@ -357,7 +409,7 @@ public final class CoordinatorState implements NodeState {
         Settings shipped = settings.build();
 
         if (applied == null) {
-            return IndexMetadata.builder(held).settings(shipped).build();
+            return withInSync(IndexMetadata.builder(held).settings(shipped), inSync).build();
         }
         if (org.opensearch.index.IndexSettings.same(shipped, applied.getSettings())) {
             // The settings this state ships are the ones already applied, so the version must not move. Bumping it
@@ -372,17 +424,24 @@ public final class CoordinatorState implements NodeState {
             // Compared with the server's own IndexSettings.same rather than Settings.equals, because that is the
             // predicate deciding whether it will treat this as an update -- approximating it is how the version and
             // the settings come to disagree again.
-            return IndexMetadata.builder(held)
-                .settings(shipped)
+            //
+            // The metadata version, though, moves by one when anything else differs -- the in-sync set, or a term -- as it
+            // does in OpenSearch, and stays put only when nothing does. It used to stay put regardless.
+            IndexMetadata.Builder unchanged = withInSync(IndexMetadata.builder(held).settings(shipped), inSync)
                 .settingsVersion(applied.getSettingsVersion())
-                .version(applied.getVersion())
-                .build();
+                .version(applied.getVersion());
+            IndexMetadata candidate = unchanged.build();
+            return candidate.equals(applied) ? candidate : unchanged.version(applied.getVersion() + 1).build();
         }
-        return IndexMetadata.builder(held)
-            .settings(shipped)
+        return withInSync(IndexMetadata.builder(held).settings(shipped), inSync)
             .settingsVersion(applied.getSettingsVersion() + 1)
             .version(Math.max(held.getVersion(), applied.getVersion() + 1))
             .build();
+    }
+
+    private static IndexMetadata.Builder withInSync(IndexMetadata.Builder builder, Map<Integer, Set<String>> inSync) {
+        inSync.forEach(builder::putInSyncAllocationIds);
+        return builder;
     }
 
     /**

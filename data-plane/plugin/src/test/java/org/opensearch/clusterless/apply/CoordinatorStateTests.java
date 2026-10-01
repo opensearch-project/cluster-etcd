@@ -669,15 +669,83 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         assertEquals("aid-rebuilt", peerCopy(after).allocationId().getId());
     }
 
+    // ---------------------------------------------------------------- a docrep primary's in-sync set (finding 12)
+
+    public void testADocrepPrimaryCallsInSyncWhatItsTrackerHolds() {
+        // A started replica that is in neither the cluster state's in-sync set nor initializing is dropped by
+        // ReplicationTracker.updateFromClusterManager, and stops receiving writes without anything saying so.
+        IndexStatus.Copy replica = copy(PEER, ShardRole.REPLICA, ShardState.STARTED);
+        ClusterState first = docrepPrimary(ClusterState.EMPTY_STATE, replica, TrackedInSync.UNKNOWN);
+        String primary = localPrimaryId(first);
+        assertEquals("before the tracker can say, the primary alone", Set.of(primary), inSync(first));
+        TrackedInSync tracked = shardId -> Set.of(primary, allocationIdOf(PEER));
+
+        ClusterState second = docrepPrimary(first, replica, tracked);
+
+        assertEquals(Set.of(primary, allocationIdOf(PEER)), inSync(second));
+        IndexMetadata before = first.metadata().index(indexName());
+        IndexMetadata after = second.metadata().index(indexName());
+        assertEquals("a metadata change, so the version moves by one", before.getVersion() + 1, after.getVersion());
+        assertEquals("and not a settings change", before.getSettingsVersion(), after.getSettingsVersion());
+
+        ClusterState third = docrepPrimary(second, replica, tracked);
+        assertTrue("the pass after changes nothing", StateEquivalence.sameContent(second, third));
+        assertEquals(after.getVersion(), third.metadata().index(indexName()).getVersion());
+    }
+
+    public void testACopyTheTrackerHoldsThatIsNotInTheTableIsNotInSync() {
+        // The tracker keeps a copy for as long as the cluster state calls it in sync, so without this the set would feed
+        // itself: a copy that left would stay in it, and hold back the global checkpoint, for ever.
+        IndexStatus.Copy replica = copy(PEER, ShardRole.REPLICA, ShardState.STARTED);
+        ClusterState first = docrepPrimary(ClusterState.EMPTY_STATE, replica, TrackedInSync.UNKNOWN);
+        String primary = localPrimaryId(first);
+
+        ClusterState second = docrepPrimary(first, replica, shardId -> Set.of(primary, "aid-long-gone"));
+
+        assertEquals(Set.of(primary), inSync(second));
+    }
+
+    public void testAnInitializingCopyTheTrackerHoldsIsInSync() {
+        // The primary marks a copy in sync as its recovery finishes, before the copy's own node has started it.
+        IndexStatus.Copy replica = copy(PEER, ShardRole.REPLICA, ShardState.INITIALIZING);
+        ClusterState first = docrepPrimary(ClusterState.EMPTY_STATE, replica, TrackedInSync.UNKNOWN);
+        String primary = localPrimaryId(first);
+
+        ClusterState second = docrepPrimary(first, replica, shardId -> Set.of(primary, allocationIdOf(PEER)));
+
+        assertEquals(Set.of(primary, allocationIdOf(PEER)), inSync(second));
+    }
+
+    public void testASegmentReplicatedPrimarysTrackerIsNotAsked() {
+        IndexConfig segment = new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            Map.of("index.number_of_shards", "1", "index.number_of_replicas", "0", "index.replication.type", "SEGMENT"),
+            Map.of("properties", Map.of("host", Map.of("type", "keyword"))),
+            3041
+        );
+        docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.SEARCH_REPLICA, ShardState.STARTED), shardId -> {
+            throw new AssertionError("a segment-replicated primary's tracker must not be asked about " + shardId);
+        }, segment);
+    }
+
     /** A node holding the primary of a docrep index, given the projection's copy of its replica. */
     private static ClusterState docrepPrimary(ClusterState previous, IndexStatus.Copy replica) {
+        return docrepPrimary(previous, replica, TrackedInSync.UNKNOWN, docrepConfig());
+    }
+
+    private static ClusterState docrepPrimary(ClusterState previous, IndexStatus.Copy replica, TrackedInSync tracked) {
+        return docrepPrimary(previous, replica, tracked, docrepConfig());
+    }
+
+    private static ClusterState docrepPrimary(ClusterState previous, IndexStatus.Copy replica, TrackedInSync tracked, IndexConfig config) {
         List<IndexStatus.Copy> copies = List.of(copy(LOCAL, ShardRole.PRIMARY, ShardState.STARTED), replica);
         Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
         copies.forEach(copy -> peers.put(copy.node(), peer(copy.node().value())));
         CoordinatorView view = new CoordinatorView(
-            List.of(
-                new CoordinatorView.RoutedIndex(ACME, docrepConfig(), placement(Map.of(0, copies)), Set.of(0), Map.of(0, ShardRole.PRIMARY))
-            ),
+            List.of(new CoordinatorView.RoutedIndex(ACME, config, placement(Map.of(0, copies)), Set.of(0), Map.of(0, ShardRole.PRIMARY))),
             peers,
             List.of()
         );
@@ -689,7 +757,7 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
                     42,
                     Map.of(
                         new DesiredState.IndexKey(ACME, UUID),
-                        new DesiredState.DesiredIndex(new DesiredState.IndexKey(ACME, UUID), docrepConfig(), Map.of(0, ShardRole.PRIMARY))
+                        new DesiredState.DesiredIndex(new DesiredState.IndexKey(ACME, UUID), config, Map.of(0, ShardRole.PRIMARY))
                     ),
                     List.of(),
                     List.of()
@@ -699,8 +767,18 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
             ),
             TestFixtures.localNode(LOCAL),
             view,
-            MappingSource.WRAPPED
+            MappingSource.WRAPPED,
+            tracked
         ).buildClusterState(previous);
+    }
+
+    private static String localPrimaryId(ClusterState state) {
+        IndexShardRoutingTable shard = state.routingTable().index(state.metadata().index(indexName()).getIndex()).shard(0);
+        return shard.primaryShard().allocationId().getId();
+    }
+
+    private static Set<String> inSync(ClusterState state) {
+        return state.metadata().index(indexName()).inSyncAllocationIds(0);
     }
 
     private static ShardRouting peerCopy(ClusterState state) {

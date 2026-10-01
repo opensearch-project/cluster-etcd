@@ -174,11 +174,13 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
         NodeId nodeId = NodeId.of(localNode.getId());
         String ephemeralId = localNode.getEphemeralId();
 
+        // One reading of each primary's tracker, for what this node publishes and for what it fabricates.
+        IndicesServiceTrackedInSync trackedInSync = new IndicesServiceTrackedInSync(this::indicesService);
         ClusterStateInventorySource inventorySource = new ClusterStateInventorySource(
             clusterService::state,
             localNode.getId(),
             new IndicesServiceShardSizes(this::indicesService),
-            new IndicesServiceTrackedInSync(this::indicesService)
+            trackedInSync
         );
 
         publisher = new NodePublisher(
@@ -219,7 +221,8 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
                 ),
                 localNode,
                 coordinated,
-                mappingSource
+                mappingSource,
+                trackedInSync
             ),
             publisher,
             new ClusterApplierServiceStateApplier(clusterService.getClusterApplierService()),
