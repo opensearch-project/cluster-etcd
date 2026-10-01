@@ -889,7 +889,7 @@ staying paused" still ingests whatever is available at the new pointer. The firs
 nothing would be consumed and failed for exactly this reason; it now asserts the thing that is true and matters —
 that a poller left paused does not consume what is published *after* the reset.
 
-## M9. Document replication
+## M9. Document replication — **built, awaiting a real run**
 
 - Peer resolution (done), primary term handling (done), push-based ingestion.
 - **Done when:** an index with `index.replication.type: DOCUMENT` indexes and replicates.
@@ -1092,6 +1092,95 @@ does not list it. That rule covers restart, promotion and a replica marked stale
 `ephemeral_id` rule recommended above. The finding also recommends that the supervisor promote only a replica in
 the lost primary's last `in_sync` set. The server-side half, `remoteShardFailed` handled locally so that a failed
 replica write does not hang, is the user's.
+
+### Finding 12, built — allocation ids and the in-sync set cross between nodes
+
+The supervisor carries both fields (its half of finding 12, with the promotion rule adopted: it promotes only a
+replica the lost primary last published as in sync). This side, in five commits on 2026-10-01:
+
+1. **Read and route by the published id** (`b7bcbeb`). `IndexStatus.Copy` reads `allocation_id` and `in_sync`.
+   `CoordinatorState` gives a docrep peer's routing entry the id its own node published, and gives a docrep copy
+   published without one no entry at all, rather than minting one that recovery would never match. Whether a peer
+   copy is routable is now one function, `CoordinatorState.routable`, which `PeerRecovery` also uses. Before, the
+   same test was written out in both, and they had to agree or a replica was built beside no primary.
+2. **Publish both** (`075afc1`). Every docrep copy publishes its `allocation_id`. A docrep primary also publishes
+   `in_sync`, read from its own `ReplicationTracker` through `TrackedInSync`, sorted so the inventory's bytes are
+   stable, and omitted (not empty) when the tracker cannot say.
+3. **An unstated replication type is `DOCUMENT`** (`3546c88`), at the user's direction, as in OpenSearch, and it is
+   written into every fabricated index so that no node falls back to its own cluster default. The supervisor's
+   matching change is its finding 13.
+4. **The primary's in-sync set comes from its tracker** (`4010a2f`, then corrected in `b6a4e86`). For each docrep
+   shard whose primary is here, `in_sync` is the primary plus the copies in the routing table that its tracker holds
+   in sync. It is built in the decorator because only it sees the whole table, and the intersection with the table is
+   what stops the set feeding itself, the M4 failure in a new place. Initializing copies count, since the primary marks
+   a copy in sync before the copy's own node starts it.
+5. **A replica its primary no longer holds is rebuilt** (`d3e2f7d`). See *StaleReplicas* below.
+
+**What testing against a real tracker found, and why step 4 needed correcting.** `TrackedInSyncReplicationTests`
+uses OpenSearch's in-process replication harness: a real primary and a replica that recovered from it by real peer
+recovery. It hands the primary the fabricated set and table through `IndexShard.updateShardState`, then writes
+through `ReplicationOperation`. The fabricated set is accepted on every pass and every write reaches the replica.
+But `ReplicationTracker.invariant` asserts that every copy in the routing table is tracked, and
+`updateFromClusterManager` drops a started copy outside the in-sync set. So **a started copy in its primary's table and
+outside its in-sync set is a state the server rejects**: an `AssertionError` under `-ea`, and without it, a copy that
+is silently no longer written to. Every docrep primary that saw a started replica fabricated that state before
+finding 12. Step 4 as first committed still did whenever the tracker did not hold the replica: after a restart, after
+a promotion, and after a drop. So a primary now routes a started peer only if its tracker holds it in sync. Anything
+else is left out of its table, which the server accepts. An initializing peer is always routed, since that is how
+it recovers into the set.
+
+### StaleReplicas — the replica side
+
+A replica left out of its primary's table is no longer written to, and from its own node it looks started and
+healthy. `StaleReplicas` runs once per pass in `AssignmentPoller` and names the local copies to rebuild.
+`DataNodeState` then builds each again under a new allocation id, initializing from a peer, so the server closes the
+shard and recovers it, and the copy rejoins the set by the ordinary route. It is keyed by allocation id, so the
+second fabrication of an applying pass keeps the new entry. This is the one deliberate exception to D2.2.
+
+**Absence from the primary's `in_sync` is never enough on its own.** The primary marks a copy in sync as its recovery
+finishes, and the copy starts a moment later. The primary publishes its new set on its next pass and the supervisor
+carries it on its own, so a just-started replica can read its primary's set from before it joined. A started replica
+whose started primary publishes a set without it is rebuilt only if, in addition:
+- **its primary changed** from the one it recovered from (a restart gives a new id, and a promotion the promoted
+  copy's);
+- **or it was in the set and is not now** (it was dropped);
+- **or it has not appeared within `PASSES_TO_JOIN` (10) passes** of starting.
+
+A primary that publishes no set triggers nothing. The memory is per process; a replica whose node restarts recovers
+anyway.
+
+### What is proven, and what is not
+
+Proven, by `../gradlew`: each rule above has a test, and each test fails with its rule reverted. The fabricated
+in-sync set is accepted by a real primary and keeps a real replica written to, and the server rejects the state that
+was fabricated before. The three conformance checks for `status/indices` and the three for `status/nodes` pass
+(26 of 26).
+
+**Not proven: any of it across real nodes.** No docrep replica has been seen to recover from a primary on another
+node, stay in sync, be rebuilt after a promotion, or rejoin. The harness runs one primary and one replica in one JVM,
+with no transport between them. Whether ten passes is the right wait depends on the poll and supervisor intervals.
+Two gaps are known and open:
+- **`remoteShardFailed`** still waits for a cluster manager that never comes, so a docrep write whose replica fails
+  hangs. That is the user's, upstream; the replica side above is ready for it.
+- **`PeerRecovery` closes a started replica whose primary drops out of the peer view**, so in a promotion that
+  replica comes back as a new copy rather than staying in place. It is safe, but slower.
+
+### For the first real run
+
+`../gradlew run` starts nodes with `-ea -esa` (testclusters, `OpenSearchNode.java:796`), so the invariant above
+fails loudly there rather than silently. Worth watching:
+
+- **The primary's report** (`GET /_clusterless/status` on its node) prints `in_sync=` per shard. It should name the
+  primary and, once the replica has recovered, the replica.
+- **The inventories and the projection** (`nodes/shards/<id>`, `tenant/<t>/status/indices/<uuid>`) carry
+  `allocation_id` on every docrep copy and `in_sync` on the primary, and the ids should agree across them.
+- **The primary's log should not show** `delaying recovery of … as it is not listed as assigned to target node`. That
+  was the original failure. If it appears, the replica's id has not reached the primary's table.
+- **Writes reach the replica**: a search with `preference=_local` on the replica's node counts the same as on the
+  primary's.
+- **After stopping the primary's node**, the supervisor promotes an in-sync replica (the term goes up). Any other
+  replica logs `rebuilding this node's replica of … its primary [...] does not hold it in sync`, recovers, and
+  appears in the new primary's `in_sync`.
 
 ## M10. Cluster-manager actions — **the not-hanging half is done**
 

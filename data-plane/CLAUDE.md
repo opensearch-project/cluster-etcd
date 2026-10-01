@@ -111,28 +111,20 @@ Decides arguments that would otherwise be settled by what is easiest on a laptop
 - **Live shard splitting is not the plan** — stand up a new index, restore, delete out-of-shard documents, resume
   from the checkpoint.
 
-## Where things stand (2026-09-30)
+## Where things stand (2026-10-01)
 
-M1–M8.2 are done and confirmed on real nodes. M9 (document replication) is in progress; see `MILESTONES.md` for
-the detail. The PR review of the one-repository import was worked through on 2026-09-30: tenant isolation in the
-index-name resolver, the `x-tenant-id` REST header, terms kept through the reducers, failed shards (with an
-upstream `LocalShardStateAction.localShardFailed` change), and a declined term keeping its copy serving. The build
-now targets OpenSearch main, 3.10.0-SNAPSHOT.
-
-**M9 is blocked on the supervisor, finding 12.** Reading the server, a docrep replica cannot finish recovering:
-recovery is keyed on the replica's allocation id, and the primary's node mints a different one for the same copy.
-The in-sync gap is the same problem: the set must come from the primary's own tracker, and a replica must be able to
-see whether it is in it. The design agreed with the user: the supervisor carries `allocation_id` (every docrep copy)
-and `in_sync` (docrep primaries) from inventories into `tenant/<t>/status/indices/<uuid>`, verbatim. This side
-then (1) fabricates a docrep primary's in-sync set from its `ReplicationTracker`, which needs nothing from the
-supervisor and can land first; (2) uses the published id for a peer's entry; (3) rebuilds a started replica as
-`INITIALIZING` when its started primary's `in_sync` does not list it, which replaces the `ephemeral_id` idea. Not
-done: declaring every visible replica in sync, which the tracker's own assertion forbids.
+M1–M8.2 are done and confirmed on real nodes. **M9 (document replication) is built and awaiting a real run**; see
+`MILESTONES.md`, *Finding 12, built*, which ends with what to watch on the first run. In short: docrep peers are routed
+under the allocation id their own node publishes; a docrep primary's in-sync set comes from its own tracker,
+intersected with its routing table; a started copy its primary does not hold in sync is left out of the primary's
+table, because the server rejects it otherwise; and `StaleReplicas` rebuilds a replica its primary no longer holds. An
+unstated replication type is `DOCUMENT`, as in OpenSearch. The build targets OpenSearch main, 3.10.0-SNAPSHOT. The PR
+review of the one-repository import was worked through on 2026-09-30.
 
 **Upstream, owned by the user, for M9:** `remoteShardFailed` waits for a cluster manager that never comes
 (`ClusterManagerNodeChangePredicate` refuses every state without one), so a docrep write whose replica fails hangs.
 Handle it locally, as `localShardFailed` now is: drop the id from the in-sync set, unassign the peer's entry, and
-complete the listener.
+complete the listener. `StaleReplicas` then rebuilds the dropped replica.
 
 **Waiting on the supervisor, also:** `retain_remote_history` and `abandon_remote_terms` (DESIGN.md §27). Add each to
 `Registration.IMPLEMENTED_FEATURES` only once this side acts on it — declaring a feature is a promise the supervisor
