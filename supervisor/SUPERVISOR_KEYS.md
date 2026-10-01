@@ -322,7 +322,7 @@ rows above have nothing structural in common, and each new task type would need 
 convergence is reachable at the scale this will run at for the foreseeable future. Recorded so that the day
 it stops being reachable, the reason it was chosen is on the record along with what to do instead.
 
-Two smaller notes on the implemented definition, both places where it is deliberately not the strongest
+Three smaller notes on the implemented definition, all places where it is deliberately not the strongest
 reading available:
 
 - **Replicas are excluded from `create-index`.** Requiring every desired copy would be more obviously
@@ -332,6 +332,11 @@ reading available:
 - **A task whose subject no longer exists is complete, not failed.** A `create-index` task for an index since
   deleted describes work nobody wants. Failing it would leave a permanent record of something that never went
   wrong.
+- **A `close-index` task waits for no node to report a copy, not for no node to be assigned one.** A closed
+  index keeps its assignment entries, because withdrawing them would tell the node to delete data that must
+  survive a reopen. A node reports a closed index as holding no copies (`NODE_CONTRACT.md`), so that is the
+  completion test. Waiting for the entries to go as well, as `delete-index` does, failed every close of an index
+  that had copies.
 
 ## 3. Pools, members and leases
 

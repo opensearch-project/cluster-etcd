@@ -262,6 +262,21 @@ class TaskCompletionTests {
         assertTrue(evaluate(TaskType.CLOSE_INDEX, index(false, 1, 3041), empty()).satisfied());
     }
 
+    @Test
+    void closeIsDoneWhileTheClosedIndexIsStillAssigned() {
+        // A closed index keeps its assignment entries, so that reopening it finds its data. Waiting for those to go,
+        // as a delete does, meant every close of an index with copies ended failed and stuck.
+        assertTrue(evaluate(TaskType.CLOSE_INDEX, index(false, 1, 3041), assignedOnly()).satisfied());
+    }
+
+    @Test
+    void closeIsNotDoneWhileANodeStillReportsACopy() {
+        var verdict = evaluate(TaskType.CLOSE_INDEX, index(false, 1, 3041), holding(3041, ShardState.STARTED));
+
+        assertFalse(verdict.satisfied());
+        assertTrue(verdict.because().contains("has not closed it yet"), verdict.because());
+    }
+
     // ---------------------------------------------------------------- configuration updates
 
     @Test

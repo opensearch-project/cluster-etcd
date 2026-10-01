@@ -72,10 +72,14 @@ public final class TaskCompletion {
                 ))
                 .orElseGet(() -> noCopiesRemain(task, tenant, observation));
 
+            // Not noCopiesRemain: a closed index keeps its assignment entries, because withdrawing them would tell
+            // the node to delete data that must survive a reopen (SurplusReaper leaves them dormant). So the entries
+            // never go, and waiting for them failed every close of an index that had copies. A node reports a closed
+            // index as holding no copies (NODE_CONTRACT.md), so that is what is waited for.
             case CLOSE_INDEX -> index
                 .map(config -> config.open()
                     ? Verdict.notYet("index [" + config.name() + "] is still open in desired state")
-                    : noCopiesRemain(task, tenant, observation))
+                    : noCopiesReported(task, tenant, observation))
                 .orElseGet(() -> Verdict.done("index uuid " + task.indexUuid() + " is gone, which closes it"));
 
             case UPDATE_MAPPING, UPDATE_SETTINGS -> index
@@ -360,6 +364,20 @@ public final class TaskCompletion {
             }
         }
         return Verdict.done("no node in this pool holds or is assigned a copy of index uuid " + task.indexUuid());
+    }
+
+    /** No node reports holding a copy, whatever it is still assigned — which is how a closed index is reported. */
+    private static Verdict noCopiesReported(TaskRecord task, TenantId tenant, Observation observation) {
+        for (Observation.NodeObservation node : observation.nodes().values()) {
+            if (node.copiesCount() && holdsAnything(node, tenant, task.indexUuid())) {
+                return Verdict.notYet(
+                    "node [" + node.nodeId() + "] still reports a copy of index uuid " + task.indexUuid()
+                        + ", so it has not closed it yet"
+                );
+            }
+        }
+        return Verdict.done("no node in this pool reports a copy of index uuid " + task.indexUuid()
+            + ", which is how a node reports an index closed");
     }
 
     private static boolean holdsAnything(Observation.NodeObservation node, TenantId tenant, String indexUuid) {
