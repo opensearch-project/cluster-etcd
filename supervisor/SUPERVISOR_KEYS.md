@@ -121,7 +121,9 @@ into every assignment, which would store it once per reader and rewrite every co
   never see the primary it is waiting for, because the primary is not serving until the replica catches up.
   `role` and `state` are separate for the reason `NODE_CONTRACT.md` gives: a primary that is still
   initializing is a thing that exists, and `active_primary_shards` cannot be computed without saying so.
-- **`replication`** is `DOCUMENT` or `SEGMENT`, copied from the index's `index.replication.type`. It tells a
+- **`replication`** is `DOCUMENT` or `SEGMENT`, copied from the index's `index.replication.type`, and `DOCUMENT`
+  when the index document does not state one, as OpenSearch, the control plane and the data plane all read it
+  (finding 13). It tells a
   reader whether peer resolution applies at all before it goes looking.
 - **`serving`** on each copy is redundant with `state` and is published anyway: which states serve is this
   service's rule, and making every reader reimplement it is how two implementations of one rule come to

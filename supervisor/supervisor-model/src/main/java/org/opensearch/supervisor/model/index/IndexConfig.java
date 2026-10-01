@@ -272,7 +272,10 @@ public record IndexConfig(
             intSetting(settings, SETTING_SHARDS, 1, name),
             intSetting(settings, SETTING_REPLICAS, 0, name),
             intSetting(settings, SETTING_SEARCH_REPLICAS, 0, name),
-            Replication.from(stringSetting(settings, SETTING_REPLICATION, "SEGMENT")),
+            // Absent is DOCUMENT, as in OpenSearch (both index.replication.type and the cluster strategy default to
+            // it), the control plane, which writes it into every index it creates without one, and the data plane.
+            // Reading it as SEGMENT planned search replicas a node then declined (finding 13).
+            Replication.from(stringSetting(settings, SETTING_REPLICATION, "DOCUMENT")),
             Boolean.parseBoolean(stringSetting(settings, SETTING_HIDDEN, "false")),
             // From the document body rather than from settings, and absent means consuming.
             root.path(FIELD_INGESTION_STATUS).path(FIELD_IS_PAUSED).asBoolean(false),

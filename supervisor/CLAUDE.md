@@ -70,29 +70,27 @@ Ownership decisions already made. Don't reopen them without a reason:
 
 ## Where things stand (2026-10-01)
 
-**Last landed:** finding 12, after the review fixes for the PR that published v2. Allocation ids and the
-in-sync set are carried from the inventory into `status/indices` for document replication, `Promoter` promotes
-only a replica the lost primary last called in sync (`DESIGN.md` §28.10), `fake-node` publishes both, and the
-conformance suite gained `readIndexStatus`, a reading-side check of `status/indices`. Before that: primary terms
-and promotion (§27–28, finding 11), whose data plane half is done.
+**Last landed:** findings 12 and 13, both closed on both sides. Allocation ids and the in-sync set are carried
+from the inventory into `status/indices` for document replication, `Promoter` promotes only a replica the lost
+primary last called in sync (`DESIGN.md` §28.10), `fake-node` publishes both, and the conformance suite gained
+`readIndexStatus`, a reading-side check of `status/indices`. An index that does not state its replication type is
+`DOCUMENT`, as in OpenSearch. Before that: the review fixes for the PR that published v2, and primary terms and
+promotion (§27–28, finding 11).
 
 **Open threads, roughly in priority order:**
 
-1. **The data plane must publish `allocation_id` and `in_sync` and implement `ContractNode.readIndexStatus`.**
-   Three checks fail on its side until it does, which fails the root build. Handed over in finding 12's status
-   block.
-2. **Somewhere to record that a drain or dual-run is intended.** Open question 11 (announced deployments) and
+1. **Somewhere to record that a drain or dual-run is intended.** Open question 11 (announced deployments) and
    §28.9. It blocks three things: intentional demotion (a drain), the rollback dual-run (§27.4), and exempting
    an intended dual-run from `PRIMARY_CONFLICT`. This is the next design task.
-3. **The rest of §28:** `retain_remote_history` and `abandon_remote_terms`, the scoped metadata lock (§27.5),
+2. **The rest of §28:** `retain_remote_history` and `abandon_remote_terms`, the scoped metadata lock (§27.5),
    and the upstream search-replica pin (§27.3). None of it is built.
-4. **`NodeStatus` has no reading-side conformance check.** `status/indices` has one now; `status/nodes` is the
+3. **`NodeStatus` has no reading-side conformance check.** `status/indices` has one now; `status/nodes` is the
    other document the data plane reads.
-5. **No way to promote an out-of-sync replica on purpose.** With no in-sync replica left, a docrep shard stays
+4. **No way to promote an out-of-sync replica on purpose.** With no in-sync replica left, a docrep shard stays
    without a primary; OpenSearch has `allocate_stale_primary` for this, and nothing here does.
-6. **Two projections still read the configured copy count rather than the authorised one:** `Differ` and
+5. **Two projections still read the configured copy count rather than the authorised one:** `Differ` and
    `StatusComputation` (§15.2). Health is per shard now, but within a shard copies are not counted by role.
-7. **Long-standing:** R5.3 snapshot metadata, cross-pool migration, the dedicated-pool ceiling, rollover, an
+6. **Long-standing:** R5.3 snapshot metadata, cross-pool migration, the dedicated-pool ceiling, rollover, an
    ordinary replica of a segment-replication index (open question 10), and the heat signal (proposed in
    `NODE_CONTRACT.md`).
 

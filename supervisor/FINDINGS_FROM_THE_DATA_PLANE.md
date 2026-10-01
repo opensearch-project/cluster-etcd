@@ -1234,6 +1234,9 @@ precisely the state D8.2 exists to prevent.
 > - **`fake-node` publishes both**, so the supervisor's own tests run the path end to end: a stable id per docrep
 >   copy, kept through promotion, and on a primary itself plus the replicas the projection shows started.
 >
+> **Both halves done** (2026-10-01). The data plane publishes both fields, routes a docrep peer under its published id,
+> and implements `readIndexStatus`; its contract test passes all 23 checks. Kept below for the record:
+>
 > **What your side must do next.** Publish the two fields, and implement `ContractNode.readIndexStatus` in
 > `PluginNodeContractTests`: the conformance suite has three new checks of how a node reads `status/indices`, built
 > from the supervisor's own writer, and they fail on your side until the adapter reports which allocation id it
@@ -1375,7 +1378,13 @@ about another node.
 
 ## 13. An index that does not state its replication type is read as segment-replicated here, and as document-replicated everywhere else
 
-> **Open.** A one-line default, and the reasoning for it.
+> **Closed.** `IndexConfig.parse` reads an absent `index.replication.type` as `DOCUMENT`, so such an index is planned
+> with ordinary replicas and projected as `"replication": "DOCUMENT"`; an explicit `SEGMENT`, in any case, still plans
+> search replicas. Checked against OpenSearch 3.10.0-SNAPSHOT's source rather than taken from this note: both
+> `index.replication.type` (`IndexMetadata`) and `cluster.indices.replication.strategy` (`IndicesService`) default to
+> `DOCUMENT`. `SUPERVISOR_KEYS.md` says absent means `DOCUMENT` under `replication`. One existing test had pinned
+> `SEGMENT` as "the intended default"; it now pins `DOCUMENT` and says why. Nothing else depended on it. Nothing more
+> is needed from your side.
 
 ### What happens
 

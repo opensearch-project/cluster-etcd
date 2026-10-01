@@ -295,6 +295,21 @@ class StatusComputationTests {
     }
 
     @Test
+    void anIndexThatDoesNotStateItsTypeIsProjectedAsDocumentReplicated() {
+        // The projection is what the data plane acts on, so it has to say what the data plane reads (finding 13).
+        IndexConfig unstated = IndexConfig.parse(
+            "{\"index\":\"my-index\",\"uuid\":\"uzKxLWZu4nPSrTknEcDpoA\",\"settings\":{}}"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8), 3041);
+
+        IndexStatus status = statusOf(unstated, Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))
+        ));
+
+        assertTrue(new String(status.toBytes(), java.nio.charset.StandardCharsets.UTF_8)
+            .contains("\"replication\":\"DOCUMENT\""), new String(status.toBytes(), java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    @Test
     void placementOrderIsStableSoAnUnchangedProjectionIsNotRewritten() {
         var nodes = Map.of(
             NODE_B, node(NODE_B, Liveness.LIVE, Map.of(), Map.of(0, copy(ShardRole.REPLICA, ShardState.STARTED))),

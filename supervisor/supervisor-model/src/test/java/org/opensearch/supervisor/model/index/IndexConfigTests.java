@@ -1,6 +1,7 @@
 package org.opensearch.supervisor.model.index;
 
 import org.junit.jupiter.api.Test;
+import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.status.Replication;
 
 import java.nio.charset.StandardCharsets;
@@ -81,7 +82,31 @@ class IndexConfigTests {
 
         assertEquals(1, config.numberOfShards());
         assertEquals(0, config.numberOfReplicas());
-        assertEquals(Replication.SEGMENT, config.replication(), "segment replication is the intended default");
+        // Segment replication is the intended path, but absent means what it means in OpenSearch, which fixes
+        // DOCUMENT into an index created without a type -- and what the control plane and the data plane read.
+        assertEquals(Replication.DOCUMENT, config.replication(), "absent is DOCUMENT, as everywhere else (finding 13)");
+    }
+
+    @Test
+    void anIndexThatDoesNotStateItsTypeIsPlannedWithOrdinaryReplicas() {
+        // Read as SEGMENT, number_of_replicas was planned as search replicas, which the data plane, reading the same
+        // document as DOCUMENT, declined.
+        IndexConfig config = parse("{\"index\":\"i\",\"uuid\":\"u\",\"settings\":{\"index.number_of_replicas\":\"2\"}}");
+
+        assertEquals(2, config.desiredCopiesOf(ShardRole.REPLICA));
+        assertEquals(0, config.desiredCopiesOf(ShardRole.SEARCH_REPLICA));
+    }
+
+    @Test
+    void anExplicitSegmentTypeInAnyCaseStillPlansSearchReplicas() {
+        for (String spelling : java.util.List.of("SEGMENT", "segment", "Segment")) {
+            IndexConfig config = parse("{\"index\":\"i\",\"uuid\":\"u\",\"settings\":{"
+                + "\"index.number_of_replicas\":\"2\",\"index.replication.type\":\"" + spelling + "\"}}");
+
+            assertEquals(Replication.SEGMENT, config.replication(), spelling);
+            assertEquals(2, config.desiredCopiesOf(ShardRole.SEARCH_REPLICA), spelling);
+            assertEquals(0, config.desiredCopiesOf(ShardRole.REPLICA), spelling);
+        }
     }
 
     @Test
