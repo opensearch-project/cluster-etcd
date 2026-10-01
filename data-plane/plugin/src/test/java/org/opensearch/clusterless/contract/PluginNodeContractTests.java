@@ -213,6 +213,32 @@ public class PluginNodeContractTests extends OpenSearchTestCase {
         }
 
         /**
+         * What this plugin makes of a peer's projection the supervisor wrote.
+         *
+         * <p>The fields are read off the {@code DiscoveryNode} that {@code CoordinatorState.peerFor} builds -- the one this
+         * node would connect to -- rather than off the parse. Roles are the parse's, because a {@code DiscoveryNode} has no
+         * coordinator role to carry, and an unrecognised one has to show as UNKNOWN rather than vanish. Reachable is the
+         * gate {@code CoordinatorViewSource} applies before routing to a peer: not lost, and addressable.
+         */
+        @Override
+        public ContractNode.UnderstoodNode readNodeStatus(byte[] document) {
+            NodeStatus status = NodeStatus.read(document);
+            org.opensearch.cluster.node.DiscoveryNode built = CoordinatorState.peerFor(status);
+            java.util.Set<org.opensearch.supervisor.model.node.NodeRole> roles = new java.util.LinkedHashSet<>();
+            status.roles().forEach(role -> roles.add(nodeRoleOf(role)));
+            return new ContractNode.UnderstoodNode(
+                org.opensearch.supervisor.model.NodeId.of(built.getId()),
+                built.getEphemeralId(),
+                built.getHostAddress(),
+                built.getAddress().getPort(),
+                built.getVersion().toString(),
+                roles,
+                built.getAttributes(),
+                status.isReachable() && status.isAddressable()
+            );
+        }
+
+        /**
          * The term each copy is <em>fabricated</em> at, read back out of the cluster state this plugin would publish.
          *
          * <p>Not {@code primaryTermOf}, which is the parse: the check exists to catch a node that reads the field and

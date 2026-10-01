@@ -588,7 +588,8 @@ public final class CoordinatorState implements NodeState {
         return nodes.build();
     }
 
-    private DiscoveryNode peerFor(NodeStatus peer) {
+    /** The node this state names a peer by, built from its projection; null if one cannot be built. */
+    public static DiscoveryNode peerFor(NodeStatus peer) {
         try {
             Set<DiscoveryNodeRole> roles = peer.holdsData() ? Set.of(DiscoveryNodeRole.DATA_ROLE) : Set.of();
             return new DiscoveryNode(

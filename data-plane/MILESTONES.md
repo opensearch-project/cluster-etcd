@@ -1142,6 +1142,11 @@ whether it would route to or recover from that peer (`contract.NodeStatus.isReac
 anything but `lost` as reachable — the supervisor now agrees). The checks are `aPeerIsUnderstoodAsTheSupervisorWroteIt`,
 `aStalePeerIsReachableAndALostOneIsNot` and `anUnrecognisedLivenessIsReachable`.
 
+**Done, 2026-10-01.** `PluginNodeContractTests.readNodeStatus` reports the fields of the `DiscoveryNode` that
+`CoordinatorState.peerFor` builds, so what is checked is what this node would connect with. Roles are the parse's,
+since a `DiscoveryNode` has no coordinator role to carry. Reachable is the gate `CoordinatorViewSource` applies
+before routing to a peer: not lost, and addressable.
+
 The original note follows.
 
 ## The shared conformance suite: why
