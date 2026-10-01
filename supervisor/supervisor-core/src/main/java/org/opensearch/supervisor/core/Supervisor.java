@@ -194,12 +194,20 @@ public final class Supervisor {
         lastDecision = Balancer.decide(view, passesOverShare, balancerConfig);
         applyDecision(lastDecision);
 
-        // Chores that belong to no pool, done by whichever member holds the one extra lease.
-        housekeeping.tick(pass, pools, membership, clock.millis());
+        // Chores that belong to no pool, done by whichever member holds the one extra lease. Every lease this member
+        // holds has been renewed by now, so a chore that throws must not stop the pools' passes: they would be
+        // renewed for ever and never run.
+        Throwable failure = null;
+        try {
+            housekeeping.tick(pass, pools, membership, clock.millis());
+        } catch (Throwable thrown) {
+            failure = thrown;
+        }
 
         // Only now, with ownership settled, does any reconciliation happen.
         java.util.Map<org.opensearch.supervisor.model.NodeId, org.opensearch.supervisor.model.node.Registration>
             seen = new LinkedHashMap<>();
+        Set<PoolId> failed = new LinkedHashSet<>();
         for (PoolId pool : held) {
             SupervisorLoop loop = loops.computeIfAbsent(pool, id -> readOnly
                 ? new SupervisorLoop(store, clock, id, supervisorId, configuredTenants, liveness)
@@ -208,13 +216,55 @@ public final class Supervisor {
                 : new SupervisorLoop(store, clock, id, supervisorId, configuredTenants,
                     () -> leases.holds(id), policy, leases.epochOf(id), liveness)
             );
-            loop.pass();
+            try {
+                loop.pass();
+            } catch (Throwable thrown) {
+                // The lease was renewed at the top of this tick, so a pool whose pass always throws would otherwise
+                // be renewed for ever and never reach a peer. Dropping it stops the renewal without releasing: the
+                // lease expires after its TTL, which is the pause before anyone -- this member included -- tries
+                // again. The other pools still run, and the failure is rethrown once they have.
+                failed.add(pool);
+                loops.remove(pool);
+                if (failure == null) {
+                    failure = thrown;
+                } else {
+                    failure.addSuppressed(thrown);
+                }
+                continue;
+            }
             seen.putAll(loop.lastRegistrations());
+        }
+        if (failed.isEmpty() == false) {
+            Set<PoolId> next = new LinkedHashSet<>(held);
+            next.removeAll(failed);
+            held = next;
         }
 
         // What this process is running with, published after the pools are settled so `pools_held` is the answer
         // for the pass that just ran rather than the one before it. R3.3, which had no observable answer until now.
         memberStatus.project(seen, List.copyOf(held), thresholds, clock.millis());
+
+        if (failure != null) {
+            throw new TickFailedException(failed, failure);
+        }
+    }
+
+    /** Housekeeping or one or more pools' passes threw; the rest of the tick completed, without the failed pools. */
+    public static final class TickFailedException extends RuntimeException {
+        private final Set<PoolId> pools;
+
+        TickFailedException(Set<PoolId> pools, Throwable cause) {
+            super(pools.isEmpty()
+                ? "housekeeping failed; every pool's pass still ran"
+                : "the pass over " + pools + " failed, so this member stops renewing their leases and they pass to"
+                    + " whichever member claims them once the leases expire", cause);
+            this.pools = Set.copyOf(pools);
+        }
+
+        /** The pools given up. Empty when only housekeeping failed. */
+        public Set<PoolId> pools() {
+            return pools;
+        }
     }
 
     private void applyDecision(Balancer.Decision decision) {

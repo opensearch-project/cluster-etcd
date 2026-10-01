@@ -270,6 +270,108 @@ class SupervisorFleetTests {
         assertFalse(holder.held().contains(stolen), "the lease is gone, so the pool must be too");
     }
 
+    /** Throws on a scan of one prefix while armed, so one pool's pass fails and nothing else does. */
+    private static final class FailingStore implements org.opensearch.controlplane.store.KeyValueStore {
+        private final org.opensearch.controlplane.store.KeyValueStore delegate;
+        private final String failingPrefix;
+        boolean armed;
+
+        FailingStore(org.opensearch.controlplane.store.KeyValueStore delegate, String failingPrefix) {
+            this.delegate = delegate;
+            this.failingPrefix = failingPrefix;
+        }
+
+        @Override
+        public java.util.Optional<Versioned> get(String key) {
+            return delegate.get(key);
+        }
+
+        @Override
+        public java.util.NavigableMap<String, Versioned> scanPrefix(String keyPrefix) {
+            if (armed && keyPrefix.equals(failingPrefix)) {
+                throw new IllegalStateException("injected: cannot read " + keyPrefix);
+            }
+            return delegate.scanPrefix(keyPrefix);
+        }
+
+        @Override
+        public long put(String key, byte[] value) {
+            return delegate.put(key, value);
+        }
+
+        @Override
+        public long put(String key, byte[] value, long expectedRevision) {
+            return delegate.put(key, value, expectedRevision);
+        }
+
+        @Override
+        public boolean delete(String key) {
+            return delegate.delete(key);
+        }
+
+        @Override
+        public boolean delete(String key, long expectedRevision) {
+            return delegate.delete(key, expectedRevision);
+        }
+    }
+
+    @Test
+    void aPoolWhosePassThrowsIsGivenUpAndTheOtherPoolsStillRun() {
+        // The lease is renewed at the top of a tick, before any pass. So a pass that always threw used to keep its
+        // pool's lease renewed for ever -- no peer could take it -- and abandoned every pool after it, and the
+        // member status, on every tick.
+        TenantId acme = TenantId.of("acme");
+        store.put(Keys.poolBinding(acme), PoolBinding.to(B).toBytes());
+        store.put(Keys.tenantRegistration(acme),
+            "{\"tenant\":\"acme\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        FailingStore failing = new FailingStore(store, Keys.indicesPrefix(acme));
+        Supervisor wedged = new Supervisor(failing, clock, "s1", Set.of(), 1.0, TTL, Balancer.Config.defaults());
+        run(List.of(wedged), 6);
+        assertEquals(Set.of(A, B, C), wedged.held(), "precondition: the lone member holds every pool");
+
+        failing.armed = true;
+        long statusBefore = store.revisionOf(Keys.memberStatus("s1"));
+        Map<PoolId, Object> diffsBefore = new HashMap<>();
+        for (PoolId pool : Set.of(A, C)) {
+            diffsBefore.put(pool, wedged.lastDiffOf(pool));
+        }
+        Supervisor.TickFailedException thrown =
+            org.junit.jupiter.api.Assertions.assertThrows(Supervisor.TickFailedException.class, wedged::tick);
+
+        assertEquals(Set.of(B), thrown.pools());
+        assertEquals(Set.of(A, C), wedged.held(), "only the failing pool is given up");
+        for (PoolId pool : Set.of(A, C)) {
+            assertTrue(wedged.lastDiffOf(pool) != diffsBefore.get(pool), pool + " still ran its pass");
+        }
+        assertTrue(store.revisionOf(Keys.memberStatus("s1")) > statusBefore,
+            "and member status is still published, without the given-up pool");
+        Supervisor peer = supervisor("s2");
+
+        // Not renewed again, so it goes quiet, and a peer takes it over once the TTL has passed. The peer ticks
+        // first, so it is the one to notice the expiry.
+        long lastRenewal = store.revisionOf(Keys.poolLease(B));
+        for (int round = 0; round < 3; round++) {
+            clock.advance(Duration.ofSeconds(2));
+            peer.tick();
+            wedged.tick();
+        }
+        assertEquals(lastRenewal, store.revisionOf(Keys.poolLease(B)), "the given-up pool's lease is not renewed");
+        assertFalse(wedged.held().contains(B));
+
+        clock.advance(TTL);
+        for (int round = 0; round < 10 && peer.held().contains(B) == false; round++) {
+            peer.tick();
+            try {
+                wedged.tick();
+            } catch (Supervisor.TickFailedException e) {
+                // It may reclaim the pool and fail on it again, which is fine; the peer gets the next chance.
+            }
+            assertNoPoolHeldTwice(List.of(peer, wedged));
+            clock.advance(Duration.ofSeconds(2));
+        }
+        assertTrue(peer.held().contains(B), "the peer takes the pool over; it holds " + peer.held());
+    }
+
     // ---------------------------------------------------------------- the store's view
 
     @Test

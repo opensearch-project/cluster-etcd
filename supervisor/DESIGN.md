@@ -240,6 +240,11 @@ record expires and its capacity leaves the fair-share denominator. **Failover ti
 default `max(3 × pass interval, 15 s)`, and it is the number to argue about — too short and a GC pause
 hands a pool to someone else, too long and a pool goes unmanaged.
 
+**A pool whose pass throws is given up the same way.** Leases are renewed at the start of a tick, before any pass,
+so a member whose pass over one pool always throws would otherwise renew that pool for ever and no peer could take
+it. `Supervisor.tick()` drops the pool without releasing it, runs the other pools and housekeeping regardless, and
+rethrows. The lease expires after the TTL, which is also the pause before anyone, this member included, tries again.
+
 `POOL_UNOWNED` is raised by the housekeeping holder for a pool no member has claimed, so a pool that nobody
 can serve is visible rather than merely quiet.
 

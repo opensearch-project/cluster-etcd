@@ -15,9 +15,10 @@ import java.util.concurrent.locks.LockSupport;
  * proceeds. Exiting instead would turn a transient store timeout into an outage of the management plane.
  *
  * <p><b>And a permanently failing pass needs no special handling either</b>, which is the part worth noticing.
- * Lease renewal happens inside {@code tick()}. A supervisor whose passes all throw is therefore not renewing,
- * so its leases expire and its peers take the pools over — the wedged process stops being anybody's problem
- * without having to detect that it is wedged. It keeps trying and keeps saying so, because a process that exits
+ * {@code Supervisor.tick()} renews leases first and then gives up any pool whose pass throws, without releasing it,
+ * so a pool whose passes all throw stops being renewed, its lease expires, and a peer takes it over. Housekeeping and
+ * the other pools still run. A tick that fails while renewing has not renewed what it failed on. Either way the
+ * wedged process stops being anybody's problem without having to detect that it is wedged. It keeps trying and keeps saying so, because a process that exits
  * loses the one thing it is still good for: reporting why it cannot work. So there is no failure count that
  * triggers an exit, deliberately. The escalating log is the whole response.
  *
