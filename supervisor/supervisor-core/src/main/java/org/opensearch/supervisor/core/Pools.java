@@ -62,26 +62,26 @@ public final class Pools {
         List<String> problems = new ArrayList<>();
 
         Map<PoolId, PoolDefinition> definitions = new LinkedHashMap<>();
-        PoolId defaultPool = null;
+        List<PoolId> claimingDefault = new ArrayList<>();
         for (var entry : store.scanPrefix(Keys.POOL_DEFINITIONS_PREFIX).entrySet()) {
             String id = Keys.idAfter(Keys.POOL_DEFINITIONS_PREFIX, entry.getKey());
             try {
                 PoolDefinition definition = PoolDefinition.from(entry.getValue().value());
                 definitions.put(PoolId.of(id), definition);
                 if (definition.isDefault()) {
-                    if (defaultPool != null) {
-                        // Two defaults would make the destination of an unbound tenant depend on scan
-                        // order, which is a coin flip dressed up as configuration.
-                        problems.add("pools [" + defaultPool + "] and [" + id + "] both claim to be default;"
-                            + " ignoring both, because choosing by scan order is worse than not choosing");
-                        defaultPool = null;
-                    } else {
-                        defaultPool = PoolId.of(id);
-                    }
+                    claimingDefault.add(PoolId.of(id));
                 }
             } catch (RuntimeException e) {
                 unreadable.add(entry.getKey());
             }
+        }
+        // Decided once every definition has been read. Two or more defaults would make the destination of an unbound
+        // tenant depend on scan order, which is a coin flip dressed up as configuration -- and so would clearing the
+        // choice on each conflict as it is found, which let a third default win.
+        PoolId defaultPool = claimingDefault.size() == 1 ? claimingDefault.get(0) : null;
+        if (claimingDefault.size() > 1) {
+            problems.add("pools " + claimingDefault + " all claim to be default; ignoring every one of them, because"
+                + " choosing by scan order is worse than not choosing");
         }
 
         Map<TenantId, PoolBinding> bindings = new LinkedHashMap<>();
