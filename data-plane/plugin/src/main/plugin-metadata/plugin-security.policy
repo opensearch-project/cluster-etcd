@@ -1,0 +1,37 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
+
+// Granted to this plugin's own jars, which is all a plugin policy can do -- and all it needs to do, because
+// every call into the store goes through PrivilegedKeyValueStore. OpenSearch 3.x's java agent walks the stack
+// and requires every protection domain on it to hold the permission, so without that privileged block these
+// grants would be irrelevant: the check would fail on a server jar further up the stack, naming a jar that has
+// nothing to do with this plugin. That was the first symptom, and it is worth knowing before touching this file.
+
+grant {
+  // The store backend is a jar an operator drops beside this one, and it talks to etcd, ZooKeeper or whatever
+  // else over the network. Nothing in this repository names one -- D6.2 -- so nothing here can narrow the
+  // permission to a known host or port either. What restricts it in practice is which backend jar is installed
+  // and what URI the operator configured.
+  permission java.net.SocketPermission "*", "connect,resolve";
+
+  // ServiceLoader finds a backend on the plugin's own classloader, and gRPC and Curator both set the context
+  // classloader while starting their client threads.
+  permission java.lang.RuntimePermission "*", "setContextClassLoader";
+
+  // The filesystem backend, which store-api bundles, reads and writes an ordinary directory named by
+  // clusterless.store. It cannot be narrowed here for the same reason the socket permission cannot: the path is
+  // configuration, and a policy file is static.
+  //
+  // This is the broadest grant in the file, and it is worth being clear about what it buys. The filesystem
+  // backend exists so that the three planes can be run together on a laptop with no infrastructure -- it is a
+  // development and demonstration convenience, not a production store, because a directory is not shared
+  // between machines. A deployment that uses etcd or ZooKeeper needs the socket permission above and gets no
+  // value from this one. If that becomes the only interesting case, delete this line: the plugin will keep
+  // working against a real store and stop working against a directory, which is an honest trade.
+  permission java.io.FilePermission "<<ALL FILES>>", "read,write,delete";
+};
