@@ -14,6 +14,7 @@ import org.opensearch.test.OpenSearchTestCase;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The primary term a node fabricates, which decides whether a promotion is one.
@@ -98,6 +99,29 @@ public class PrimaryTermsTests extends OpenSearchTestCase {
         assertTrue(primary.initializing());
         assertNotEquals(replica.allocationId().getId(), primary.allocationId().getId());
         assertEquals(5L, onlyIndex(promoted).primaryTerm(0));
+    }
+
+    public void testAReplicaListedForRebuildingIsBuiltAgainUnderANewIdOnce() {
+        // StaleReplicas' decision, carried out: neither reused nor promoted, so the server closes the copy and recovers
+        // it from the primary under the new id. By id, so the second fabrication of an applying pass -- and every pass
+        // after -- keeps the new entry rather than rebuilding it again.
+        ClusterState asReplica = withShardStarted(build(ClusterState.EMPTY_STATE, docrep(Map.of(0, ShardRole.REPLICA), Map.of(0, 4L))));
+        ShardRouting before = onlyCopy(asReplica, 0);
+        Set<String> rebuild = Set.of(before.allocationId().getId());
+
+        ClusterState rebuilt = buildRebuilding(asReplica, docrep(Map.of(0, ShardRole.REPLICA), Map.of(0, 4L)), rebuild);
+
+        ShardRouting after = onlyCopy(rebuilt, 0);
+        assertTrue(after.initializing());
+        assertFalse(after.primary());
+        assertEquals(org.opensearch.cluster.routing.RecoverySource.Type.PEER, after.recoverySource().getType());
+        assertNotEquals(before.allocationId().getId(), after.allocationId().getId());
+
+        ClusterState again = buildRebuilding(rebuilt, docrep(Map.of(0, ShardRole.REPLICA), Map.of(0, 4L)), rebuild);
+        assertEquals("the new entry is kept", after, onlyCopy(again, 0));
+        assertTrue(StateEquivalence.sameContent(rebuilt, again));
+
+        assertEquals("and without the decision the started entry is reused", before, onlyCopy(build(asReplica, docrep(Map.of(0, ShardRole.REPLICA), Map.of(0, 4L))), 0));
     }
 
     public void testASearchReplicaIsNotPromotedInPlace() {
@@ -220,6 +244,20 @@ public class PrimaryTermsTests extends OpenSearchTestCase {
 
         DesiredState again = PrimaryTerms.reduce(PeerRecovery.reduce(promoted, nothingVisible), next);
         assertTrue("and the pass after changes nothing", StateEquivalence.sameContent(next, build(next, again)));
+    }
+
+    private static ClusterState buildRebuilding(ClusterState previous, DesiredState desired, Set<String> rebuild) {
+        return new DataNodeState(
+            new org.opensearch.cluster.ClusterName("clusterless"),
+            TestFixtures.localNode("pv1sDMfZRxSTMiW5VrbN9w"),
+            desired,
+            MappingSource.WRAPPED,
+            LocalShardStore.EMPTY,
+            RemoteStore.NONE,
+            Set.of(),
+            Map.of(),
+            rebuild
+        ).buildClusterState(previous);
     }
 
     private static ClusterState build(ClusterState previous, DesiredState desired) {

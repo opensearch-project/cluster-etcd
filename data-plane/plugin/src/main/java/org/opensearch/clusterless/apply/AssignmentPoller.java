@@ -77,6 +77,7 @@ public final class AssignmentPoller {
     private final RemoteRecovery remoteRecovery;
     private final CoordinatorViewSource coordinatedShards;
     private final IngestionResets ingestionResets;
+    private final StaleReplicas staleReplicas;
     private final boolean applyEnabled;
 
     /** What the poller needs of the fabricator: everything a pass decides, and nothing it has to decide itself. */
@@ -86,7 +87,8 @@ public final class AssignmentPoller {
             DesiredState desired,
             Set<Index> stopRetaining,
             Map<ShardId, RecoverySource> recoverySources,
-            CoordinatorView coordinated
+            CoordinatorView coordinated,
+            Set<String> rebuild
         );
     }
 
@@ -188,6 +190,7 @@ public final class AssignmentPoller {
         this.applier = applier;
         this.reaper = Objects.requireNonNull(reaper, "reaper");
         this.ingestionResets = ingestionResets;
+        this.staleReplicas = new StaleReplicas(nodeId.value());
         this.remoteRecovery = remoteRecovery;
         this.coordinatedShards = coordinatedShards == null ? CoordinatorViewSource.NONE : coordinatedShards;
         this.applyEnabled = applyEnabled;
@@ -261,10 +264,13 @@ public final class AssignmentPoller {
             // matters more than the server's own refusal would.
             desired = PrimaryTerms.reduce(desired, live);
             lastResolved = desired;
+            // Once per pass, because it counts passes: which started docrep replicas here their primary no longer holds
+            // in sync, and so are rebuilt. See StaleReplicas.
+            Set<String> rebuild = staleReplicas.toRebuild(desired, live, coordinated);
             // Fabricated against the live state to decide whether anything needs doing, and fabricated again
             // inside the applier against whatever the server hands over. The two can differ -- a shard may have
             // finished recovering in between -- and the applier's copy is the one that counts.
-            ClusterState intended = nodeStates.create(desired, stopRetaining, recovery.sources(), coordinated)
+            ClusterState intended = nodeStates.create(desired, stopRetaining, recovery.sources(), coordinated, rebuild)
                 .buildClusterState(live);
 
             if (StateEquivalence.sameContent(live, intended)) {
@@ -280,7 +286,7 @@ public final class AssignmentPoller {
                 if (applyEnabled) {
                     applier.apply(
                         "clusterless assignment version " + desired.assignmentVersion(),
-                        previous -> nodeStates.create(finalDesired, stopRetaining, recovery.sources(), coordinated)
+                        previous -> nodeStates.create(finalDesired, stopRetaining, recovery.sources(), coordinated, rebuild)
                             .buildClusterState(previous),
                         this::applied
                     );

@@ -208,7 +208,7 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
             nodeId,
             new DesiredStateResolver(indexConfigs, remoteStore),
             clusterService::state,
-            (desired, stopRetaining, recoverySources, coordinated) -> new CoordinatorState(
+            (desired, stopRetaining, recoverySources, coordinated, rebuild) -> new CoordinatorState(
                 new DataNodeState(
                     clusterService.getClusterName(),
                     localNode,
@@ -217,7 +217,8 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
                     localShardStore,
                     remoteStore,
                     stopRetaining,
-                    recoverySources
+                    recoverySources,
+                    rebuild
                 ),
                 localNode,
                 coordinated,

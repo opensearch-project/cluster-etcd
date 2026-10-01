@@ -89,6 +89,7 @@ public final class DataNodeState implements NodeState {
     private final LocalShardStore shardStore;
     private final RemoteStore remoteStore;
     private final Set<Index> stopRetaining;
+    private final Set<String> rebuild;
     private final Map<ShardId, RecoverySource> recoverySources;
 
     /**
@@ -158,6 +159,27 @@ public final class DataNodeState implements NodeState {
         Set<Index> stopRetaining,
         Map<ShardId, RecoverySource> recoverySources
     ) {
+        this(clusterName, localNode, desired, mappings, shardStore, remoteStore, stopRetaining, recoverySources, Set.of());
+    }
+
+    /**
+     * @param rebuild allocation ids of this node's copies not to carry forward, decided by {@link StaleReplicas} once per
+     *     pass: a copy listed here is built again under a new id, which makes the server close it and recover it. By id
+     *     rather than by shard, so that once the entry has been replaced -- this class runs twice on a pass that applies --
+     *     the new one is kept.
+     */
+    public DataNodeState(
+        ClusterName clusterName,
+        DiscoveryNode localNode,
+        DesiredState desired,
+        MappingSource mappings,
+        LocalShardStore shardStore,
+        RemoteStore remoteStore,
+        Set<Index> stopRetaining,
+        Map<ShardId, RecoverySource> recoverySources,
+        Set<String> rebuild
+    ) {
+        this.rebuild = rebuild == null ? Set.of() : Set.copyOf(rebuild);
         this.clusterName = Objects.requireNonNull(clusterName, "clusterName");
         this.localNode = Objects.requireNonNull(localNode, "localNode");
         this.desired = Objects.requireNonNull(desired, "desired");
@@ -451,6 +473,10 @@ public final class DataNodeState implements NodeState {
             if (previousShard != null) {
                 for (ShardRouting candidate : previousShard) {
                     boolean mine = localNode.getId().equals(candidate.currentNodeId());
+                    if (mine && candidate.allocationId() != null && rebuild.contains(candidate.allocationId().getId())) {
+                        // Neither reused nor promoted: see StaleReplicas.
+                        continue;
+                    }
                     boolean live = candidate.started() || candidate.initializing();
                     boolean sameRole = candidate.primary() == primary && candidate.isSearchOnly() == searchOnly;
                     if (mine && live && sameRole) {

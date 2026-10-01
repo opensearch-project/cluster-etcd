@@ -130,7 +130,7 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
             NODE,
             new DesiredStateResolver(indexConfigs),
             () -> recordingApplier.state,
-            (desired, stopRetaining, recoverySources, coordinated) -> new DataNodeState(
+            (desired, stopRetaining, recoverySources, coordinated, rebuild) -> new DataNodeState(
                 CLUSTER,
                 TestFixtures.localNode(NODE.value()),
                 desired,
@@ -363,7 +363,7 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
             NODE,
             new DesiredStateResolver((tenant, name) -> Optional.empty()),
             () -> ClusterState.EMPTY_STATE,
-            (desired, stopRetaining, recoverySources, coordinated) -> new DataNodeState(
+            (desired, stopRetaining, recoverySources, coordinated, rebuild) -> new DataNodeState(
                 CLUSTER,
                 TestFixtures.localNode(NODE.value()),
                 desired,
@@ -495,7 +495,7 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
                 NODE,
                 new DesiredStateResolver((tenant, name) -> Optional.empty()),
                 () -> ClusterState.EMPTY_STATE,
-                (desired, stopRetaining, recoverySources, coordinated) -> new DataNodeState(
+                (desired, stopRetaining, recoverySources, coordinated, rebuild) -> new DataNodeState(
                     CLUSTER,
                     TestFixtures.localNode(NODE.value()),
                     desired,
@@ -651,7 +651,7 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
             NODE,
             new DesiredStateResolver(indexConfigs),
             () -> recordingApplier.state,
-            (desired, stopRetaining, recoverySources, coordinated) -> new DataNodeState(
+            (desired, stopRetaining, recoverySources, coordinated, rebuild) -> new DataNodeState(
                 CLUSTER,
                 TestFixtures.localNode(NODE.value()),
                 desired,
