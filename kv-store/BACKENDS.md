@@ -11,7 +11,15 @@ and limits are in the `KeyValueStore` Javadoc, and every existing backend enforc
 - The filesystem store now hashes keys too long for a filename. Production-length keys failed there before.
 - The etcd store now pages its scans. One unpaged range failed above gRPC's 4 MiB message limit.
 
-Still open: the control-plane changes in "Order of work" below.
+The control plane now stays inside the limits too (`f8e3073`):
+
+- Names that become key segments are capped at 255 UTF-8 bytes. That covers aliases, pipelines, templates,
+  stored scripts and repositories.
+- Index and alias documents are checked against the value limit before anything is written.
+- A `LimitExceededException` that still reaches the router answers `400`.
+
+One gap remains, recorded in `control-plane/README.md`: a resume's `reset_settings` go into a task written
+after the index document, and their size is not bounded.
 
 ## TL;DR
 
@@ -120,9 +128,9 @@ Proposed: the interface states a size every backend must accept, with a contract
   already enforced by refusing the write.
 
 Over the limit, a backend throws a dedicated exception rather than a generic failure, so a consumer can
-tell "too big" from "store down". That leaves DynamoDB to cover the gap itself (see below), and leaves
-`indices/<name>` needing a cap in the control plane. That cap is a control-plane change, and is worth
-raising whatever happens to these backends.
+tell "too big" from "store down". That leaves DynamoDB to cover the gap itself (see below). It also
+needed `indices/<name>` capped in the control plane, which now checks index and alias documents before
+writing them.
 
 ### 3. A stated maximum key length
 
@@ -142,9 +150,8 @@ its native limit:
 - DynamoDB and S3 have 1,024 bytes, or less where a partition prefix is taken out of the sort key.
 
 Longer keys are rejected with a clear error rather than truncated. The longest production key today is
-about 400 bytes (`tenant/<128-byte tenant>/indices/<255-byte name>`). That holds only if the control plane
-validates the user-supplied names that currently go into keys unchecked — 255 bytes, as for index names.
-That is again a control-plane change.
+about 400 bytes (`tenant/<128-byte tenant>/indices/<255-byte name>`). That holds because the control plane
+caps every user-supplied name that goes into a key at 255 bytes, as for index names.
 
 ### 4. Consistency and durability, written down
 
@@ -373,13 +380,14 @@ and it has the most open questions.
 
 ## Order of work
 
-1. **Interface changes first, since every backend needs them:**
+1. **Interface changes first, since every backend needs them.** Done (`ea27608`):
    - the revision contract, moving the cross-key test into the filesystem tests
    - the value-size and key-length guarantees, with contract tests
    - the consistency and durability rules
    - `actualRevision` as best-effort
 
-   Hand two changes to the control plane: caps on `indices/<name>` size and on user-supplied names in keys.
+   And done in the control plane (`f8e3073`): caps on `indices/<name>` size and on user-supplied names in
+   keys.
 2. **Relational backend:** lowest risk, and a check that the contract suite is written in backend-neutral
    terms.
 3. **DynamoDB**, after deciding how keys are partitioned.
