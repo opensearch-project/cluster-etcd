@@ -7,14 +7,19 @@ package org.opensearch.controlplane.handler.indices;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.resolver.IndexAbstractions;
+import org.opensearch.controlplane.rest.ErrorResponses;
 import org.opensearch.controlplane.rest.Json;
+import org.opensearch.controlplane.rest.RestRequest;
+import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.RevisionConflictException;
+import org.opensearch.controlplane.store.WriteLimits;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.NavigableMap;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.TreeMap;
 
 /**
@@ -116,6 +121,14 @@ final class AliasStore {
         } catch (RevisionConflictException lostTheRace) {
             return false;
         }
+    }
+
+    /** The rejection for an alias document over the store's value limit, checked before writing. */
+    static Optional<RestResponse> rejectIfTooLarge(RestRequest request, String alias, ObjectNode definition) {
+        OptionalInt bytes = WriteLimits.oversized(definition);
+        return bytes.isPresent()
+            ? Optional.of(ErrorResponses.documentTooLarge(request, "alias [" + alias + "]", bytes.getAsInt()))
+            : Optional.empty();
     }
 
     static ObjectNode emptyDefinition() {

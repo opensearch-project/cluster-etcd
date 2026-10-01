@@ -9,15 +9,18 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
+import org.opensearch.controlplane.handler.indices.IndexNameValidator;
 import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.metadata.SettingsValidation;
 import org.opensearch.controlplane.rest.ErrorResponses;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
+import org.opensearch.controlplane.store.WriteLimits;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Creates or updates a template, for any of the three kinds.
@@ -99,6 +102,13 @@ public final class PutTemplateHandler implements OperationHandler {
             }
         }
 
+        // A template's name becomes a key segment, so it is held to the store's name limit. Ours: upstream
+        // has no length rule for template names, and would be first in its validation list if it had.
+        Optional<String> tooLong = WriteLimits.nameTooLong(name);
+        if (tooLong.isPresent()) {
+            return ErrorResponses.invalidTemplate(request, name, "name is too long, " + tooLong.get());
+        }
+
         // Settings are checked before the overlap check, matching the order a real cluster reports them
         // in. Static settings are permitted -- a template setting number_of_shards is the normal case --
         // so only existence and permission are checked.
@@ -117,6 +127,14 @@ public final class PutTemplateHandler implements OperationHandler {
             }
             if (problems.notUserSettable().isEmpty() == false) {
                 return ErrorResponses.privateSettingsRejected(request, problems.notUserSettable(), name);
+            }
+            // After the template's own validation, as upstream's validateAliasStandalone runs: an alias a
+            // template declares becomes an alias key when an index is created from it.
+            for (String alias : (Iterable<String>) () -> block.path("aliases").fieldNames()) {
+                Optional<String> invalid = IndexNameValidator.validateIndexOrAliasName(alias);
+                if (invalid.isPresent()) {
+                    return ErrorResponses.invalidAliasName(request, alias, invalid.get());
+                }
             }
         }
 

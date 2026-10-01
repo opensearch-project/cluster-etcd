@@ -13,8 +13,10 @@ import org.opensearch.controlplane.rest.ErrorResponses;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
+import org.opensearch.controlplane.store.WriteLimits;
 
 import java.io.IOException;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -76,6 +78,20 @@ public final class PutPipelineHandler implements OperationHandler {
         if (definition == null || definition.isObject() == false) {
             return ErrorResponses.parseFailure(request, "pipeline definition must be a JSON object");
         }
+        // Upstream caps pipeline ids at 512 UTF-8 bytes, ahead of parsing the definition; the id is a key
+        // segment here, so the cap is the store's 255 and the message is upstream's with that number in it.
+        String id = request.pathParam("id");
+        int idBytes = WriteLimits.utf8Bytes(id);
+        if (idBytes > WriteLimits.MAX_NAME_BYTES) {
+            return ErrorResponses.illegalArgument(request, String.format(
+                Locale.ROOT,
+                "%s id [%s] exceeds maximum length of %d UTF-8 bytes (actual: %d bytes)",
+                kind.errorStyle() == PipelineKind.ProcessorErrorStyle.INGEST ? "Pipeline" : "Search Pipeline",
+                id,
+                WriteLimits.MAX_NAME_BYTES,
+                idBytes
+            ));
+        }
         if (kind.hasRequiredProperty() && definition.hasNonNull(kind.requiredProperty()) == false) {
             return ErrorResponses.missingRequiredProperty(request, kind.requiredProperty());
         }
@@ -87,8 +103,7 @@ public final class PutPipelineHandler implements OperationHandler {
 
         // Stored canonically rather than verbatim so that output formatting is a function of ?pretty
         // alone, not of however the client happened to indent the request.
-        new PipelineDefinitions(context.store(), kind)
-            .put(request.pathParam("id"), Json.toBytes(definition));
+        new PipelineDefinitions(context.store(), kind).put(id, Json.toBytes(definition));
         return Json.acknowledged(request);
     }
 

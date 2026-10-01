@@ -105,6 +105,10 @@ public final class PutMappingHandler implements OperationHandler {
                 return ErrorResponses.structured(
                     RestStatus.BAD_REQUEST, "illegal_argument_exception", conflict.get().message(), request);
             }
+            Optional<RestResponse> tooLarge = IndexStore.rejectIfTooLarge(request, index, metadata);
+            if (tooLarge.isPresent()) {
+                return tooLarge.get();
+            }
             pending.add(new Pending(index, metadata, stored.get().revision()));
         }
 

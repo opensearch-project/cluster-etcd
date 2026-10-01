@@ -96,8 +96,9 @@ public final class ChangeIndexStateHandler implements OperationHandler {
         IndexStore indices = new IndexStore(context.store());
         IndexManagementTasks tasks = new IndexManagementTasks(context.store());
         String targetState = closing ? IndexStore.STATE_CLOSE : IndexStore.STATE_OPEN;
-        List<String> changed = new ArrayList<>();
-
+        // Every index checked and changed in memory before any is written, as put_mapping does, so a
+        // failure on the last leaves the first untouched.
+        List<Staged> staged = new ArrayList<>();
         for (String index : resolved.indices().stream().sorted().toList()) {
             Optional<KeyValueStore.Versioned> stored = indices.getVersioned(index);
             if (stored.isEmpty()) {
@@ -112,16 +113,25 @@ public final class ChangeIndexStateHandler implements OperationHandler {
 
             metadata.put(IndexStore.STATE, targetState);
             metadata.set("settings", markerFor(metadata, closing).toJson(true));
-            if (indices.replace(index, metadata, stored.get().revision()) == false) {
-                return ErrorResponses.concurrentUpdate(request, index);
+            Optional<RestResponse> tooLarge = IndexStore.rejectIfTooLarge(request, index, metadata);
+            if (tooLarge.isPresent()) {
+                return tooLarge.get();
+            }
+            staged.add(new Staged(index, metadata, stored.get().revision()));
+        }
+
+        List<String> changed = new ArrayList<>();
+        for (Staged each : staged) {
+            if (indices.replace(each.index(), each.metadata(), each.revision()) == false) {
+                return ErrorResponses.concurrentUpdate(request, each.index());
             }
             tasks.submit(
                 closing ? IndexManagementTasks.TYPE_CLOSE_INDEX : IndexManagementTasks.TYPE_OPEN_INDEX,
-                index,
-                metadata.path("uuid").asText("_na_"),
+                each.index(),
+                each.metadata().path("uuid").asText("_na_"),
                 context.nowEpochMillis()
             );
-            changed.add(index);
+            changed.add(each.index());
         }
 
         ObjectNode body = Json.object();
@@ -154,4 +164,7 @@ public final class ChangeIndexStateHandler implements OperationHandler {
             throw new IllegalStateException("corrupt index metadata", e);
         }
     }
+
+    /** An index whose changed metadata is ready to write, and the revision it must still be at. */
+    private record Staged(String index, ObjectNode metadata, long revision) {}
 }

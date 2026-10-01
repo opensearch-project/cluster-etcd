@@ -103,4 +103,14 @@ class IndexNameValidatorTests {
             IndexNameValidator.message("MyIndex", "must be lowercase")
         );
     }
+
+    /**
+     * Case is validateIndexName's alone and runs after the shared rules, length among them, so an
+     * over-long upper-case name reports its length. Aliases skip the case rule entirely.
+     */
+    @Test
+    void caseIsCheckedAfterTheSharedRulesAndOnlyForIndices() {
+        assertEquals("index name is too long, (256 > 255)", reason("A".repeat(256)));
+        assertEquals(Optional.empty(), IndexNameValidator.validateIndexOrAliasName("MyAlias"));
+    }
 }

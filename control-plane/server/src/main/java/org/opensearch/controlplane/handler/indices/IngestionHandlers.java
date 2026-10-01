@@ -252,6 +252,10 @@ public final class IngestionHandlers {
         status.put(IS_PAUSED, paused);
         metadata.set(INGESTION_STATUS, status);
 
+        Optional<RestResponse> tooLarge = IndexStore.rejectIfTooLarge(request, index, metadata);
+        if (tooLarge.isPresent()) {
+            return tooLarge.get();
+        }
         if (indices.replace(index, metadata, stored.get().revision()) == false) {
             return ErrorResponses.concurrentUpdate(request, index);
         }

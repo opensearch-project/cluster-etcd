@@ -12,6 +12,7 @@ import org.opensearch.controlplane.rest.ErrorResponses;
 import org.opensearch.controlplane.rest.GlobalParameters;
 import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
+import org.opensearch.controlplane.store.LimitExceededException;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -113,6 +114,11 @@ public final class Router {
                 return new RestResponse(response.status(), response.contentType(), new byte[0], response.headers());
             }
             return response;
+        } catch (LimitExceededException e) {
+            // The store refused a key or value over its limit. The handlers check first where it matters
+            // to the message or to a multi-write operation; this is the backstop, so a write nobody
+            // checked is still a client error rather than a 500.
+            return ErrorResponses.storeLimitExceeded(e, pretty);
         } catch (Exception e) {
             return ErrorResponses.internalError(e, pretty, isErrorTrace(queryParams));
         }

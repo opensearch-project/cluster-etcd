@@ -8,9 +8,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.resolver.IndexAbstractions;
+import org.opensearch.controlplane.rest.ErrorResponses;
 import org.opensearch.controlplane.rest.Json;
+import org.opensearch.controlplane.rest.RestRequest;
+import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.RevisionConflictException;
+import org.opensearch.controlplane.store.WriteLimits;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -19,6 +23,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.NavigableMap;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.TreeMap;
 
 /**
@@ -71,6 +76,17 @@ final class IndexStore {
 
     Optional<JsonNode> get(String index) {
         return store.get(key(index)).map(versioned -> parse(versioned.value()));
+    }
+
+    /**
+     * The rejection for an index document that would be over the store's value limit, checked before
+     * writing so that an operation over several indices is refused before it changes any of them.
+     */
+    static Optional<RestResponse> rejectIfTooLarge(RestRequest request, String index, ObjectNode metadata) {
+        OptionalInt bytes = WriteLimits.oversized(metadata);
+        return bytes.isPresent()
+            ? Optional.of(ErrorResponses.documentTooLarge(request, "index [" + index + "]", bytes.getAsInt()))
+            : Optional.empty();
     }
 
     /** Metadata with the revision it was read at, for a read-modify-write that must not lose updates. */

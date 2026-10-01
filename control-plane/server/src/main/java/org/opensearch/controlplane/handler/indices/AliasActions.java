@@ -134,7 +134,8 @@ final class AliasActions {
 
             for (String alias : action.aliases()) {
                 if (action.kind() == Action.Kind.ADD) {
-                    Optional<RestResponse> rejected = rejectIfIndexNameCollision(request, indices, alias);
+                    Optional<RestResponse> rejected = rejectIfInvalidName(request, alias)
+                        .or(() -> rejectIfIndexNameCollision(request, indices, alias));
                     if (rejected.isPresent()) {
                         return rejected;
                     }
@@ -154,9 +155,12 @@ final class AliasActions {
         }
 
         // Write-index uniqueness is a property of the final state, so it is checked after staging.
+        // As is size, and both before anything is written, so a request over several aliases is refused
+        // whole rather than after writing the first few.
         for (Map.Entry<String, AliasStore.Versioned> entry : staged.entrySet()) {
             Optional<RestResponse> rejected =
-                rejectIfMultipleWriteIndices(request, entry.getKey(), entry.getValue().definition());
+                rejectIfMultipleWriteIndices(request, entry.getKey(), entry.getValue().definition())
+                    .or(() -> AliasStore.rejectIfTooLarge(request, entry.getKey(), entry.getValue().definition()));
             if (rejected.isPresent()) {
                 return rejected;
             }
@@ -211,6 +215,15 @@ final class AliasActions {
             return Optional.of(ErrorResponses.aliasesNotFound(request, alias));
         }
         return Optional.empty();
+    }
+
+    /**
+     * The rules alias names share with index names, the 255-byte limit among them. Checked wherever an
+     * alias is added: here, on {@code indices.create}, and in a template's aliases.
+     */
+    static Optional<RestResponse> rejectIfInvalidName(RestRequest request, String alias) {
+        return IndexNameValidator.validateIndexOrAliasName(alias)
+            .map(reason -> ErrorResponses.invalidAliasName(request, alias, reason));
     }
 
     /** An alias may not share a name with an index. Also checked by {@code indices.create}. */

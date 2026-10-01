@@ -23,9 +23,9 @@ import java.util.Optional;
  * </ul>
  *
  * <p>So: invalid characters, then {@code #}, then {@code :}, then leading character, then case. The
- * remaining rules ({@code .}/{@code ..} and the length cap) are ordered from the server source; a
- * name violating one of those plus an earlier rule is not something a client is likely to send, but
- * the relative order of those two against case is unverified.
+ * remaining rules (the length cap, then {@code .}/{@code ..}) are ordered from the server source, which
+ * also puts case after both: it belongs to {@code validateIndexName} alone, while everything else is
+ * {@code validateIndexOrAliasName}, shared with aliases.
  */
 public final class IndexNameValidator {
 
@@ -49,13 +49,34 @@ public final class IndexNameValidator {
      *         into an {@code invalid_index_name_exception}.
      */
     public static Optional<String> validate(String name) {
-        if (name == null || name.isEmpty()) {
+        Optional<String> invalid = validateIndexOrAliasName(name);
+        if (invalid.isPresent()) {
+            return invalid;
+        }
+        // MetadataCreateIndexService.validateIndexName, after the shared rules: aliases may be upper case.
+        if (name.toLowerCase(java.util.Locale.ROOT).equals(name) == false) {
+            return Optional.of("must be lowercase");
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * The rules index and alias names share, in {@code MetadataCreateIndexService.validateIndexOrAliasName}'s
+     * order. The length rule says "index name" for an alias too; that is the server's wording.
+     *
+     * @return the reason the name is invalid, or empty if it is acceptable
+     */
+    public static Optional<String> validateIndexOrAliasName(String name) {
+        if (name == null) {
             return Optional.of("must not be empty");
         }
         for (char invalid : INVALID_CHARS) {
             if (name.indexOf(invalid) >= 0) {
                 return Optional.of(INVALID_CHARS_MESSAGE);
             }
+        }
+        if (name.isEmpty()) {
+            return Optional.of("must not be empty");
         }
         if (name.indexOf('#') >= 0) {
             return Optional.of("must not contain '#'");
@@ -67,15 +88,12 @@ public final class IndexNameValidator {
         if (first == '_' || first == '-' || first == '+') {
             return Optional.of("must not start with '_', '-', or '+'");
         }
-        if (name.equals(".") || name.equals("..")) {
-            return Optional.of("must not be '.' or '..'");
-        }
-        if (name.toLowerCase(java.util.Locale.ROOT).equals(name) == false) {
-            return Optional.of("must be lowercase");
-        }
         int byteCount = name.getBytes(StandardCharsets.UTF_8).length;
         if (byteCount > MAX_NAME_BYTES) {
             return Optional.of("index name is too long, (" + byteCount + " > " + MAX_NAME_BYTES + ")");
+        }
+        if (name.equals(".") || name.equals("..")) {
+            return Optional.of("must not be '.' or '..'");
         }
         return Optional.empty();
     }

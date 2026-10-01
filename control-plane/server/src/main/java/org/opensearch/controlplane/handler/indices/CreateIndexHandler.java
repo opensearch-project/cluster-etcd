@@ -170,6 +170,10 @@ public final class CreateIndexHandler implements OperationHandler {
             return aliasRejection.get();
         }
         ObjectNode metadata = buildMetadata(index, uuid, effective, context.nowEpochMillis());
+        Optional<RestResponse> tooLarge = IndexStore.rejectIfTooLarge(request, index, metadata);
+        if (tooLarge.isPresent()) {
+            return tooLarge.get();
+        }
 
         if (indices.createIfAbsent(metadata, index).isEmpty()) {
             // Lost the create-if-absent, so something else got there first. Report its UUID, not the
@@ -212,8 +216,9 @@ public final class CreateIndexHandler implements OperationHandler {
     }
 
     /**
-     * The alias checks upstream runs on create, against what is stored now: no alias may share a name
-     * with an index, this one included, and none may end up with two write indices.
+     * The alias checks upstream runs on create, against what is stored now: every alias name follows the
+     * index-name rules, none may share a name with an index, this one included, and none may end up with
+     * two write indices.
      *
      * <p>Run before the index is written, so an ordinary rejection writes nothing. {@link #applyAliases}
      * repeats the per-alias checks against what it actually writes over.
@@ -231,6 +236,10 @@ public final class CreateIndexHandler implements OperationHandler {
         ObjectNode aliases
     ) {
         for (Map.Entry<String, JsonNode> alias : aliases.properties()) {
+            Optional<RestResponse> invalid = AliasActions.rejectIfInvalidName(request, alias.getKey());
+            if (invalid.isPresent()) {
+                return invalid;
+            }
             if (alias.getKey().equals(index)) {
                 return Optional.of(ErrorResponses.illegalArgument(request,
                     "index, alias, and data stream names need to be unique, but the following duplicates were found ["
@@ -293,7 +302,8 @@ public final class CreateIndexHandler implements OperationHandler {
             return collision;
         }
         ((ObjectNode) current.definition().get(AliasStore.INDICES)).set(index, properties.deepCopy());
-        return AliasActions.rejectIfMultipleWriteIndices(request, alias, current.definition());
+        return AliasActions.rejectIfMultipleWriteIndices(request, alias, current.definition())
+            .or(() -> AliasStore.rejectIfTooLarge(request, alias, current.definition()));
     }
 
     /**

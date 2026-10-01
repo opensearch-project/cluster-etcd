@@ -135,6 +135,12 @@ public final class DataStreamHandlers {
                 composed.settings().with(SETTING_HIDDEN, "true"), composed.mappings(), composed.aliases());
 
             String backingIndex = DataStreamStore.backingIndexName(name, FIRST_GENERATION);
+            // The backing index is created as an ordinary index upstream, so its name is validated as one: a
+            // stream name within 11 bytes of the limit passes above and fails here, on the .ds- name.
+            Optional<String> invalidBacking = IndexNameValidator.validate(backingIndex);
+            if (invalidBacking.isPresent()) {
+                return ErrorResponses.invalidIndexName(request, backingIndex, invalidBacking.get());
+            }
             IndexStore indices = new IndexStore(context.store());
             String uuid = IndexStore.newUuid();
             AliasStore aliases = new AliasStore(context.store());
@@ -145,6 +151,10 @@ public final class DataStreamHandlers {
             }
             ObjectNode metadata =
                 CreateIndexHandler.buildMetadata(backingIndex, uuid, composed, context.nowEpochMillis());
+            Optional<RestResponse> tooLarge = IndexStore.rejectIfTooLarge(request, backingIndex, metadata);
+            if (tooLarge.isPresent()) {
+                return tooLarge.get();
+            }
 
             if (indices.createIfAbsent(metadata, backingIndex).isEmpty()) {
                 return ErrorResponses.illegalArgument(

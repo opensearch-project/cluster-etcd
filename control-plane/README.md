@@ -364,6 +364,31 @@ conditional expression on a version attribute, S3 has conditional writes via
 Payloads are small — index and pipeline configuration, not documents — which is worth
 weighing when considering an object store for this role.
 
+### Limits, and checking them before writing
+
+`KeyValueStore` guarantees keys up to `MAX_KEY_BYTES` (512 UTF-8 bytes) and values up to `MAX_VALUE_BYTES`
+(960 KiB) on every backend, and throws `LimitExceededException` beyond either, even on a backend that could
+store more. See `../kv-store/BACKENDS.md` for where the numbers come from. This service keeps inside them in
+three ways, all in `WriteLimits`:
+
+- **Every name that becomes a key segment is at most 255 UTF-8 bytes**: index, data stream, alias, template,
+  pipeline, stored script and repository names. With the longest tenant id (128 bytes) and the longest
+  resource prefix, that keeps every key under 512. For indices and aliases this is OpenSearch's own rule,
+  `validateIndexOrAliasName`, with its messages; alias names were not validated at all before. For the other
+  four it is ours, and a considered divergence.
+- **Documents are checked against the value limit before they are written**: index documents on every path
+  that writes one, and alias documents. An operation over several indices or aliases checks all of them
+  first, so it is refused whole: `put_mapping`, `put_settings`, `_close`/`_open` and `_aliases` all stage
+  every document before writing any. The rejection is `400 illegal_argument_exception`,
+  `index [x] would be N bytes, over the limit of 983040 bytes`.
+- **Anything else the store refuses is a 400**, not a 500: `Router` maps an escaped `LimitExceededException`
+  to `illegal_argument_exception` with the store's message. That is the path for single-key writes nobody
+  checks first, such as a stored script with a 1 MiB source. Being single-key, they cannot write partially.
+
+Not covered: an index-management task carries a `resume` request's `reset_settings` unbounded, and it is
+written after the index document. A request with enough reset entries to overflow the task would leave the
+index resumed without the task.
+
 **Implementations:**
 
 | implementation | source set | notes |
@@ -390,15 +415,14 @@ same directory, are fsynced, then `ATOMIC_MOVE`d into place, so a reader never s
 value. Revisions increment per key, which needs no separate counter to persist and survives
 restarts.
 
-Three limitations worth knowing:
+Two limitations and a detail worth knowing:
 
 - **CAS is process-local.** Conditional writes are serialised by an in-process lock, so two
   instances sharing a directory will race and lose updates. One process per directory, or use a
   store with real CAS. This is the main reason production wants etcd or DynamoDB.
 - **`scanPrefix` is O(number of keys)** — it lists the directory and decodes every name. Fine for
   control plane volumes, not a substitute for an index.
-- **Key length is bounded** by the filename limit (240 encoded characters). Exceeding it throws
-  rather than truncating.
+- **Keys too long for a filename are hashed**, so every key up to the store's 512-byte limit works.
 
 ## Conformance
 
@@ -914,6 +938,7 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | metadata fields in `get_field_mapping` | `_index`, `_routing`, `_doc_count`, … returned under a wildcard | declared fields only | they come from the mapping engine's field registry, which is version- and plugin-dependent; a hardcoded copy would drift the way a hardcoded settings registry would |
 | `shards_acknowledged` on ingestion pause/resume | reports whether every shard's poller acted | always `false` | the spec marks it required, so it cannot be omitted, and this returns before any poller has seen the change. Same call as `indices.create`: the honest answer is that we did not wait |
 | `failures` on ingestion pause/resume | per-shard failures, grouped by index | never present | a shard failure is not something a metadata write can observe. The field is optional in the spec, so the response stays valid |
+| name length for templates, pipelines, stored scripts and repositories | no limit, except pipeline ids at 512 UTF-8 bytes | 255 UTF-8 bytes; pipelines keep upstream's message with 255 in it, templates and scripts fold it into their usual validation message, and a repository answers `400 repository_exception` where upstream's repository name rules answer 500 | each name is a key segment, and 255 is what keeps a key under the store's 512-byte limit beneath the longest tenant id. Index and alias names already had this limit upstream. See [Limits](#limits-and-checking-them-before-writing) |
 | `include_defaults` on `get_settings` | a sibling `defaults` block, ~2.6 kB per index | accepted and ignored | **the control plane owns the settings a user explicitly set; computed values belong to the layer that computes them.** A data plane node can already answer `/{index}/_settings?local=true` with the fully resolved settings, defaults included, so putting a settings registry here would duplicate that — and a duplicated registry drifts. Same reasoning as [Data plane capabilities](#data-plane-capabilities) |
 | `PUT` weighted routing with no body | **500** `null_pointer_exception`, the reason naming `WeightedRouting.attributeName()` | 400 `parse_exception`, `request body is required` | the body is never parsed, so the request object stays null and `validate()` dereferences it. Reproducing a crash is not compatibility, and the message leaks a server-internal class name at a status that tells the caller to retry. Third place OpenSearch answers 5xx for a plain client error, after `source` without `source_content_type` and an unknown repository type |
 | weight keys in a weighted routing response | `HashMap` order | sorted | same call as nested settings key order, and for the same reasons. It does **not** extend to the two error messages that embed a rendered weights map: those are strings a client may compare, so hash order is reproduced there deliberately |

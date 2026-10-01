@@ -16,6 +16,7 @@ import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.rest.RestStatus;
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.WriteLimits;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -174,7 +175,15 @@ public final class StoredScriptHandlers {
                 }
             }
 
-            context.store().put(key(request.pathParam("id")), Json.toBytes(definition));
+            // After the body, as upstream's PutStoredScriptRequest.validate runs after the REST layer has
+            // parsed it. Upstream has no length rule; the id is a key segment here.
+            String id = request.pathParam("id");
+            Optional<String> tooLong = WriteLimits.nameTooLong(id);
+            if (tooLong.isPresent()) {
+                return ErrorResponses.validationFailed(request, "id is too long, " + tooLong.get() + " for stored script");
+            }
+
+            context.store().put(key(id), Json.toBytes(definition));
             return Json.acknowledged(request);
         }
     }

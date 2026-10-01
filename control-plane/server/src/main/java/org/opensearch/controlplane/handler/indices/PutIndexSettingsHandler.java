@@ -171,7 +171,7 @@ public final class PutIndexSettingsHandler implements OperationHandler {
                 request, pending.getFirst().index(), problems.notEverUpdateable().getFirst());
         }
 
-        IndexManagementTasks tasks = new IndexManagementTasks(context.store());
+        // Every merged document before writing any, so one over the size limit leaves the rest untouched.
         for (Pending each : pending) {
             Settings current = Settings.forIndex(each.metadata().path("settings"));
             // Removals first, as upstream applies them: a glob must not take a key this request assigns.
@@ -184,6 +184,14 @@ public final class PutIndexSettingsHandler implements OperationHandler {
                 CreateIndexHandler.SETTING_REPLICAS, CreateIndexHandler.DEFAULT_NUMBER_OF_REPLICAS);
 
             each.metadata().set("settings", merged.toJson(true));
+            Optional<RestResponse> tooLarge = IndexStore.rejectIfTooLarge(request, each.index(), each.metadata());
+            if (tooLarge.isPresent()) {
+                return tooLarge.get();
+            }
+        }
+
+        IndexManagementTasks tasks = new IndexManagementTasks(context.store());
+        for (Pending each : pending) {
             if (indices.replace(each.index(), each.metadata(), each.revision()) == false) {
                 return ErrorResponses.concurrentUpdate(request, each.index());
             }

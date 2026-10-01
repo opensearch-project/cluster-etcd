@@ -14,9 +14,11 @@ import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.rest.RestStatus;
+import org.opensearch.controlplane.store.WriteLimits;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * The three repository-configuration operations: {@code PUT}, {@code GET} and {@code DELETE} on
@@ -93,9 +95,17 @@ public final class RepositoryHandlers {
                 return ErrorResponses.validationFailed(request, "type is missing");
             }
 
+            // After the request's own validation, where RepositoriesService.validate checks upstream's name
+            // rules. Upstream has no length rule; the name is a key segment here.
+            String name = request.pathParam("repository");
+            Optional<String> tooLong = WriteLimits.nameTooLong(name);
+            if (tooLong.isPresent()) {
+                return ErrorResponses.repositoryRejected(request, name, "is too long, " + tooLong.get());
+            }
+
             // No implicit prefix: a repository setting is written out in full, unlike an index setting.
             new RepositoryStore(context.store()).put(
-                request.pathParam("repository"),
+                name,
                 type,
                 Settings.of(body.path(RepositoryStore.SETTINGS))
             );

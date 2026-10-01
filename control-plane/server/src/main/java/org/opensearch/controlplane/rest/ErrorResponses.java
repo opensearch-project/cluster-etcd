@@ -5,6 +5,8 @@
 package org.opensearch.controlplane.rest;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.LimitExceededException;
 
 import java.util.List;
 import java.util.Map;
@@ -107,6 +109,26 @@ public final class ErrorResponses {
             "source and source_content_type parameters are required",
             pretty
         );
+    }
+
+    /**
+     * {@code 400} for a write the store refused as over its key or value limit.
+     *
+     * <p>Ours: OpenSearch has no store with such limits. A client error, since retrying cannot help, and
+     * an {@code illegal_argument_exception} like the other size limits a cluster enforces.
+     */
+    public static RestResponse storeLimitExceeded(LimitExceededException cause, boolean pretty) {
+        return structured(RestStatus.BAD_REQUEST, "illegal_argument_exception", cause.getMessage(), pretty);
+    }
+
+    /**
+     * {@code 400} for a document that would be over the store's value limit, checked before writing.
+     *
+     * @param resource what the document is, as it reads in a message: {@code index [x]}, {@code alias [x]}
+     */
+    public static RestResponse documentTooLarge(RestRequest request, String resource, int bytes) {
+        return illegalArgument(request, resource + " would be " + bytes + " bytes, over the limit of "
+            + KeyValueStore.MAX_VALUE_BYTES + " bytes");
     }
 
     /** An unexpected exception escaped a handler. */
@@ -316,6 +338,18 @@ public final class ErrorResponses {
      * <p>Verified shape, including that {@code index} names the colliding index rather than the one
      * being aliased.
      */
+    /**
+     * {@code 400} for an alias name breaking the rules it shares with index names.
+     *
+     * <p>{@code AliasValidator.validateAliasStandalone} builds this through the two-argument
+     * {@code InvalidAliasNameException}, which formats with a colon and sets no index — unlike the
+     * collision above, which names the index it collided with after a comma.
+     */
+    public static RestResponse invalidAliasName(RestRequest request, String alias, String reason) {
+        return structured(
+            RestStatus.BAD_REQUEST, "invalid_alias_name_exception", "Invalid alias name [" + alias + "]: " + reason, request);
+    }
+
     public static RestResponse invalidAliasName(RestRequest request, String alias, String index, String indexUuid) {
         ObjectNode cause = Json.object();
         cause.put("type", "invalid_alias_name_exception");
@@ -623,6 +657,29 @@ public final class ErrorResponses {
      *
      * @param templateName the template being put, or {@code null} when this is an index create
      */
+    /**
+     * {@code 400 repository_exception}, {@code [name] reason}, as {@code RepositoryException} renders.
+     *
+     * <p>Upstream answers its repository name rules with a 500. The one this service adds, the name
+     * limit, is a client error and answers 400, the same call as two write indices for an alias.
+     */
+    public static RestResponse repositoryRejected(RestRequest request, String name, String reason) {
+        return structured(RestStatus.BAD_REQUEST, "repository_exception", "[" + name + "] " + reason, request);
+    }
+
+    /**
+     * {@code 400} wrapping one template validation error, as {@code MetadataIndexTemplateService.validate}
+     * reports its accumulated list: {@code index_template [name] invalid, cause [Validation Failed: 1: ...;]}.
+     */
+    public static RestResponse invalidTemplate(RestRequest request, String templateName, String error) {
+        return structured(
+            RestStatus.BAD_REQUEST,
+            "invalid_index_template_exception",
+            "index_template [" + templateName + "] invalid, cause [Validation Failed: 1: " + error + ";]",
+            request
+        );
+    }
+
     public static RestResponse privateSettingsRejected(RestRequest request, List<String> keys, String templateName) {
         // ValidationException.toString: "Validation Failed: " once, then "N: <error>;" per error with no
         // separator between them -- so the second onwards follow the previous semicolon directly, with no
