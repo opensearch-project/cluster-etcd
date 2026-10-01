@@ -16,6 +16,8 @@ import org.opensearch.supervisor.model.node.ShardRole;
 import org.opensearch.supervisor.model.node.ShardState;
 import org.opensearch.supervisor.model.status.HealthStatus;
 import org.opensearch.supervisor.model.status.IndexStatus;
+import org.opensearch.supervisor.model.status.Liveness;
+import org.opensearch.supervisor.model.status.NodeStatus;
 import org.opensearch.supervisor.model.status.Replication;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -506,7 +508,56 @@ public final class NodeContractChecks {
                 understood.toString());
         }));
 
+        // ------------------------------------------------------------ a peer's projection
+
+        checks.add(new Check("aPeerIsUnderstoodAsTheSupervisorWroteIt", harness -> {
+            // Every field a node builds a peer's DiscoveryNode from. The ephemeral id is the one that bites: the
+            // transport refuses a connection to a peer whose ephemeral id does not match the one it reports.
+            ContractNode.UnderstoodNode understood = readNodeStatus(harness, peerStatus(Liveness.LIVE));
+
+            assertEquals(PEER, understood.nodeId());
+            assertEquals("eph-91c2", understood.ephemeralId());
+            assertEquals("10.0.3.15", understood.address());
+            assertEquals(9301, understood.port());
+            assertEquals("3.7.0", understood.version());
+            assertEquals(Set.of(NodeRole.DATA, NodeRole.COORDINATOR), understood.roles());
+            assertEquals(Map.of("zone", "z2", "rack", "r7"), understood.attributes());
+            assertTrue(understood.reachable());
+        }));
+
+        checks.add(new Check("aStalePeerIsReachableAndALostOneIsNot", harness -> {
+            // A late heartbeat is usually a node still serving, and refusing it would turn a slow store into an
+            // outage. A lost one has been given up on and its copies are being placed elsewhere.
+            assertTrue(readNodeStatus(harness, peerStatus(Liveness.STALE)).reachable(), "stale is reachable");
+            assertFalse(readNodeStatus(harness, peerStatus(Liveness.LOST)).reachable(), "lost is not");
+        }));
+
+        checks.add(new Check("anUnrecognisedLivenessIsReachable", harness -> {
+            // The supervisor writes only live, stale and lost, so anything else comes from a newer one. Read as
+            // unreachable, an upgrade of the supervisor would look like every peer vanishing at once.
+            String written = new String(peerStatus(Liveness.LIVE), java.nio.charset.StandardCharsets.UTF_8);
+            byte[] future = written.replace("\"liveness\":\"live\"", "\"liveness\":\"dormant\"")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            assertNotEquals(written, new String(future, java.nio.charset.StandardCharsets.UTF_8),
+                "precondition: the writer's spelling of liveness changed; update this check");
+
+            assertTrue(readNodeStatus(harness, future).reachable());
+        }));
+
         return List.copyOf(checks);
+    }
+
+    private static ContractNode.UnderstoodNode readNodeStatus(Harness harness, byte[] document) {
+        ContractNode.UnderstoodNode understood = harness.node().readNodeStatus(document);
+        assertNotNull(understood, "readNodeStatus is not implemented by this node's adapter, so nothing has checked"
+            + " how it reads tenant/<t>/status/nodes/<node-id>");
+        return understood;
+    }
+
+    /** {@link #PEER}'s projection, built by the supervisor's own writer, with the contract document's example values. */
+    private static byte[] peerStatus(Liveness liveness) {
+        return new NodeStatus(PEER, "eph-91c2", "data-4", Set.of(NodeRole.DATA, NodeRole.COORDINATOR), "10.0.3.15",
+            9301, "3.7.0", Map.of("zone", "z2", "rack", "r7"), liveness, 1788969977933L).toBytes();
     }
 
     /** The node that holds the other copy in {@link #docrepStatus}. */

@@ -199,7 +199,11 @@ document — that data is already in `nodes/heartbeat/<id>` for anyone entitled 
 }
 ```
 
-`liveness` is `live`, `stale` or `lost`, on the two-threshold rule in `NODE_CONTRACT.md`.
+`liveness` is `live`, `stale` or `lost`, on the two-threshold rule in `NODE_CONTRACT.md`. A reader treats every
+value but `lost` as reachable, an unrecognised one included, since only a newer supervisor could have written it.
+**A node not yet seen alive is not listed**: one registered with no heartbeat, or with a heartbeat that has never
+been readable, has no liveness to publish and no address worth connecting to, and appears once it heartbeats.
+Projecting it used to fail the pass, because the observer's `UNKNOWN` cannot be written.
 
 `ephemeral_id` is here because **an address is necessary and not sufficient**, which a real coordinator
 discovered by locating a node correctly and being refused anyway: `DiscoveryNode.equals` compares only the

@@ -124,6 +124,15 @@ class FakeNodeContractTests extends NodeContractTests {
         }
 
         @Override
+        public ContractNode.UnderstoodNode readNodeStatus(byte[] document) {
+            // PeerResolver reads a peer through the shared parser and acts on reachability and the address, so this
+            // reports that parse.
+            var status = org.opensearch.supervisor.model.status.NodeStatus.from(document);
+            return new ContractNode.UnderstoodNode(status.nodeId(), status.ephemeralId(), status.address(),
+                status.port(), status.version(), status.roles(), status.attributes(), status.isReachable());
+        }
+
+        @Override
         public ContractNode.UnderstoodPeers readIndexStatus(byte[] document) {
             // FakeNode reads the projection with the shared parser to build a primary's in-sync set, and that parse is
             // all it acts on, so reporting it is honest in the same way the roles half of readAssignment is.

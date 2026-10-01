@@ -648,6 +648,11 @@ copies that are not yet started — a projection filtered to `STARTED` only woul
 never see the primary it is waiting for. `tenant/<t>/status/indices/<uuid>` therefore lists every observed
 copy with its role and state, and the replica waits for a primary whose state is `STARTED`.
 
+**A peer's address comes from `tenant/<t>/status/nodes/<node-id>`**, with the ephemeral id the transport insists on.
+A node routes to or recovers from a peer whose `liveness` is anything but `lost`, an unrecognised value included,
+and a peer the supervisor has not yet seen alive is simply not listed. Both readers are held to this by the
+conformance suite's `readNodeStatus` checks.
+
 **A docrep peer's identity comes from the same document.** Each copy of a `DOCUMENT` index carries the
 `allocation_id` its holder published, and a primary carries its `in_sync` set, both verbatim from the holder's
 current inventory and absent where it published none. A primary's node builds each replica's routing entry with the

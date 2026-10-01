@@ -53,6 +53,11 @@ public record NodeStatus(
     /**
      * Whether this node is worth trying to reach. A {@code LOST} peer is not a recovery source.
      *
+     * <p>Anything else is reachable, a liveness this build does not recognise included. This service writes only
+     * {@code live}, {@code stale} and {@code lost}, so an unrecognised value comes from a newer one, and treating it as
+     * unreachable would make an upgrade look like an outage. The data plane reads it the same way, and the
+     * conformance suite holds both to it.
+     *
      * <p>{@code @JsonIgnore} because it is named the way Jackson detects a property, and it was being written as
      * {@code "reachable"} — a field no reader asked for, documented nowhere, and derivable from {@code liveness}
      * by anyone who wanted it. Third time this repository has published a field by accident of a method name; the
@@ -60,7 +65,7 @@ public record NodeStatus(
      */
     @JsonIgnore
     public boolean isReachable() {
-        return liveness == Liveness.LIVE || liveness == Liveness.STALE;
+        return liveness != Liveness.LOST;
     }
 
     public byte[] toBytes() {

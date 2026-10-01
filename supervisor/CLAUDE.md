@@ -84,8 +84,9 @@ promotion (§27–28, finding 11).
    an intended dual-run from `PRIMARY_CONFLICT`. This is the next design task.
 2. **The rest of §28:** `retain_remote_history` and `abandon_remote_terms`, the scoped metadata lock (§27.5),
    and the upstream search-replica pin (§27.3). None of it is built.
-3. **`NodeStatus` has no reading-side conformance check.** `status/indices` has one now; `status/nodes` is the
-   other document the data plane reads.
+3. **The data plane must implement `ContractNode.readNodeStatus`.** The reading-side check for `status/nodes`
+   landed on 2026-10-01 with three checks that fail on its side until it does, which fails the root build. Handed
+   over in the data plane's `MILESTONES.md`, under the shared conformance suite.
 4. **No way to promote an out-of-sync replica on purpose.** With no in-sync replica left, a docrep shard stays
    without a primary; OpenSearch has `allocate_stale_primary` for this, and nothing here does.
 5. **Two projections still read the configured copy count rather than the authorised one:** `Differ` and

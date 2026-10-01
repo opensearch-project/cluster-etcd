@@ -1134,6 +1134,14 @@ scope. Thirteen assertions, both implementations passing. Two notes for whoever 
   belongs in that side's own tests rather than behind a capability flag — a conformance suite half its
   implementations skip proves nothing about either.
 
+**From the supervisor, 2026-10-01: `readNodeStatus` is new, and three checks fail here until the adapter
+implements it.** `ContractNode.readNodeStatus(byte[])` is the reading-side check for
+`tenant/<t>/status/nodes/<node-id>`, the companion to `readIndexStatus`. Report what this plugin acts on: the
+ephemeral id, address, port, version, roles and attributes it would build the peer's `DiscoveryNode` from, and
+whether it would route to or recover from that peer (`contract.NodeStatus.isReachable`, which already reads
+anything but `lost` as reachable — the supervisor now agrees). The checks are `aPeerIsUnderstoodAsTheSupervisorWroteIt`,
+`aStalePeerIsReachableAndALostOneIsNot` and `anUnrecognisedLivenessIsReachable`.
+
 The original note follows.
 
 ## The shared conformance suite: why

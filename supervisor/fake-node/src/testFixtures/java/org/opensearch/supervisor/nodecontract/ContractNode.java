@@ -103,6 +103,46 @@ public interface ContractNode {
     }
 
     /**
+     * What this node made of a peer's projection, {@code tenant/<t>/status/nodes/<node-id>}: the node it would build to
+     * connect to that peer, and whether it would try.
+     *
+     * <p>The other supervisor-written document a node reads. A docrep node turns a peer's id from the index projection
+     * into an address through it, and a coordinator routes by it, so a field read wrongly here is a connection that
+     * fails: the transport refuses a peer whose ephemeral id does not match. Fed bytes from the supervisor's own
+     * writer, and a default for the reason {@link #readIndexStatus} is.
+     *
+     * @param document the bytes of a {@code tenant/<t>/status/nodes/<node-id>} document
+     * @return what the node will act on, or null if this implementation does not say
+     */
+    default UnderstoodNode readNodeStatus(byte[] document) {
+        return null;
+    }
+
+    /**
+     * A node's reading of a peer's projection, stated as what it acts on: the fields it would build the peer's
+     * {@code DiscoveryNode} from, and whether it would route to or recover from that peer at all.
+     *
+     * @param roles a role the node did not recognise must show as
+     *     {@link org.opensearch.supervisor.model.node.NodeRole#UNKNOWN} rather than being dropped, as in
+     *     {@link Understood}
+     */
+    record UnderstoodNode(
+        NodeId nodeId,
+        String ephemeralId,
+        String address,
+        int port,
+        String version,
+        java.util.Set<org.opensearch.supervisor.model.node.NodeRole> roles,
+        java.util.Map<String, String> attributes,
+        boolean reachable
+    ) {
+        public UnderstoodNode {
+            roles = java.util.Set.copyOf(roles);
+            attributes = java.util.Map.copyOf(attributes);
+        }
+    }
+
+    /**
      * One copy of a shard, as an index projection lists it: which node holds it, which shard, in which role.
      */
     record PeerCopy(NodeId node, int shard, org.opensearch.supervisor.model.node.ShardRole role) {}
