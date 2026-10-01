@@ -27,17 +27,32 @@ class SizeBudgetTests {
 
     /** Realistic worst case: several thousand copies across many indices in several tenants. */
     private static ShardInventory inventoryWith(int tenants, int indicesPerTenant, int shardsPerIndex) {
+        return inventoryWith(tenants, indicesPerTenant, shardsPerIndex, false);
+    }
+
+    /**
+     * @param docrep every copy a document-replication one: a 22-character allocation id on each, and on each primary
+     *     an in-sync set of itself and one replica. Finding 12's worst case.
+     */
+    private static ShardInventory inventoryWith(int tenants, int indicesPerTenant, int shardsPerIndex, boolean docrep) {
         Map<TenantId, ShardInventory.TenantShards> byTenant = new LinkedHashMap<>();
         for (int t = 0; t < tenants; t++) {
             Map<String, ShardInventory.IndexShards> indices = new LinkedHashMap<>();
             for (int i = 0; i < indicesPerTenant; i++) {
                 Map<Integer, ShardInventory.ShardCopy> shards = new LinkedHashMap<>();
                 for (int s = 0; s < shardsPerIndex; s++) {
-                    shards.put(s, ShardInventory.ShardCopy.of(
+                    ShardInventory.ShardCopy copy = ShardInventory.ShardCopy.of(
                         s % 2 == 0 ? ShardRole.PRIMARY : ShardRole.REPLICA,
                         ShardState.STARTED,
                         4_823_012L + s
-                    ));
+                    );
+                    if (docrep) {
+                        String id = String.format("ULHF36LvSIa6sReN%06d", (t * 1000 + i) * 100 + s);
+                        copy = copy.withReplicationIds(id, copy.role() == ShardRole.PRIMARY
+                            ? java.util.List.of(id, String.format("3YLXESN2TkSC5FYh%06d", (t * 1000 + i) * 100 + s))
+                            : null);
+                    }
+                    shards.put(s, copy);
                 }
                 // Index uuids are 22 characters of base64url, so use something that length rather than "i1".
                 indices.put("uzKxLWZu4nPSrTknEcD" + String.format("%03d", i), new ShardInventory.IndexShards(
@@ -59,6 +74,19 @@ class SizeBudgetTests {
             size <= NodeJson.INVENTORY_BUDGET_BYTES,
             "5000 copies serialised to " + size + " bytes, over the " + NodeJson.INVENTORY_BUDGET_BYTES + " budget"
         );
+    }
+
+    @Test
+    void threeThousandDocumentReplicationCopiesFitTheInventoryBudget() {
+        // Finding 12 put an allocation id on every docrep copy and an in-sync set on every docrep primary. Measured,
+        // half of them primaries each in sync with one replica: 165 bytes per copy, so 3,000 copies are 496,767
+        // bytes (95% of the budget) and the ceiling is about 3,160. The finding estimated 3,900.
+        ShardInventory inventory = inventoryWith(10, 30, 10, true);
+        assertEquals(3000, inventory.copyCount());
+
+        int size = NodeJson.write(inventory).length;
+        assertTrue(size <= NodeJson.INVENTORY_BUDGET_BYTES,
+            "3000 docrep copies serialised to " + size + " bytes, over the " + NodeJson.INVENTORY_BUDGET_BYTES + " budget");
     }
 
     @Test

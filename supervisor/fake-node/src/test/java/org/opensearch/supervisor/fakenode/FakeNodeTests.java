@@ -336,6 +336,75 @@ class FakeNodeTests {
         assertEquals(1, storedInventory().copyCount());
     }
 
+    private void writeDocrepIndex() {
+        store.put(Keys.indicesPrefix(ACME) + "my-index", org.opensearch.supervisor.model.index.IndexConfig.toDocument(
+            "my-index", INDEX_UUID, true, org.opensearch.supervisor.model.index.IndexConfig.settingsOf(
+                2, 1, org.opensearch.supervisor.model.status.Replication.DOCUMENT)));
+    }
+
+    private ShardInventory.ShardCopy storedCopy(int shard) {
+        return storedInventory().tenants().get(ACME).indices().get(INDEX_UUID).shards().get(shard);
+    }
+
+    @Test
+    void aDocumentReplicationCopyPublishesAStableAllocationId() {
+        // Finding 12: a docrep primary's node builds this copy's routing entry from the id, so it must not change
+        // while the copy exists -- through a promotion too.
+        writeDocrepIndex();
+        assign(Map.of(0, ShardRole.REPLICA), 1);
+        node.tick();
+        String minted = storedCopy(0).allocationId();
+        node.tick();
+        assertTrue(minted != null, "a docrep copy carries an id from the moment it exists");
+        assertEquals(minted, storedCopy(0).allocationId(), "and keeps it once started");
+        assertEquals(null, storedCopy(0).inSync(), "a replica has no in-sync set");
+
+        assign(Map.of(0, ShardRole.PRIMARY), 2);
+        node.tick();
+        assertEquals(minted, storedCopy(0).allocationId(), "promotion keeps the id, as OpenSearch does");
+        assertEquals(java.util.List.of(minted), storedCopy(0).inSync(), "a primary is in sync with itself");
+    }
+
+    @Test
+    void aDocumentReplicationPrimaryCallsInSyncTheReplicasTheProjectionShowsStarted() {
+        // Standing in for a primary's tracker: a replica it would have finished recovering.
+        writeDocrepIndex();
+        assign(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.PRIMARY), 1);
+        node.tick();
+        node.tick();
+        String own = storedCopy(0).allocationId();
+        NodeId other = NodeId.of("72ZSKeRtQmuqOGyPvYzmLw");
+        store.put(Keys.indexStatus(ACME, INDEX_UUID), new org.opensearch.supervisor.model.status.IndexStatus(
+            "my-index", INDEX_UUID, 3041, org.opensearch.supervisor.model.status.HealthStatus.GREEN,
+            org.opensearch.supervisor.model.status.Replication.DOCUMENT, 2, 1, 0, false, Map.of(
+                0, java.util.List.of(
+                    new org.opensearch.supervisor.model.status.IndexStatus.ShardPlacement(
+                        NODE, ShardRole.PRIMARY, ShardState.STARTED, own, java.util.List.of(own)),
+                    new org.opensearch.supervisor.model.status.IndexStatus.ShardPlacement(
+                        other, ShardRole.REPLICA, ShardState.STARTED, "zzz-started-replica", null)),
+                1, java.util.List.of(
+                    new org.opensearch.supervisor.model.status.IndexStatus.ShardPlacement(
+                        other, ShardRole.REPLICA, ShardState.INITIALIZING, "zzz-recovering-replica", null))),
+            clock.millis(), 1).toBytes());
+
+        node.tick();
+
+        assertEquals(java.util.List.of(own, "zzz-started-replica"), storedCopy(0).inSync(), "sorted, itself included");
+        assertEquals(java.util.List.of(storedCopy(1).allocationId()), storedCopy(1).inSync(),
+            "a replica still recovering is not in sync");
+    }
+
+    @Test
+    void aSegmentReplicationCopyPublishesNeitherField() {
+        writeIndex(INDEX_UUID, true);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
+        node.tick();
+        node.tick();
+
+        assertEquals(null, storedCopy(0).allocationId());
+        assertEquals(null, storedCopy(0).inSync());
+    }
+
     @Test
     void anAbsentAssignmentIsNotAnEmptyOne() {
         // GAP in NODE_CONTRACT.md: it says the assignment is the complete desired set, and says nothing

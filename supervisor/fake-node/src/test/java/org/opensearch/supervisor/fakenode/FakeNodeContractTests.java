@@ -124,6 +124,26 @@ class FakeNodeContractTests extends NodeContractTests {
         }
 
         @Override
+        public ContractNode.UnderstoodPeers readIndexStatus(byte[] document) {
+            // FakeNode reads the projection with the shared parser to build a primary's in-sync set, and that parse is
+            // all it acts on, so reporting it is honest in the same way the roles half of readAssignment is.
+            var status = org.opensearch.supervisor.model.status.IndexStatus.from(document);
+            Map<ContractNode.PeerCopy, String> ids = new LinkedHashMap<>();
+            Map<Integer, List<String>> inSync = new LinkedHashMap<>();
+            status.shards().forEach((shard, placements) -> placements.forEach(placement -> {
+                if (placement.allocationId() != null) {
+                    ids.put(new ContractNode.PeerCopy(placement.nodeId(), shard, placement.role()),
+                        placement.allocationId());
+                }
+                if (placement.role() == org.opensearch.supervisor.model.node.ShardRole.PRIMARY
+                    && placement.inSync() != null) {
+                    inSync.put(shard, placement.inSync());
+                }
+            }));
+            return new ContractNode.UnderstoodPeers(ids, inSync);
+        }
+
+        @Override
         public ContractNode.Understood readAssignment(byte[] document) {
             Assignment parsed = NodeJson.readAssignment(document);
 

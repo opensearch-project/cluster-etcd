@@ -169,4 +169,68 @@ class PromotionTests {
         assertTrue(plan.instructions().isEmpty(), "C is not promoted too: " + plan.instructions());
         assertTrue(refusalFor(plan, observation).contains("has not reported it yet"), refusalFor(plan, observation));
     }
+
+    private static final org.opensearch.supervisor.model.NodeId D = org.opensearch.supervisor.model.NodeId.of(
+        "nodeDDDDDDDDDDDDDDDDDD");
+
+    @Test
+    void onlyAReplicaTheLostPrimaryLastCalledInSyncIsPromoted() {
+        // Finding 12. B sorts first and would have been chosen, but A last reported only C in sync: B may be missing
+        // acknowledged writes, and promoting it would lose them silently.
+        Observation observation = observe(index(1, 2, Replication.DOCUMENT), counter(Map.of(0, 1L), 3),
+            Node.of(A).holdingDocrep(0, ShardRole.PRIMARY, "alloc-a", "alloc-a", "alloc-c")
+                .told(0, ShardRole.PRIMARY, 1).lost(),
+            Node.of(B).holdingDocrep(0, ShardRole.REPLICA, "alloc-b").declaringPrimaryTerms(),
+            Node.of(C).holdingDocrep(0, ShardRole.REPLICA, "alloc-c").declaringPrimaryTerms());
+
+        Plan plan = plan(observation);
+
+        assertEquals(1, plan.instructions().size(), plan.instructions().toString());
+        assertEquals(C, ((Instruction.PlaceCopy) plan.instructions().get(0)).node());
+    }
+
+    @Test
+    void withNoInSyncReplicaTheShardIsReportedRatherThanPromotedOrReplaced() {
+        // Neither promoting B nor an empty primary on D: the second would have B recover from it and discard its
+        // data, which is at least as bad as losing the writes B is missing.
+        Observation observation = observe(index(1, 1, Replication.DOCUMENT), counter(Map.of(0, 1L), 3),
+            Node.of(A).holdingDocrep(0, ShardRole.PRIMARY, "alloc-a", "alloc-a").told(0, ShardRole.PRIMARY, 1).lost(),
+            Node.of(B).holdingDocrep(0, ShardRole.REPLICA, "alloc-b").declaringPrimaryTerms(),
+            Node.of(D).declaringPrimaryTerms());
+
+        Plan plan = plan(observation);
+
+        assertTrue(plan.instructions().isEmpty(), "nothing promoted and nothing placed: " + plan.instructions());
+        String refusal = refusalFor(plan, observation);
+        assertTrue(refusal.contains("acknowledged writes"), refusal);
+        assertTrue(refusal.contains("[alloc-a]"), "and it names the set it went by: " + refusal);
+    }
+
+    @Test
+    void theSetComesFromTheLostPrimaryWithTheHighestTerm() {
+        // A was primary at term 1 and lost, B was promoted at term 2 and lost in turn. A's inventory is still there
+        // and its set is out of date; intersecting the two would exclude C, which B last called in sync.
+        Observation observation = observe(index(1, 2, Replication.DOCUMENT), counter(Map.of(0, 2L), 3),
+            Node.of(A).holdingDocrep(0, ShardRole.PRIMARY, "alloc-a", "alloc-a", "alloc-b")
+                .told(0, ShardRole.PRIMARY, 1).lost(),
+            Node.of(B).holdingDocrep(0, ShardRole.PRIMARY, "alloc-b", "alloc-b", "alloc-c")
+                .told(0, ShardRole.PRIMARY, 2).lost(),
+            Node.of(C).holdingDocrep(0, ShardRole.REPLICA, "alloc-c").told(0, ShardRole.REPLICA, 2)
+                .declaringPrimaryTerms());
+
+        Plan plan = plan(observation);
+
+        assertEquals(1, plan.instructions().size(), refusalFor(plan, observation));
+        assertEquals(C, ((Instruction.PlaceCopy) plan.instructions().get(0)).node());
+    }
+
+    @Test
+    void aLostPrimaryThatNeverPublishedASetLeavesAnyStartedReplicaPromotable() {
+        // A node from before finding 12: today's behaviour, not a refusal.
+        Observation observation = observe(index(1, 1, Replication.DOCUMENT), counter(Map.of(0, 1L), 3),
+            Node.of(A).holding(0, ShardRole.PRIMARY).told(0, ShardRole.PRIMARY, 1).lost(),
+            Node.of(B).holdingDocrep(0, ShardRole.REPLICA, "alloc-b").declaringPrimaryTerms());
+
+        assertEquals(B, ((Instruction.PlaceCopy) plan(observation).instructions().get(0)).node());
+    }
 }

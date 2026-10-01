@@ -5,6 +5,7 @@ import org.opensearch.supervisor.model.Keys;
 import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.TenantId;
 import org.opensearch.supervisor.model.index.IndexConfig;
+import org.opensearch.supervisor.model.status.IndexStatus;
 import org.opensearch.supervisor.model.node.Assignment;
 import org.opensearch.supervisor.model.node.AppliedOutcome;
 import org.opensearch.supervisor.model.node.Heartbeat;
@@ -16,6 +17,7 @@ import org.opensearch.supervisor.model.node.ShardState;
 
 import java.time.Clock;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -42,6 +44,7 @@ public final class FakeNode {
     private final String ephemeralId;
 
     private final Map<Integer, Long> shardSizes = new TreeMap<>();
+    private long allocationsMinted;
     private ShardInventory inventory;
     private String inventoryDigest;
     private long appliedVersion = Heartbeat.NO_ASSIGNMENT;
@@ -202,7 +205,8 @@ public final class FakeNode {
     private void converge(Map<Desired, ShardRole> assigned, Assignment assignment) {
         Map<Desired, ShardInventory.ShardCopy> held = flatten(inventory);
         Map<Desired, ShardInventory.ShardCopy> next = new TreeMap<>();
-        Map<Desired, ShardRole> desired = withoutClosedIndices(assigned);
+        Map<String, IndexConfig> indices = new java.util.HashMap<>();
+        Map<Desired, ShardRole> desired = withoutClosedIndices(assigned, indices);
 
         for (Map.Entry<Desired, ShardRole> entry : desired.entrySet()) {
             Desired want = entry.getKey();
@@ -222,6 +226,7 @@ public final class FakeNode {
             }
         }
         // Anything held and not desired is absent from next, and so is gone. Nothing models a slow delete.
+        next.replaceAll((where, copy) -> withReplicationIds(where, copy, held.get(where), indices));
 
         appliedVersion = assignment.version();
         failureDetail = null;
@@ -237,32 +242,82 @@ public final class FakeNode {
         }
     }
 
-    /**
-     * The assigned copies whose index is not closed. Read from the index document every tick, as a real node
-     * fabricates its metadata from it. The document is found by name and trusted only if its uuid is the one the
-     * assignment named (DESIGN.md section 12); one that is absent, unreadable or a namesake leaves the copy as it was.
-     */
-    private Map<Desired, ShardRole> withoutClosedIndices(Map<Desired, ShardRole> assigned) {
-        Map<String, Boolean> closed = new java.util.HashMap<>();
+    /** The assigned copies whose index is not closed. */
+    private Map<Desired, ShardRole> withoutClosedIndices(Map<Desired, ShardRole> assigned, Map<String, IndexConfig> indices) {
         Map<Desired, ShardRole> open = new TreeMap<>();
         assigned.forEach((copy, role) -> {
-            boolean isClosed = closed.computeIfAbsent(copy.tenant() + "/" + copy.indexUuid(), ignored -> {
-                var stored = store.get(Keys.indicesPrefix(copy.tenant()) + copy.indexName());
-                if (stored.isEmpty()) {
-                    return false;
-                }
-                try {
-                    IndexConfig index = IndexConfig.parse(stored.get().value(), stored.get().revision());
-                    return index.uuid().equals(copy.indexUuid()) && index.open() == false;
-                } catch (RuntimeException e) {
-                    return false;
-                }
-            });
-            if (isClosed == false) {
+            IndexConfig index = indexOf(copy, indices);
+            if (index == null || index.open()) {
                 open.put(copy, role);
             }
         });
         return open;
+    }
+
+    /**
+     * The index document a copy was assigned against, or null. Read every tick, as a real node fabricates its metadata
+     * from it, found by name and trusted only if its uuid is the one the assignment named (DESIGN.md section 12): one
+     * that is absent, unreadable or a namesake is null, and leaves the copy as it was.
+     *
+     * @param indices this tick's reads, so one index is read once however many of its shards are held
+     */
+    private IndexConfig indexOf(Desired copy, Map<String, IndexConfig> indices) {
+        return indices.computeIfAbsent(copy.tenant() + "/" + copy.indexUuid(), ignored -> {
+            var stored = store.get(Keys.indicesPrefix(copy.tenant()) + copy.indexName());
+            if (stored.isEmpty()) {
+                return null;
+            }
+            try {
+                IndexConfig index = IndexConfig.parse(stored.get().value(), stored.get().revision());
+                return index.uuid().equals(copy.indexUuid()) ? index : null;
+            } catch (RuntimeException e) {
+                return null;
+            }
+        });
+    }
+
+    /**
+     * A document-replication copy's identity, and on a primary its in-sync set (finding 12); a segment-replication
+     * copy carries neither.
+     *
+     * <p>The allocation id is minted when the copy is created and kept for as long as it exists, through a promotion
+     * too, as OpenSearch keeps it. The in-sync set stands in for a primary's replication tracker: itself, plus every
+     * replica of the shard that the index projection shows started with an id, which is the point at which a real
+     * primary would have finished recovering it. Sorted, so an unchanged set leaves the inventory's bytes alone.
+     */
+    private ShardInventory.ShardCopy withReplicationIds(
+        Desired where,
+        ShardInventory.ShardCopy copy,
+        ShardInventory.ShardCopy before,
+        Map<String, IndexConfig> indices
+    ) {
+        IndexConfig index = indexOf(where, indices);
+        if (index == null || index.replication() != org.opensearch.supervisor.model.status.Replication.DOCUMENT) {
+            return copy.withReplicationIds(null, null);
+        }
+        String allocationId = before != null && before.allocationId() != null
+            ? before.allocationId()
+            // The ephemeral id is fresh per process, so a restarted node cannot mint an id its predecessor used.
+            : ephemeralId + "-" + (++allocationsMinted);
+        if (copy.role() != ShardRole.PRIMARY) {
+            return copy.withReplicationIds(allocationId, null);
+        }
+        java.util.TreeSet<String> inSync = new java.util.TreeSet<>();
+        inSync.add(allocationId);
+        store.get(Keys.indexStatus(where.tenant(), where.indexUuid())).ifPresent(versioned -> {
+            try {
+                IndexStatus status = IndexStatus.from(versioned.value());
+                for (IndexStatus.ShardPlacement replica : status.replicasOf(where.shard())) {
+                    if (replica.role() == ShardRole.REPLICA && replica.state() == ShardState.STARTED
+                        && replica.allocationId() != null) {
+                        inSync.add(replica.allocationId());
+                    }
+                }
+            } catch (RuntimeException e) {
+                // An unreadable projection says nothing about the replicas; the primary is still in sync with itself.
+            }
+        });
+        return copy.withReplicationIds(allocationId, List.copyOf(inSync));
     }
 
     /** Whether the inventory now says exactly what the assignment asked for: right role, and serving. */

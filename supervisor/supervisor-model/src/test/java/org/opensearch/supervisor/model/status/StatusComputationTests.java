@@ -211,6 +211,89 @@ class StatusComputationTests {
         assertEquals(1, status.replicasOf(0).size());
     }
 
+    // ---------------------------------------------------------------- document replication ids (finding 12)
+
+    private static IndexConfig docrepIndex() {
+        return new IndexConfig("my-index", UUID, true, 1, 1, Replication.DOCUMENT, false,
+            org.opensearch.supervisor.model.settings.AllocationEnable.UNKNOWN, 3041);
+    }
+
+    private static ShardInventory.ShardCopy docrep(ShardRole role, String allocationId, String... inSync) {
+        return copy(role, ShardState.STARTED).withReplicationIds(allocationId, inSync.length == 0 ? null : List.of(inSync));
+    }
+
+    @Test
+    void aDocumentReplicationCopyCarriesItsAllocationIdAndThePrimaryItsInSyncSetVerbatim() {
+        // A docrep primary's node builds its replicas' routing entries from this document, and peer recovery is
+        // keyed on the replica's own id. Only the holding node knows it, so it is carried, never made up.
+        IndexStatus status = statusOf(docrepIndex(), Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(0, docrep(ShardRole.PRIMARY, "alloc-a", "alloc-a", "alloc-b"))),
+            NODE_B, node(NODE_B, Liveness.LIVE, Map.of(), Map.of(0, docrep(ShardRole.REPLICA, "alloc-b")))
+        ));
+
+        IndexStatus.ShardPlacement primary = status.servingPrimary(0).orElseThrow();
+        assertEquals("alloc-a", primary.allocationId());
+        assertEquals(List.of("alloc-a", "alloc-b"), primary.inSync());
+        IndexStatus.ShardPlacement replica = status.replicasOf(0).get(0);
+        assertEquals("alloc-b", replica.allocationId());
+        assertEquals(null, replica.inSync(), "only a primary has an in-sync set");
+
+        // And they survive the projection's own bytes, which is what a node reads.
+        IndexStatus read = IndexStatus.from(status.toBytes());
+        assertEquals(List.of("alloc-a", "alloc-b"), read.servingPrimary(0).orElseThrow().inSync());
+        assertEquals("alloc-b", read.replicasOf(0).get(0).allocationId());
+    }
+
+    @Test
+    void aCopyWithoutAnAllocationIdIsPublishedWithoutOne() {
+        IndexStatus status = statusOf(docrepIndex(), Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)))
+        ));
+
+        assertEquals(null, status.servingPrimary(0).orElseThrow().allocationId());
+        assertFalse(new String(status.toBytes(), java.nio.charset.StandardCharsets.UTF_8).contains("allocation_id"),
+            "absent, not null or empty");
+    }
+
+    @Test
+    void anAllocationIdLeavesTheProjectionWithTheCopy() {
+        // Carried from the current inventory and nothing else: a stale id held for ever is how the data plane's
+        // own in-sync set once grew without bound.
+        IndexStatus before = statusOf(docrepIndex(), Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(0, docrep(ShardRole.PRIMARY, "alloc-a", "alloc-a"))),
+            NODE_B, node(NODE_B, Liveness.LIVE, Map.of(), Map.of(0, docrep(ShardRole.REPLICA, "alloc-b")))
+        ));
+        IndexStatus after = statusOf(docrepIndex(), Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(0, docrep(ShardRole.PRIMARY, "alloc-a", "alloc-a"))),
+            NODE_B, node(NODE_B, Liveness.LIVE, Map.of(), Map.of())
+        ));
+
+        assertTrue(new String(before.toBytes(), java.nio.charset.StandardCharsets.UTF_8).contains("alloc-b"));
+        assertFalse(new String(after.toBytes(), java.nio.charset.StandardCharsets.UTF_8).contains("alloc-b"));
+    }
+
+    @Test
+    void aSegmentReplicationCopyCarriesNeitherFieldEvenIfANodePublishesThem() {
+        IndexStatus status = statusOf(index(true, 1, 0), Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(0, docrep(ShardRole.PRIMARY, "alloc-a", "alloc-a")))
+        ));
+
+        String bytes = new String(status.toBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertFalse(bytes.contains("allocation_id"), bytes);
+        assertFalse(bytes.contains("in_sync"), bytes);
+    }
+
+    @Test
+    void anUnchangedInventoryProducesAnIdenticalPlacement() {
+        // The projector writes only when the content changes, so equal placements are what keep it quiet.
+        Map<NodeId, Observation.NodeObservation> nodes = Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(0, docrep(ShardRole.PRIMARY, "alloc-a", "alloc-a", "alloc-b"))),
+            NODE_B, node(NODE_B, Liveness.LIVE, Map.of(), Map.of(0, docrep(ShardRole.REPLICA, "alloc-b")))
+        );
+
+        assertEquals(statusOf(docrepIndex(), nodes).shards(), statusOf(docrepIndex(), nodes).shards());
+    }
+
     @Test
     void placementOrderIsStableSoAnUnchangedProjectionIsNotRewritten() {
         var nodes = Map.of(

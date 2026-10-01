@@ -84,6 +84,49 @@ public interface ContractNode {
     Understood readAssignment(byte[] document);
 
     /**
+     * What this node made of an index projection, {@code tenant/<t>/status/indices/<uuid>}, for a document-replication
+     * index it holds copies of (finding 12).
+     *
+     * <p>The second document flowing from the supervisor to a node, and the one both cross-repository format failures
+     * so far were about: written correctly by one side and read wrongly by the other. Fed bytes from the supervisor's
+     * own writer, like {@link #readAssignment}.
+     *
+     * <p>A default rather than abstract, so adding it broke no implementation's build. An implementation that has not
+     * overridden it fails the checks that use it, deliberately, for the reason {@link Understood}'s term-less
+     * constructor gives: one that says nothing is one nobody has checked.
+     *
+     * @param document the bytes of a {@code tenant/<t>/status/indices/<uuid>} document
+     * @return what the node will act on, or null if this implementation does not say
+     */
+    default UnderstoodPeers readIndexStatus(byte[] document) {
+        return null;
+    }
+
+    /**
+     * One copy of a shard, as an index projection lists it: which node holds it, which shard, in which role.
+     */
+    record PeerCopy(NodeId node, int shard, org.opensearch.supervisor.model.node.ShardRole role) {}
+
+    /**
+     * A node's reading of an index projection, stated as what it acts on.
+     *
+     * @param allocationIds the allocation id the node will give each copy's routing entry. A copy the projection gives
+     *     no id must be <b>absent</b>: a node mints none for a peer, because peer recovery is keyed on the id its holder
+     *     uses, and a minted one never matches. Each node fabricates its own copy's entry from its own state, so the
+     *     map is about the others, but every listed copy may appear.
+     * @param inSync per shard, the in-sync set the node read from that shard's primary, absent where it gave none.
+     */
+    record UnderstoodPeers(
+        java.util.Map<PeerCopy, String> allocationIds,
+        java.util.Map<Integer, List<String>> inSync
+    ) {
+        public UnderstoodPeers {
+            allocationIds = java.util.Map.copyOf(allocationIds);
+            inSync = java.util.Map.copyOf(inSync);
+        }
+    }
+
+    /**
      * A node's reading of an assignment, in terms the suite can compare.
      *
      * <p>Deliberately not the parsed {@code Assignment} object: that would test that both sides call the same

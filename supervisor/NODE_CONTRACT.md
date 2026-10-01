@@ -251,6 +251,25 @@ Ground truth for actual state: what this node **has**, not what it was told (R3.
     filtered out again.
 
   Both mappings discard information the data plane has. They are decisions, not omissions.
+- **`allocation_id` and `in_sync`, on document-replication copies only** (`FINDINGS_FROM_THE_DATA_PLANE.md`
+  item 12). `allocation_id` is on every docrep copy: the id of that copy's routing entry on its own node. `in_sync`
+  is on a docrep primary only: the allocation ids its own tracker holds in sync, itself included, sorted so the
+  bytes are stable. It is never empty, because a primary is always in sync with itself, so absent means "this node
+  does not publish it" rather than "nothing is in sync".
+
+  ```json
+  "0": { "role": "PRIMARY", "state": "STARTED", "size_bytes": 4823012,
+         "allocation_id": "ULHF36LvSIa6sReNU-zHoA",
+         "in_sync": ["3YLXESN2TkSC5FYhEDzvNg", "ULHF36LvSIa6sReNU-zHoA"] },
+  "1": { "role": "REPLICA", "state": "STARTED", "allocation_id": "yfU2ZTYYQEWWtXEy7SDTZQ" }
+  ```
+
+  Peer recovery is keyed on the replica's allocation id, and a docrep primary's node fabricates its replicas'
+  routing entries from `tenant/<t>/status/indices/<uuid>`, so the two nodes must agree on the id and only the
+  holder knows it. The in-sync set can only come from the primary, and without it a started replica is untracked
+  and silently stops receiving writes. The supervisor carries both into that projection verbatim and reads
+  `in_sync` for one decision of its own: it promotes only a replica the lost primary last listed (`DESIGN.md`
+  §28.10). A segment-replication copy resolves no peers and publishes neither; the supervisor ignores them there.
 - **`size_bytes`** is the most load-bearing field in this document, and more so than it first looked. It is
   what a disk-aware decider needs, and it is also the whole of the balancer's size signal — the thing
   OpenSearch's count-only balancer cannot see (`DESIGN.md` §14.2). Publishing it accurately is therefore worth
@@ -284,6 +303,12 @@ the ceiling is far above practice, but there is no headroom left for another per
 would exceed the budget must write nothing and report `outcome: failed` — a truncated inventory is worse
 than a missing one, because the supervisor would read it as "those copies are gone" and start replacing
 shards that exist.
+
+**Document replication costs more, and only there.** `allocation_id` and `in_sync` are on docrep copies alone, so
+a segment-replication copy still costs 93 bytes. **Measured** with every copy docrep and half of them primaries,
+each in sync with one replica: 165 bytes per copy, so 3,000 copies serialise to 496,767 bytes (95% of the budget)
+and the ceiling is about 3,160 copies per node, where the finding estimated 3,900. `SizeBudgetTests` pins it.
+Document replication is the discouraged path, for small tenants, so this is not expected to bind.
 
 ## Heat, and why it is its own document
 
@@ -623,6 +648,14 @@ copies that are not yet started — a projection filtered to `STARTED` only woul
 never see the primary it is waiting for. `tenant/<t>/status/indices/<uuid>` therefore lists every observed
 copy with its role and state, and the replica waits for a primary whose state is `STARTED`.
 
+**A docrep peer's identity comes from the same document.** Each copy of a `DOCUMENT` index carries the
+`allocation_id` its holder published, and a primary carries its `in_sync` set, both verbatim from the holder's
+current inventory and absent where it published none. A primary's node builds each replica's routing entry with the
+replica's published id, which is what peer recovery waits to see; a replica that does not find its own id in its
+started primary's `in_sync` has been dropped from the group and rebuilds itself. A copy published without an id is
+one a node declines to build against, with a reason. The ids come from different nodes' inventories read at
+different moments, so a reader must tolerate them disagreeing for a pass.
+
 The corresponding obligation on the supervisor is to place a shard's primary before its replicas, since a
 replica placed first cannot converge until one exists. That is a planning rule, and it is open question 2.
 
@@ -828,7 +861,8 @@ exposes Jackson's streaming API and not databind, so nothing but that suite conn
 
 6. **Nothing in the store can tell a returning node that it used to hold a shard**, and the two decisions that
    produce that are both right. Allocation ids are deliberately absent from the inventory — 37% of the size
-   budget for a field the supervisor has no use for — and *One thing worth not copying* above rules out
+   budget for a field the supervisor has no use for — *(since finding 12 they are present on document-replication
+   copies, which need them for peer recovery; a segment-replication copy, the case below, still has none)* — and *One thing worth not copying* above rules out
    recovering them from the store, because they live on local disk and a round trip makes them lossable.
 
    Together those mean an assignment cannot distinguish **"create this copy"** from **"you already have this
@@ -901,7 +935,8 @@ rate against a slow store queues passes that were stale when they were queued �
 `interval + pass duration`. The declared figure is therefore a lower bound rather than the period. Harmless
 at the default multiplier of six, and worth knowing before anyone tightens it.
 
-9. **Document replication needs allocation ids and the in-sync set to cross between nodes, and this document leaves
+9. **Done** — see `allocation_id` and `in_sync` under `nodes/shards/<node-id>`, and finding 12's status block.
+   **Document replication needs allocation ids and the in-sync set to cross between nodes, and this document leaves
    both out.** A docrep replica's recovery is keyed on its allocation id, and the primary's node never learns it:
    each node mints its own id for the same copy, so, reading the server, recovery cannot complete. The primary's
    in-sync set can only come from the primary, and without it a started replica is untracked and silently stops

@@ -66,6 +66,13 @@ final class PrimaryTermFixture {
             return this;
         }
 
+        /** A started document-replication copy with its allocation id, and on a primary its in-sync set. */
+        Node holdingDocrep(int shard, ShardRole role, String allocationId, String... inSync) {
+            held.put(shard, ShardInventory.ShardCopy.of(role, ShardState.STARTED, 1000)
+                .withReplicationIds(allocationId, inSync.length == 0 ? null : List.of(inSync)));
+            return this;
+        }
+
         Node told(int shard, ShardRole role, long term) {
             told.put(shard, role);
             toldTerms.put(shard, term);

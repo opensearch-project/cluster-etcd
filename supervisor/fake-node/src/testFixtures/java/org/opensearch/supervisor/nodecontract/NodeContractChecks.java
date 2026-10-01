@@ -13,6 +13,10 @@ import org.opensearch.supervisor.model.PoolId;
 import org.opensearch.supervisor.model.node.Assignment;
 import org.opensearch.supervisor.model.node.NodeRole;
 import org.opensearch.supervisor.model.node.ShardRole;
+import org.opensearch.supervisor.model.node.ShardState;
+import org.opensearch.supervisor.model.status.HealthStatus;
+import org.opensearch.supervisor.model.status.IndexStatus;
+import org.opensearch.supervisor.model.status.Replication;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.ArrayList;
@@ -471,7 +475,70 @@ public final class NodeContractChecks {
             }
         }));
 
+        // ------------------------------------------------------------ the index projection (finding 12)
+
+        checks.add(new Check("peerAllocationIdsAreUnderstoodAsPublished", harness -> {
+            // A docrep primary's node builds each replica's routing entry from the projection, and peer recovery
+            // waits until the replica's own id appears there. A node that read the id wrongly, or minted its own,
+            // never lets a replica finish recovering.
+            ContractNode.UnderstoodPeers understood = readIndexStatus(harness, docrepStatus(harness, true));
+
+            assertEquals("ULHF36LvSIa6sReNU-zHoA", understood.allocationIds().get(
+                new ContractNode.PeerCopy(harness.node().nodeId(), 0, ShardRole.PRIMARY)), understood.toString());
+            assertEquals("yfU2ZTYYQEWWtXEy7SDTZQ", understood.allocationIds().get(
+                new ContractNode.PeerCopy(PEER, 0, ShardRole.REPLICA)), understood.toString());
+        }));
+
+        checks.add(new Check("aPeerPublishedWithoutAnAllocationIdIsGivenNone", harness -> {
+            // "If a copy has no allocation_id, publish the copy without one." A node must decline to build against it
+            // rather than mint one, because a minted id is one recovery will never match.
+            ContractNode.UnderstoodPeers understood = readIndexStatus(harness, docrepStatus(harness, false));
+
+            assertFalse(understood.allocationIds().containsKey(new ContractNode.PeerCopy(PEER, 0, ShardRole.REPLICA)),
+                "a copy without a published id must not be given one: " + understood);
+        }));
+
+        checks.add(new Check("thePrimarysInSyncSetIsUnderstoodAsPublished", harness -> {
+            // A replica learns it has been dropped from its primary's group by not finding itself here.
+            ContractNode.UnderstoodPeers understood = readIndexStatus(harness, docrepStatus(harness, true));
+
+            assertEquals(List.of("ULHF36LvSIa6sReNU-zHoA", "yfU2ZTYYQEWWtXEy7SDTZQ"), understood.inSync().get(0),
+                understood.toString());
+        }));
+
         return List.copyOf(checks);
+    }
+
+    /** The node that holds the other copy in {@link #docrepStatus}. */
+    private static final NodeId PEER = NodeId.of("72ZSKeRtQmuqOGyPvYzmLw");
+
+    private static ContractNode.UnderstoodPeers readIndexStatus(Harness harness, byte[] document) {
+        ContractNode.UnderstoodPeers understood = harness.node().readIndexStatus(document);
+        assertNotNull(understood, "readIndexStatus is not implemented by this node's adapter, so nothing has checked"
+            + " that it reads allocation_id and in_sync from tenant/<t>/status/indices/<uuid> (finding 12)");
+        return understood;
+    }
+
+    /**
+     * A document-replication index's projection, built by the supervisor's own writer: shard 0 with its primary on the
+     * node under test and a started replica on {@link #PEER}.
+     *
+     * @param replicaHasId whether the replica's holder published an allocation id
+     */
+    private static byte[] docrepStatus(Harness harness, boolean replicaHasId) {
+        String primaryId = "ULHF36LvSIa6sReNU-zHoA";
+        String replicaId = "yfU2ZTYYQEWWtXEy7SDTZQ";
+        IndexStatus status = new IndexStatus(
+            ContractFixtures.INDEX_NAME, ContractFixtures.INDEX_UUID, ContractFixtures.CONFIG_REVISION,
+            HealthStatus.GREEN, Replication.DOCUMENT, 1, 1, 0, false,
+            Map.of(0, List.of(
+                new IndexStatus.ShardPlacement(harness.node().nodeId(), ShardRole.PRIMARY, ShardState.STARTED,
+                    primaryId, List.of(primaryId, replicaId)),
+                new IndexStatus.ShardPlacement(PEER, ShardRole.REPLICA, ShardState.STARTED,
+                    replicaHasId ? replicaId : null, null))),
+            1788969977933L, 10432L
+        );
+        return status.toBytes();
     }
 
     private static byte[] assignmentWith(Harness harness, Set<NodeRole> roles, List<ContractCopy> copies) {

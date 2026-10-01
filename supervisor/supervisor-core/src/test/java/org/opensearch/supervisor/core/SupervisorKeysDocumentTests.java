@@ -77,6 +77,7 @@ class SupervisorKeysDocumentTests {
     private static final NodeId B = NodeId.of("nodeBBBBBBBBBBBBBBBBBB");
     private static final String PLACED = "uzKxLWZu4nPSrTknEcDpoA";
     private static final String STRAINED = "vBxKLWZu4nPSrTknEcDpoA";
+    private static final String REPLICATED = "wCyLMXZu4nPSrTknEcDpoA";
 
     /**
      * Objects whose keys are data, not schema.
@@ -142,6 +143,10 @@ class SupervisorKeysDocumentTests {
         // which is the field list this document exists for.
         store.put(Keys.indicesPrefix(ACME) + "strained", IndexConfig.toDocument(
             "strained", STRAINED, true, IndexConfig.settingsOf(1, 0, 3, Replication.SEGMENT)));
+        // ...and one under document replication, which is the only kind whose copies carry allocation ids and an
+        // in-sync set. The documented example is one, so it is the one checked against it.
+        store.put(Keys.indicesPrefix(ACME) + "replicated", IndexConfig.toDocument(
+            "replicated", REPLICATED, true, IndexConfig.settingsOf(1, 1, Replication.DOCUMENT)));
 
         Supervisor supervisor = new Supervisor(store, clock, "s1", Set.of(), 1.0, Duration.ofSeconds(15),
             Balancer.Config.defaults(), new Planner.Policy(200, 5, 2), false);
@@ -167,7 +172,7 @@ class SupervisorKeysDocumentTests {
 
     @Test
     void theIndexStatusDocumentMatchesItsDescription() {
-        assertDocumented("tenant/<t>/status/indices/<index-uuid>", Keys.indexStatus(ACME, PLACED));
+        assertDocumented("tenant/<t>/status/indices/<index-uuid>", Keys.indexStatus(ACME, REPLICATED));
     }
 
     @Test
@@ -305,9 +310,10 @@ class SupervisorKeysDocumentTests {
                 paths.add(child);
                 flatten(node.get(name), child, paths);
             });
-        } else if (node.isArray() && node.isEmpty() == false) {
-            // One element is enough: a heterogeneous array would not be a schema either side could describe.
-            flatten(node.get(0), path + "[]", paths);
+        } else if (node.isArray()) {
+            // Every element, not the first: a field present on only some elements -- in_sync is on a primary and not
+            // on its replicas -- is still schema, and the first element might be one without it.
+            node.forEach(element -> flatten(element, path + "[]", paths));
         }
     }
 

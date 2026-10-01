@@ -89,11 +89,30 @@ public record IndexStatus(
     }
 
     /** Where one copy of one shard is, and how it is getting on. */
-    public record ShardPlacement(NodeId nodeId, ShardRole role, ShardState state) {
+    /**
+     * @param allocationId and {@code inSync} are carried verbatim from the holding node's current inventory, on a
+     *     document-replication copy only, and are absent wherever that inventory has none (finding 12). A docrep node
+     *     builds its peers' routing entries from them: peer recovery is keyed on the replica's id, and a primary's
+     *     in-sync set is what a replica checks to learn it has been dropped. Never constructed here, and never carried
+     *     forward once the inventory stops reporting the copy.
+     */
+    public record ShardPlacement(
+        NodeId nodeId,
+        ShardRole role,
+        ShardState state,
+        String allocationId,
+        List<String> inSync
+    ) {
         public ShardPlacement {
             Objects.requireNonNull(nodeId, "nodeId");
             Objects.requireNonNull(role, "role");
             Objects.requireNonNull(state, "state");
+            inSync = inSync == null ? null : List.copyOf(inSync);
+        }
+
+        /** Without the document-replication fields, which is every segment-replication copy. */
+        public ShardPlacement(NodeId nodeId, ShardRole role, ShardState state) {
+            this(nodeId, role, state, null, null);
         }
 
         /**

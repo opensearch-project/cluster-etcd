@@ -3,6 +3,7 @@ package org.opensearch.supervisor.model.node;
 import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.TenantId;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -69,15 +70,26 @@ public record ShardInventory(
      * @param sizeBytes what a disk-aware decider needs; {@code null} while initializing
      * @param reason why a {@code FAILED} copy failed, bounded like the heartbeat's detail
      *
-     * <p><b>Deliberately absent: OpenSearch's allocation id.</b> It is a real per-copy identity and it was
-     *     tried here, because it distinguishes a copy from its own predecessor after a rebuild on the same
-     *     node, which nothing else in this document can do. Measured cost: 135 bytes per copy instead of
-     *     72, which is 37% of the inventory's size budget spent on a field the supervisor has no use for —
-     *     it places copies, it does not track in-sync sets. The node needs allocation ids internally and
-     *     has them on local disk; it does not need to publish them for the supervisor's benefit. Add it
-     *     when something actually reads it, and raise the ceiling on copies-per-node at the same time.
+     * @param allocationId the id of this copy's routing entry on its own node, on a document-replication copy only
+     *     (finding 12). A docrep primary's node fabricates its replicas' routing entries from the index projection,
+     *     and peer recovery is keyed on the replica's id, so the two nodes have to agree on it and only the holder
+     *     knows it. A segment-replication copy resolves no peers and does not publish one.
+     * @param inSync on a document-replication primary only: the allocation ids its own tracker holds in sync, itself
+     *     included, sorted. Never empty, so absent means "not published", not "nothing in sync".
+     *
+     * <p><b>Allocation ids were left out at first</b>, because at 135 bytes per copy instead of 72 they cost 37% of
+     *     the budget for a field nothing read. Document replication is what reads them, so they are carried there and
+     *     nowhere else: a segment-replication copy costs what it did. A node whose every copy is docrep fits fewer
+     *     copies; {@code SizeBudgetTests} measures how many.
      */
-    public record ShardCopy(ShardRole role, ShardState state, Long sizeBytes, String reason) {
+    public record ShardCopy(
+        ShardRole role,
+        ShardState state,
+        Long sizeBytes,
+        String reason,
+        String allocationId,
+        List<String> inSync
+    ) {
 
         public static final int MAX_REASON_LENGTH = 512;
 
@@ -87,6 +99,17 @@ public record ShardInventory(
             if (reason != null && reason.length() > MAX_REASON_LENGTH) {
                 reason = reason.substring(0, MAX_REASON_LENGTH);
             }
+            inSync = inSync == null ? null : List.copyOf(inSync);
+        }
+
+        /** Without the document-replication fields, which is every segment-replication copy. */
+        public ShardCopy(ShardRole role, ShardState state, Long sizeBytes, String reason) {
+            this(role, state, sizeBytes, reason, null, null);
+        }
+
+        /** The same copy carrying a document-replication identity, and an in-sync set if it is a primary. */
+        public ShardCopy withReplicationIds(String allocationId, List<String> inSync) {
+            return new ShardCopy(role, state, sizeBytes, reason, allocationId, inSync);
         }
 
         /** Whether this copy is a started primary, which is what {@code active_primary_shards} counts. */

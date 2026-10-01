@@ -1213,9 +1213,30 @@ precisely the state D8.2 exists to prevent.
 
 ## 12. Document replication needs the primary and its replicas to agree on allocation ids and the in-sync set
 
-> **Open.** Asks for two fields to be carried from the inventory to the index projection, verbatim, for
-> `DOCUMENT` indices only, and recommends one promotion rule that follows from them. The supervisor makes no new
-> decision to carry them. The recommendation is a decision, and it is yours.
+> **Supervisor half done.** Both fields are carried as asked, and the recommended promotion rule is adopted.
+>
+> - **Carried.** `ShardInventory.ShardCopy` reads `allocation_id` and `in_sync`, and `StatusComputation` copies them
+>   into `tenant/<t>/status/indices/<uuid>` from the holder's current inventory: verbatim, `in_sync` on primaries
+>   only, nothing constructed, nothing carried forward, and never on a `SEGMENT` index even if a node publishes them.
+>   A copy without an id is published without one. Documented in `NODE_CONTRACT.md` (the inventory and *Peer
+>   resolution*) and `SUPERVISOR_KEYS.md`; `SupervisorKeysDocumentTests` now checks a docrep projection's fields.
+> - **Promotion follows the in-sync set** (`DESIGN.md` §28.10). `Promoter` promotes only a started replica whose
+>   published id is in the set the lost primary last published, read from that primary's last inventory, so no
+>   memory is needed. With a set and no replica in it, nothing is promoted and nothing is placed, and the refusal
+>   says why. A primary that never published a set leaves today's behaviour. One addition you did not ask for: when
+>   a promoted primary is lost in turn, the older primary's inventory is still there, so the set comes from the lost
+>   primary told the highest term.
+> - **The size estimate was low.** Measured, with half the copies primaries in sync with one replica: 165 bytes per
+>   docrep copy, so the ceiling is about 3,160 copies per node rather than 3,900. `SizeBudgetTests` pins 3,000.
+>   The in-sync ids appear to have been counted once rather than on every primary.
+> - **`fake-node` publishes both**, so the supervisor's own tests run the path end to end: a stable id per docrep
+>   copy, kept through promotion, and on a primary itself plus the replicas the projection shows started.
+>
+> **What your side must do next.** Publish the two fields, and implement `ContractNode.readIndexStatus` in
+> `PluginNodeContractTests`: the conformance suite has three new checks of how a node reads `status/indices`, built
+> from the supervisor's own writer, and they fail on your side until the adapter reports which allocation id it
+> gives each peer and which in-sync set it read. That is the reading-side check for the projection that both
+> earlier cross-repository failures needed.
 
 **The blocker for M9 on the data plane, and a correction to what this side has said about it.** Earlier writing on
 this side described the in-sync set as a problem only after a primary restarts or is promoted. It is worse: as far

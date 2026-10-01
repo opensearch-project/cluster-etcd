@@ -119,7 +119,7 @@ public final class StatusComputation {
 
         Map<Integer, List<IndexStatus.ShardPlacement>> shards = new TreeMap<>();
         for (int shard = 0; shard < index.numberOfShards(); shard++) {
-            shards.put(shard, placementsOf(tenant, index.uuid(), shard, observation));
+            shards.put(shard, placementsOf(tenant, index, shard, observation));
         }
 
         // Judged per shard, never on index-wide totals: an extra copy of shard 0 must not stand in for a missing
@@ -172,10 +172,14 @@ public final class StatusComputation {
      */
     private static List<IndexStatus.ShardPlacement> placementsOf(
         TenantId tenant,
-        String indexUuid,
+        IndexConfig index,
         int shard,
         Observation observation
     ) {
+        String indexUuid = index.uuid();
+        // Carried for document replication only, where a node builds its peers' routing entries from them. A
+        // segment-replication copy resolves no peers, so whatever a node publishes there is left out.
+        boolean carryReplicationIds = index.replication() == Replication.DOCUMENT;
         List<IndexStatus.ShardPlacement> placements = new ArrayList<>();
         observation.nodes().forEach((nodeId, node) -> {
             if (node.copiesCount() == false || node.inventory() == null) {
@@ -191,7 +195,10 @@ public final class StatusComputation {
             }
             ShardInventory.ShardCopy copy = held.shards().get(shard);
             if (copy != null) {
-                placements.add(new IndexStatus.ShardPlacement(nodeId, copy.role(), copy.state()));
+                placements.add(carryReplicationIds
+                    ? new IndexStatus.ShardPlacement(nodeId, copy.role(), copy.state(), copy.allocationId(),
+                        copy.role() == ShardRole.PRIMARY ? copy.inSync() : null)
+                    : new IndexStatus.ShardPlacement(nodeId, copy.role(), copy.state()));
             }
         });
         placements.sort(java.util.Comparator.comparing(placement -> placement.nodeId().value()));

@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Chooses a document-replication replica to promote when a shard has lost its primary (finding 11).
@@ -40,10 +41,14 @@ import java.util.Map;
  * reporting cannot be shown to have applied the promotion; the shard waits, with a reason, until the node is live again
  * or lost.
  *
- * <p><b>Not tracked: the in-sync set.</b> OpenSearch promotes only a replica in the primary's in-sync set; this chooses
- * any started replica on a node still heartbeating, by node id. A replica that fell behind before the primary was lost
- * can therefore be promoted and lose what it missed. The data plane keeps an in-sync set locally and this service
- * does not observe it — worth closing if document replication becomes a first-class mode here.
+ * <p><b>Only a replica the lost primary last called in sync</b> (finding 12). A replica outside that set may be missing
+ * acknowledged writes, and promoting it would lose them silently; OpenSearch's allocator has the same rule and makes an
+ * operator ask explicitly to break it. The set is read from the lost primary's own inventory, which stays in the store
+ * and in the observation after the node is lost, and promotion happens long before that node is reaped, so no memory
+ * is needed here. A replica is in the set when the allocation id it publishes is listed. When the lost primary
+ * published a set and no started replica is in it, nothing is promoted and nothing is placed: the shard is reported,
+ * because an empty primary would make every replica recover from it. When it never published one, any started replica
+ * may be promoted, as before.
  */
 final class Promoter {
 
@@ -85,15 +90,20 @@ final class Promoter {
             }
         }
 
+        Set<String> lastInSync = lastInSyncOfLostPrimary(observation, tenant, index, shard);
         List<NodeId> capable = new ArrayList<>();
         List<NodeId> incapable = new ArrayList<>();
         List<NodeId> unplaceable = new ArrayList<>();
+        List<NodeId> outOfSync = new ArrayList<>();
         for (Map.Entry<NodeId, Observation.NodeObservation> entry : observation.nodes().entrySet()) {
             Observation.NodeObservation node = entry.getValue();
-            if (node.actsOnItsAssignment() == false || holdsStartedReplica(node, tenant, index, shard) == false) {
+            ShardInventory.ShardCopy replica = startedReplica(node, tenant, index, shard);
+            if (node.actsOnItsAssignment() == false || replica == null) {
                 continue;
             }
-            if (node.isPlaceable() == false) {
+            if (lastInSync != null && lastInSync.contains(replica.allocationId()) == false) {
+                outOfSync.add(entry.getKey());
+            } else if (node.isPlaceable() == false) {
                 unplaceable.add(entry.getKey());
             } else if (node.registration().declares(ContractFeatures.PRIMARY_TERMS)) {
                 capable.add(entry.getKey());
@@ -117,7 +127,60 @@ final class Promoter {
                 + " that replica recover from it and discard its data, so this shard waits until the node is live"
                 + " again or is lost");
         }
+        if (outOfSync.isEmpty() == false) {
+            return new Outcome(null, "the lost primary last reported " + new java.util.TreeSet<>(lastInSync)
+                + " in sync, and no started replica of this shard is among them: " + sorted(outOfSync) + " may be"
+                + " missing acknowledged writes, so promoting one could lose them silently, and placing an empty primary"
+                + " instead would make them recover from it and discard their data; this shard stays without a primary"
+                + " until the lost primary returns or an in-sync replica does");
+        }
         return Outcome.none();
+    }
+
+    /**
+     * The in-sync set the lost primary last published, or null when no lost primary published one.
+     *
+     * <p>A lost primary is a node that is no longer counted and still reports this shard as {@code PRIMARY}: its last
+     * inventory, which nothing has deleted. There can be more than one when a promoted primary was lost in turn, and
+     * the earlier one's set is out of date, so the set comes from whichever was told the highest primary term. A lost
+     * node's assignment is not rewritten, so it still records that term. Two at the same term would be a split brain;
+     * a replica then has to be in both sets.
+     */
+    private static Set<String> lastInSyncOfLostPrimary(
+        Observation observation,
+        TenantId tenant,
+        IndexConfig index,
+        int shard
+    ) {
+        Set<String> inSync = null;
+        long highestTerm = 0;
+        for (Observation.NodeObservation node : observation.nodes().values()) {
+            if (node.copiesCount()) {
+                continue;
+            }
+            ShardInventory.ShardCopy copy = copyOf(node, tenant, index, shard);
+            if (copy == null || copy.role() != ShardRole.PRIMARY || copy.inSync() == null) {
+                continue;
+            }
+            long term = toldTerm(node, tenant, index, shard);
+            if (term > highestTerm) {
+                highestTerm = term;
+                inSync = new java.util.HashSet<>(copy.inSync());
+            } else if (term == highestTerm) {
+                inSync.retainAll(copy.inSync());
+            }
+        }
+        return inSync;
+    }
+
+    /** The primary term this node was last told for the shard, or 1 when its assignment gives none. */
+    private static long toldTerm(Observation.NodeObservation node, TenantId tenant, IndexConfig index, int shard) {
+        if (node.assignment() == null) {
+            return 1L;
+        }
+        var tenantAssignment = node.assignment().tenants().get(tenant);
+        var entry = tenantAssignment == null ? null : tenantAssignment.indices().get(index.uuid());
+        return entry == null ? 1L : entry.primaryTermOf(shard);
     }
 
     private static List<NodeId> sorted(List<NodeId> nodes) {
@@ -141,7 +204,18 @@ final class Promoter {
         return indexAssignment != null && indexAssignment.shards().get(shard) == ShardRole.PRIMARY;
     }
 
-    private static boolean holdsStartedReplica(
+    /** This node's started replica of the shard, or null. */
+    private static ShardInventory.ShardCopy startedReplica(
+        Observation.NodeObservation node,
+        TenantId tenant,
+        IndexConfig index,
+        int shard
+    ) {
+        ShardInventory.ShardCopy copy = copyOf(node, tenant, index, shard);
+        return copy != null && copy.role() == ShardRole.REPLICA && copy.state() == ShardState.STARTED ? copy : null;
+    }
+
+    private static ShardInventory.ShardCopy copyOf(
         Observation.NodeObservation node,
         TenantId tenant,
         IndexConfig index,
@@ -149,17 +223,13 @@ final class Promoter {
     ) {
         ShardInventory inventory = node.inventory();
         if (inventory == null) {
-            return false;
+            return null;
         }
         ShardInventory.TenantShards tenantShards = inventory.tenants().get(tenant);
         if (tenantShards == null) {
-            return false;
+            return null;
         }
         ShardInventory.IndexShards held = tenantShards.indices().get(index.uuid());
-        if (held == null) {
-            return false;
-        }
-        ShardInventory.ShardCopy copy = held.shards().get(shard);
-        return copy != null && copy.role() == ShardRole.REPLICA && copy.state() == ShardState.STARTED;
+        return held == null ? null : held.shards().get(shard);
     }
 }

@@ -2238,7 +2238,8 @@ Three things learned building it, each recorded where it applies:
   on a node now lost, and that second case is exactly the one the new term fences.
 
 Also not tracked, and worth knowing before relying on promotion: the in-sync set. OpenSearch promotes only an
-in-sync replica; `Promoter` promotes any started replica on a node still heartbeating.
+in-sync replica; `Promoter` promotes any started replica on a node still heartbeating. *(Superseded by §28.10: the in-sync set
+is now observed, and promotion follows it.)*
 
 **And a returning old primary is withdrawn, not re-stamped.** Found after the data plane implemented its side: a
 node lost while primary keeps its assignment unrewritten, because only placeable nodes are visited, so when it came
@@ -2396,3 +2397,29 @@ never lowers a copy's term in place.
 - **The upstream pin.** Until it lands, a search replica's term is recorded and has no effect on what it reads, so
   the roll-forward and roll-back steps move nothing.
 - **The scoped lock's design** (§27.5).
+
+### 28.10 The in-sync set, carried and obeyed (finding 12)
+
+Document replication needs two things to cross between nodes that only the supervisor can carry: each copy's
+**allocation id**, because peer recovery is keyed on the replica's id and the primary's node fabricates that replica's
+routing entry, and the primary's **in-sync set**, because a started replica the primary no longer tracks silently
+stops receiving writes. Each node publishes them on its docrep copies in `nodes/shards/<id>`, and the supervisor
+copies them into `tenant/<t>/status/indices/<uuid>` without deciding anything: from the holder's current inventory,
+never constructed, never carried forward, and never on a `SEGMENT` index.
+
+**One decision follows, and it is the data plane's recommendation.** When a docrep primary is lost, `Promoter`
+promotes only a started replica whose published allocation id is in the set that primary last published. A replica
+outside it may be missing acknowledged writes. If the lost primary published a set and no started replica is in it,
+nothing is promoted and nothing is placed: an empty primary would have every replica recover from it and discard its
+data, so the shard stays without a primary, reported with a reason, until the lost primary or an in-sync replica
+returns. There is no operator override yet, where OpenSearch has `allocate_stale_primary`. A lost primary that never
+published a set leaves today's behaviour in place, so nodes can upgrade one at a time.
+
+**No memory is needed for "last".** A lost node's inventory stays in the store, and in the observation, until it is
+reaped, and reaping waits thirty passes past `NODE_LOST`, while promotion acts after two. When more than one lost
+node still reports itself primary, as when a promoted primary is lost in turn, the set is taken from whichever was
+told the highest primary term. A lost node's assignment is not rewritten, so it still records that term. At equal
+terms a replica must be in every set.
+
+**The cost is per-copy bytes on docrep copies only**: 165 bytes per copy rather than 93, so a node whose every copy
+is docrep fits about 3,160 copies rather than 5,600 (`NODE_CONTRACT.md`, measured).

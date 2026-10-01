@@ -95,8 +95,10 @@ into every assignment, which would store it once per reader and rewrite every co
   "initializing_shards": 0,
   "replication": "DOCUMENT",
   "shards": {
-    "0": [ { "node_id": "pv1sDM…", "role": "PRIMARY", "state": "STARTED", "serving": true },
-           { "node_id": "72ZSKe…", "role": "REPLICA", "state": "INITIALIZING", "serving": false } ],
+    "0": [ { "node_id": "pv1sDM…", "role": "PRIMARY", "state": "STARTED", "serving": true,
+             "allocation_id": "ULHF36…", "in_sync": ["ULHF36…"] },
+           { "node_id": "72ZSKe…", "role": "REPLICA", "state": "INITIALIZING", "serving": false,
+             "allocation_id": "yfU2ZT…" } ],
     "1": [ { "node_id": "zF5QLA…", "role": "PRIMARY", "state": "STARTED", "serving": true } ]
   },
   "observed_at": 1788969977933,
@@ -125,11 +127,17 @@ into every assignment, which would store it once per reader and rewrite every co
   service's rule, and making every reader reimplement it is how two implementations of one rule come to
   disagree. The data plane's coordinator routing reads it. It began as an accident of a method name and was
   undocumented for a long time — see the note under §4 on how that is now caught.
+- **`allocation_id`** on each copy and **`in_sync`** on each primary, for a `DOCUMENT` index only, carried verbatim
+  from the holding node's current inventory (`NODE_CONTRACT.md`, finding 12). A docrep node builds its peers'
+  routing entries from them. Never constructed and never carried forward: a copy whose inventory has no id is
+  published without one, and an id leaves with the copy. Both change only when placement does, so they do not make
+  the document noisier. Absent on every `SEGMENT` index, even if a node publishes them.
 - **`number_of_search_replicas`** and **`ingestion_paused`** come straight from the index document's settings,
   and are here for the same reason as `config_revision`: a reader needs to know whether what it is looking at
   reflects the settings it just wrote. `ingestion_paused` is the one field here that is a *desired* state rather
   than an observed one.
-- **Size** is bounded by shard count × copies, at roughly 60 bytes each. An index of 1000 shards with two
+- **Size** is bounded by shard count × copies, at roughly 60 bytes each, and about 40 more on a docrep copy plus
+  about 25 per in-sync id on a docrep primary. An index of 1000 shards with two
   copies is ~120 KiB, under the 512 KiB budget. An index that would exceed it is a finding, not a truncated
   write.
 
