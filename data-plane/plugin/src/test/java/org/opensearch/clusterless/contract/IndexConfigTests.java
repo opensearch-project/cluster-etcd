@@ -92,10 +92,13 @@ public class IndexConfigTests extends OpenSearchTestCase {
         assertTrue(read("{\"index\": \"i\", \"uuid\": \"u\", \"state\": \"open\", \"settings\": {}}", 1).open());
     }
 
-    public void testReplicationDefaultsToSegmentWhenUnset() {
-        // The deployment this plugin supports first. A copy that pulls from the remote store resolves no peers,
-        // which is what makes it the version that can exist before peer resolution does.
-        assertEquals("SEGMENT", read("{\"index\": \"i\", \"uuid\": \"u\", \"settings\": {}}", 1).replication());
+    public void testReplicationDefaultsToDocumentWhenUnset() {
+        // As in OpenSearch, so that nobody moving from it is surprised, although segment replication is the intended path.
+        assertEquals("DOCUMENT", read("{\"index\": \"i\", \"uuid\": \"u\", \"settings\": {}}", 1).replication());
+        assertEquals(
+            "SEGMENT",
+            read("{\"index\": \"i\", \"uuid\": \"u\", \"settings\": {\"index.replication.type\": \"segment\"}}", 1).replication()
+        );
     }
 
     public void testAMissingCreationDateIsSurvivable() {

@@ -457,6 +457,29 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         assertEquals("and no node added", 1, state.nodes().getSize());
     }
 
+    public void testACoordinatorStatesTheReplicationTypeAsTheDataPathDoes() {
+        // This node holds no copy, so the metadata is this class's own, and it must describe the index as DataNodeState
+        // would: DOCUMENT where the document does not say.
+        IndexConfig unstated = new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            Map.of("index.number_of_shards", "1", "index.number_of_replicas", "0"),
+            Map.of(),
+            3041
+        );
+        CoordinatorView view = new CoordinatorView(
+            List.of(CoordinatorView.RoutedIndex.wholeIndex(ACME, unstated, placement(Map.of(0, List.of(copy(PEER, ShardRole.PRIMARY, ShardState.STARTED)))))),
+            Map.of(NodeId.of(PEER), peer(PEER)),
+            List.of()
+        );
+
+        ClusterState state = coordinate(ClusterState.EMPTY_STATE, view);
+
+        assertEquals("DOCUMENT", state.metadata().index(indexName()).getSettings().get("index.replication.type"));
+    }
+
     public void testAFailedOrUnknownCopyIsNotRoutedTo() {
         ClusterState state = coordinate(
             ClusterState.EMPTY_STATE,

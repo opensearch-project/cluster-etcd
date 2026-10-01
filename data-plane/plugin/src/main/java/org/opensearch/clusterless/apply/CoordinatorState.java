@@ -21,6 +21,7 @@ import org.opensearch.cluster.routing.RoutingTable;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.UnassignedInfo;
 import org.opensearch.clusterless.ClusterlessIndexSettings;
+import org.opensearch.clusterless.contract.IndexConfig;
 import org.opensearch.clusterless.contract.IndexStatus;
 import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.contract.NodeStatus;
@@ -401,6 +402,10 @@ public final class CoordinatorState implements NodeState {
     ) {
         Settings.Builder settings = Settings.builder();
         settings.loadFromMap(Map.copyOf(routed.config().settings()));
+        // As DataNodeState states it, so the two never describe one index differently.
+        if (routed.config().settings().containsKey(IndexConfig.REPLICATION_TYPE) == false) {
+            settings.put(IndexConfig.REPLICATION_TYPE, IndexConfig.DEFAULT_REPLICATION);
+        }
         settings.put(IndexMetadata.SETTING_INDEX_UUID, routed.uuid());
         settings.put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT);
         settings.put(IndexMetadata.SETTING_CREATION_DATE, DataNodeState.creationDate(routed.config()));

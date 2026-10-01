@@ -109,17 +109,22 @@ public record IndexConfig(
         return requiredInt("index.number_of_replicas");
     }
 
+    /** The index setting that holds the replication type. */
+    public static final String REPLICATION_TYPE = "index.replication.type";
+
     /**
-     * {@code DOCUMENT} or {@code SEGMENT}, which decides whether a copy resolves peers at all.
+     * What an index that does not say uses: document replication, as in OpenSearch.
      *
-     * <p>Defaults to segment replication when the setting is absent, matching the deployment this plugin
-     * currently supports: the first version is segment replication from the remote store, and a copy that
-     * pulls from the remote store resolves no peers. A document-replication index reaching a node that cannot
-     * do docrep yet is a real possibility, and the honest failure is a copy that cannot be built rather than
-     * one built as though it were something else — see {@code Replication}.
+     * <p>Segment replication is the intended path here, and still not the default, because someone moving from
+     * OpenSearch would be surprised. OpenSearch fixes an index's type when it is created, from
+     * {@code cluster.indices.replication.strategy}, which defaults to {@code DOCUMENT}. The control plane writes the
+     * same default into every index it creates, so this applies only to a document that came from somewhere else.
      */
+    public static final String DEFAULT_REPLICATION = "DOCUMENT";
+
+    /** {@code DOCUMENT} or {@code SEGMENT}, which decides whether a copy resolves peers at all. */
     public String replication() {
-        return settings.getOrDefault("index.replication.type", "SEGMENT").toUpperCase(java.util.Locale.ROOT);
+        return settings.getOrDefault(REPLICATION_TYPE, DEFAULT_REPLICATION).trim().toUpperCase(java.util.Locale.ROOT);
     }
 
     private int requiredInt(String key) {

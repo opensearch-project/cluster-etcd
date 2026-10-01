@@ -526,6 +526,13 @@ public final class DataNodeState implements NodeState {
         // and entirely string-valued, which is the shape loadFromMap wants.
         settings.loadFromMap(Map.copyOf(config.settings()));
 
+        // Stated explicitly where the document does not, because otherwise each node's server would take its own
+        // cluster.indices.replication.strategy, and nodes could disagree about one index. OpenSearch also fixes the type
+        // into the index's settings when it creates the index. An explicit value is left exactly as written.
+        if (config.settings().containsKey(IndexConfig.REPLICATION_TYPE) == false) {
+            settings.put(IndexConfig.REPLICATION_TYPE, IndexConfig.DEFAULT_REPLICATION);
+        }
+
         settings.put(IndexMetadata.SETTING_INDEX_UUID, desiredIndex.uuid());
         settings.put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT);
         settings.put(IndexMetadata.SETTING_CREATION_DATE, creationDate(config));

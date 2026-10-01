@@ -116,8 +116,12 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
     /** The index document both the resolver and the reaper read. Removed to simulate a delete. */
     private final java.util.concurrent.atomic.AtomicBoolean indexExists = new java.util.concurrent.atomic.AtomicBoolean(true);
 
+    /** The index document the source answers with while it exists. */
+    private final java.util.concurrent.atomic.AtomicReference<org.opensearch.clusterless.contract.IndexConfig> indexConfig =
+        new java.util.concurrent.atomic.AtomicReference<>(TestFixtures.indexConfig(UUID));
+
     private final IndexConfigSource indexConfigs = (tenant, name) -> indexExists.get()
-        ? Optional.of(TestFixtures.indexConfig(UUID))
+        ? Optional.of(indexConfig.get())
         : Optional.empty();
 
     private AssignmentPoller poller(boolean apply) {
@@ -251,6 +255,7 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
     public void testDeferredCopiesAreVisibleInTheStatus() {
         // "The supervisor asked for a shard and this node did not build it" is otherwise invisible from both
         // ends: the store shows an unassigned shard and the node shows nothing.
+        indexConfig.set(TestFixtures.segmentReplicatedIndexConfig(UUID));
         writeAssignment(assignmentJson(42, "{\"0\": \"PRIMARY\", \"1\": \"REPLICA\"}"));
         AssignmentPoller poller = poller(false);
 

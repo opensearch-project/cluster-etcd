@@ -12,6 +12,7 @@ import org.opensearch.cluster.routing.RoutingNode;
 import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.clusterless.ClusterlessIndexSettings;
 import org.opensearch.clusterless.apply.TrackedInSync;
+import org.opensearch.clusterless.contract.IndexConfig;
 import org.opensearch.clusterless.contract.ShardInventory;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.clusterless.contract.ShardState;
@@ -136,11 +137,12 @@ public final class ClusterStateInventorySource implements ShardInventorySource {
         Long sizeBytes = shardState == ShardState.STARTED ? shardSizes.sizeOf(routing.shardId()) : null;
 
         // Finding 12: only under document replication, where a peer's routing entry and recovery are keyed on the id
-        // and the in-sync set has to cross between nodes. Read as IndexConfig.replication() reads it, so that this and
-        // CoordinatorState agree on which indices those are.
+        // and the in-sync set has to cross between nodes. The fabrication states the type on every index it builds; the
+        // default is IndexConfig's in case it ever does not.
         String allocationId = null;
         List<String> inSync = null;
-        if ("DOCUMENT".equalsIgnoreCase(indexMetadata.getSettings().get("index.replication.type", "SEGMENT").trim())) {
+        String replication = indexMetadata.getSettings().get(IndexConfig.REPLICATION_TYPE, IndexConfig.DEFAULT_REPLICATION);
+        if ("DOCUMENT".equalsIgnoreCase(replication.trim())) {
             allocationId = routing.allocationId().getId();
             if (routing.primary()) {
                 Set<String> tracked = trackedInSync.of(routing.shardId());

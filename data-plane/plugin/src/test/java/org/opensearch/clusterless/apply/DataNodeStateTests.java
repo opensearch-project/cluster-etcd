@@ -23,6 +23,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.core.common.transport.TransportAddress;
 import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.indices.replication.common.ReplicationType;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.net.InetAddress;
@@ -156,6 +157,31 @@ public class DataNodeStateTests extends OpenSearchTestCase {
         ClusterState again = build(rebuilt, desired(Map.of(0, ShardRole.PRIMARY)));
         assertEquals("and then it is kept", after.allocationId().getId(), onlyCopy(again, 0).allocationId().getId());
         assertTrue(StateEquivalence.sameContent(rebuilt, again));
+    }
+
+    public void testAnIndexThatDoesNotSayIsFabricatedAsDocumentReplicated() {
+        // Stated rather than left to the server, which would take each node's cluster.indices.replication.strategy, so
+        // that nodes could disagree about one index. DOCUMENT because it is OpenSearch's default.
+        ClusterState first = build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY)));
+
+        Settings settings = onlyIndex(first).getSettings();
+        assertEquals("DOCUMENT", settings.get("index.replication.type"));
+        assertEquals(ReplicationType.DOCUMENT, IndexMetadata.INDEX_REPLICATION_TYPE_SETTING.get(settings));
+
+        ClusterState second = build(withShardStarted(first), desired(Map.of(0, ShardRole.PRIMARY)));
+        assertEquals("and stating it is not a change on the pass after", onlyIndex(first).getSettingsVersion(), onlyIndex(second).getSettingsVersion());
+    }
+
+    public void testAnExplicitReplicationTypeIsLeftAsWritten() {
+        // Byte for byte, case included: rewriting it would be a settings change on every index that already has it.
+        Map<String, String> asWritten = new java.util.HashMap<>(settings());
+        asWritten.put("index.replication.type", "segment");
+        ClusterState state = build(
+            ClusterState.EMPTY_STATE,
+            desiredWith(new IndexConfig("my-index", UUID, 1788969977933L, true, asWritten, mappings(), 3041), Map.of(0, ShardRole.PRIMARY))
+        );
+
+        assertEquals("segment", onlyIndex(state).getSettings().get("index.replication.type"));
     }
 
     public void testApplyingTheSameDesiredStateRepeatedlyChangesNothingButTheVersion() {

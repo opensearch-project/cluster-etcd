@@ -133,12 +133,11 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
     }
 
     public void testAReplicaOfASegmentReplicatedIndexIsDeclined() {
-        // Not the docrep case, despite what this test used to be called: `config` asks for no replication type, so
-        // the index is segment-replicated and a REPLICA of it is a role the supervisor should never have assigned --
-        // it maps SEGMENT to SEARCH_REPLICA. Either a supervisor newer than this node or a mapping that has drifted,
-        // and building a peer-recovering copy of an index whose segments come from a repository would recover from a
-        // primary that publishes no operations to it.
-        documents.put("acme/my-index", config(UUID, true, 2));
+        // A REPLICA of a segment-replicated index is a role the supervisor should never have assigned -- it maps SEGMENT
+        // to SEARCH_REPLICA. Either a supervisor newer than this node or a mapping that has drifted, and building a
+        // peer-recovering copy of an index whose segments come from a repository would recover from a primary that
+        // publishes no operations to it.
+        documents.put("acme/my-index", segmentReplicated(UUID));
 
         DesiredState desired = resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA)));
 
