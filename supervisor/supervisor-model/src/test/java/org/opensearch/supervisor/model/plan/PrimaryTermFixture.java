@@ -77,6 +77,11 @@ final class PrimaryTermFixture {
             return this;
         }
 
+        Node stale() {
+            liveness = Liveness.STALE;
+            return this;
+        }
+
         Node lost() {
             liveness = Liveness.LOST;
             return this;

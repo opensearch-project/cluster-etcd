@@ -136,4 +136,37 @@ class PromotionTests {
         assertTrue(refusalFor(plan, observation).contains("has not reported it yet"), refusalFor(plan, observation));
         assertTrue(TermLedger.resolve(plan, observation).writes().isEmpty(), "and the term does not move");
     }
+
+    @Test
+    void aReplicaOnAStaleNodeIsNotWipedByAnEmptyPrimaryOnALiveOne() {
+        // B's copies still count through the stale window, so the shard looks primary-less while B holds its data.
+        // Searching only live nodes found no replica, and the allocator put an empty primary on C, which B's replica
+        // would recover from when B came back. B cannot be promoted while it is not reporting, so the shard waits.
+        Observation observation = observe(index(1, 1, Replication.DOCUMENT), counter(Map.of(0, 1L), 3),
+            Node.of(A).told(0, ShardRole.PRIMARY, 1).lost(),
+            Node.of(B).holding(0, ShardRole.REPLICA).told(0, ShardRole.REPLICA, 1).declaringPrimaryTerms().stale(),
+            Node.of(C).declaringPrimaryTerms());
+
+        Plan plan = plan(observation);
+
+        assertTrue(plan.instructions().isEmpty(), "no empty primary on C: " + plan.instructions());
+        String refusal = refusalFor(plan, observation);
+        assertTrue(refusal.contains("not live"), refusal);
+        assertTrue(refusal.contains("discard its data"), refusal);
+    }
+
+    @Test
+    void aPromotionToANodeThatHasSinceGoneStaleIsNotRepeatedElsewhere() {
+        // B was told PRIMARY and went quiet before reporting it. It may still apply it, so promoting C as well would
+        // make two primaries.
+        Observation observation = observe(index(1, 2, Replication.DOCUMENT), counter(Map.of(0, 2L), 3),
+            Node.of(A).told(0, ShardRole.PRIMARY, 1).lost(),
+            Node.of(B).holding(0, ShardRole.REPLICA).told(0, ShardRole.PRIMARY, 2).declaringPrimaryTerms().stale(),
+            Node.of(C).holding(0, ShardRole.REPLICA).told(0, ShardRole.REPLICA, 2).declaringPrimaryTerms());
+
+        Plan plan = plan(observation);
+
+        assertTrue(plan.instructions().isEmpty(), "C is not promoted too: " + plan.instructions());
+        assertTrue(refusalFor(plan, observation).contains("has not reported it yet"), refusalFor(plan, observation));
+    }
 }

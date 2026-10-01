@@ -33,6 +33,13 @@ import java.util.Map;
  * promoted, this refuses rather than letting the allocator place an empty primary: a shard that cannot take writes is
  * recoverable, and one whose replica was wiped is not.
  *
+ * <p><b>Every node whose copies still count is searched, not only the placeable ones.</b> A replica on a {@code STALE}
+ * node is still counted by the differ, so a shard whose primary is lost and whose replica's node has merely gone quiet
+ * looks primary-less — and returning nothing here would let the allocator place an empty primary on a live node, which
+ * the replica would recover from when its node came back. Such a replica is not promoted, because a node that is not
+ * reporting cannot be shown to have applied the promotion; the shard waits, with a reason, until the node is live again
+ * or lost.
+ *
  * <p><b>Not tracked: the in-sync set.</b> OpenSearch promotes only a replica in the primary's in-sync set; this chooses
  * any started replica on a node still heartbeating, by node id. A replica that fell behind before the primary was lost
  * can therefore be promoted and lose what it missed. The data plane keeps an in-sync set locally and this service
@@ -68,8 +75,9 @@ final class Promoter {
         // A promotion already written and not yet reported. The node reports what it holds, and what it holds beats
         // what it was told, so until it applies the change its copy still reads as a replica -- the shard still looks
         // primary-less, and without this the planner would promote again every pass, advancing the term each time
-        // and rewriting every copy's assignment with it.
-        for (Map.Entry<NodeId, Observation.NodeObservation> entry : observation.placeableNodes().entrySet()) {
+        // and rewriting every copy's assignment with it. A node gone stale since keeps its claim, as any assigned
+        // copy does through the stale window.
+        for (Map.Entry<NodeId, Observation.NodeObservation> entry : observation.nodes().entrySet()) {
             Observation.NodeObservation node = entry.getValue();
             if (node.actsOnItsAssignment() && assignedPrimary(node, tenant, index, shard)) {
                 return new Outcome(null, "a promotion to [" + entry.getKey() + "] has been written and the node has"
@@ -79,12 +87,15 @@ final class Promoter {
 
         List<NodeId> capable = new ArrayList<>();
         List<NodeId> incapable = new ArrayList<>();
-        for (Map.Entry<NodeId, Observation.NodeObservation> entry : observation.placeableNodes().entrySet()) {
+        List<NodeId> unplaceable = new ArrayList<>();
+        for (Map.Entry<NodeId, Observation.NodeObservation> entry : observation.nodes().entrySet()) {
             Observation.NodeObservation node = entry.getValue();
             if (node.actsOnItsAssignment() == false || holdsStartedReplica(node, tenant, index, shard) == false) {
                 continue;
             }
-            if (node.registration() != null && node.registration().declares(ContractFeatures.PRIMARY_TERMS)) {
+            if (node.isPlaceable() == false) {
+                unplaceable.add(entry.getKey());
+            } else if (node.registration().declares(ContractFeatures.PRIMARY_TERMS)) {
                 capable.add(entry.getKey());
             } else {
                 incapable.add(entry.getKey());
@@ -95,13 +106,22 @@ final class Promoter {
             return new Outcome(capable.stream().min(Comparator.comparing(NodeId::value)).orElseThrow(), null);
         }
         if (incapable.isEmpty() == false) {
-            return new Outcome(null, "a started replica of this shard survives on " + incapable.stream()
-                .sorted(Comparator.comparing(NodeId::value)).toList()
+            return new Outcome(null, "a started replica of this shard survives on " + sorted(incapable)
                 + ", and promoting it needs the node to declare [" + ContractFeatures.PRIMARY_TERMS + "]; placing an"
                 + " empty primary elsewhere instead would make that replica recover from it and discard its data, so"
                 + " this shard waits for a node that can be promoted");
         }
+        if (unplaceable.isEmpty() == false) {
+            return new Outcome(null, "a started replica of this shard survives on " + sorted(unplaceable)
+                + ", which is not live, so it cannot be promoted; placing an empty primary elsewhere instead would make"
+                + " that replica recover from it and discard its data, so this shard waits until the node is live"
+                + " again or is lost");
+        }
         return Outcome.none();
+    }
+
+    private static List<NodeId> sorted(List<NodeId> nodes) {
+        return nodes.stream().sorted(Comparator.comparing(NodeId::value)).toList();
     }
 
     private static boolean assignedPrimary(
