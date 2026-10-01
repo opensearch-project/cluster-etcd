@@ -122,37 +122,34 @@ public final class StatusComputation {
             shards.put(shard, placementsOf(tenant, index.uuid(), shard, observation));
         }
 
-        int activeShards = 0;
-        int activePrimaries = 0;
-        int initializing = 0;
+        // Judged per shard, never on index-wide totals: an extra copy of shard 0 must not stand in for a missing
+        // replica of shard 1. Totals reported green for an index with an under-replicated shard.
         boolean anyPrimaryInactive = false;
+        boolean anyCopyShort = false;
 
         for (List<IndexStatus.ShardPlacement> placements : shards.values()) {
+            int started = 0;
             boolean primaryActive = false;
             for (IndexStatus.ShardPlacement placement : placements) {
                 if (placement.state() == ShardState.STARTED) {
-                    activeShards++;
+                    started++;
                     if (placement.role() == ShardRole.PRIMARY) {
                         primaryActive = true;
-                        activePrimaries++;
                     }
-                } else if (placement.state() == ShardState.INITIALIZING) {
-                    initializing++;
                 }
             }
             if (primaryActive == false) {
                 anyPrimaryInactive = true;
             }
+            if (started < index.copiesPerShard()) {
+                anyCopyShort = true;
+            }
         }
-
-        int desiredCopies = index.numberOfShards() * index.copiesPerShard();
-        int presentCopies = shards.values().stream().mapToInt(List::size).sum();
-        int unassigned = Math.max(0, desiredCopies - presentCopies);
 
         HealthStatus status;
         if (anyPrimaryInactive) {
             status = HealthStatus.RED;
-        } else if (activeShards < desiredCopies) {
+        } else if (anyCopyShort) {
             status = HealthStatus.YELLOW;
         } else {
             status = HealthStatus.GREEN;

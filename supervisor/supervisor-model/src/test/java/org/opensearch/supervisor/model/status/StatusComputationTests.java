@@ -106,6 +106,23 @@ class StatusComputationTests {
     }
 
     @Test
+    void anExtraCopyOfOneShardDoesNotHideAMissingCopyOfAnother() {
+        // Index-wide totals: shard 0 has three serving copies where it wants two, shard 1 has one, and four of four
+        // read as green while shard 1 is a node loss away from being red.
+        IndexStatus status = statusOf(index(true, 2, 1), Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(
+                0, copy(ShardRole.PRIMARY, ShardState.STARTED),
+                1, copy(ShardRole.PRIMARY, ShardState.STARTED))),
+            NODE_B, node(NODE_B, Liveness.LIVE, Map.of(), Map.of(0, copy(ShardRole.SEARCH_REPLICA, ShardState.STARTED))),
+            NodeId.of("nodeCCCCCCCCCCCCCCCCCC"), node(NodeId.of("nodeCCCCCCCCCCCCCCCCCC"), Liveness.LIVE, Map.of(),
+                Map.of(0, copy(ShardRole.SEARCH_REPLICA, ShardState.STARTED)))
+        ));
+
+        assertEquals(HealthStatus.YELLOW, status.status());
+        assertEquals(1, status.unassignedShards(), "shard 1's missing copy, not cancelled by shard 0's extra one");
+    }
+
+    @Test
     void redWhenAPrimaryIsMissingEntirely() {
         assertEquals(HealthStatus.RED, statusOf(index(true, 1, 0), Map.of()).status());
     }
