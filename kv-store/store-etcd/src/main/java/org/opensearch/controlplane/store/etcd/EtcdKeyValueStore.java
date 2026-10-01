@@ -20,6 +20,7 @@ import io.etcd.jetcd.options.PutOption;
 import io.etcd.jetcd.options.WatchOption;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.RevisionConflictException;
+import org.opensearch.controlplane.store.StoreLimits;
 import org.opensearch.controlplane.store.Watch;
 
 import java.nio.charset.StandardCharsets;
@@ -76,11 +77,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * <h2>Limitations</h2>
  *
  * <ul>
- *   <li><b>Values are capped by etcd's request limit</b>, 1.5 MB by default. Control plane payloads are
- *       configuration, so there is room to spare.</li>
- *   <li><b>{@link #scanPrefix} is one range request</b> and returns everything under the prefix in one
- *       response, so a very large prefix is bounded by that same request limit rather than paged. Paging
- *       would change the interface, which returns a materialised map.</li>
+ *   <li><b>Values are capped by the interface</b> at {@link KeyValueStore#MAX_VALUE_BYTES}, inside etcd's
+ *       1.5 MiB default request limit.</li>
+ *   <li><b>{@link #scanPrefix} is paged</b>, {@link #SCAN_PAGE_KEYS} keys per request, so it is not a
+ *       snapshot: a write between pages may or may not appear. The interface permits that, and one
+ *       unpaged range would fail at gRPC's message limit once a prefix held a few large values.</li>
  *   <li><b>Compaction is irrelevant here</b>, unlike most etcd uses: revisions are only ever compared for
  *       equality against a key's current {@code mod_revision}, never read as historical versions.</li>
  * </ul>
@@ -113,24 +114,68 @@ public final class EtcdKeyValueStore implements KeyValueStore {
 
     @Override
     public NavigableMap<String, Versioned> scanPrefix(String keyPrefix) {
-        ByteSequence from = keyOf(keyPrefix);
-        GetResponse response = await("scan", keyPrefix,
-            kv.get(from, GetOption.builder().isPrefix(true).build()));
+        byte[] prefix = keyOf(keyPrefix).getBytes();
+        ByteSequence end = ByteSequence.from(prefixEnd(prefix));
+        ByteSequence from = ByteSequence.from(prefix);
 
         NavigableMap<String, Versioned> found = new TreeMap<>();
         int rootLength = root.length() + 1;
-        for (KeyValue entry : response.getKvs()) {
-            String fullKey = entry.getKey().toString(StandardCharsets.UTF_8);
-            found.put(
-                fullKey.substring(rootLength),
-                new Versioned(entry.getValue().getBytes(), entry.getModRevision())
-            );
+        while (true) {
+            // Each page reads at its own revision, so a write between pages may or may not appear. The contract
+            // permits exactly that, and pinning the first page's revision instead would fail the scan whenever
+            // compaction overtook it.
+            GetResponse page = await("scan", keyPrefix,
+                kv.get(from, GetOption.builder().withRange(end).withLimit(SCAN_PAGE_KEYS).build()));
+            for (KeyValue entry : page.getKvs()) {
+                String fullKey = entry.getKey().toString(StandardCharsets.UTF_8);
+                found.put(
+                    fullKey.substring(rootLength),
+                    new Versioned(entry.getValue().getBytes(), entry.getModRevision())
+                );
+            }
+            if (page.isMore() == false || page.getKvs().isEmpty()) {
+                return found;
+            }
+            // The smallest key after the last one returned: the same bytes with a zero byte appended.
+            byte[] last = page.getKvs().get(page.getKvs().size() - 1).getKey().getBytes();
+            from = ByteSequence.from(java.util.Arrays.copyOf(last, last.length + 1));
         }
-        return found;
     }
+
+    /**
+     * The exclusive end of the range of keys starting with {@code prefix}: the prefix with its last byte
+     * incremented, after dropping trailing {@code 0xff} bytes, which cannot be incremented. The root is never
+     * empty and is UTF-8, so there is always a byte to increment.
+     */
+    static byte[] prefixEnd(byte[] prefix) {
+        for (int i = prefix.length - 1; i >= 0; i--) {
+            if (prefix[i] != (byte) 0xff) {
+                byte[] end = java.util.Arrays.copyOf(prefix, i + 1);
+                end[i]++;
+                return end;
+            }
+        }
+        throw new IllegalArgumentException("a prefix of only 0xff bytes has no end");
+    }
+
+    /**
+     * Keys per scan page. The page has to fit the client's inbound message limit at the worst case, every value
+     * at {@link KeyValueStore#MAX_VALUE_BYTES}, which {@link #MAX_INBOUND_MESSAGE_BYTES} is sized for. Large
+     * enough that a fleet-wide scan of small documents, such as heartbeats, takes a handful of round trips.
+     */
+    static final int SCAN_PAGE_KEYS = 256;
+
+    /**
+     * gRPC's inbound limit for this store's client: one full page of maximum-size entries, plus a margin for
+     * protobuf framing and the root. gRPC's default of 4 MiB would fail a scan returning five large values.
+     * The limit costs nothing until a response is that large, and the scan is materialised whole regardless.
+     */
+    static final int MAX_INBOUND_MESSAGE_BYTES =
+        SCAN_PAGE_KEYS * (KeyValueStore.MAX_VALUE_BYTES + KeyValueStore.MAX_KEY_BYTES + 1024) + (1 << 20);
 
     @Override
     public long put(String key, byte[] value) {
+        StoreLimits.checkWrite(key, value);
         // Every put moves the store revision, even one writing an identical value, so the returned
         // revision always differs from the previous one -- which the contract requires.
         return await("put", key, kv.put(keyOf(key), valueOf(value), PutOption.DEFAULT))
@@ -139,6 +184,7 @@ public final class EtcdKeyValueStore implements KeyValueStore {
 
     @Override
     public long put(String key, byte[] value, long expectedRevision) {
+        StoreLimits.checkWrite(key, value);
         ByteSequence target = keyOf(key);
         // ABSENT is zero, and a key that does not exist has mod_revision zero, so one comparison covers
         // both create-if-absent and update-at-revision without a special case.

@@ -17,39 +17,69 @@ import java.util.Optional;
  *
  * <h2>Revisions</h2>
  *
- * <p>Every key carries a monotonically increasing revision, and writes can be made conditional on
- * it. This is not speculative: {@code indices.create} must fail with
- * {@code resource_already_exists_exception} rather than clobbering an existing index, and
- * operations like {@code indices.update_aliases} and {@code indices.put_mapping} are
- * read-modify-write cycles that lose updates without a compare-and-set. All three likely backends
- * support this directly — etcd compares {@code ModRevision}, DynamoDB uses a conditional
- * expression on a version attribute, and S3 has conditional writes via {@code If-Match} /
- * {@code If-None-Match} on ETags.
+ * <p>Every key carries a revision, and writes can be made conditional on it. This is not speculative:
+ * {@code indices.create} must fail with {@code resource_already_exists_exception} rather than clobbering
+ * an existing index, and operations like {@code indices.update_aliases} and {@code indices.put_mapping}
+ * are read-modify-write cycles that lose updates without a compare-and-set.
  *
- * <p>Revisions are opaque and only comparable for equality. Do not assume they are dense,
- * global, or meaningful across keys.
+ * <p>Consumers use revisions only for equality: as the token for a conditional write, and as a change
+ * signal — a reader that parsed a key at revision R and sees R again may skip the parse, and liveness and
+ * lease expiry are judged by how long a revision has gone unchanged. Revisions are also stored inside other
+ * values and compared across processes ({@code configRevision}). A backend must therefore guarantee:
  *
- * <p><b>A revision is never reused for a key, including after that key has been deleted and written
- * again.</b> This is the guarantee that makes revision equality usable as a change signal — a reader
- * that parsed a key at revision R and sees R again may skip the parse, and readers here do exactly
- * that. A backend which restarts a key's revision after deletion breaks them silently: the key comes
- * back at a revision already seen, carrying different content, and the reader keeps the stale value
- * for ever with nothing anywhere to indicate it. This went unstated once, and the consequence was a
- * supervisor whose desired state froze on a deleted index's uuid while the data node correctly
- * declined to build it.
+ * <ol>
+ *   <li><b>A revision is never reused for a key</b>, including after that key has been deleted and written
+ *       again, and including when a write repeats the previous bytes exactly. A backend which restarts a
+ *       key's revision after deletion breaks readers silently: the key comes back at a revision already
+ *       seen, carrying different content, and a reader keeps the stale value for ever with nothing
+ *       anywhere to indicate it. This went unstated once, and the consequence was a supervisor whose
+ *       desired state froze on a deleted index's uuid while the data node correctly declined to build it.
+ *       Content hashes, such as S3 ETags, fail the second half.</li>
+ *   <li><b>Revisions strictly increase per key.</b> No consumer relies on the order, but it is what makes
+ *       the first rule implementable and testable.</li>
+ *   <li><b>{@code put} returns the revision later reads report</b>, in every process.</li>
+ *   <li><b>A revision is positive and at most {@link #MAX_REVISION}</b>, 2<sup>53</sup> − 1, so it survives
+ *       a JSON parser that reads numbers as doubles.</li>
+ * </ol>
  *
- * <p>Note what that does <em>not</em> require. Revisions need not be dense, so a backend may skip
- * numbers — recording a counter before using it, and so leaving a gap on a crash, is a legitimate way
- * to keep the guarantee. They need not be global either, so two keys may sit at the same revision.
- * Both real backends get this for free from a cluster-wide transaction id — etcd's
- * {@code mod_revision} and ZooKeeper's {@code mzxid} — and {@code ZooKeeperKeyValueStore} records why
- * {@code Stat.getVersion()} cannot be used, which is this hazard reached from the other direction.
+ * <p>Nothing is promised <em>across</em> keys: two keys may share a revision, and a write to one key may
+ * get a lower revision than an earlier write to another. That freedom is what lets a backend without a
+ * store-wide transaction id — DynamoDB, S3 — issue revisions per key instead of funnelling every write
+ * through one counter. etcd's {@code mod_revision}, ZooKeeper's {@code mzxid} and the filesystem store's
+ * counter happen to be store-wide; consumers must not depend on it. Revisions need not be dense either, so
+ * recording a counter before using it, and leaving a gap on a crash, is a legitimate way to keep rule 1.
+ *
+ * <h2>Consistency</h2>
+ *
+ * <ul>
+ *   <li><b>Conditional writes are linearizable per key.</b> Leases, task claims and assignments depend on
+ *       exactly one of two racing writers winning.</li>
+ *   <li><b>Through one store instance, reads see that instance's own writes and never go backwards</b>, and
+ *       after a conditional write loses, a read sees the winner.</li>
+ *   <li><b>Across instances, reads may lag by a bounded amount</b>: seconds at most, well under the ~20 s
+ *       at which a stale heartbeat reads as a lost node. One process may briefly miss another's
+ *       acknowledged write. This is deliberately weaker than linearizable reads, which etcd provides and
+ *       ZooKeeper, reading from followers without {@code sync()}, does not.</li>
+ *   <li><b>{@link #scanPrefix} is not a snapshot.</b> Writes during a scan may or may not appear. A key
+ *       that exists throughout the scan is always returned, and a value is never partial.</li>
+ *   <li><b>An acknowledged write survives failover of the backend.</b> A deployment that can lose
+ *       acknowledged writes — an asynchronously replicated database, say — can also reissue revisions,
+ *       which breaks rule 1.</li>
+ *   <li><b>No multi-key atomicity.</b> Consumers order their writes instead.</li>
+ * </ul>
+ *
+ * <h2>Limits</h2>
+ *
+ * <p>Every backend accepts keys up to {@link #MAX_KEY_BYTES} and values up to {@link #MAX_VALUE_BYTES}, and
+ * rejects anything larger with {@link LimitExceededException} — even a backend that could store more, so
+ * that a consumer which works on one backend works on all of them. Reads of a longer key simply find
+ * nothing. The value limit is ZooKeeper's: its default {@code jute.maxbuffer} is just under 1 MiB for a
+ * whole request, path included. See {@link StoreLimits}.
  *
  * <h2>Implementations</h2>
  *
- * <p>Expected production backends are etcd or DynamoDB depending on the environment. Payloads are
- * small — index and pipeline configuration, not documents — which is worth keeping in mind when
- * evaluating object stores for this role.
+ * <p>etcd, ZooKeeper, and a filesystem store for development. {@code BACKENDS.md} in this library sketches
+ * DynamoDB, relational, OpenSearch and S3 backends, and is where the rules above came from.
  *
  * <p>Implementations must be safe for concurrent use.
  */
@@ -60,6 +90,15 @@ public interface KeyValueStore extends AutoCloseable {
      * write to get create-if-absent semantics.
      */
     long ABSENT = 0L;
+
+    /** The largest revision a backend may issue: 2<sup>53</sup> − 1, the largest integer a double holds exactly. */
+    long MAX_REVISION = (1L << 53) - 1;
+
+    /** The longest key, in UTF-8 bytes, that every backend accepts. */
+    int MAX_KEY_BYTES = 512;
+
+    /** The largest value, in bytes, that every backend accepts. */
+    int MAX_VALUE_BYTES = 960 * 1024;
 
     /**
      * A stored payload and the revision it was written at.
@@ -79,6 +118,7 @@ public interface KeyValueStore extends AutoCloseable {
      * Unconditional upsert.
      *
      * @return the revision the value was written at
+     * @throws LimitExceededException if the key or value is over its limit
      */
     long put(String key, byte[] value);
 
@@ -89,6 +129,7 @@ public interface KeyValueStore extends AutoCloseable {
      *                         require that it does not exist
      * @return the revision the value was written at
      * @throws RevisionConflictException if the key is not at {@code expectedRevision}
+     * @throws LimitExceededException if the key or value is over its limit
      */
     long put(String key, byte[] value, long expectedRevision);
 

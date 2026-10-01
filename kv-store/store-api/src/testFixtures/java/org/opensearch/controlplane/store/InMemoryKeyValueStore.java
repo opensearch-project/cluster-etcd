@@ -46,6 +46,7 @@ public final class InMemoryKeyValueStore implements KeyValueStore {
 
     @Override
     public synchronized long put(String key, byte[] value) {
+        StoreLimits.checkWrite(key, value);
         long revision = nextRevision++;
         entries.put(key, new Versioned(value.clone(), revision));
         return revision;
@@ -53,6 +54,7 @@ public final class InMemoryKeyValueStore implements KeyValueStore {
 
     @Override
     public synchronized long put(String key, byte[] value, long expectedRevision) {
+        StoreLimits.checkWrite(key, value);
         requireRevision(key, expectedRevision);
         return put(key, value);
     }

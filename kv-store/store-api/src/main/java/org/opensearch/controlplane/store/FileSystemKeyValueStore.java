@@ -39,6 +39,12 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <p>Each file is an 8-byte big-endian revision followed by the payload.
  *
+ * <p>A key whose encoding is longer than a filename can be — {@link #MAX_ENCODED_KEY_LENGTH} — is stored
+ * under {@code %%} and the SHA-256 of the key instead, and its file carries the key itself between the
+ * revision and the payload: a 4-byte length, then the UTF-8 bytes. No encoded key can start {@code %%},
+ * because the encoding only ever writes {@code %} before two hex digits, so the two kinds of name cannot
+ * collide. A scan has to open a hashed file to learn its key; keys long enough to need one are rare.
+ *
  * <h2>Durability</h2>
  *
  * <p>Writes go to a temporary file in the same directory, are fsynced, and are then moved into place
@@ -55,8 +61,8 @@ import java.util.concurrent.locks.ReentrantLock;
  *       process per directory, or use a store that offers real CAS.</li>
  *   <li><b>{@link #scanPrefix} is O(number of keys).</b> It lists the directory and decodes every
  *       name. Fine for control plane volumes; not a substitute for an index.</li>
- *   <li><b>Key length is bounded</b> by the filesystem's filename limit — see
- *       {@link #MAX_ENCODED_KEY_LENGTH}. Exceeding it fails loudly rather than truncating.</li>
+ *   <li><b>Long keys cost a file read to scan</b>, since a hashed filename does not say which key it
+ *       holds. See the layout above.</li>
  * </ul>
  */
 public final class FileSystemKeyValueStore implements KeyValueStore {
@@ -67,6 +73,9 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
      * usable key length is smaller for keys with many non-alphanumeric characters.
      */
     static final int MAX_ENCODED_KEY_LENGTH = 240;
+
+    /** Starts the filename of a key too long to encode into one. See the class javadoc. */
+    static final String HASHED_PREFIX = "%%";
 
     private static final int REVISION_HEADER_BYTES = Long.BYTES;
     private static final String TEMP_PREFIX = ".tmp-";
@@ -146,7 +155,7 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
                 // store fail on exactly the untidiness it has no opinion about. Found by a data-plane test that puts
                 // an extra file in a store directory on purpose, which the old per-key scheme never had to look at.
                 try {
-                    recovered = Math.max(recovered, read(file).map(Versioned::revision).orElse(ABSENT));
+                    recovered = Math.max(recovered, readStored(file).map(stored -> stored.versioned().revision()).orElse(ABSENT));
                 } catch (RuntimeException unreadable) {
                     // Swallowed deliberately: the counter file above is the authority in the ordinary case, and a
                     // key file this cannot read is one that get() will fail on just as loudly when asked for it.
@@ -207,7 +216,7 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
     public Optional<Versioned> get(String key) {
         lock.lock();
         try {
-            return read(pathFor(key));
+            return read(key);
         } finally {
             lock.unlock();
         }
@@ -224,12 +233,18 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
                 if (fileName.startsWith(TEMP_PREFIX) || fileName.equals(REVISION_COUNTER_FILE)) {
                     continue;
                 }
+                if (fileName.startsWith(HASHED_PREFIX)) {
+                    // The name says nothing about the key, so the file has to be opened to find out.
+                    readStored(entry).filter(stored -> stored.key().startsWith(keyPrefix))
+                        .ifPresent(stored -> matched.put(stored.key(), stored.versioned()));
+                    continue;
+                }
                 String key = decode(fileName);
                 if (key.startsWith(keyPrefix) == false) {
                     continue;
                 }
                 // A concurrent delete between listing and reading is not an error.
-                read(entry).ifPresent(versioned -> matched.put(key, versioned));
+                readStored(entry).ifPresent(stored -> matched.put(key, stored.versioned()));
             }
         } catch (IOException e) {
             throw new UncheckedIOException("could not scan " + directory, e);
@@ -239,16 +254,46 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
         return matched;
     }
 
-    private Optional<Versioned> read(Path file) {
+    /** What one file holds. {@code key} is null for an encoded filename, which carries the key in its name. */
+    private record Stored(String key, Versioned versioned) {}
+
+    private Optional<Versioned> read(String key) {
+        Path file = pathFor(key);
+        return readStored(file).map(stored -> {
+            if (stored.key() != null && stored.key().equals(key) == false) {
+                // Two keys with one SHA-256. Not expected in the lifetime of the universe, but not a reason to
+                // hand back another key's value either.
+                throw new IllegalStateException("hashed store file " + file + " holds [" + stored.key()
+                    + "], not [" + key + "]");
+            }
+            return stored.versioned();
+        });
+    }
+
+    private Optional<Stored> readStored(Path file) {
         try {
             byte[] contents = Files.readAllBytes(file);
             if (contents.length < REVISION_HEADER_BYTES) {
                 throw new IOException("truncated store file " + file + " (" + contents.length + " bytes)");
             }
-            long revision = ByteBuffer.wrap(contents, 0, REVISION_HEADER_BYTES).getLong();
-            byte[] value = new byte[contents.length - REVISION_HEADER_BYTES];
-            System.arraycopy(contents, REVISION_HEADER_BYTES, value, 0, value.length);
-            return Optional.of(new Versioned(value, revision));
+            ByteBuffer buffer = ByteBuffer.wrap(contents);
+            long revision = buffer.getLong();
+            String key = null;
+            if (file.getFileName().toString().startsWith(HASHED_PREFIX)) {
+                if (buffer.remaining() < Integer.BYTES) {
+                    throw new IOException("truncated store file " + file + " (no key length)");
+                }
+                int keyLength = buffer.getInt();
+                if (keyLength < 0 || keyLength > buffer.remaining()) {
+                    throw new IOException("truncated store file " + file + " (key of " + keyLength + " bytes)");
+                }
+                byte[] keyBytes = new byte[keyLength];
+                buffer.get(keyBytes);
+                key = new String(keyBytes, StandardCharsets.UTF_8);
+            }
+            byte[] value = new byte[buffer.remaining()];
+            buffer.get(value);
+            return Optional.of(new Stored(key, new Versioned(value, revision)));
         } catch (NoSuchFileException e) {
             return Optional.empty();
         } catch (IOException e) {
@@ -262,6 +307,7 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
 
     @Override
     public long put(String key, byte[] value) {
+        StoreLimits.checkWrite(key, value);
         lock.lock();
         try {
             return write(key, value, nextRevision());
@@ -272,6 +318,7 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
 
     @Override
     public long put(String key, byte[] value, long expectedRevision) {
+        StoreLimits.checkWrite(key, value);
         lock.lock();
         try {
             long actual = currentRevision(key);
@@ -320,18 +367,22 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
      * {@link #nextRevision()} for why that is store-wide.
      */
     private long currentRevision(String key) {
-        return read(pathFor(key)).map(Versioned::revision).orElse(ABSENT);
+        return read(key).map(Versioned::revision).orElse(ABSENT);
     }
 
     /** Write-to-temp, fsync, atomic-move, so a reader never sees a partial value. */
     private long write(String key, byte[] value, long revision) {
-        Objects.requireNonNull(value, "value");
         Path target = pathFor(key);
         Path temp = null;
         try {
             temp = Files.createTempFile(directory, TEMP_PREFIX, null);
             try (FileChannel channel = FileChannel.open(temp, StandardOpenOption.WRITE)) {
                 channel.write(ByteBuffer.allocate(REVISION_HEADER_BYTES).putLong(revision).flip());
+                if (target.getFileName().toString().startsWith(HASHED_PREFIX)) {
+                    byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
+                    channel.write(ByteBuffer.allocate(Integer.BYTES).putInt(keyBytes.length).flip());
+                    channel.write(ByteBuffer.wrap(keyBytes));
+                }
                 channel.write(ByteBuffer.wrap(value));
                 channel.force(true);
             }
@@ -370,7 +421,21 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
     // ------------------------------------------------------------------
 
     private Path pathFor(String key) {
-        return directory.resolve(encode(Objects.requireNonNull(key, "key")));
+        return directory.resolve(fileNameFor(Objects.requireNonNull(key, "key")));
+    }
+
+    /** The encoded key, or {@link #HASHED_PREFIX} and its SHA-256 when the encoding is too long for a filename. */
+    static String fileNameFor(String key) {
+        String encoded = encode(key);
+        if (encoded.length() <= MAX_ENCODED_KEY_LENGTH) {
+            return encoded;
+        }
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
+            return HASHED_PREFIX + java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new AssertionError("every JDK provides SHA-256", e);
+        }
     }
 
     /**
@@ -388,12 +453,6 @@ public final class FileSystemKeyValueStore implements KeyValueStore {
                 encoded.append('%').append(Character.toUpperCase(Character.forDigit(c >> 4, 16)))
                        .append(Character.toUpperCase(Character.forDigit(c & 0x0F, 16)));
             }
-        }
-        if (encoded.length() > MAX_ENCODED_KEY_LENGTH) {
-            throw new IllegalArgumentException(
-                "key [" + key + "] encodes to " + encoded.length() + " characters, exceeding the "
-                    + MAX_ENCODED_KEY_LENGTH + "-character filename budget of this store"
-            );
         }
         return encoded.toString();
     }

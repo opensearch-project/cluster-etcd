@@ -24,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * published as a test fixture of {@code :store-api} for exactly that reason, and a backend module gets
  * it with {@code testImplementation(testFixtures(project(":store-api")))}.
  *
- * <p>Two assertions here constrain backend design more than they look, and are worth reading before
+ * <p>Three assertions here constrain backend design more than they look, and are worth reading before
  * writing one:
  *
  * <ul>
@@ -33,6 +33,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>{@code dotDotIsAnOrdinaryKeySegment} — {@code ..} is an ordinary segment and must never
  *       resolve. Any backend that maps keys onto a path-like namespace has to encode it; ZooKeeper
  *       rejects {@code .} and {@code ..} as znode names outright.</li>
+ *   <li>{@code aKeyAndValueAtTheLimitsRoundTrip} — every backend must take the longest key and the largest
+ *       value at once, after its own escaping and framing. A backend whose native limits are smaller has to
+ *       work around them (hashing long keys, moving large values elsewhere), not lower the limits.</li>
  * </ul>
  */
 public abstract class KeyValueStoreContractTests {
@@ -115,6 +118,7 @@ public abstract class KeyValueStoreContractTests {
 
         long first = store.put("a", bytes("one"));
         assertNotEquals(KeyValueStore.ABSENT, first, "a written key must not report the ABSENT revision");
+        assertTrue(first > 0 && first <= KeyValueStore.MAX_REVISION, "revisions are positive and JSON-safe: " + first);
         assertEquals(first, store.get("a").orElseThrow().revision());
 
         long second = store.put("a", bytes("two"));
@@ -136,7 +140,10 @@ public abstract class KeyValueStoreContractTests {
         );
         assertEquals("a", e.key());
         assertEquals(KeyValueStore.ABSENT, e.expectedRevision());
-        assertEquals(store.get("a").orElseThrow().revision(), e.actualRevision());
+        // Best effort: the backend may not know without another request.
+        if (e.actualRevision() != RevisionConflictException.UNKNOWN) {
+            assertEquals(store.get("a").orElseThrow().revision(), e.actualRevision());
+        }
         assertEquals(Optional.of("one"), asString(store, "a"), "a failed write must not apply");
     }
 
@@ -205,20 +212,17 @@ public abstract class KeyValueStoreContractTests {
     }
 
     @Test
-    void aDeletedKeysRevisionIsNotHandedToAnotherWrite() {
-        // The subtler half, and the one a per-key counter passes by accident. Deleting whichever key happens to
-        // hold the highest revision must not let a later write reissue it -- which is exactly what a backend that
-        // recovers its counter by scanning the surviving keys would do.
+    void writingIdenticalBytesStillChangesTheRevision() {
+        // Readers treat an unchanged revision as an unchanged key, and liveness is judged by how long a heartbeat's
+        // revision has gone unchanged, so a rewrite of the same bytes has to register. Rules out content hashes.
         KeyValueStore store = newStore();
+        long first = store.put("a", bytes("same"));
+        long second = store.put("a", bytes("same"));
+        long third = store.put("a", bytes("same"), second);
 
-        store.put("a", bytes("one"));
-        long highest = store.put("b", bytes("two"));
-        assertTrue(store.delete("b"));
-
-        long next = store.put("c", bytes("three"));
-
-        assertNotEquals(highest, next, "the deleted key's revision must not be handed out again");
-        assertTrue(next > highest, "and the store must keep moving forward across a delete");
+        assertNotEquals(first, second);
+        assertNotEquals(second, third);
+        assertEquals(third, store.get("a").orElseThrow().revision());
     }
 
     // ------------------------------------------------------------------
@@ -289,6 +293,105 @@ public abstract class KeyValueStoreContractTests {
         // The literal key was stored; it did not resolve to tenant/globex/x.
         assertEquals(Optional.empty(), store.get("tenant/globex/x"));
         assertEquals(1, store.scanPrefix("tenant/acme/x").size());
+    }
+
+    /** More keys than a backend that pages its scans would put in one page. */
+    @Test
+    void scanPrefixReturnsEveryKeyOfALargePrefix() {
+        KeyValueStore store = newStore();
+        int count = 600;
+        for (int i = 0; i < count; i++) {
+            store.put(String.format(java.util.Locale.ROOT, "many/%04d", i), bytes("v" + i));
+        }
+        store.put("manyx", bytes("outside"));
+
+        var scanned = store.scanPrefix("many/");
+        assertEquals(count, scanned.size());
+        assertEquals("many/0000", scanned.firstKey());
+        assertEquals("many/0599", scanned.lastKey());
+        assertEquals("v300", new String(scanned.get("many/0300").value(), StandardCharsets.UTF_8));
+    }
+
+    /** More bytes than gRPC's default 4 MiB message, which an unpaged range would have to fit in. */
+    @Test
+    void scanPrefixReturnsMoreThanFourMebibytes() {
+        KeyValueStore store = newStore();
+        int count = 6;
+        for (int i = 0; i < count; i++) {
+            store.put("big/" + i, filled(KeyValueStore.MAX_VALUE_BYTES, i));
+        }
+
+        var scanned = store.scanPrefix("big/");
+        assertEquals(count, scanned.size());
+        for (int i = 0; i < count; i++) {
+            assertArrayEqualsLocal(filled(KeyValueStore.MAX_VALUE_BYTES, i), scanned.get("big/" + i).value());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // limits
+    // ------------------------------------------------------------------
+
+    /**
+     * The worst case together: the longest key, of characters every escaping scheme expands, and the largest value.
+     * ZooKeeper bounds the whole request, so this is the case its limit was set by.
+     */
+    @Test
+    void aKeyAndValueAtTheLimitsRoundTrip() {
+        KeyValueStore store = newStore();
+        String key = "limit/" + "é".repeat((KeyValueStore.MAX_KEY_BYTES - "limit/".length()) / 2);
+        assertEquals(KeyValueStore.MAX_KEY_BYTES, key.getBytes(StandardCharsets.UTF_8).length);
+        byte[] value = filled(KeyValueStore.MAX_VALUE_BYTES, 7);
+
+        long revision = store.put(key, value, KeyValueStore.ABSENT);
+        assertArrayEqualsLocal(value, store.get(key).orElseThrow().value());
+        assertEquals(List.of(key), List.copyOf(store.scanPrefix("limit/").keySet()));
+        assertTrue(store.delete(key, revision));
+    }
+
+    @Test
+    void aValueOverTheLimitIsRejectedAndNotApplied() {
+        KeyValueStore store = newStore();
+        long revision = store.put("a", bytes("small"));
+        byte[] tooBig = new byte[KeyValueStore.MAX_VALUE_BYTES + 1];
+
+        assertThrows(LimitExceededException.class, () -> store.put("a", tooBig));
+        assertThrows(LimitExceededException.class, () -> store.put("a", tooBig, revision));
+        assertThrows(LimitExceededException.class, () -> store.put("b", tooBig, KeyValueStore.ABSENT));
+        assertEquals(revision, store.get("a").orElseThrow().revision());
+        assertEquals(Optional.empty(), store.get("b"));
+    }
+
+    @Test
+    void aKeyOverTheLimitIsRejected() {
+        KeyValueStore store = newStore();
+        String tooLong = "k".repeat(KeyValueStore.MAX_KEY_BYTES + 1);
+        // Measured in UTF-8 bytes, not characters.
+        String tooLongInBytes = "é".repeat(KeyValueStore.MAX_KEY_BYTES / 2 + 1);
+
+        assertThrows(LimitExceededException.class, () -> store.put(tooLong, bytes("v")));
+        assertThrows(LimitExceededException.class, () -> store.put(tooLong, bytes("v"), KeyValueStore.ABSENT));
+        assertThrows(LimitExceededException.class, () -> store.put(tooLongInBytes, bytes("v")));
+        assertTrue(store.scanPrefix("").isEmpty());
+    }
+
+    /** A key that cannot be written cannot exist, so reading one is an ordinary miss rather than an error. */
+    @Test
+    void readingAKeyOverTheLimitFindsNothing() {
+        KeyValueStore store = newStore();
+        String tooLong = "k".repeat(KeyValueStore.MAX_KEY_BYTES + 1);
+
+        assertEquals(Optional.empty(), store.get(tooLong));
+        assertFalse(store.delete(tooLong));
+        assertFalse(store.delete(tooLong, KeyValueStore.ABSENT));
+        assertTrue(store.scanPrefix(tooLong).isEmpty());
+    }
+
+    /** Bytes that differ per {@code seed}, so a scan handing back the wrong value cannot pass by accident. */
+    private static byte[] filled(int length, int seed) {
+        byte[] value = new byte[length];
+        new java.util.Random(seed).nextBytes(value);
+        return value;
     }
 
     // ------------------------------------------------------------------

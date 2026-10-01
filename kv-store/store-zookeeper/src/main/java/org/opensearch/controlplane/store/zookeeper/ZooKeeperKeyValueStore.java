@@ -11,6 +11,7 @@ import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.data.Stat;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.RevisionConflictException;
+import org.opensearch.controlplane.store.StoreLimits;
 import org.opensearch.controlplane.store.Watch;
 
 import java.util.ArrayDeque;
@@ -70,8 +71,13 @@ import java.util.TreeMap;
  *       children, so it is scoped rather than global, but a single parent with enough children to exceed
  *       the ensemble's buffer limit (1 MB by default) will fail. That is a property of ZooKeeper, not of
  *       this mapping; a keyspace where one prefix holds tens of thousands of entries wants etcd.</li>
- *   <li><b>Values are capped at just under 1 MB</b> for the same reason. Control plane payloads are
- *       configuration, so this has room to spare.</li>
+ *   <li><b>Values are capped for the same reason</b>, and this backend's limit is the one that sets
+ *       {@link KeyValueStore#MAX_VALUE_BYTES}: {@code jute.maxbuffer} bounds the whole request, path and
+ *       frame included, so the interface promises 960 KiB rather than 1 MiB.</li>
+ *   <li><b>Reads from another client may lag.</b> A follower serves reads from its own copy, and this store
+ *       never calls {@code sync()}, so one process can briefly miss another's acknowledged write. That is
+ *       exactly the latitude the interface's consistency rules allow; a session still sees its own writes
+ *       in order.</li>
  *   <li><b>A {@link #watch} does not survive session expiry.</b> The persistent watch belongs to the
  *       ZooKeeper session and is not re-registered on a new one, so after an expiry it stops firing with
  *       nothing to indicate it. {@link Watch} permits missed notifications, but unlike etcd's this one
@@ -178,6 +184,7 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
 
     @Override
     public long put(String key, byte[] value) {
+        StoreLimits.checkWrite(key, value);
         String path = pathOf(key);
         byte[] framed = frame(value);
         // Two writers can race between the create and the setData, so this retries rather than assuming
@@ -206,6 +213,7 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
 
     @Override
     public long put(String key, byte[] value, long expectedRevision) {
+        StoreLimits.checkWrite(key, value);
         String path = pathOf(key);
         byte[] framed = frame(value);
         try {

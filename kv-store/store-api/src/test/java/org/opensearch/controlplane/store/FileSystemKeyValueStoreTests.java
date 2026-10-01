@@ -142,23 +142,64 @@ class FileSystemKeyValueStoreTests extends KeyValueStoreContractTests {
         assertEquals("simple-key_1", FileSystemKeyValueStore.encode("simple-key_1"));
     }
 
+    /**
+     * A key the interface allows but whose encoding is too long for a filename. Production keys reach about
+     * 400 bytes, and every {@code /} encodes to three characters, so this is not hypothetical.
+     */
     @Test
-    void anOverlongKeyFailsLoudlyRatherThanTruncating() {
-        KeyValueStore store = newStore();
-        String tooLong = "k".repeat(FileSystemKeyValueStore.MAX_ENCODED_KEY_LENGTH + 1);
+    void aKeyTooLongToEncodeIsStoredUnderItsHash() throws IOException {
+        Path directory = tempDir.resolve("hashed");
+        KeyValueStore store = new FileSystemKeyValueStore(directory);
+        String key = "tenant/" + "t".repeat(128) + "/indices/" + "i".repeat(255);
+        assertTrue(FileSystemKeyValueStore.encode(key).length() > FileSystemKeyValueStore.MAX_ENCODED_KEY_LENGTH);
 
-        IllegalArgumentException e = assertThrows(
-            IllegalArgumentException.class,
-            () -> store.put(tooLong, bytes("v"))
-        );
-        assertTrue(e.getMessage().contains("filename budget"));
+        long revision = store.put(key, bytes("v"));
+        store.put("tenant/short", bytes("s"));
+
+        List<String> names = fileNames(directory);
+        assertEquals(2, names.size(), names.toString());
+        assertTrue(names.stream().anyMatch(name -> name.startsWith(FileSystemKeyValueStore.HASHED_PREFIX)), names.toString());
+
+        assertEquals(Optional.of("v"), asString(store, key));
+        assertEquals(List.of("tenant/short", key), List.copyOf(store.scanPrefix("tenant/").keySet()));
+        assertEquals(revision, store.scanPrefix("tenant/" + "t".repeat(10)).get(key).revision());
+        assertTrue(store.scanPrefix("tenant/x").isEmpty(), "a hashed key must still be filtered by prefix");
+
+        FileSystemKeyValueStore reopened = new FileSystemKeyValueStore(directory);
+        assertEquals(Optional.of("v"), asString(reopened, key));
+        assertTrue(reopened.put("other", bytes("o")) > revision, "a hashed key's revision counts towards recovery");
+        assertTrue(reopened.delete(key, revision));
+        assertEquals(Optional.empty(), reopened.get(key));
     }
 
+    /** Percent-encoding triples multi-byte characters, so a non-ASCII key needs a hash sooner. */
     @Test
-    void aKeyOfNonAsciiCharactersHitsTheBudgetSooner() {
-        // Percent-encoding triples multi-byte characters, so the usable key length is shorter.
+    void aNonAsciiKeyWithinTheLimitRoundTrips() {
         KeyValueStore store = newStore();
-        assertThrows(IllegalArgumentException.class, () -> store.put("é".repeat(41), bytes("v")));
+        String key = "é".repeat(KeyValueStore.MAX_KEY_BYTES / 2);
+
+        store.put(key, bytes("v"));
+        assertEquals(Optional.of("v"), asString(store, key));
+        assertEquals(List.of(key), List.copyOf(store.scanPrefix("é").keySet()));
+    }
+
+    /**
+     * Deleting whichever key holds the highest revision must not let a later write reissue it, which is
+     * exactly what recovering the counter by scanning the surviving keys would do.
+     *
+     * <p>Specific to this store, not the contract: the interface promises nothing across keys, but this
+     * store's per-key guarantee rests on one store-wide counter, and this is how that counter breaks.
+     */
+    @Test
+    void aDeletedKeysRevisionIsNotHandedToAnotherWrite() {
+        Path directory = tempDir.resolve("counter");
+        KeyValueStore store = new FileSystemKeyValueStore(directory);
+        store.put("a", bytes("one"));
+        long highest = store.put("b", bytes("two"));
+        assertTrue(store.delete("b"));
+
+        long next = new FileSystemKeyValueStore(directory).put("b", bytes("three"));
+        assertTrue(next > highest, "the counter must survive the delete of the key carrying it");
     }
 
     // ------------------------------------------------------------------

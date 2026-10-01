@@ -15,6 +15,12 @@ import java.util.Locale;
  */
 public class RevisionConflictException extends RuntimeException {
 
+    /**
+     * The actual revision, when the backend cannot report it without another round trip. Never a real
+     * revision, since revisions are positive.
+     */
+    public static final long UNKNOWN = -1L;
+
     private final String key;
     private final long expectedRevision;
     private final long actualRevision;
@@ -40,7 +46,11 @@ public class RevisionConflictException extends RuntimeException {
         return expectedRevision;
     }
 
-    /** The revision the key is actually at, or {@link KeyValueStore#ABSENT} if it does not exist. */
+    /**
+     * Best effort, for messages and logs: the revision the key was found at, {@link KeyValueStore#ABSENT} if
+     * it did not exist, or {@link #UNKNOWN} where finding out would cost another request. It may already be
+     * stale. To act on the current state, read the key again.
+     */
     public long actualRevision() {
         return actualRevision;
     }

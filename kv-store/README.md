@@ -53,17 +53,34 @@ notification.
 | `store-etcd` | native range watch, from now rather than a past revision |
 | `store-api` filesystem | polling |
 
+## What every backend guarantees
+
+The `KeyValueStore` Javadoc is the authority; in short:
+
+- **Revisions** are never reused for a key, even across delete and recreate or a rewrite of identical
+  bytes. They strictly increase per key and stay at most 2^53 − 1. **Nothing is promised across keys.**
+- **Conditional writes are linearizable per key.** A store instance reads its own writes. Reads through
+  different instances may lag by seconds. Scans are not snapshots. Acknowledged writes survive failover.
+- **Keys up to 512 UTF-8 bytes and values up to 960 KiB**, enforced identically by every backend with
+  `LimitExceededException`, so a consumer that works on one backend works on all of them.
+
+[`BACKENDS.md`](BACKENDS.md) is where these came from: sketches of DynamoDB, relational, OpenSearch and S3
+backends, and what each one needs from the interface.
+
 ## Writing a backend
 
 Implement `KeyValueStore` and `KeyValueStoreProvider`, declare the provider in
 `META-INF/services/org.opensearch.controlplane.store.KeyValueStoreProvider`, and extend
-`KeyValueStoreContractTests`. Two of its assertions constrain the design more than they look:
+`KeyValueStoreContractTests`. Three of its assertions constrain the design more than they look:
 
 - **`emptyValuesRoundTrip`** — an empty value must stay distinguishable from an absent key, because marker
   keys rely on it. A backend may not use "has no data" to mean "is not a key".
 - **`dotDotIsAnOrdinaryKeySegment`** — `..` is an ordinary key segment and must never resolve, and
   `scanPrefix` is specified over key prefixes rather than path boundaries, so a non-segment-aligned prefix
   such as `tenant/acme/x` has to work too.
+- **`aKeyAndValueAtTheLimitsRoundTrip`** — the longest key and the largest value together, after the
+  backend's own escaping and framing. A backend with smaller native limits works around them; it does not
+  lower the limits. The filesystem store hashes long filenames, for example.
 
 ## Running the integration tests
 

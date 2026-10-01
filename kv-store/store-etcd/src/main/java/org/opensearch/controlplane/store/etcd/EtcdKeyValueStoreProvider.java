@@ -62,7 +62,10 @@ public final class EtcdKeyValueStoreProvider implements KeyValueStoreProvider {
         }
 
         Duration timeout = timeoutFrom(uri);
-        Client client = Client.builder().endpoints(endpoints.toArray(String[]::new)).build();
+        Client client = Client.builder()
+            .endpoints(endpoints.toArray(String[]::new))
+            .maxInboundMessageSize(EtcdKeyValueStore.MAX_INBOUND_MESSAGE_BYTES)
+            .build();
         return new EtcdKeyValueStore(client, root, timeout.toMillis(), true);
     }
 
