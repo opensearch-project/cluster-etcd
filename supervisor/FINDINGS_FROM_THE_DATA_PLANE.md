@@ -1,6 +1,6 @@
 # Findings from the data plane
 
-Twelve items wanted in this repository, all found by running the real data plane
+Thirteen items wanted in this repository, all found by running the real data plane
 (`../data-plane`) against a real supervisor, a real control plane and one store. None loses data.
 
 The first two are cases where **the supervisor made a decision and did not say so** — the failure mode this
@@ -16,7 +16,9 @@ all — a reused store revision froze its desired state on a deleted index's uui
 on this side rested on the guarantee that was missing. The eleventh is the one that blocks a milestone: promoting a
 replica needs a primary term in the assignment, and that term is also the only fence document replication gets. The
 twelfth blocks the rest of that milestone: under document replication the primary and its replicas must agree on
-allocation ids and on the in-sync set, and only the supervisor can carry them between nodes.
+allocation ids and on the in-sync set, and only the supervisor can carry them between nodes. The
+thirteenth is a default: an index that does not state its replication type is read as segment-replicated here and as
+document-replicated everywhere else.
 
 Each item says what happened, why the current behaviour is wrong, where the code is, what a fix has to be careful
 about, and the tests worth having. All of them are self-contained.
@@ -1368,6 +1370,47 @@ behaviour.
 `cluster-etcd` solved this by having data nodes read each other's heartbeats. That is the coupling the contract's
 *Peer resolution* section declines, and rightly so. The supervisor stays the only writer of anything a node reads
 about another node.
+
+---
+
+## 13. An index that does not state its replication type is read as segment-replicated here, and as document-replicated everywhere else
+
+> **Open.** A one-line default, and the reasoning for it.
+
+### What happens
+
+`IndexConfig.parse` reads an absent `index.replication.type` as `SEGMENT`
+(`supervisor-model/.../index/IndexConfig.java:275`). Every other reader now says `DOCUMENT`:
+
+- **OpenSearch** fixes an index's type into its settings when the index is created, from
+  `cluster.indices.replication.strategy`, which defaults to `DOCUMENT`.
+- **The control plane** writes `index.replication.type: DOCUMENT` into every index it creates without one
+  (`CreateIndexHandler`, `DEFAULT_REPLICATION_TYPE`).
+- **The data plane**, as of the commit that answers this, reads an absent type as `DOCUMENT`, and states it
+  explicitly in every index it fabricates. Otherwise each node's server falls back to its own cluster strategy, and
+  two nodes could disagree about one index. The user's decision: segment replication is the intended path, but it
+  should not surprise anyone moving from OpenSearch.
+
+### Why it matters
+
+Only for an index document that does not state its type, so not for anything the control plane created. For such an
+index, though, the two sides now plan different things. This side plans `number_of_replicas` as search replicas
+(`IndexConfig.java:192`), carries no allocation ids (finding 12), and applies no in-sync promotion rule. The data
+plane treats it as document-replicated, so it declines the search replicas, with a reason naming
+`index.replication.type`. That is visible, not silent, but it is a disagreement about the one property the two have
+to share.
+
+### What would fix it
+
+Default to `DOCUMENT` at line 275. `Replication` is copied into `tenant/<t>/status/indices/<uuid>`, so the
+projection then says `DOCUMENT` for such an index, which is what the data plane acts on. Worth a sentence in
+`SUPERVISOR_KEYS.md`, under `replication`, that absent means `DOCUMENT`.
+
+### Tests worth having on your side
+
+- an index document with no `index.replication.type` is planned with `REPLICA` copies, not `SEARCH_REPLICA`, and its
+  projection says `"replication": "DOCUMENT"`;
+- an explicit `SEGMENT`, in any case, still plans search replicas.
 
 ---
 
