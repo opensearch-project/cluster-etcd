@@ -72,8 +72,10 @@ import java.util.TreeMap;
  *       this mapping; a keyspace where one prefix holds tens of thousands of entries wants etcd.</li>
  *   <li><b>Values are capped at just under 1 MB</b> for the same reason. Control plane payloads are
  *       configuration, so this has room to spare.</li>
- *   <li><b>No watches are exposed.</b> The interface is pull-only, and adding change notification is a
- *       change to the interface rather than to this class.</li>
+ *   <li><b>A {@link #watch} does not survive session expiry.</b> The persistent watch belongs to the
+ *       ZooKeeper session and is not re-registered on a new one, so after an expiry it stops firing with
+ *       nothing to indicate it. {@link Watch} permits missed notifications, but unlike etcd's this one
+ *       does not recover; a consumer must keep polling rather than rely on it.</li>
  * </ul>
  */
 public final class ZooKeeperKeyValueStore implements KeyValueStore {
@@ -249,13 +251,14 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
      *
      * <p>{@code withVersion} is what makes the whole operation atomic despite being read-then-write: if
      * anything touched the znode after the {@link Stat} was read, its version has moved and ZooKeeper
-     * refuses. A refusal here is a lost race, which is the same outcome as a stale revision.
+     * refuses. A refusal here is a lost race, which is the same outcome as a stale revision, and so is
+     * the znode having been deleted meanwhile.
      */
     private long setDataChecked(String key, String path, byte[] framed, int version, long expectedRevision)
         throws Exception {
         try {
             return client.setData().withVersion(version).forPath(path, framed).getMzxid();
-        } catch (KeeperException.BadVersionException raced) {
+        } catch (KeeperException.BadVersionException | KeeperException.NoNodeException raced) {
             throw new RevisionConflictException(key, expectedRevision, revisionOf(path));
         }
     }
@@ -281,10 +284,16 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
     public boolean delete(String key, long expectedRevision) {
         String path = pathOf(key);
         try {
-            Stat stat = client.checkExists().forPath(path);
-            boolean present = stat != null && isKey(dataAt(path));
+            // Data and stat from one read, so the frame check and the revision describe the same write.
+            Stat stat = new Stat();
+            byte[] framed;
+            try {
+                framed = client.getData().storingStatIn(stat).forPath(path);
+            } catch (KeeperException.NoNodeException absent) {
+                framed = null;
+            }
 
-            if (present == false) {
+            if (isKey(framed) == false) {
                 if (expectedRevision != ABSENT) {
                     throw new RevisionConflictException(key, expectedRevision, ABSENT);
                 }
@@ -293,17 +302,31 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
             if (stat.getMzxid() != expectedRevision) {
                 throw new RevisionConflictException(key, expectedRevision, stat.getMzxid());
             }
-            removeOrUnframe(path);
+            removeOrUnframeChecked(key, path, stat.getVersion(), expectedRevision);
             return true;
         } catch (RevisionConflictException conflict) {
             throw conflict;
-        } catch (KeeperException.NoNodeException absent) {
-            if (expectedRevision != ABSENT) {
-                throw new RevisionConflictException(key, expectedRevision, ABSENT);
-            }
-            return false;
         } catch (Exception e) {
             throw failure("delete", key, e);
+        }
+    }
+
+    /**
+     * The write half of a conditional delete: {@link #removeOrUnframe} at the version the revision was
+     * checked against, for the same reason as {@link #setDataChecked}. Unversioned, a write landing
+     * between the check and the delete would be deleted with it. A znode that has gone meanwhile is a
+     * lost race too, since the caller expected a key at a revision it no longer has.
+     */
+    private void removeOrUnframeChecked(String key, String path, int version, long expectedRevision)
+        throws Exception {
+        try {
+            try {
+                client.delete().withVersion(version).forPath(path);
+            } catch (KeeperException.NotEmptyException hasDescendants) {
+                client.setData().withVersion(version).forPath(path, new byte[0]);
+            }
+        } catch (KeeperException.BadVersionException | KeeperException.NoNodeException raced) {
+            throw new RevisionConflictException(key, expectedRevision, revisionOf(path));
         }
     }
 
@@ -332,9 +355,14 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
         }
     }
 
+    /** The key's revision, or {@link #ABSENT} for a znode that is only structure. */
     private long revisionOf(String path) throws Exception {
-        Stat stat = client.checkExists().forPath(path);
-        return stat == null ? ABSENT : stat.getMzxid();
+        try {
+            Stat stat = new Stat();
+            return isKey(client.getData().storingStatIn(stat).forPath(path)) ? stat.getMzxid() : ABSENT;
+        } catch (KeeperException.NoNodeException absent) {
+            return ABSENT;
+        }
     }
 
     /**

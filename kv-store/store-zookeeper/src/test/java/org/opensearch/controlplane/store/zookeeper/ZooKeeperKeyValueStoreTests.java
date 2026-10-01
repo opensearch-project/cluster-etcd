@@ -184,6 +184,67 @@ class ZooKeeperKeyValueStoreTests extends KeyValueStoreContractTests {
         }
     }
 
+    /**
+     * A conditional delete is a compare-and-set too. Checked by mzxid but deleted without a version, it
+     * would remove a put that landed in between, and both would report success — a lease released by one
+     * holder taking a peer's fresh acquisition with it.
+     */
+    @Test
+    void concurrentConditionalDeleteAndPutHaveExactlyOneWinner() throws Exception {
+        assertConditionalDeleteRacesPutsFairly(newStore(), "contended");
+    }
+
+    /** The same, where the delete has to clear the frame because the key has descendants. */
+    @Test
+    void concurrentConditionalDeleteOfAParentAndPutHaveExactlyOneWinner() throws Exception {
+        KeyValueStore store = newStore();
+        store.put("contended/child", bytes("child"));
+        assertConditionalDeleteRacesPutsFairly(store, "contended");
+    }
+
+    private void assertConditionalDeleteRacesPutsFairly(KeyValueStore store, String key) throws Exception {
+        int writers = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(writers + 1);
+        try {
+            for (int round = 0; round < 20; round++) {
+                long revision = store.put(key, bytes("start-" + round));
+                List<Callable<Boolean>> attempts = new ArrayList<>();
+                attempts.add(() -> {
+                    try {
+                        return store.delete(key, revision);
+                    } catch (org.opensearch.controlplane.store.RevisionConflictException lost) {
+                        return false;
+                    }
+                });
+                for (int i = 0; i < writers; i++) {
+                    String value = "writer-" + i;
+                    attempts.add(() -> {
+                        try {
+                            store.put(key, bytes(value), revision);
+                            return true;
+                        } catch (org.opensearch.controlplane.store.RevisionConflictException lost) {
+                            return false;
+                        }
+                    });
+                }
+                List<Future<Boolean>> results = pool.invokeAll(attempts);
+                boolean deleted = results.get(0).get();
+                long winners = 0;
+                for (Future<Boolean> result : results) {
+                    if (result.get()) {
+                        winners++;
+                    }
+                }
+                assertEquals(1, winners, "round " + round + ": exactly one write may succeed at a given revision");
+                assertEquals(deleted, store.get(key).isEmpty(),
+                    "round " + round + ": the key is absent exactly when the delete won");
+            }
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
     /** The root path is mandatory, so a control plane cannot scatter keys across an ensemble root. */
     @Test
     void aConnectionStringWithoutARootIsRejected() {
