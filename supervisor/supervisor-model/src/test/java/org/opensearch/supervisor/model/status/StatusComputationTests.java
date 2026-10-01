@@ -362,6 +362,21 @@ class StatusComputationTests {
     // ---------------------------------------------------------------- the node list
 
     @Test
+    void aNodeNotYetSeenAliveIsNotListedAndEveryListedNodeCanBeWritten() {
+        // UNKNOWN is a reading, not a value: it cannot be written. A node that is registered and assigned this
+        // tenant's copy but has no readable heartbeat was projected anyway, and serialising it failed the pass.
+        Observation.NodeObservation known = node(NODE_A, Liveness.LIVE, Map.of(),
+            Map.of(0, copy(ShardRole.PRIMARY, ShardState.STARTED)));
+        Observation.NodeObservation unknown = node(NODE_B, Liveness.UNKNOWN, Map.of(),
+            Map.of(0, copy(ShardRole.REPLICA, ShardState.STARTED)));
+
+        var status = StatusComputation.compute(ACME, observe(index(true, 1, 1), Map.of(NODE_A, known, NODE_B, unknown)));
+
+        assertEquals(java.util.Set.of(NODE_A), status.nodes().keySet());
+        status.nodes().values().forEach(NodeStatus::toBytes);
+    }
+
+    @Test
     void onlyNodesHoldingSomethingOfThisTenantsAreListed() {
         // A tenant in a shared pool must not learn how many machines its neighbours are using, and its
         // number_of_nodes must not move when somebody else's data does.

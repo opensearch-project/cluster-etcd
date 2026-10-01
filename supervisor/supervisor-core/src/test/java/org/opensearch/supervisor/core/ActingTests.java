@@ -675,6 +675,37 @@ class ActingTests {
     }
 
     @Test
+    void aSupervisorStartingBesideAnUnreadableHeartbeatStillCompletesItsPasses() {
+        // A node holding a copy, whose heartbeat cannot be parsed when a fresh supervisor starts: it has no readable
+        // heartbeat to fall back on, so it is UNKNOWN, and projecting UNKNOWN into status/nodes threw, failing the
+        // pool's pass every time.
+        FakeNode data = node(NODE);
+        data.start();
+        createIndex(1, 0);
+        Supervisor first = acting("s1");
+        for (int pass = 0; pass < 5; pass++) {
+            first.tick();
+            data.tick();
+            advance();
+        }
+        assertEquals(1, data.inventory().copyCount(), "precondition: the shard is placed");
+        first.die();
+        clock.advance(TTL.multipliedBy(2));
+
+        store.put(Keys.nodeHeartbeat(NODE), "{ not json".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        // Long enough for a new member to see the old lease sit still for a TTL and claim the pool, then pass over it.
+        Supervisor second = acting("s2");
+        for (int pass = 0; pass < 15; pass++) {
+            second.tick();
+            advance();
+        }
+
+        assertFalse(second.held().isEmpty(), "the pool is held, so its passes are not failing");
+        assertTrue(store.get(Keys.nodeStatus(ACME, NODE)).isEmpty(),
+            "a node not seen alive is not published to peers until it heartbeats");
+    }
+
+    @Test
     void releasingTheBrakeLetsTheWorkProceed() {
         FakeNode data = node(NODE);
         data.start();

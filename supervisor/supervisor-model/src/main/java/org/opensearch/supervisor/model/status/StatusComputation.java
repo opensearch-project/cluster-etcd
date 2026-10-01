@@ -229,6 +229,12 @@ public final class StatusComputation {
             if (node.registration() == null || node.copiesCount() == false) {
                 return;
             }
+            if (node.liveness() == Liveness.UNKNOWN) {
+                // Not yet seen alive: registered with no heartbeat, or one that has never been readable. There is no
+                // true liveness to publish -- UNKNOWN cannot be written, and writing it failed the whole pass -- and
+                // nothing a peer could do with the address, so the node appears once it has heartbeated.
+                return;
+            }
             if (servesTenant(node, tenant) == false) {
                 return;
             }
