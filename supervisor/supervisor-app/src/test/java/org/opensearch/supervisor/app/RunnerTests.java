@@ -195,6 +195,90 @@ class RunnerTests {
     }
 
     @Test
+    void theShutdownHookReturnsOnlyOnceTheLeasesAreReleased() {
+        // The JVM halts as soon as every shutdown hook returns. A hook that only asked for a stop returned at once,
+        // so the process died before the loop released anything and peers waited out a whole lease TTL.
+        AtomicBoolean released = new AtomicBoolean();
+        java.util.concurrent.CountDownLatch inPass = new java.util.concurrent.CountDownLatch(1);
+        Cycle slowToRelease = new Cycle() {
+            @Override
+            public void tick() {
+                inPass.countDown();
+            }
+
+            @Override
+            public void shutdown() {
+                try {
+                    Thread.sleep(300);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                released.set(true);
+            }
+
+            @Override
+            public String describe() {
+                return "slow to release";
+            }
+        };
+        Runner runner = new Runner(slowToRelease, options("--interval=1h", "--shutdown-budget=20s"));
+        Thread loop = new Thread(runner::run, "loop");
+        loop.start();
+
+        try {
+            assertTrue(inPass.await(10, java.util.concurrent.TimeUnit.SECONDS), "precondition: the loop is running");
+        } catch (InterruptedException e) {
+            throw new AssertionError(e);
+        }
+        boolean finished = runner.stopAndAwait();
+
+        assertTrue(finished, "the loop finished inside the budget");
+        assertTrue(released.get(), "and the hook did not return before the leases were released");
+    }
+
+    @Test
+    void theShutdownHookGivesUpWhenTheBudgetIsSpent() {
+        // The budget covers the whole stop. A release that will not finish must not hold the process up past it.
+        java.util.concurrent.CountDownLatch inPass = new java.util.concurrent.CountDownLatch(1);
+        Cycle wedged = new Cycle() {
+            @Override
+            public void tick() {
+                inPass.countDown();
+            }
+
+            @Override
+            public void shutdown() {
+                try {
+                    Thread.sleep(Long.MAX_VALUE);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            @Override
+            public String describe() {
+                return "wedged";
+            }
+        };
+        Runner runner = new Runner(wedged, options("--interval=1h", "--shutdown-budget=200ms"));
+        Thread loop = new Thread(runner::run, "loop");
+        loop.setDaemon(true);
+        loop.start();
+
+        long startedAt;
+        try {
+            assertTrue(inPass.await(10, java.util.concurrent.TimeUnit.SECONDS), "precondition: the loop is running");
+        } catch (InterruptedException e) {
+            throw new AssertionError(e);
+        }
+        startedAt = System.nanoTime();
+        runner.stopAndAwait();
+        long tookMillis = (System.nanoTime() - startedAt) / 1_000_000;
+
+        assertTrue(tookMillis < 30_000, "took " + tookMillis + "ms, so the budget was not honoured at all");
+    }
+
+    @Test
     void aShutdownThatWillNotCompleteDoesNotKeepTheProcessAlive() {
         // A store that has stopped answering must not turn a stop into a hang. The leases expire on their own,
         // which is exactly the case the TTL exists for.

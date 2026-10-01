@@ -87,8 +87,9 @@ public final class Main {
             warnIfIdentityLooksTaken(store, options);
 
             Runner runner = new Runner(Cycle.of(supervisor), options);
-            // Registered before the loop starts, so a signal arriving during the first pass is still honoured.
-            Runtime.getRuntime().addShutdownHook(new Thread(runner::stop, "supervisor-signal"));
+            // Registered before the loop starts, so a signal arriving during the first pass is still honoured. It
+            // waits for the leases to be released, because the JVM halts as soon as the hooks return.
+            Runtime.getRuntime().addShutdownHook(new Thread(runner::stopAndAwait, "supervisor-signal"));
             log.info("running", "interval_ms", options.interval().toMillis());
             return runner.run();
         } catch (Options.UsageException e) {

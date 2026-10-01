@@ -1,6 +1,8 @@
 package org.opensearch.supervisor.app;
 
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 
@@ -39,11 +41,15 @@ public final class Runner {
     private final Cycle cycle;
     private final Options options;
     private final AtomicBoolean stopping = new AtomicBoolean();
+    /** Counted down once {@link #run()} has released its leases, or given up trying. */
+    private final CountDownLatch finished = new CountDownLatch(1);
 
     private long passes;
     private long failures;
     private long consecutiveFailures;
-    private Thread loopThread;
+    private volatile Thread loopThread;
+    /** When a requested stop must be over by, in {@link System#nanoTime()} terms; meaningful once stopping. */
+    private volatile long stopDeadlineNanos;
 
     public Runner(Cycle cycle, Options options) {
         this.cycle = cycle;
@@ -53,6 +59,14 @@ public final class Runner {
     /** Runs until {@link #stop()}, or until {@code --max-passes} is reached. Returns the exit code. */
     public int run() {
         loopThread = Thread.currentThread();
+        try {
+            return loop();
+        } finally {
+            finished.countDown();
+        }
+    }
+
+    private int loop() {
         long intervalNanos = options.interval().toNanos();
 
         while (stopping.get() == false) {
@@ -111,10 +125,39 @@ public final class Runner {
      * short, and interrupting one would abandon a store call that may be halfway through a write that the next
      * owner then has to reason about. Waiting for it costs at most one interval.
      */
-    public void stop() {
-        if (stopping.compareAndSet(false, true)) {
+    public synchronized void stop() {
+        if (stopping.get() == false) {
+            // The deadline before the flag, so whoever sees the flag also sees the deadline.
+            stopDeadlineNanos = System.nanoTime() + options.shutdownBudget().toNanos();
+            stopping.set(true);
             log.info("stopping after the current pass");
             LockSupport.unpark(loopThread);
+        }
+    }
+
+    /**
+     * Stops, and waits for the leases to be released, for at most the shutdown budget. For the shutdown hook.
+     *
+     * <p><b>The wait is the point.</b> The JVM halts as soon as every shutdown hook has returned, so a hook that only
+     * asked for a stop returned at once and the process died while the loop was still finishing its pass, before it
+     * released anything. Peers then waited out a whole lease TTL for pools that a clean stop hands over on their next
+     * pass. The budget covers the whole stop, the pass in flight included, as {@code --shutdown-budget} says; a stop
+     * that cannot finish inside it leaves the leases to expire, as before.
+     *
+     * @return whether the loop finished within the budget
+     */
+    public boolean stopAndAwait() {
+        stop();
+        if (loopThread == null) {
+            // Not started, so nothing is held and nothing will be released.
+            return true;
+        }
+        long remaining = stopDeadlineNanos - System.nanoTime();
+        try {
+            return finished.await(Math.max(0, remaining), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
@@ -133,8 +176,13 @@ public final class Runner {
         releasing.setDaemon(true);
         releasing.start();
 
+        // A stop that was requested has already spent part of its budget on the pass it interrupted, so the release
+        // gets what is left, and the shutdown hook waiting on this gives up at the same moment rather than earlier.
+        long budgetNanos = stopping.get()
+            ? Math.max(0, stopDeadlineNanos - System.nanoTime())
+            : options.shutdownBudget().toNanos();
         try {
-            releasing.join(options.shutdownBudget().toMillis());
+            releasing.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(budgetNanos)));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
