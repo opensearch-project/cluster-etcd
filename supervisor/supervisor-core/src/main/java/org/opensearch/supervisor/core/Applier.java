@@ -213,8 +213,13 @@ public final class Applier {
                 Map<Integer, ShardRole> shards = new LinkedHashMap<>(index == null ? Map.of() : index.shards());
                 shards.put(place.shard(), place.role());
 
+                // The reset and the terms are carried rather than left to be recomputed: an unreadable counter leaves
+                // applyPrimaryTerms nothing better than what the entry already said. A shard new to the entry has no
+                // term yet, so terms are carried only when the set of shards is unchanged.
                 indices.put(place.indexUuid(), new Assignment.IndexAssignment(
-                    place.indexName(), place.configRevision(), shards
+                    place.indexName(), place.configRevision(), shards,
+                    index == null ? null : index.ingestionReset(),
+                    index == null ? null : termsFor(index, shards)
                 ));
                 tenants.put(place.tenant(), tenant == null
                     ? Assignment.TenantAssignment.data(indices)
@@ -244,7 +249,7 @@ public final class Applier {
                     indices.remove(remove.indexUuid());
                 } else {
                     indices.put(remove.indexUuid(), new Assignment.IndexAssignment(
-                        index.name(), index.configRevision(), shards
+                        index.name(), index.configRevision(), shards, index.ingestionReset(), termsFor(index, shards)
                     ));
                 }
 
@@ -452,7 +457,8 @@ public final class Applier {
                     } else {
                         Assignment.IndexAssignment index = indexEntry.getValue();
                         indices.put(uuid, new Assignment.IndexAssignment(
-                            index.name(), index.configRevision(), shards, index.ingestionReset()));
+                            index.name(), index.configRevision(), shards, index.ingestionReset(),
+                            termsFor(index, shards)));
                     }
                 }
             }
@@ -467,6 +473,19 @@ public final class Applier {
                 tenants.put(tenant, entry.withIndices(indices));
             }
         }
+    }
+
+    /**
+     * The entry's terms for exactly these shards, or null when it has none for one of them -- an entry carries a term
+     * for every shard or for none.
+     */
+    private static Map<Integer, Long> termsFor(Assignment.IndexAssignment index, Map<Integer, ShardRole> shards) {
+        if (index.primaryTerms() == null || index.primaryTerms().keySet().containsAll(shards.keySet()) == false) {
+            return null;
+        }
+        Map<Integer, Long> kept = new java.util.TreeMap<>();
+        shards.keySet().forEach(shard -> kept.put(shard, index.primaryTerms().get(shard)));
+        return kept;
     }
 
     /** The term this node was last told for a shard: its observed entry's, or 1 when that carried none. */
@@ -484,9 +503,13 @@ public final class Applier {
      *
      * <p>A property of assembling the assignment rather than an instruction, like coordinator membership: every copy
      * of a shard must be told a new term in the same pass as the primary that caused it, and the applier already
-     * visits every placeable node every pass. An index whose counter cannot be read keeps the terms its entries
-     * already carry, and a shard new to such an entry takes the highest term observed for it anywhere — never lower
-     * than what that shard has been told before.
+     * visits every placeable node every pass.
+     *
+     * <p>An index whose counter cannot be read is told, for each shard, the highest term any node has been told for
+     * it: never lower than what this node was told before, and the same for a shard new to the entry. Taken from the
+     * observed assignments rather than from the entry being built, because an entry rebuilt by this pass's placements
+     * may not carry its old terms. An index that has never been told a term above 1 is left without any, so that an
+     * assignment from a supervisor that issues none stays byte-identical to one written before terms existed.
      */
     private static void applyPrimaryTerms(
         Map<TenantId, Assignment.TenantAssignment> tenants,
@@ -501,9 +524,12 @@ public final class Applier {
                 Map<Integer, Long> stamped = new java.util.TreeMap<>();
                 if (resolved.isPresent()) {
                     index.shards().keySet().forEach(shard -> stamped.put(shard, resolved.get().termOf(shard)));
-                } else if (index.primaryTerms() != null) {
-                    index.shards().keySet().forEach(shard -> stamped.put(shard,
-                        index.primaryTerms().getOrDefault(shard, terms.floorOf(tenant, uuid, shard))));
+                } else {
+                    index.shards().keySet().forEach(shard -> stamped.put(shard, Math.max(
+                        index.primaryTermOf(shard), terms.floorOf(tenant, uuid, shard))));
+                    if (index.primaryTerms() == null && stamped.values().stream().allMatch(term -> term == 1L)) {
+                        stamped.clear();
+                    }
                 }
                 indices.put(uuid, index.withPrimaryTerms(stamped.isEmpty() ? null : stamped));
             });

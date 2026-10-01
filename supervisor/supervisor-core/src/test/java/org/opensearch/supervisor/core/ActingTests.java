@@ -1633,6 +1633,43 @@ class ActingTests {
     }
 
     @Test
+    void placingACopyWhileTheCounterIsUnreadableKeepsTheTermsAlreadyTold() {
+        // Placing a copy rebuilds the node's index entry. The rebuild used to drop the entry's terms, and with the
+        // counter unreadable there was nothing else to stamp them from, so the primaries already on these nodes were
+        // told term 1 -- below the term they were promoted at.
+        FakeNode a = nodeDeclaringTerms(NODE);
+        FakeNode b = nodeDeclaringTerms(NODE_B);
+        a.start();
+        b.start();
+        createDocrepIndex(2, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(2L, counterFor(0));
+        assertEquals(2L, counterFor(1));
+
+        store.put(Keys.primaryTerms(ACME, UUID), "not a counter".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        createDocrepIndex(2, 1);
+        for (int pass = 0; pass < 14; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        for (NodeId node : java.util.List.of(NODE, NODE_B)) {
+            var entry = assignmentOf(node).tenants().get(ACME).indices().get(UUID);
+            assertEquals(2, entry.shards().size(), "precondition: a replica was placed beside " + node + "'s primary");
+            assertEquals(2L, entry.primaryTermOf(0), node + " shard 0");
+            assertEquals(2L, entry.primaryTermOf(1), node + " shard 1");
+        }
+    }
+
+    @Test
     void aReturningOldPrimaryIsNotToldItIsPrimaryAtTheNewTerm() {
         // The case neither side had tested. A was primary at term N and was lost; B was promoted at N+1. A's
         // assignment was never rewritten while it was lost -- the applier only visits placeable nodes -- so it still
