@@ -294,6 +294,48 @@ class FakeNodeTests {
 
     // ---------------------------------------------------------------- the two gaps in the contract
 
+    private void writeIndex(String uuid, boolean open) {
+        store.put(Keys.indicesPrefix(ACME) + "my-index", org.opensearch.supervisor.model.index.IndexConfig.toDocument(
+            "my-index", uuid, open, org.opensearch.supervisor.model.index.IndexConfig.settingsOf(
+                1, 0, org.opensearch.supervisor.model.status.Replication.SEGMENT)));
+    }
+
+    @Test
+    void aClosedIndexIsReportedAsHoldingNoCopiesAndReopensByRecovering() {
+        // NODE_CONTRACT.md: a closed index is reported as having no copies. Its entry stays in the assignment, and
+        // the node still counts that assignment as applied.
+        writeIndex(INDEX_UUID, true);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
+        node.tick();
+        node.tick();
+        assertEquals(ShardState.STARTED, storedInventory().tenants().get(ACME).indices().get(INDEX_UUID)
+            .shards().get(0).state());
+
+        writeIndex(INDEX_UUID, false);
+        node.tick();
+
+        assertEquals(0, storedInventory().copyCount(), "a closed index's copies are not reported");
+        assertEquals(AppliedOutcome.APPLIED, heartbeat().applied().outcome(), "and that is the assignment applied");
+
+        writeIndex(INDEX_UUID, true);
+        node.tick();
+        assertEquals(ShardState.INITIALIZING, storedInventory().tenants().get(ACME).indices().get(INDEX_UUID)
+            .shards().get(0).state(), "reopened, it recovers before it serves");
+        node.tick();
+        assertEquals(ShardState.STARTED, storedInventory().tenants().get(ACME).indices().get(INDEX_UUID)
+            .shards().get(0).state());
+    }
+
+    @Test
+    void aClosedNamesakeDoesNotCloseTheIndexTheAssignmentNames() {
+        // Names are reused. A closed index of the same name and a different uuid is a different index.
+        writeIndex("someOtherUuidAAAAAAAAA", false);
+        assign(Map.of(0, ShardRole.PRIMARY), 1);
+        node.tick();
+
+        assertEquals(1, storedInventory().copyCount());
+    }
+
     @Test
     void anAbsentAssignmentIsNotAnEmptyOne() {
         // GAP in NODE_CONTRACT.md: it says the assignment is the complete desired set, and says nothing

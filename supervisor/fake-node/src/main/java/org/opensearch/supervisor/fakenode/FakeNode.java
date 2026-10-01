@@ -4,6 +4,7 @@ import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.supervisor.model.Keys;
 import org.opensearch.supervisor.model.NodeId;
 import org.opensearch.supervisor.model.TenantId;
+import org.opensearch.supervisor.model.index.IndexConfig;
 import org.opensearch.supervisor.model.node.Assignment;
 import org.opensearch.supervisor.model.node.AppliedOutcome;
 import org.opensearch.supervisor.model.node.Heartbeat;
@@ -193,10 +194,15 @@ public final class FakeNode {
      * supervisor's handling of a copy that exists but cannot yet serve is exercised by something other
      * than a hand-written fixture. Copies the assignment does not name are removed: the assignment is the
      * complete desired set, never a delta.
+     *
+     * <p><b>A copy of a closed index is reported as absent</b>, as {@code NODE_CONTRACT.md} says, while its entry
+     * stays in the assignment so a real node keeps the data for a reopen. This node holds no data, so a reopened
+     * index's copies simply come back as {@code INITIALIZING} and then serve, as a real node's recovery would.
      */
-    private void converge(Map<Desired, ShardRole> desired, Assignment assignment) {
+    private void converge(Map<Desired, ShardRole> assigned, Assignment assignment) {
         Map<Desired, ShardInventory.ShardCopy> held = flatten(inventory);
         Map<Desired, ShardInventory.ShardCopy> next = new TreeMap<>();
+        Map<Desired, ShardRole> desired = withoutClosedIndices(assigned);
 
         for (Map.Entry<Desired, ShardRole> entry : desired.entrySet()) {
             Desired want = entry.getKey();
@@ -229,6 +235,34 @@ public final class FakeNode {
         if (next.equals(held) == false) {
             inventory = rebuild(next);
         }
+    }
+
+    /**
+     * The assigned copies whose index is not closed. Read from the index document every tick, as a real node
+     * fabricates its metadata from it. The document is found by name and trusted only if its uuid is the one the
+     * assignment named (DESIGN.md section 12); one that is absent, unreadable or a namesake leaves the copy as it was.
+     */
+    private Map<Desired, ShardRole> withoutClosedIndices(Map<Desired, ShardRole> assigned) {
+        Map<String, Boolean> closed = new java.util.HashMap<>();
+        Map<Desired, ShardRole> open = new TreeMap<>();
+        assigned.forEach((copy, role) -> {
+            boolean isClosed = closed.computeIfAbsent(copy.tenant() + "/" + copy.indexUuid(), ignored -> {
+                var stored = store.get(Keys.indicesPrefix(copy.tenant()) + copy.indexName());
+                if (stored.isEmpty()) {
+                    return false;
+                }
+                try {
+                    IndexConfig index = IndexConfig.parse(stored.get().value(), stored.get().revision());
+                    return index.uuid().equals(copy.indexUuid()) && index.open() == false;
+                } catch (RuntimeException e) {
+                    return false;
+                }
+            });
+            if (isClosed == false) {
+                open.put(copy, role);
+            }
+        });
+        return open;
     }
 
     /** Whether the inventory now says exactly what the assignment asked for: right role, and serving. */

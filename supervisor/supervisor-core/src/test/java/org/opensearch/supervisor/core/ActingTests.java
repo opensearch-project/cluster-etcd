@@ -1333,6 +1333,48 @@ class ActingTests {
     }
 
     @Test
+    void closingAnIndexFinishesItsTaskAndKeepsTheCopyForAReopen() {
+        // A closed index keeps its assignment entry, so its data survives a reopen, and its node reports it as
+        // holding no copies. The close task used to wait for the entry to go too, which it never does, so every
+        // close of an index with copies ended failed.
+        FakeNode data = node(NODE);
+        data.start();
+        data.tick();
+        createIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 5; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+        assertEquals(1, data.inventory().copyCount(), "precondition: the shard is placed");
+
+        store.put(Keys.indicesPrefix(ACME) + "my-index", IndexConfig.toDocument(
+            "my-index", UUID, false, IndexConfig.settingsOf(1, 0, Replication.SEGMENT)));
+        String json = "{\"task_id\":\"t-close\",\"type\":\"close-index\",\"index\":\"my-index\","
+            + "\"index_uuid\":\"" + UUID + "\",\"state\":\"pending\",\"submitted_at\":1000,\"sequence\":1}";
+        store.put(Keys.tasksPrefix(ACME) + "t-close", json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        for (int pass = 0; pass < 6; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+
+        assertEquals(TaskState.COMPLETED, taskOf("t-close").state(), taskOf("t-close").toString());
+        assertEquals(0, data.inventory().copyCount(), "a closed index is reported as holding nothing");
+        assertTrue(assignmentOf(NODE).tenants().get(ACME).indices().containsKey(UUID),
+            "and its entry stays, so the node keeps the data");
+
+        createIndex(1, 0);
+        for (int pass = 0; pass < 5; pass++) {
+            supervisor.tick();
+            data.tick();
+            advance();
+        }
+        assertEquals(1, data.inventory().copyCount(), "reopened, the copy serves again");
+    }
+
+    @Test
     void aDeletedIndexIsLetGoOfAndItsDeletionTaskFinishes() {
         // The whole loop, and for a long time none of it closed: the differ raised ORPHANED_COPY, nothing
         // consumed it, so the copy was held for ever, the deletion task could never finish because a node still
