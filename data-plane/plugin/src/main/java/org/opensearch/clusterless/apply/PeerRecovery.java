@@ -8,7 +8,6 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.opensearch.clusterless.contract.IndexStatus;
 import org.opensearch.clusterless.contract.ShardRole;
-import org.opensearch.clusterless.contract.ShardState;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -86,7 +85,8 @@ public final class PeerRecovery {
                 buildable.remove(shardNumber);
                 declined.add(
                     index.key() + "/" + shardNumber + ": a document-replication replica recovers from its primary, "
-                        + "and no started or initializing primary for that shard is reachable in this node's peer view"
+                        + "and no started or initializing primary for that shard, with a published allocation id, is reachable in this "
+                        + "node's peer view"
                 );
                 logger.debug(
                     "clusterless: not building the replica of {}/{} -- its primary is not visible in the peer view",
@@ -114,8 +114,7 @@ public final class PeerRecovery {
                 continue;
             }
             for (IndexStatus.Copy copy : routed.placement().copiesOf(shard)) {
-                boolean usable = copy.state() == ShardState.STARTED || copy.state() == ShardState.INITIALIZING;
-                if (copy.role() == ShardRole.PRIMARY && usable && coordinated.peers().containsKey(copy.node())) {
+                if (copy.role() == ShardRole.PRIMARY && CoordinatorState.routable(copy, true, coordinated.peers())) {
                     return true;
                 }
             }

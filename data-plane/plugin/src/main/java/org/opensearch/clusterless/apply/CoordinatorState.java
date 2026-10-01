@@ -161,7 +161,7 @@ public final class CoordinatorState implements NodeState {
                     // below follows the table rather than the projection, so the two cannot disagree.
                     continue;
                 }
-                ShardRouting elsewhere = routingFor(new ShardId(index, shardNumber), copy, previous, index);
+                ShardRouting elsewhere = routingFor(new ShardId(index, shardNumber), copy, previous, index, documentReplicated(routed));
                 if (elsewhere == null) {
                     continue;
                 }
@@ -207,26 +207,55 @@ public final class CoordinatorState implements NodeState {
         routing.add(indexRouting);
     }
 
+    static boolean documentReplicated(CoordinatorView.RoutedIndex routed) {
+        return "DOCUMENT".equals(routed.config().replication());
+    }
+
+    /**
+     * Whether a copy on another node gets a routing entry in this node's state.
+     *
+     * <p>The one test, and {@link PeerRecovery} uses it too: a replica built against a primary that this class then
+     * leaves out is one applied state away from the {@code RoutingNodes} assertion that every shard has a primary.
+     */
+    public static boolean routable(IndexStatus.Copy copy, boolean documentReplicated, Map<NodeId, ?> peers) {
+        if (copy.role() == ShardRole.UNKNOWN) {
+            return false;
+        }
+        if (copy.state() != ShardState.STARTED && copy.state() != ShardState.INITIALIZING) {
+            // FAILED occupies disk and cannot serve, and UNKNOWN cannot be mapped to a routing state at all.
+            return false;
+        }
+        if (peers.containsKey(copy.node()) == false) {
+            return false;
+        }
+        // Under document replication, the allocation id is what peer recovery and the primary's tracker key on, and only
+        // the copy's own node knows it. A copy whose node published none gets no entry rather than a minted id, which
+        // nothing would ever match.
+        return documentReplicated == false || copy.allocationId() != null;
+    }
+
+    /**
+     * The allocation id a copy on another node gets here: the one its own node published, under document replication.
+     * Null otherwise, which means mint one. Nothing reads those -- a coordinator tracks no in-sync set, and a search
+     * replica recovers from the remote store -- so they only have to be stable, which reusing the entry makes them.
+     */
+    public static String allocationIdFor(IndexStatus.Copy copy, boolean documentReplicated) {
+        return documentReplicated ? copy.allocationId() : null;
+    }
+
     /**
      * A routing entry for a copy on another node: the previous one where it still describes the same thing, a
      * fresh one otherwise.
      *
-     * <p>Reused on (node, role, state) rather than rebuilt, because {@code initialize} mints an allocation id and a
-     * table that differs every pass makes this node publish a state every pass. Nothing reads these allocation ids
-     * — a coordinator tracks no in-sync set — so the only thing they have to be is stable.
+     * <p>Reused on (node, role, state) rather than rebuilt, because a table that differs every pass makes this node
+     * publish a state every pass -- and under document replication on the allocation id as well, since a copy its node
+     * built again is a different copy with a different id.
      */
-    private ShardRouting routingFor(ShardId shardId, IndexStatus.Copy copy, ClusterState previous, Index index) {
+    private ShardRouting routingFor(ShardId shardId, IndexStatus.Copy copy, ClusterState previous, Index index, boolean documentReplicated) {
         boolean primary = copy.role() == ShardRole.PRIMARY;
         boolean searchOnly = copy.role() == ShardRole.SEARCH_REPLICA;
-        if (copy.role() == ShardRole.UNKNOWN) {
-            logger.debug("clusterless: not routing to {} on [{}], whose role this build does not understand", shardId, copy.node());
-            return null;
-        }
-        if (copy.state() != ShardState.STARTED && copy.state() != ShardState.INITIALIZING) {
-            // FAILED occupies disk and cannot serve, and UNKNOWN cannot be mapped to a routing state at all.
-            return null;
-        }
-        if (view.peers().containsKey(copy.node()) == false) {
+        if (routable(copy, documentReplicated, view.peers()) == false) {
+            logger.debug("clusterless: not routing to {} on [{}]: {}", shardId, copy.node(), copy);
             return null;
         }
 
@@ -238,7 +267,8 @@ public final class CoordinatorState implements NodeState {
                     boolean sameNode = copy.node().value().equals(candidate.currentNodeId());
                     boolean sameRole = candidate.primary() == primary && candidate.isSearchOnly() == searchOnly;
                     boolean sameState = candidate.started() == (copy.state() == ShardState.STARTED);
-                    if (sameNode && sameRole && sameState) {
+                    boolean sameCopy = documentReplicated == false || candidate.allocationId().getId().equals(copy.allocationId());
+                    if (sameNode && sameRole && sameState && sameCopy) {
                         return candidate;
                     }
                 }
@@ -258,7 +288,7 @@ public final class CoordinatorState implements NodeState {
                 ? RecoverySource.EmptyStoreRecoverySource.INSTANCE
                 : RecoverySource.PeerRecoverySource.INSTANCE,
             new UnassignedInfo(UnassignedInfo.Reason.CLUSTER_RECOVERED, "observed by the supervisor on another node")
-        ).initialize(copy.node().value(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
+        ).initialize(copy.node().value(), allocationIdFor(copy, documentReplicated), ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
         return copy.state() == ShardState.STARTED ? fresh.moveToStarted() : fresh;
     }
 

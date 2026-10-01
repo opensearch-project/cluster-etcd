@@ -10,6 +10,7 @@ import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.node.DiscoveryNodeRole;
+import org.opensearch.clusterless.apply.CoordinatorState;
 import org.opensearch.clusterless.apply.DataNodeState;
 import org.opensearch.clusterless.apply.DesiredState;
 import org.opensearch.clusterless.apply.DesiredStateResolver;
@@ -177,6 +178,38 @@ public class PluginNodeContractTests extends OpenSearchTestCase {
                 )));
             });
             return new ContractNode.Understood(roles, copies, fabricatedTerms(assignment, copies));
+        }
+
+        /**
+         * What this plugin makes of an index projection the supervisor wrote, for a document-replication index.
+         *
+         * <p>The ids are the ones {@code CoordinatorState} gives each copy's routing entry, through the same function its
+         * {@code routingFor} calls, so a copy it would give none is absent here too. The in-sync sets are the ones the
+         * replica-side rule reads.
+         */
+        @Override
+        public ContractNode.UnderstoodPeers readIndexStatus(byte[] document) {
+            IndexStatus status = IndexStatus.read(document);
+            boolean documentReplicated = status.replication() == IndexStatus.Replication.DOCUMENT;
+
+            Map<ContractNode.PeerCopy, String> allocationIds = new java.util.LinkedHashMap<>();
+            Map<Integer, List<String>> inSync = new java.util.LinkedHashMap<>();
+            status.shards().forEach((shard, copies) -> {
+                for (IndexStatus.Copy copy : copies) {
+                    String id = CoordinatorState.allocationIdFor(copy, documentReplicated);
+                    if (id != null) {
+                        allocationIds.put(
+                            new ContractNode.PeerCopy(org.opensearch.supervisor.model.NodeId.of(copy.node().value()), shard, supervisorRoleOf(copy.role())),
+                            id
+                        );
+                    }
+                }
+                List<String> published = status.inSyncOf(shard);
+                if (published != null) {
+                    inSync.put(shard, published);
+                }
+            });
+            return new ContractNode.UnderstoodPeers(allocationIds, inSync);
         }
 
         /**

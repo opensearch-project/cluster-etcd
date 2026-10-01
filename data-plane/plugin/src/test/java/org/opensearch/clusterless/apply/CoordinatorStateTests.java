@@ -603,27 +603,62 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         // silent. A docrep primary's replication group is exactly the copies in its own routing table --
         // ReplicationOperation sends to what ReplicationTracker found there -- so a primary that knows no replicas
         // does not fail to push, it acknowledges writes that only it holds. Nothing logs that.
-        List<IndexStatus.Copy> copies = List.of(
-            copy(LOCAL, ShardRole.PRIMARY, ShardState.STARTED),
-            copy(PEER, ShardRole.REPLICA, ShardState.STARTED)
-        );
+        ClusterState state = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.REPLICA, ShardState.STARTED));
+
+        IndexShardRoutingTable shard = state.routingTable().index(state.metadata().index(indexName()).getIndex()).shard(0);
+        assertEquals("a docrep primary must keep the replica it replicates to", 2, shard.size());
+        assertEquals(2, state.nodes().getSize());
+    }
+
+    public void testADocrepPeerIsRoutedUnderTheAllocationIdItsNodePublished() {
+        // Peer recovery waits until the recovering replica's own id is in the primary's routing table, so an id minted
+        // here, as every peer's once was, is one no recovery ever matches.
+        ClusterState first = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.REPLICA, ShardState.INITIALIZING));
+
+        ShardRouting replica = peerCopy(first);
+        assertEquals(allocationIdOf(PEER), replica.allocationId().getId());
+        assertTrue(replica.initializing());
+
+        ClusterState second = docrepPrimary(first, copy(PEER, ShardRole.REPLICA, ShardState.INITIALIZING));
+        assertEquals(replica, peerCopy(second));
+        assertTrue("the pass after changes nothing", StateEquivalence.sameContent(first, second));
+
+        ClusterState started = docrepPrimary(second, copy(PEER, ShardRole.REPLICA, ShardState.STARTED));
+        assertTrue(peerCopy(started).started());
+        assertEquals("the same copy once started, so the same id", allocationIdOf(PEER), peerCopy(started).allocationId().getId());
+    }
+
+    public void testADocrepPeerWithNoPublishedAllocationIdIsLeftOut() {
+        // "A copy without an id is published without one", and a node must not mint one in its place.
+        ClusterState state = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.REPLICA, ShardState.STARTED, null));
+
+        IndexShardRoutingTable shard = state.routingTable().index(state.metadata().index(indexName()).getIndex()).shard(0);
+        assertEquals("only this node's own copy: " + shard, 1, shard.size());
+    }
+
+    public void testADocrepPeerBuiltAgainIsANewEntry() {
+        // Its node built the copy again -- after a failure, say -- so it has a new id, and the entry reused from the last
+        // pass names one that no longer exists.
+        ClusterState before = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.REPLICA, ShardState.STARTED));
+
+        ClusterState after = docrepPrimary(before, copy(PEER, ShardRole.REPLICA, ShardState.STARTED, "aid-rebuilt"));
+
+        assertEquals("aid-rebuilt", peerCopy(after).allocationId().getId());
+    }
+
+    /** A node holding the primary of a docrep index, given the projection's copy of its replica. */
+    private static ClusterState docrepPrimary(ClusterState previous, IndexStatus.Copy replica) {
+        List<IndexStatus.Copy> copies = List.of(copy(LOCAL, ShardRole.PRIMARY, ShardState.STARTED), replica);
         Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
         copies.forEach(copy -> peers.put(copy.node(), peer(copy.node().value())));
         CoordinatorView view = new CoordinatorView(
             List.of(
-                new CoordinatorView.RoutedIndex(
-                    ACME,
-                    docrepConfig(),
-                    placement(Map.of(0, copies)),
-                    Set.of(0),
-                    Map.of(0, ShardRole.PRIMARY)
-                )
+                new CoordinatorView.RoutedIndex(ACME, docrepConfig(), placement(Map.of(0, copies)), Set.of(0), Map.of(0, ShardRole.PRIMARY))
             ),
             peers,
             List.of()
         );
-
-        ClusterState state = new CoordinatorState(
+        return new CoordinatorState(
             new DataNodeState(
                 CLUSTER,
                 TestFixtures.localNode(LOCAL),
@@ -642,11 +677,12 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
             TestFixtures.localNode(LOCAL),
             view,
             MappingSource.WRAPPED
-        ).buildClusterState(ClusterState.EMPTY_STATE);
+        ).buildClusterState(previous);
+    }
 
+    private static ShardRouting peerCopy(ClusterState state) {
         IndexShardRoutingTable shard = state.routingTable().index(state.metadata().index(indexName()).getIndex()).shard(0);
-        assertEquals("a docrep primary must keep the replica it replicates to", 2, shard.size());
-        assertEquals(2, state.nodes().getSize());
+        return shard.shards().stream().filter(copy -> PEER.equals(copy.currentNodeId())).findFirst().orElseThrow();
     }
 
     /** The same index, under document replication, which is the case the narrowing must not touch. */
@@ -708,8 +744,17 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         return new DesiredState(42, Map.of(key, new DesiredState.DesiredIndex(key, config(), shards)), List.of(), List.of());
     }
 
+    /** With an allocation id published for it, as a supervisor carrying finding 12 does for a docrep copy. */
     private static IndexStatus.Copy copy(String node, ShardRole role, ShardState state) {
-        return new IndexStatus.Copy(NodeId.of(node), role, state, state == ShardState.STARTED);
+        return copy(node, role, state, allocationIdOf(node));
+    }
+
+    private static IndexStatus.Copy copy(String node, ShardRole role, ShardState state, String allocationId) {
+        return new IndexStatus.Copy(NodeId.of(node), role, state, state == ShardState.STARTED, allocationId, null);
+    }
+
+    private static String allocationIdOf(String node) {
+        return "aid-" + node;
     }
 
     private static CoordinatorView copies(Map<Integer, List<IndexStatus.Copy>> shards) {

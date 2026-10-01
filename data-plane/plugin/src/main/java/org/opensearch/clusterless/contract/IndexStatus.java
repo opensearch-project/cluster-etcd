@@ -54,13 +54,24 @@ public record IndexStatus(
      *
      * @param serving the supervisor's own judgement, kept because it folds together "started" and "on a node that
      *     is still alive" — two facts a reader would otherwise have to join for itself
+     * @param allocationId the id of the copy's routing entry on its own node, carried verbatim from that node's
+     *     inventory. Only on a document-replication copy, and null where the holder published none. Peer recovery is
+     *     keyed on it, so a node must use this one and never mint its own for someone else's copy.
+     * @param inSync on a document-replication primary, the copies its own tracker holds in sync, itself included;
+     *     null where none was published. Never empty when present, since a primary is in sync with itself.
      */
-    public record Copy(NodeId node, ShardRole role, ShardState state, boolean serving) {
+    public record Copy(NodeId node, ShardRole role, ShardState state, boolean serving, String allocationId, List<String> inSync) {
 
         public Copy {
             Objects.requireNonNull(node, "node");
             role = role == null ? ShardRole.UNKNOWN : role;
             state = state == null ? ShardState.UNKNOWN : state;
+            inSync = inSync == null ? null : List.copyOf(inSync);
+        }
+
+        /** A copy of an index that publishes neither field, which is every segment-replication copy. */
+        public Copy(NodeId node, ShardRole role, ShardState state, boolean serving) {
+            this(node, role, state, serving, null, null);
         }
     }
 
@@ -96,6 +107,16 @@ public record IndexStatus(
 
     public List<Copy> copiesOf(int shard) {
         return shards.getOrDefault(shard, List.of());
+    }
+
+    /** The in-sync set the shard's primary published, or null if it has no primary here or published none. */
+    public List<String> inSyncOf(int shard) {
+        for (Copy copy : copiesOf(shard)) {
+            if (copy.role() == ShardRole.PRIMARY && copy.inSync() != null) {
+                return copy.inSync();
+            }
+        }
+        return null;
     }
 
     /** Whether this describes the index the reader meant. Names are reused; uuids are not. */
@@ -148,10 +169,30 @@ public record IndexStatus(
                     NodeId.of(Documents.requireString(copy, "node_id", what)),
                     ShardRole.from(Documents.string(copy, "role", null)),
                     ShardState.from(Documents.string(copy, "state", null)),
-                    Boolean.parseBoolean(Documents.string(copy, "serving", "false"))
+                    Boolean.parseBoolean(Documents.string(copy, "serving", "false")),
+                    blankAsNull(Documents.string(copy, "allocation_id", null)),
+                    strings(copy.get("in_sync"))
                 )
             );
         }
         return List.copyOf(copies);
+    }
+
+    private static String blankAsNull(String value) {
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    /** A list of strings, or null if absent; anything that is not a string is skipped rather than failing the parse. */
+    private static List<String> strings(Object value) {
+        if (value instanceof List<?> == false) {
+            return null;
+        }
+        List<String> strings = new ArrayList<>();
+        for (Object element : (List<?>) value) {
+            if (element instanceof String string) {
+                strings.add(string);
+            }
+        }
+        return strings;
     }
 }

@@ -80,6 +80,25 @@ public class PeerRecoveryTests extends OpenSearchTestCase {
         assertTrue(reduced.deferred().get(0), reduced.deferred().get(0).contains("recovers from its primary"));
     }
 
+    public void testAReplicaIsDeclinedWhenItsPrimaryPublishedNoAllocationId() {
+        // CoordinatorState leaves such a primary out of the routing table, since recovery could never match a minted id,
+        // so building the replica would put it beside no primary at all.
+        IndexStatus.Copy primary = new IndexStatus.Copy(NodeId.of(PRIMARY_NODE), ShardRole.PRIMARY, ShardState.STARTED, true, null, null);
+        DesiredState reduced = PeerRecovery.reduce(
+            holding(Map.of(0, ShardRole.REPLICA), documentReplicated()),
+            new CoordinatorView(
+                List.of(
+                    new CoordinatorView.RoutedIndex(ACME, documentReplicated(), placement(List.of(primary)), Set.of(0), Map.of(0, ShardRole.REPLICA))
+                ),
+                Map.of(NodeId.of(PRIMARY_NODE), peer(PRIMARY_NODE)),
+                List.of()
+            )
+        );
+
+        assertEquals(0, reduced.copyCount());
+        assertTrue(reduced.deferred().get(0), reduced.deferred().get(0).contains("published allocation id"));
+    }
+
     public void testAReplicaIsDeclinedWhenThePrimarysNodeCannotBeReached() {
         // The projection has a primary and the peer view resolved no address for its node, so the fabricator would
         // leave it out of the routing table -- which puts this node one applied state away from the assertion.
@@ -207,7 +226,7 @@ public class PeerRecoveryTests extends OpenSearchTestCase {
     }
 
     private static IndexStatus.Copy copy(String node, ShardRole role, ShardState state) {
-        return new IndexStatus.Copy(NodeId.of(node), role, state, state == ShardState.STARTED);
+        return new IndexStatus.Copy(NodeId.of(node), role, state, state == ShardState.STARTED, "aid-" + node, null);
     }
 
     private static NodeStatus peer(String nodeId) {
