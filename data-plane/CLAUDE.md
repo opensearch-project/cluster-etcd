@@ -113,7 +113,10 @@ Decides arguments that would otherwise be settled by what is easiest on a laptop
 
 ## Where things stand (2026-10-06)
 
-M1–M9 are done and confirmed on real nodes. **M9 (document replication) was confirmed by a failover** on four nodes
+M1–M10 are done on this side. M10's fleet view of `cluster.health` and `cluster.state` is the control plane's, by
+decision; this side refuses those for a request with `x-tenant-id`, and answers with its own view without one (control
+plane `FINDINGS_FROM_THE_DATA_PLANE.md`, item 1). Left: M11 (watch), and runs for M5 (many tenants at once) and M6 (a
+rebalancer move). **M9 (document replication) was confirmed by a failover** on four nodes
 (each in its own `./gradlew run -PstartNode=N`, the upstream change for exactly this): the primary's node was stopped,
 a replica was promoted in place, and the others rebuilt and recovered from it. See `MILESTONES.md`, *Finding 12, built*,
 and the runs after it. Document replication is not supported on a remote-store node, by decision: a pool runs one

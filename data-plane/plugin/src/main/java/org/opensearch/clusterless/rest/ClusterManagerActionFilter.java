@@ -10,6 +10,7 @@ import org.opensearch.OpenSearchStatusException;
 import org.opensearch.action.ActionRequest;
 import org.opensearch.action.admin.cluster.health.ClusterHealthAction;
 import org.opensearch.action.admin.cluster.health.ClusterHealthResponse;
+import org.opensearch.action.admin.cluster.state.ClusterStateAction;
 import org.opensearch.action.support.ActionFilter;
 import org.opensearch.action.support.ActionFilterChain;
 import org.opensearch.action.support.clustermanager.ClusterManagerNodeReadRequest;
@@ -57,11 +58,12 @@ import org.opensearch.tasks.Task;
  * conclusions. The bodies differ: the message names the control plane, because in this design there is somewhere
  * specific for a rejected mutation to go.
  *
- * <p><b>What this is not.</b> Answering {@code cluster.health} and {@code cluster.state} from local state gives a
- * node-local view — one node, its own shards — where a client asking about a cluster expects the fleet's. The
- * supervisor projects exactly that into {@code tenant/<t>/status/cluster} and
- * {@code tenant/<t>/status/indices/<uuid>}, and serving those is the rest of the milestone. This is the half that
- * stops things hanging.
+ * <p><b>Whose view.</b> Answering {@code cluster.health} and {@code cluster.state} from local state gives a
+ * node-local view — one node, its own shards. That is what this node answers when a request carries no
+ * {@code x-tenant-id}: the platform team's view, for debugging. A tenant's view of the cluster is the fleet's, which
+ * the supervisor projects into {@code tenant/<t>/status/cluster} and {@code tenant/<t>/status/indices/<uuid>}. Serving
+ * those is the control plane's, since it is only a read of the store and the control plane is stateless, so a request
+ * carrying {@code x-tenant-id} is refused here with a reason saying so.
  */
 public class ClusterManagerActionFilter implements ActionFilter {
 
@@ -77,14 +79,27 @@ public class ClusterManagerActionFilter implements ActionFilter {
 
     private final java.util.function.Supplier<ClusterState> state;
     private final String clusterName;
+    private final java.util.function.Supplier<String> tenantHeader;
 
     /**
-     * Takes the two things it needs rather than a {@code ClusterService}, which is the difference between a class
+     * Takes the things it needs rather than a {@code ClusterService}, which is the difference between a class
      * that can be tested and one that needs a node to instantiate.
      */
     public ClusterManagerActionFilter(java.util.function.Supplier<ClusterState> state, String clusterName) {
+        this(state, clusterName, () -> null);
+    }
+
+    /**
+     * @param tenantHeader the request's {@code x-tenant-id}, read from the thread context; null or blank when it has none
+     */
+    public ClusterManagerActionFilter(
+        java.util.function.Supplier<ClusterState> state,
+        String clusterName,
+        java.util.function.Supplier<String> tenantHeader
+    ) {
         this.state = state;
         this.clusterName = clusterName;
+        this.tenantHeader = tenantHeader;
     }
 
     @Override
@@ -104,6 +119,30 @@ public class ClusterManagerActionFilter implements ActionFilter {
         if (action.startsWith(INTERNAL_PREFIX)) {
             chain.proceed(task, action, request, listener);
             return;
+        }
+
+        if (action.equals(ClusterHealthAction.NAME) || action.equals(ClusterStateAction.NAME)) {
+            String tenant = tenantHeader.get();
+            if (tenant != null && tenant.isBlank() == false) {
+                // A tenant asking about the cluster. This node holds one part of the fleet, and its own health and state
+                // describe that part, every tenant's indices on it included. The tenant's view of the cluster is built
+                // from the supervisor's projections, which is the control plane's to serve, so it is refused here, the
+                // way a mutation is: at once, with somewhere to go. Without the header, this node answers with its own
+                // view, which is what the platform team debugging it needs.
+                listener.onFailure(
+                    new OpenSearchStatusException(
+                        "["
+                            + action
+                            + "] for tenant ["
+                            + tenant
+                            + "] is the control plane's to answer: a clusterless node holds one part of the fleet, and "
+                            + "its own health and state describe that part. Send the request to the control plane. (Without "
+                            + "x-tenant-id, this node answers with its own local view.)",
+                        RestStatus.BAD_REQUEST
+                    )
+                );
+                return;
+            }
         }
 
         if (action.equals(ClusterHealthAction.NAME)) {
