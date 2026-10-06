@@ -164,6 +164,20 @@ public final class DesiredStateResolver {
                 );
                 return;
             }
+            if ("DOCUMENT".equals(config.replication()) && remoteStore.configured()) {
+                // Not supported, by decision: one pool runs document replication and another segment replication, and
+                // this node is in the second kind. OpenSearch treats every index on a remote-store node as
+                // segment-replicated in places (IndexSettings.isSegRepEnabledOrRemoteNode), and never hosts a
+                // document-replicated one there, because a remote-store cluster forces segment replication for every
+                // index. Built anyway, its shards are handled by the segment-replication service too, which fails on them
+                // during a failover. Declined for every role, so that it is said once per copy and nothing is half built.
+                defer(
+                    deferred,
+                    key + "/" + shard + ": [" + config.name() + "] uses document replication, which is not supported on a "
+                        + "node with a remote store; place it in a pool whose nodes set no node.attr.remote_store.* attributes"
+                );
+                return;
+            }
             switch (role) {
                 case PRIMARY -> buildable.put(shard, role);
                 case SEARCH_REPLICA -> {
