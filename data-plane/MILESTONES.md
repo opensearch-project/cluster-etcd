@@ -1189,6 +1189,24 @@ an initializing peer is left out. Reverting the placeholder fails with the run's
 re-run on real nodes**: the next run should show the replicas surviving the loss, one promoted in place, and the
 others rebuilt by `StaleReplicas` and recovered from it.
 
+**The second run, after that fix: failover worked.** The primary moved from runTask-0 to runTask-3 at term 8. The other
+two replicas were rebuilt by `StaleReplicas` and recovered from the new primary, whose `in_sync_allocations` named
+all three surviving copies. (A replica's own in-sync set names only itself, as it always has; only a primary's is
+read.) Two kinds of noise remained:
+
+- **A `NullPointerException` in `CoordinatorState.routingFor`**, comparing a peer's previous entry with the placeholder,
+  which has no allocation id. It cost the node every peer of the index for one pass, which dropped the peers from its
+  node list and briefly released the index. Fixed, with a test of the second run's shape that failed with the same
+  exception. The earlier tests missed it because the comparison reaches the placeholder only when no earlier entry
+  matches, and because `route()` contains failures per index.
+- **`SegmentReplicationTargetService` errors on a document-replicated index**: "discovery node must not be null", and
+  `previousNode` null in its `clusterChanged`. They come from the server, not this plugin. `IndexSettings.
+  isSegRepEnabledOrRemoteNode()` is true for every index on a node with remote-store attributes, which the run's nodes
+  have by default, so the segment-replication service handles docrep shards as well. It assumes a started replica's
+  primary is assigned, which the placeholder makes untrue for the gap. Vanilla OpenSearch never runs docrep on a
+  remote-store node, because a remote-store cluster forces segment replication for every index. That makes this
+  combination untested upstream, and it is an open question for the user whether to support it.
+
 ### For the first real run
 
 `../gradlew run` starts nodes with `-ea -esa` (testclusters, `OpenSearchNode.java:796`), so the invariant above
