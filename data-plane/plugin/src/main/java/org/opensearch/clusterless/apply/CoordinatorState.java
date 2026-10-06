@@ -108,7 +108,7 @@ public final class CoordinatorState implements NodeState {
     public ClusterState buildClusterState(ClusterState previous) {
         ClusterState held = delegate.buildClusterState(previous);
         if (view.isEmpty()) {
-            return held;
+            return withAPrimaryForEveryShard(held);
         }
 
         Metadata.Builder metadata = Metadata.builder(held.metadata());
@@ -125,7 +125,76 @@ public final class CoordinatorState implements NodeState {
             }
         }
 
-        return ClusterState.builder(held).nodes(nodes(held, reached)).metadata(metadata).routingTable(routing.build()).build();
+        return withAPrimaryForEveryShard(
+            ClusterState.builder(held).nodes(nodes(held, reached)).metadata(metadata).routingTable(routing.build()).build()
+        );
+    }
+
+    /**
+     * Every shard of an index that is not search-only, given a primary entry if it has none.
+     *
+     * <p>{@code RoutingNodes}, built from every applied state, asserts that such a shard has a primary, and an assertion
+     * on the applier thread exits the node. A document-replication shard whose primary was lost has none: the lost node
+     * is not routed to, and its replicas, on this node and others, still are. That is what killed every replica of a
+     * shard at once when its primary's node was stopped, before the supervisor had promoted anything.
+     *
+     * <p>The entry is an unassigned primary, which is what this node knows: there is one, and it is nowhere this node can
+     * reach. The assertion asks only that it exist. It keeps a started replica open until the supervisor promotes one,
+     * so that promotion can be in place. An initializing copy is left out while the primary is unassigned, because
+     * {@code RoutingNodes} also asserts that a copy recovering from its primary has an assigned one, and a copy with no
+     * primary to recover from cannot progress anyway. Built from constants, so that it is identical on every pass.
+     */
+    static ClusterState withAPrimaryForEveryShard(ClusterState state) {
+        RoutingTable.Builder routing = null;
+        for (IndexRoutingTable index : state.routingTable()) {
+            IndexMetadata metadata = state.metadata().index(index.getIndex());
+            if (metadata == null || IndexMetadata.INDEX_BLOCKS_SEARCH_ONLY_SETTING.get(metadata.getSettings())) {
+                continue;
+            }
+            boolean changed = false;
+            IndexRoutingTable.Builder rebuilt = IndexRoutingTable.builder(index.getIndex());
+            for (IndexShardRoutingTable shard : index) {
+                if (shard.primaryShard() != null || shard.size() == 0) {
+                    rebuilt.addIndexShard(shard);
+                    continue;
+                }
+                changed = true;
+                List<ShardRouting> kept = shard.shards().stream().filter(copy -> copy.initializing() == false).toList();
+                if (kept.isEmpty()) {
+                    continue;
+                }
+                IndexShardRoutingTable.Builder withPrimary = new IndexShardRoutingTable.Builder(shard.shardId());
+                kept.forEach(withPrimary::addShard);
+                withPrimary.addShard(unassignedPrimary(shard.shardId()));
+                rebuilt.addIndexShard(withPrimary.build());
+            }
+            if (changed) {
+                if (routing == null) {
+                    routing = RoutingTable.builder(state.routingTable());
+                }
+                routing.add(rebuilt);
+            }
+        }
+        return routing == null ? state : ClusterState.builder(state).routingTable(routing.build()).build();
+    }
+
+    private static ShardRouting unassignedPrimary(ShardId shardId) {
+        return ShardRouting.newUnassigned(
+            shardId,
+            true,
+            RecoverySource.ExistingStoreRecoverySource.INSTANCE,
+            new UnassignedInfo(
+                UnassignedInfo.Reason.NODE_LEFT,
+                "no primary is reachable from this node",
+                null,
+                0,
+                0L,
+                0L,
+                false,
+                UnassignedInfo.AllocationStatus.NO_ATTEMPT,
+                Set.of()
+            )
+        );
     }
 
     private void route(
