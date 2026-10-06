@@ -1236,7 +1236,7 @@ fails loudly there rather than silently. Worth watching:
   replica logs `rebuilding this node's replica of … its primary [...] does not hold it in sync`, recovers, and
   appears in the new primary's `in_sync`.
 
-## M10. Cluster-manager actions — **the not-hanging half is done**
+## M10. Cluster-manager actions — **done on this side; the fleet view is the control plane's**
 
 - `cluster.health` and `cluster.state` answered from the projections; mutations refused with a reason naming
   the control plane.
@@ -1247,11 +1247,30 @@ fails loudly there rather than silently. Worth watching:
 the cluster manager. `ClusterManagerActionFilter` now marks read requests local and refuses everything else that
 needs a manager, immediately, with a message naming the control plane.
 
-What is still missing is the half this milestone is really about: health and state are answered from **local**
+What was still missing was the half this milestone is really about: health and state are answered from **local**
 state, which is one node's view where a client asking about a cluster expects the fleet's. The supervisor already
-projects the fleet's view into `tenant/<t>/status/cluster` and `tenant/<t>/status/indices/<uuid>`; serving those
-is the remaining work, and it needs a tenant to answer for — which is a question the current filter does not even
-ask.
+projects the fleet's view into `tenant/<t>/status/cluster` and `tenant/<t>/status/indices/<uuid>`.
+
+**Decided with the user (2026-10-06): serving the fleet view is the control plane's.** It is only a read of the store,
+and the control plane is stateless, so anything that can be kept out of the data plane should be: a fault there
+costs nothing a node is serving. The control plane already stubbed both operations, waiting for these projections.
+Handed over as the control plane's `FINDINGS_FROM_THE_DATA_PLANE.md`, item 1. That covers the one trap: health has
+to come from the supervisor's figures, because the projection lists only observed copies, and recomputing from it
+reports a missing replica as green. It also covers tenant index names, waiting, and staleness.
+
+What this side does now:
+
+- **Without `x-tenant-id`, a node answers with its own local view**, as before. That is the platform team's tool for
+  seeing what a node believes.
+- **With `x-tenant-id`, `cluster.health` and `cluster.state` are refused** with `400` and a reason naming the control
+  plane, like a mutation. This also closed a cross-tenant leak: the local health covered every index on the node,
+  so on a shared node one tenant saw another's index names and health. The refusal reaches `_cat/health`,
+  `_cat/indices`, `_cat/shards` and `_cat/nodes` too, since each calls one of the two (checked in the server's
+  `rest/action/cat`). So the auth proxy has to route all of them to the control plane.
+
+Tested in `ClusterManagerActionFilterTests`: a tenant's health and state are refused, naming the control plane, and
+without the header, or with a blank one, health is answered locally and state proceeds as a local read. Reverting the
+refusal fails both refusal tests.
 
 ## M11. Watch
 

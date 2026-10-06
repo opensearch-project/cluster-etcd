@@ -345,7 +345,13 @@ public class ClusterlessPlugin extends Plugin implements ClusterPlugin, ActionPl
      */
     @Override
     public List<ActionFilter> getActionFilters() {
-        return List.of(new ClusterManagerActionFilter(clusterService::state, clusterService.getClusterName().value()));
+        return List.of(
+            new ClusterManagerActionFilter(
+                clusterService::state,
+                clusterService.getClusterName().value(),
+                () -> threadPool == null ? null : threadPool.getThreadContext().getHeader(TenantResolver.HEADER)
+            )
+        );
     }
 
     @Override
