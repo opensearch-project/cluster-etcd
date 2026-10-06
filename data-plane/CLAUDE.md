@@ -111,13 +111,18 @@ Decides arguments that would otherwise be settled by what is easiest on a laptop
 - **Live shard splitting is not the plan** — stand up a new index, restore, delete out-of-shard documents, resume
   from the checkpoint.
 
-## Where things stand (2026-10-01)
+## Where things stand (2026-10-06)
 
-M1–M8.2 are done and confirmed on real nodes. **M9 (document replication) is built and awaiting a real run**; see
-`MILESTONES.md`, *Finding 12, built*, which ends with what to watch on the first run. In short: docrep peers are routed
+M1–M9 are done and confirmed on real nodes. **M9 (document replication) was confirmed by a failover** on four nodes
+(each in its own `./gradlew run -PstartNode=N`, the upstream change for exactly this): the primary's node was stopped,
+a replica was promoted in place, and the others rebuilt and recovered from it. See `MILESTONES.md`, *Finding 12, built*,
+and the runs after it. Document replication is not supported on a remote-store node, by decision: a pool runs one
+replication type or the other, so docrep runs use `-Pclusterless.remote_store=false`. In short: docrep peers are routed
 under the allocation id their own node publishes; a docrep primary's in-sync set comes from its own tracker,
 intersected with its routing table; a started copy its primary does not hold in sync is left out of the primary's
-table, because the server rejects it otherwise; and `StaleReplicas` rebuilds a replica its primary no longer holds. An
+table, because the server rejects it otherwise; a shard whose primary is lost gets an unassigned primary entry, so that
+its started replicas stay open for an in-place promotion; and `StaleReplicas` rebuilds a replica its primary no longer
+holds. An
 unstated replication type is `DOCUMENT`, as in OpenSearch. The build targets OpenSearch main, 3.10.0-SNAPSHOT. The PR
 review of the one-repository import was worked through on 2026-09-30.
 

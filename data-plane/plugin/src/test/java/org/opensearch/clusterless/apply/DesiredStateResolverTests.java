@@ -165,6 +165,28 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
     }
 
     /** An open two-shard index that asked for document replication. */
+    public void testADocumentReplicationIndexIsDeclinedOnARemoteStoreNode() {
+        // OpenSearch treats every index on a remote-store node as segment-replicated in places
+        // (IndexSettings.isSegRepEnabledOrRemoteNode), and never hosts a docrep index on one, since a remote-store cluster
+        // forces segment replication. Run here, its segment-replication service fails on docrep shards during a failover.
+        documents.put("acme/my-index", documentReplicated(UUID));
+
+        DesiredState desired = onARemoteStoreNode.resolve(assignment(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA)));
+
+        assertEquals(0, desired.copyCount());
+        assertEquals(desired.deferred().toString(), 2, desired.deferred().size());
+        for (String reason : desired.deferred()) {
+            assertTrue(reason, reason.contains("remote store"));
+            assertTrue("and says what to change: " + reason, reason.contains("node.attr.remote_store"));
+        }
+    }
+
+    public void testADocumentReplicationIndexIsStillBuiltOnANodeWithoutOne() {
+        documents.put("acme/my-index", documentReplicated(UUID));
+
+        assertEquals(2, resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA))).copyCount());
+    }
+
     private static IndexConfig documentReplicated(String uuid) {
         return new IndexConfig(
             "my-index",
@@ -211,13 +233,14 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
 
     public void testASearchReplicaOfADocumentReplicationIndexIsDeclined() {
         // index.remote_store.enabled carries a validator that rejects it unless the replication type is SEGMENT, so
-        // there is no way to back this index with the store the copy would need to read.
+        // there is no way to back this index with the store the copy would need to read. It is declined first, though,
+        // for being a document-replicated index on a remote-store node at all.
         documents.put("acme/my-index", config(UUID, true, 2));
 
         DesiredState desired = onARemoteStoreNode.resolve(assignment(Map.of(0, ShardRole.SEARCH_REPLICA)));
 
         assertTrue(desired.indices().isEmpty());
-        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("segment replication"));
+        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("document replication"));
     }
 
     public void testASearchReplicaCanShareANodeWithAPrimaryOfTheSameIndex() {

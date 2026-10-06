@@ -889,7 +889,7 @@ staying paused" still ingests whatever is available at the new pointer. The firs
 nothing would be consumed and failed for exactly this reason; it now asserts the thing that is true and matters —
 that a poller left paused does not consume what is published *after* the reset.
 
-## M9. Document replication — **built, awaiting a real run**
+## M9. Document replication — **done, and confirmed by a failover on four real nodes**
 
 - Peer resolution (done), primary term handling (done), push-based ingestion.
 - **Done when:** an index with `index.replication.type: DOCUMENT` indexes and replicates.
@@ -1205,7 +1205,19 @@ read.) Two kinds of noise remained:
   have by default, so the segment-replication service handles docrep shards as well. It assumes a started replica's
   primary is assigned, which the placeholder makes untrue for the gap. Vanilla OpenSearch never runs docrep on a
   remote-store node, because a remote-store cluster forces segment replication for every index. That makes this
-  combination untested upstream, and it is an open question for the user whether to support it.
+  combination untested upstream.
+
+**Decided: document replication is not supported on a remote-store node.** A pool runs one or the other, and one
+supervisor and one control plane can serve a docrep pool and a segrep pool side by side. `DesiredStateResolver`
+declines every copy of a document-replicated index on a node with a remote store, with a reason naming the
+`node.attr.remote_store.*` attributes. Runs of docrep use `-Pclusterless.remote_store=false`.
+
+**The third run, which is M9's confirmation (2026-10-06).** Four nodes without a remote store, one docrep shard with
+three replicas. The primary was placed on runTask-2. When that node was stopped, the replica on runTask-3 was promoted,
+and the others rebuilt and recovered from it. The only exceptions in any log were the `ConnectTransportException`s to
+the stopped node, which are expected. Still open, and the user's, upstream: `remoteShardFailed` waits for a cluster
+manager, so a docrep write whose replica fails hangs. That has not been seen in a run, because nothing has failed a
+replica's write yet.
 
 ### For the first real run
 
