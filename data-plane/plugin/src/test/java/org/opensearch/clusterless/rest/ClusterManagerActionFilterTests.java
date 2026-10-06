@@ -53,8 +53,18 @@ public class ClusterManagerActionFilterTests extends OpenSearchTestCase {
     }
 
     private Refusal apply(String action, ActionRequest request, Chain chain, java.util.function.Supplier<ClusterState> state) {
+        return apply(action, request, chain, state, null);
+    }
+
+    private Refusal apply(
+        String action,
+        ActionRequest request,
+        Chain chain,
+        java.util.function.Supplier<ClusterState> state,
+        String tenantHeader
+    ) {
         Refusal outcome = new Refusal();
-        new ClusterManagerActionFilter(state, "clusterless").apply(null, action, request, new ActionListener<ActionResponse>() {
+        new ClusterManagerActionFilter(state, "clusterless", () -> tenantHeader).apply(null, action, request, new ActionListener<ActionResponse>() {
             @Override
             public void onResponse(ActionResponse response) {
                 outcome.response = response;
@@ -146,6 +156,50 @@ public class ClusterManagerActionFilterTests extends OpenSearchTestCase {
         assertFalse(chain.proceeded.get());
         assertNull(outcome.failure);
         assertNotNull("health must be answered, not refused", outcome.response);
+    }
+
+    // ---------------------------------------------------------------- a tenant asking for a cluster-level view
+
+    public void testATenantsClusterHealthIsRefusedAndNamesTheControlPlane() {
+        // This node holds a part of the fleet, and its local health would be that part's: other tenants' indices
+        // included, since it covers every index here. A tenant's view of the cluster is the control plane's to answer.
+        ClusterState state = ClusterState.builder(new ClusterName("clusterless")).build();
+        Chain chain = new Chain();
+
+        Refusal outcome = apply(ClusterHealthAction.NAME, new ClusterHealthRequest(), chain, () -> state, "acme");
+
+        assertFalse(chain.proceeded.get());
+        assertNull(outcome.response);
+        assertEquals(RestStatus.BAD_REQUEST, ((OpenSearchStatusException) outcome.failure).status());
+        assertTrue(outcome.failure.getMessage(), outcome.failure.getMessage().contains("control plane"));
+    }
+
+    public void testATenantsClusterStateIsRefusedToo() {
+        Chain chain = new Chain();
+
+        Refusal outcome = apply(
+            org.opensearch.action.admin.cluster.state.ClusterStateAction.NAME,
+            new org.opensearch.action.admin.cluster.state.ClusterStateRequest(),
+            chain,
+            () -> ClusterState.EMPTY_STATE,
+            "acme"
+        );
+
+        assertFalse("not answered from this node's state", chain.proceeded.get());
+        assertEquals(RestStatus.BAD_REQUEST, ((OpenSearchStatusException) outcome.failure).status());
+    }
+
+    public void testWithoutATenantTheNodeAnswersWithItsOwnView() {
+        // For the platform team: what this node believes, which is what debugging needs.
+        ClusterState state = ClusterState.builder(new ClusterName("clusterless")).build();
+        Chain healthChain = new Chain();
+        assertNotNull(apply(ClusterHealthAction.NAME, new ClusterHealthRequest(), healthChain, () -> state, " ").response);
+
+        Chain stateChain = new Chain();
+        org.opensearch.action.admin.cluster.state.ClusterStateRequest stateRequest = new org.opensearch.action.admin.cluster.state.ClusterStateRequest();
+        apply(org.opensearch.action.admin.cluster.state.ClusterStateAction.NAME, stateRequest, stateChain, () -> state, null);
+        assertTrue(stateChain.proceeded.get());
+        assertTrue("and locally", stateRequest.local());
     }
 
     /** A request that has nothing to do with a cluster manager. */
