@@ -430,7 +430,9 @@ public final class CoordinatorState implements NodeState {
                     boolean sameNode = copy.node().value().equals(candidate.currentNodeId());
                     boolean sameRole = candidate.primary() == primary && candidate.isSearchOnly() == searchOnly;
                     boolean sameState = candidate.started() == (copy.state() == ShardState.STARTED);
-                    boolean sameCopy = documentReplicated == false || candidate.allocationId().getId().equals(copy.allocationId());
+                    // An unassigned entry -- the placeholder for a lost primary -- has no allocation id, and is no one's copy.
+                    boolean sameCopy = documentReplicated == false
+                        || (candidate.allocationId() != null && candidate.allocationId().getId().equals(copy.allocationId()));
                     if (sameNode && sameRole && sameState && sameCopy) {
                         return candidate;
                     }
