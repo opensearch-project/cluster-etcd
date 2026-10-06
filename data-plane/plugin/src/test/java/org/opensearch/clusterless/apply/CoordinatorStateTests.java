@@ -797,6 +797,57 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         assertEquals("no placeholder once there is a primary", 1, shardTable(promoted).shards().stream().filter(ShardRouting::primary).count());
     }
 
+    public void testAPeerPromotedAfterThePrimaryWasLostIsRoutedAsThePrimary() {
+        // The second run: another node's replica was promoted. Its entry from the pass before had to be compared with the
+        // placeholder, which has no allocation id, and the NullPointerException that threw cost this node every peer of
+        // the index for a pass. route() contains the failure per index, so only what is routed shows it.
+        ClusterState lost = replicaHere(replicaHere(ClusterState.EMPTY_STATE, ShardRole.REPLICA, 5L, true), ShardRole.REPLICA, 5L, false);
+
+        ClusterState promotedElsewhere = peerPromoted(lost);
+
+        promotedElsewhere.getRoutingNodes();
+        IndexShardRoutingTable shard = shardTable(promotedElsewhere);
+        ShardRouting primary = shard.primaryShard();
+        assertNotNull(primary);
+        assertEquals("the promoted peer, not the placeholder: " + shard, PEER, primary.currentNodeId());
+        assertTrue(primary.started());
+        assertEquals(allocationIdOf(PEER), primary.allocationId().getId());
+        assertTrue(shard.shards().stream().noneMatch(ShardRouting::unassigned));
+    }
+
+    /** The view once the supervisor has promoted {@link #PEER}'s replica: it is the primary, and the old one is still lost. */
+    private static ClusterState peerPromoted(ClusterState previous) {
+        List<IndexStatus.Copy> copies = List.of(
+            copy(PRIMARY_NODE, ShardRole.PRIMARY, ShardState.STARTED),
+            copy(PEER, ShardRole.PRIMARY, ShardState.STARTED),
+            copy(LOCAL, ShardRole.REPLICA, ShardState.STARTED)
+        );
+        Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
+        peers.put(NodeId.of(PEER), peer(PEER));
+        CoordinatorView view = new CoordinatorView(
+            List.of(new CoordinatorView.RoutedIndex(ACME, docrepConfig(), placement(Map.of(0, copies)), Set.of(0), Map.of(0, ShardRole.REPLICA))),
+            peers,
+            List.of()
+        );
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        DesiredState desired = PeerRecovery.reduce(
+            new DesiredState(
+                42,
+                Map.of(key, new DesiredState.DesiredIndex(key, docrepConfig(), Map.of(0, ShardRole.REPLICA), Map.of(0, 6L))),
+                List.of(),
+                List.of()
+            ),
+            view,
+            previous
+        );
+        return new CoordinatorState(
+            new DataNodeState(CLUSTER, TestFixtures.localNode(LOCAL), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+            TestFixtures.localNode(LOCAL),
+            view,
+            MappingSource.WRAPPED
+        ).buildClusterState(previous);
+    }
+
     public void testAnInitializingCopyIsLeftOutWhileThePrimaryIsUnassigned() {
         // RoutingNodes asserts that a copy recovering from its primary has an assigned one.
         ClusterState started = replicaHere(ClusterState.EMPTY_STATE, ShardRole.REPLICA, 5L, true);
