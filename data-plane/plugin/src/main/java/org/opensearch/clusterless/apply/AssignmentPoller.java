@@ -258,7 +258,7 @@ public final class AssignmentPoller {
             // document-replication replica cannot be built unless its primary will be in the routing table, because
             // RoutingNodes asserts a primary exists for every shard and an assertion on the applier thread exits the
             // node rather than declining a copy. See PeerRecovery.
-            desired = PeerRecovery.reduce(desired, coordinated);
+            desired = PeerRecovery.reduce(desired, coordinated, live);
             // And a term that went backwards, which also needs the live state: a copy already running at a higher
             // term is not rebuilt at a lower one, it is declined with a reason. See PrimaryTerms for why saying so
             // matters more than the server's own refusal would.

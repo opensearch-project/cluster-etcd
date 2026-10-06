@@ -756,6 +756,118 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         }, segment);
     }
 
+    // ---------------------------------------------------------------- a lost primary (seen on a four-node run)
+
+    // The run: one docrep shard, its primary on one node and replicas on three. The primary's node was stopped, and when
+    // the supervisor marked it lost, every replica's node exited on RoutingNodes' "Primary shard routing can't be null
+    // for non-search-only indices": its own replica had been declined, and the others' were routed with no primary.
+
+    private static final String PRIMARY_NODE = "AAAAAAAAAAAAAAAAAAAAAA";
+
+    public void testAReplicaWhosePrimaryIsLostStaysOpenUnderAnUnassignedPrimary() {
+        ClusterState started = replicaHere(ClusterState.EMPTY_STATE, ShardRole.REPLICA, 5L, true);
+        ShardRouting mine = localCopy(started);
+        assertTrue(mine.started());
+
+        ClusterState lost = replicaHere(started, ShardRole.REPLICA, 5L, false);
+
+        lost.getRoutingNodes();
+        IndexShardRoutingTable shard = shardTable(lost);
+        assertEquals("the same open copy, not declined and closed", mine, localCopy(lost));
+        assertNotNull("a primary entry, for RoutingNodes", shard.primaryShard());
+        assertTrue("and an honest one: it is nowhere this node can reach", shard.primaryShard().unassigned());
+        assertTrue("the other started replica is still routed", shard.shards().stream().anyMatch(copy -> PEER.equals(copy.currentNodeId())));
+        assertTrue("and the pass after changes nothing", StateEquivalence.sameContent(lost, replicaHere(lost, ShardRole.REPLICA, 5L, false)));
+    }
+
+    public void testAReplicaPromotedAfterItsPrimaryWasLostIsPromotedInPlace() {
+        // The point of keeping it open: the same allocation, at the new term, which is the promotion updateShardState
+        // performs -- not a primary rebuilt from its store.
+        ClusterState lost = replicaHere(replicaHere(ClusterState.EMPTY_STATE, ShardRole.REPLICA, 5L, true), ShardRole.REPLICA, 5L, false);
+        ShardRouting replica = localCopy(lost);
+
+        ClusterState promoted = replicaHere(lost, ShardRole.PRIMARY, 6L, false);
+
+        promoted.getRoutingNodes();
+        ShardRouting primary = localCopy(promoted);
+        assertTrue(primary.primary());
+        assertTrue(primary.started());
+        assertEquals(replica.allocationId().getId(), primary.allocationId().getId());
+        assertEquals(6L, promoted.metadata().index(indexName()).primaryTerm(0));
+        assertEquals("no placeholder once there is a primary", 1, shardTable(promoted).shards().stream().filter(ShardRouting::primary).count());
+    }
+
+    public void testAnInitializingCopyIsLeftOutWhileThePrimaryIsUnassigned() {
+        // RoutingNodes asserts that a copy recovering from its primary has an assigned one.
+        ClusterState started = replicaHere(ClusterState.EMPTY_STATE, ShardRole.REPLICA, 5L, true);
+
+        ClusterState lost = replicaHere(started, ShardRole.REPLICA, 5L, false, ShardState.INITIALIZING);
+
+        lost.getRoutingNodes();
+        assertTrue(shardTable(lost).shards().stream().noneMatch(ShardRouting::initializing));
+    }
+
+    /**
+     * A node holding a copy of a docrep index, with the primary on {@link #PRIMARY_NODE} and another replica on {@link #PEER}.
+     *
+     * @param primaryReachable whether the primary's node is in the peer view; when the supervisor marks it lost, it is not
+     */
+    private static ClusterState replicaHere(ClusterState previous, ShardRole mine, long term, boolean primaryReachable) {
+        return replicaHere(previous, mine, term, primaryReachable, ShardState.STARTED);
+    }
+
+    private static ClusterState replicaHere(ClusterState previous, ShardRole mine, long term, boolean primaryReachable, ShardState peerState) {
+        List<IndexStatus.Copy> copies = List.of(
+            copy(PRIMARY_NODE, ShardRole.PRIMARY, ShardState.STARTED),
+            copy(PEER, ShardRole.REPLICA, peerState),
+            copy(LOCAL, ShardRole.REPLICA, ShardState.STARTED)
+        );
+        Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
+        if (primaryReachable) {
+            peers.put(NodeId.of(PRIMARY_NODE), peer(PRIMARY_NODE));
+        }
+        peers.put(NodeId.of(PEER), peer(PEER));
+        CoordinatorView view = new CoordinatorView(
+            List.of(new CoordinatorView.RoutedIndex(ACME, docrepConfig(), placement(Map.of(0, copies)), Set.of(0), Map.of(0, mine))),
+            peers,
+            List.of()
+        );
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        DesiredState desired = PeerRecovery.reduce(
+            new DesiredState(
+                42,
+                Map.of(key, new DesiredState.DesiredIndex(key, docrepConfig(), Map.of(0, mine), Map.of(0, term))),
+                List.of(),
+                List.of()
+            ),
+            view,
+            previous
+        );
+        ClusterState built = new CoordinatorState(
+            new DataNodeState(CLUSTER, TestFixtures.localNode(LOCAL), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+            TestFixtures.localNode(LOCAL),
+            view,
+            MappingSource.WRAPPED
+        ).buildClusterState(previous);
+        return primaryReachable ? startedHere(built) : built;
+    }
+
+    /** What the server does once this node's copy has recovered. */
+    private static ClusterState startedHere(ClusterState state) {
+        Index index = state.metadata().index(indexName()).getIndex();
+        org.opensearch.cluster.routing.IndexRoutingTable.Builder routing = org.opensearch.cluster.routing.IndexRoutingTable.builder(index);
+        for (IndexShardRoutingTable shard : state.routingTable().index(index)) {
+            for (ShardRouting copy : shard) {
+                routing.addShard(copy.initializing() && LOCAL.equals(copy.currentNodeId()) ? copy.moveToStarted() : copy);
+            }
+        }
+        return ClusterState.builder(state).routingTable(org.opensearch.cluster.routing.RoutingTable.builder().add(routing).build()).build();
+    }
+
+    private static ShardRouting localCopy(ClusterState state) {
+        return shardTable(state).shards().stream().filter(copy -> LOCAL.equals(copy.currentNodeId())).findFirst().orElseThrow();
+    }
+
     /** A node holding the primary of a docrep index, given the projection's copy of its replica. */
     private static ClusterState docrepPrimary(ClusterState previous, IndexStatus.Copy replica) {
         return docrepPrimary(previous, replica, TrackedInSync.UNKNOWN, docrepConfig());
