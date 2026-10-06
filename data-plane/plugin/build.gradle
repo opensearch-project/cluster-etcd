@@ -57,6 +57,7 @@ validateNebulaPom.enabled = false
 def clusterlessStore = layout.buildDirectory.dir('clusterless-store').get().asFile
 def clusterlessApply = providers.gradleProperty('clusterless.apply').getOrElse('true')
 def clusterlessNodes = providers.gradleProperty('clusterless.nodes').getOrElse('1') as Integer
+def startNode = providers.gradleProperty('startNode').getOrElse('0') as Integer
 
 // A remote store for the run cluster, shared by every node in it.
 //
@@ -149,6 +150,8 @@ if (clusterlessNodes != 1) {
 testClusters.all {
     // This installs our plugin into the testClusters
     plugin(project.tasks.bundlePlugin.archiveFile)
+
+    firstNodeIndex = startNode
 
     setting 'clusterless.store', "file://${clusterlessStore}"
     setting 'clusterless.node.pool', 'shared-a'

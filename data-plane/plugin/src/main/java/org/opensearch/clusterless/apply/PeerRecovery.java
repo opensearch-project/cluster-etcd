@@ -6,8 +6,14 @@ package org.opensearch.clusterless.apply;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.routing.IndexRoutingTable;
+import org.opensearch.cluster.routing.IndexShardRoutingTable;
+import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.clusterless.contract.IndexStatus;
 import org.opensearch.clusterless.contract.ShardRole;
+
+import org.opensearch.core.index.Index;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -61,6 +67,18 @@ public final class PeerRecovery {
      * @return the desired state with any unbuildable docrep replica removed and recorded in {@code deferred}
      */
     public static DesiredState reduce(DesiredState desired, CoordinatorView coordinated) {
+        return reduce(desired, coordinated, ClusterState.EMPTY_STATE);
+    }
+
+    /**
+     * @param live the applied state. A replica already started here is kept even without a visible primary: it needs its
+     *     primary only to recover, and it has recovered. Declining it would close a healthy copy at the moment it is most
+     *     needed -- when its primary has been lost and it is a candidate for promotion, which is only in place if the copy
+     *     is still open. {@link CoordinatorState} gives such a shard an unassigned primary entry, so that the routing table
+     *     still has a primary for {@code RoutingNodes} to find.
+     */
+    public static DesiredState reduce(DesiredState desired, CoordinatorView coordinated, ClusterState live) {
+        String localNodeId = live.nodes().getLocalNodeId();
         List<String> declined = new ArrayList<>();
         Map<DesiredState.IndexKey, DesiredState.DesiredIndex> kept = new TreeMap<>();
 
@@ -80,6 +98,14 @@ public final class PeerRecovery {
                     return;
                 }
                 if (primaryVisible(coordinated, index.uuid(), shardNumber)) {
+                    return;
+                }
+                if (startedHere(live, localNodeId, index, shardNumber)) {
+                    logger.debug(
+                        "clusterless: keeping the started replica of {}/{} although its primary is not visible in the peer view",
+                        index.key(),
+                        shardNumber
+                    );
                     return;
                 }
                 buildable.remove(shardNumber);
@@ -106,6 +132,24 @@ public final class PeerRecovery {
         List<String> deferred = new ArrayList<>(desired.deferred());
         deferred.addAll(declined);
         return new DesiredState(desired.assignmentVersion(), kept, desired.coordinatorTenants(), deferred);
+    }
+
+    private static boolean startedHere(ClusterState live, String localNodeId, DesiredState.DesiredIndex index, int shard) {
+        if (localNodeId == null) {
+            return false;
+        }
+        Index built = new Index(IndexNaming.indexName(index.tenant(), index.uuid(), index.config().name()), index.uuid());
+        IndexRoutingTable routing = live.routingTable().index(built);
+        IndexShardRoutingTable copies = routing == null ? null : routing.shard(shard);
+        if (copies == null) {
+            return false;
+        }
+        for (ShardRouting copy : copies) {
+            if (localNodeId.equals(copy.currentNodeId()) && copy.started() && copy.primary() == false && copy.isSearchOnly() == false) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean primaryVisible(CoordinatorView coordinated, String uuid, int shard) {

@@ -1165,6 +1165,30 @@ Two gaps are known and open:
 - **`PeerRecovery` closes a started replica whose primary drops out of the peer view**, so in a promotion that
   replica comes back as a new copy rather than staying in place. It is safe, but slower.
 
+### The first failover run, and what it found (2026-10-06)
+
+The user's run: one docrep shard, its primary on one node and replicas on three, each node in its own
+`./gradlew run` (the upstream `startNode` change). Replication worked. When the primary's node was stopped, every
+replica's node exited as soon as the supervisor marked it lost, before any promotion had been read, on `RoutingNodes`'
+`Primary shard routing can't be null for non-search-only indices`. The node's own replica had been declined by
+`PeerRecovery` (its primary was no longer visible), and `CoordinatorState` still routed the other nodes' replicas, so
+the shard's table held two replicas and no primary.
+
+Fixed by giving such a shard an **unassigned primary** entry in this node's table, which is what this node knows:
+there is a primary, and it is nowhere it can reach. `RoutingNodes` asks only that a primary entry exist
+(`IndexShardRoutingTable` sets its primary from any primary entry), and an unassigned one goes to its unassigned
+shards. That also lets `PeerRecovery` **keep a replica already started here**, rather than closing it, so the
+promotion that follows is in place (the same allocation at the new term), as designed. An initializing copy is still
+left out, because `RoutingNodes` separately asserts that a recovering copy's primary is assigned. The entry is built
+from constants, so it is identical on every pass. This closes the gap noted above, "`PeerRecovery` closes a started
+replica whose primary drops out of the peer view".
+
+Tested in `CoordinatorStateTests` by replaying the run: the state with the primary lost passes `RoutingNodes`, keeps
+the same open copy, and is a fixed point; promoting this node's copy then keeps its allocation id at the new term; and
+an initializing peer is left out. Reverting the placeholder fails with the run's exact `AssertionError`. **Not yet
+re-run on real nodes**: the next run should show the replicas surviving the loss, one promoted in place, and the
+others rebuilt by `StaleReplicas` and recovered from it.
+
 ### For the first real run
 
 `../gradlew run` starts nodes with `-ea -esa` (testclusters, `OpenSearchNode.java:796`), so the invariant above
