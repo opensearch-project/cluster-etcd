@@ -156,9 +156,26 @@ into every assignment, which would store it once per reader and rewrite every co
   "initializing_shards": 3,
   "indices_by_status": { "green": 78, "yellow": 3, "red": 0 },
   "observed_at": 1788969977933,
-  "observed_pass": 10432
+  "observed_pass": 10432,
+  "heartbeat_ms": 10000
 }
 ```
+
+**Rewritten at least every `heartbeat_ms`, even when nothing in it has changed** (control plane finding 1). Every
+other projection is written only on change, so on a quiet tenant its `observed_at` stops moving, and a reader cannot
+tell a healthy supervisor with nothing to say from no supervisor at all. This one document is the exception, and the
+control plane reads its freshness as the tenant's:
+
+- **The guarantee:** while a supervisor holds the pool and its passes succeed, `observed_at` is never more than
+  `heartbeat_ms` plus one pass old. The default is 10 s. The worst legitimate age adds a failover: the lease TTL
+  (15 s by default) and the new holder's first pass, which writes everything because it starts with no memory of
+  what was written. So a reader allowing 45 s rides out a failover and still notices a pool nothing is managing.
+- **Written last in its tenant's pass**, after every index and node document has been written or removed, so a fresh
+  one vouches for the whole pass.
+- **Not written by a read-only supervisor, or by a pass that fails**, so a tenant under either reads as unmanaged,
+  which is the truth. **Absent** means no supervisor has projected the tenant yet: a new tenant, or one whose pool
+  nobody holds. Nothing here deletes it deliberately.
+- **Cost:** one write of about 300 bytes per tenant per heartbeat, 0.1 writes/s per tenant at the default.
 
 **No `delayed_unassigned_shards`**, which this document promised for a long time and nothing ever wrote.
 OpenSearch's figure counts shards whose reallocation is being deliberately delayed after a node left
@@ -168,8 +185,8 @@ still count. Publishing a constant zero would have been worse than omitting it �
 reads as information.
 
 Cluster status is the worst index status. Deliberately **no per-index map here** — `cluster.health?level=indices`
-composes it from the per-index documents, so this stays a small, fixed-size document that can be rewritten
-every pass. Putting a map of every index in the hot document is the same mistake the node heartbeat avoids.
+composes it from the per-index documents, so this stays a small, fixed-size document cheap enough to rewrite on a
+heartbeat. Putting a map of every index in the hot document is the same mistake the node heartbeat avoids.
 
 ### `tenant/<t>/status/nodes/<node-id>` — for `cluster.state`, and R5.4
 
