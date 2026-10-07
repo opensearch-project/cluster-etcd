@@ -23,11 +23,14 @@ import org.opensearch.controlplane.rest.RestStatus;
 import org.opensearch.controlplane.router.Router;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -40,8 +43,10 @@ class ControlPlaneHttpHandlerTests {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /** Dispatched on the calling thread, so EmbeddedChannel sees the response before the write returns. */
     private static EmbeddedChannel channelFor(HttpRequestDispatcher dispatcher) {
-        return new EmbeddedChannel(new ControlPlaneHttpHandler(dispatcher));
+        return new EmbeddedChannel(new ControlPlaneHttpHandler(
+            dispatcher, Runnable::run, new Semaphore(ControlPlaneHttpHandler.MAX_IN_FLIGHT)));
     }
 
     private static EmbeddedChannel stubbedChannel() {
@@ -148,5 +153,41 @@ class ControlPlaneHttpHandlerTests {
         assertEquals(501, response.status().code());
         assertEquals(0, response.content().readableBytes());
         assertEquals(0, response.headers().getInt(HttpHeaderNames.CONTENT_LENGTH).intValue());
+    }
+
+    /** Past the in-flight bound a request is refused as a full thread pool refuses one, not queued. */
+    @Test
+    void aRequestPastTheInFlightBoundIsRejectedWith429() throws Exception {
+        EmbeddedChannel channel = new EmbeddedChannel(new ControlPlaneHttpHandler(
+            (method, rawPath, uri, queryParams, headers, body) -> {
+                throw new AssertionError("must not be dispatched");
+            },
+            Runnable::run,
+            new Semaphore(0)
+        ));
+
+        channel.writeInbound(request(HttpMethod.GET, "/", ""));
+        FullHttpResponse response = channel.readOutbound();
+        assertEquals(429, response.status().code());
+        assertEquals("rejected_execution_exception", MAPPER.readTree(response.content().toString(StandardCharsets.UTF_8))
+            .get("error").get("type").asText());
+        assertTrue(channel.config().isAutoRead(), "a rejected request does not stop the connection reading");
+    }
+
+    /** Reading pauses while a request is in flight, so pipelined requests are answered in order. */
+    @Test
+    void readingResumesOnceTheResponseIsWritten() {
+        List<Runnable> pending = new ArrayList<>();
+        EmbeddedChannel channel = new EmbeddedChannel(new ControlPlaneHttpHandler(
+            (method, rawPath, uri, queryParams, headers, body) -> RestResponse.json(RestStatus.OK, "{}"),
+            pending::add,
+            new Semaphore(ControlPlaneHttpHandler.MAX_IN_FLIGHT)
+        ));
+
+        channel.writeInbound(request(HttpMethod.GET, "/", ""));
+        assertFalse(channel.config().isAutoRead(), "paused while the request is in flight");
+        pending.forEach(Runnable::run);
+        channel.runPendingTasks();
+        assertTrue(channel.config().isAutoRead(), "resumed once it is answered");
     }
 }

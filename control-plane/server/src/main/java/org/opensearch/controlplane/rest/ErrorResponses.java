@@ -131,6 +131,26 @@ public final class ErrorResponses {
             + KeyValueStore.MAX_VALUE_BYTES + " bytes");
     }
 
+    /**
+     * {@code 429 rejected_execution_exception}: too many requests in flight. What a real cluster answers
+     * when a thread pool's queue is full, and for the same reason: retrying later can succeed.
+     */
+    public static RestResponse rejectedExecution(String reason) {
+        return structured(RestStatus.TOO_MANY_REQUESTS, "rejected_execution_exception", reason, false);
+    }
+
+    /**
+     * {@code 503 cluster_manager_not_discovered_exception}, as upstream answers a request that waited its
+     * {@code cluster_manager_timeout} for a cluster manager and found none. Upstream constructs it with no
+     * message, so {@code reason} is a JSON null.
+     */
+    public static RestResponse clusterManagerNotDiscovered(RestRequest request) {
+        ObjectNode cause = Json.object();
+        cause.put("type", "cluster_manager_not_discovered_exception");
+        cause.putNull("reason");
+        return structured(RestStatus.SERVICE_UNAVAILABLE, cause, isPretty(request), Map.of());
+    }
+
     /** An unexpected exception escaped a handler. */
     public static RestResponse internalError(Throwable cause, boolean pretty) {
         return internalError(cause, pretty, false);
