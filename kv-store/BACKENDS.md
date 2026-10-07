@@ -60,8 +60,11 @@ references are relative to the repository root.
 | `RevisionConflictException.actualRevision()` | No | never read |
 | Watches | No | no production caller; every loop polls |
 
-Load, steady state: about 0.2 writes/s per data node and 1.5 + P writes/s per supervisor holding P pools.
-Reads dominate. Each supervisor scans a dozen or more prefixes every 2 s, including fleet-wide
+Load, steady state: about 0.2 writes/s per data node, and 1.5 + P + 0.1 × T writes/s per supervisor holding
+P pools serving T tenants. The tenant term is `tenant/<t>/status/cluster`, rewritten at least every 10 s so
+the control plane can tell a managed tenant from an unmanaged one (`supervisor/SUPERVISOR_KEYS.md`). Only a
+pool's lease holder writes it, so store-wide it is 0.1 writes/s per tenant: 100 writes/s at a thousand
+tenants. That is the term that grows with a deployment. Reads still dominate. Each supervisor scans a dozen or more prefixes every 2 s, including fleet-wide
 `nodes/{registration,heartbeat,assignment}/`. Each data node scans its tenants' `status/indices/` every 5 s.
 The control plane scans `tenant/<t>/indices/` (full documents with mappings) and `aliases/` on every
 index-expression request.
@@ -255,7 +258,8 @@ A good fit for conditional writes. It needs work on value size and on how keys a
 - **Conditional writes** are native: `attribute_not_exists(s)` for `ABSENT`, or `rev = :expected`.
   `ReturnValuesOnConditionCheckFailure` returns the current item without another read.
 - **Revisions:** per-key hybrid revisions with tombstones (implication 1). The alternative, an atomic
-  counter item, caps the store at about 1,000 writes/s and makes every write two requests. Tombstones could
+  counter item, caps the store at about 1,000 writes/s, which the tenant heartbeat alone reaches at ten
+  thousand tenants, and makes every write two requests. Tombstones could
   be collected with DynamoDB TTL, but whether a TTL deletion can race a recreate needs checking.
   A collector that does a conditional delete is the safe default.
 - **Reads** must use `ConsistentRead=true`, on both `GetItem` and `Query`. Global secondary indexes cannot
