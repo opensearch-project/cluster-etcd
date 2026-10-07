@@ -10,6 +10,8 @@ import org.opensearch.supervisor.model.status.IndexStatus;
 import org.opensearch.supervisor.model.status.NodeStatus;
 import org.opensearch.supervisor.model.status.StatusComputation;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -30,24 +32,51 @@ import java.util.Set;
  * Change is judged on the content minus its timestamps, for the reason {@link Projector} explains: a document
  * carrying the pass it was computed at would otherwise defeat the check by changing on its own.
  *
+ * <p><b>Except {@code status/cluster}, which is also rewritten once {@link #DEFAULT_CLUSTER_HEARTBEAT} has passed</b>
+ * (control plane finding 1). Written only on change, its {@code observed_at} stopped moving on a quiet tenant, so a
+ * reader could not tell a healthy supervisor with nothing to say from no supervisor at all, and the control plane
+ * answers {@code cluster.health} differently for the two. The heartbeat is published in the document as
+ * {@code heartbeat_ms}. It is one small document per tenant, so the cost is one write per tenant per heartbeat; the
+ * per-index and per-node documents gain nothing. Timed on the observation's clock, so it is at most one pass late.
+ *
+ * <p><b>{@code status/cluster} is written last</b>, after every other document of the tenant has been written or
+ * removed, so a fresh one vouches for the whole pass. The control plane reads it as the tenant's freshness, so keep
+ * it last. A pass that throws publishes nothing after the failure, so a pool whose passes keep failing goes stale,
+ * which is the right answer.
+ *
  * <p><b>Not written in read-only mode</b>, and that costs something worth naming. One document serves four
  * readers — health, cluster state, coordinator routing, and docrep peer resolution — which was the right call
  * for write amplification but means health cannot be published without also publishing routing that
  * coordinators will act on. So a read-only supervisor stays genuinely read-only and publishes none of it.
  * Splitting the routing half out would allow observation without behaviour change; it is not worth doing until
- * somebody wants it.
+ * somebody wants it. A tenant under a read-only supervisor therefore reads as unmanaged to the control plane.
  */
 public final class StatusProjector {
 
+    /**
+     * The longest {@code status/cluster} goes unwritten while this supervisor passes over the pool. A reader's
+     * staleness threshold is this plus a failover (the lease TTL and a pass), so changing it moves theirs.
+     */
+    public static final Duration DEFAULT_CLUSTER_HEARTBEAT = Duration.ofSeconds(10);
+
     private final KeyValueStore store;
+    private final Duration clusterHeartbeat;
 
     /** Digest of the content this process last wrote per key, so an unchanged document costs no write. */
     private final Map<String, String> lastWritten = new HashMap<>();
 
+    /** When each tenant's {@code status/cluster} was last written, on the observation's clock. */
+    private final Map<String, Instant> clusterWrittenAt = new HashMap<>();
+
     private int written;
 
     public StatusProjector(KeyValueStore store) {
+        this(store, DEFAULT_CLUSTER_HEARTBEAT);
+    }
+
+    public StatusProjector(KeyValueStore store, Duration clusterHeartbeat) {
         this.store = Objects.requireNonNull(store, "store");
+        this.clusterHeartbeat = Objects.requireNonNull(clusterHeartbeat, "clusterHeartbeat");
     }
 
     /** @return how many keys were actually written this pass */
@@ -81,9 +110,6 @@ public final class StatusProjector {
                 write(key, node.toBytes());
             });
 
-            if (status.cluster() != null) {
-                write(Keys.clusterStatus(tenant), status.cluster().toBytes());
-            }
             if (status.awareness() != null) {
                 write(Keys.awarenessStatus(tenant), status.awareness().toBytes());
             }
@@ -93,6 +119,12 @@ public final class StatusProjector {
             // index that answers cluster.health after it has been deleted.
             reap(Keys.indexStatusPrefix(tenant), live);
             reap(Keys.nodeStatusPrefix(tenant), live);
+
+            // Last, so that a fresh one means everything above has landed. See the class comment.
+            if (status.cluster() != null) {
+                writeCluster(Keys.clusterStatus(tenant),
+                    status.cluster().withHeartbeatMs(clusterHeartbeat.toMillis()).toBytes(), observation.observedAt());
+            }
         }
 
         return written - before;
@@ -106,6 +138,19 @@ public final class StatusProjector {
         store.put(key, bytes);
         lastWritten.put(key, digest);
         written++;
+    }
+
+    /** As {@link #write}, and also once the heartbeat has passed, so its {@code observed_at} keeps moving. */
+    private void writeCluster(String key, byte[] bytes, Instant observedAt) {
+        Instant last = clusterWrittenAt.get(key);
+        if (last != null && Duration.between(last, observedAt).compareTo(clusterHeartbeat) >= 0) {
+            lastWritten.remove(key);
+        }
+        int before = written;
+        write(key, bytes);
+        if (written != before) {
+            clusterWrittenAt.put(key, observedAt);
+        }
     }
 
     /**

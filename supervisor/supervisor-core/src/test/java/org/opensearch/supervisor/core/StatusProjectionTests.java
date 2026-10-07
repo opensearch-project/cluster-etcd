@@ -258,9 +258,10 @@ class StatusProjectionTests {
     // ---------------------------------------------------------------- write behaviour
 
     @Test
-    void aConvergedPoolStopsWritingProjections() {
+    void aConvergedPoolStopsWritingProjectionsOtherThanTheClusterHeartbeat() {
         // Rewriting a per-index document every pass for ten thousand unchanged indices would make the
-        // supervisor the store's dominant writer, ahead of the nodes it is watching.
+        // supervisor the store's dominant writer, ahead of the nodes it is watching. A minute of quiet passes
+        // writes the index and node documents not at all, and the one small cluster document once per heartbeat.
         FakeNode data = node(NODE, "z1");
         data.start();
         createIndex("my-index", UUID, 1, 0);
@@ -268,12 +269,112 @@ class StatusProjectionTests {
 
         run(supervisor, List.of(data), 10);
         long indexRevision = store.get(Keys.indexStatus(ACME, UUID)).orElseThrow().revision();
-        long clusterRevision = store.get(Keys.clusterStatus(ACME)).orElseThrow().revision();
-
-        run(supervisor, List.of(data), 10);
+        long nodeRevision = store.get(Keys.nodeStatus(ACME, NODE)).orElseThrow().revision();
+        List<Long> clusterWrites = new java.util.ArrayList<>();
+        for (int pass = 0; pass < 30; pass++) {
+            long before = store.get(Keys.clusterStatus(ACME)).orElseThrow().revision();
+            run(supervisor, List.of(data), 1);
+            if (store.get(Keys.clusterStatus(ACME)).orElseThrow().revision() != before) {
+                clusterWrites.add(clusterStatus().observedAt());
+            }
+        }
 
         assertEquals(indexRevision, store.get(Keys.indexStatus(ACME, UUID)).orElseThrow().revision());
-        assertEquals(clusterRevision, store.get(Keys.clusterStatus(ACME)).orElseThrow().revision());
+        assertEquals(nodeRevision, store.get(Keys.nodeStatus(ACME, NODE)).orElseThrow().revision());
+        assertEquals(6, clusterWrites.size(), "60 seconds of 2-second passes is six 10-second heartbeats: " + clusterWrites);
+    }
+
+    @Test
+    void anUnchangedClusterDocumentIsRewrittenOnceTheHeartbeatHasPassedAndNotBefore() {
+        // Control plane finding 1. Written only on change, observed_at stopped moving on a quiet tenant, so a
+        // healthy supervisor with nothing to say looked exactly like no supervisor at all.
+        FakeNode data = node(NODE, "z1");
+        data.start();
+        createIndex("my-index", UUID, 1, 0);
+        Supervisor supervisor = supervisor();
+        run(supervisor, List.of(data), 10);
+
+        // Line up on a write, so the heartbeat's start is known. Bounded: with no heartbeat there is never another.
+        long revision = store.get(Keys.clusterStatus(ACME)).orElseThrow().revision();
+        for (int pass = 0; pass < 10 && store.get(Keys.clusterStatus(ACME)).orElseThrow().revision() == revision; pass++) {
+            run(supervisor, List.of(data), 1);
+        }
+        assertNotEquals(revision, store.get(Keys.clusterStatus(ACME)).orElseThrow().revision(),
+            "20 seconds of quiet passes and status/cluster was never rewritten");
+        ClusterStatus written = clusterStatus();
+        long writtenRevision = store.get(Keys.clusterStatus(ACME)).orElseThrow().revision();
+
+        run(supervisor, List.of(data), 4);
+        assertEquals(writtenRevision, store.get(Keys.clusterStatus(ACME)).orElseThrow().revision(),
+            "8 seconds on, nothing has changed and the heartbeat has not passed");
+
+        run(supervisor, List.of(data), 1);
+        ClusterStatus heartbeat = clusterStatus();
+        assertEquals(written.observedAt() + 10_000, heartbeat.observedAt(), "10 seconds on, it is written again");
+        assertTrue(heartbeat.observedPass() > written.observedPass());
+        assertEquals(10_000, heartbeat.heartbeatMs(), "and it says how often a reader may expect it");
+        assertEquals(written.withHeartbeatMs(0), new ClusterStatus(heartbeat.status(), heartbeat.numberOfNodes(),
+            heartbeat.numberOfDataNodes(), heartbeat.activeShards(), heartbeat.activePrimaryShards(),
+            heartbeat.unassignedShards(), heartbeat.initializingShards(), heartbeat.indicesByStatus(),
+            written.observedAt(), written.observedPass()), "with the same content");
+    }
+
+    @Test
+    void theClusterDocumentIsWrittenAfterEveryOtherDocumentOfItsTenant() {
+        // The control plane reads a fresh status/cluster as the tenant's freshness, so it must vouch for the whole
+        // pass: every index and node document written, and every gone one removed, before it.
+        FakeNode data = node(NODE, "z1");
+        data.start();
+        createIndex("my-index", UUID, 1, 0);
+        run(supervisor(), List.of(data), 10);
+
+        List<String> order = new java.util.ArrayList<>();
+        org.opensearch.controlplane.store.KeyValueStore recording = new org.opensearch.controlplane.store.KeyValueStore() {
+            @Override
+            public java.util.Optional<Versioned> get(String key) {
+                return store.get(key);
+            }
+
+            @Override
+            public java.util.NavigableMap<String, Versioned> scanPrefix(String prefix) {
+                return store.scanPrefix(prefix);
+            }
+
+            @Override
+            public long put(String key, byte[] value) {
+                order.add("put " + key);
+                return store.put(key, value);
+            }
+
+            @Override
+            public long put(String key, byte[] value, long expectedRevision) {
+                order.add("put " + key);
+                return store.put(key, value, expectedRevision);
+            }
+
+            @Override
+            public boolean delete(String key) {
+                order.add("delete " + key);
+                return store.delete(key);
+            }
+
+            @Override
+            public boolean delete(String key, long expectedRevision) {
+                order.add("delete " + key);
+                return store.delete(key, expectedRevision);
+            }
+        };
+        store.put(Keys.indexStatus(ACME, "goneGoneGoneGoneGoneGo"), "{}".getBytes(StandardCharsets.UTF_8));
+        var observation = new Observer(store, clock, new LivenessTracker(clock.instant()))
+            .observe(POOL, Pools.read(store), Set.of(ACME));
+
+        // A fresh projector writes everything, which is what a new lease holder's first pass does.
+        new StatusProjector(recording).project(observation);
+
+        assertEquals("put " + Keys.clusterStatus(ACME), order.get(order.size() - 1), order.toString());
+        assertTrue(order.contains("put " + Keys.indexStatus(ACME, UUID)), order.toString());
+        assertTrue(order.contains("put " + Keys.nodeStatus(ACME, NODE)), order.toString());
+        assertTrue(order.contains("delete " + Keys.indexStatus(ACME, "goneGoneGoneGoneGoneGo")), order.toString());
     }
 
     @Test
