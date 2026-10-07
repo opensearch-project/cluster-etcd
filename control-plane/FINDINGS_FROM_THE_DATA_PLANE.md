@@ -8,7 +8,28 @@ about, and the tests worth having. Reply inline.
 
 ## 1. `cluster.health` and `cluster.state` for a tenant are this component's to answer
 
-> **Open.** The data plane now refuses both for a tenant's request, so they have nowhere else to be answered.
+> **In progress.** `cluster.health` is done; `cluster.state` is next, then `_cat/health`, `_cat/indices`,
+> `_cat/shards` and `_cat/nodes`, which bring `cat` into scope.
+>
+> - **Figures are the supervisor's**, as asked. Each index's status and counts come from its
+>   `status/indices/<uuid>` document, never recomputed from the observed copies. Cluster figures are the sum over
+>   the selected indices. `level=shards` applies the supervisor's own per-shard rule from
+>   `StatusComputation.indexStatus` to the same placements, so a shard never disagrees with its index.
+> - **Tenant names only.** Indices are listed by the names in this service's `indices/<name>` documents, matched
+>   to projections by uuid, so only the tenant's own indices appear. An index not yet projected is red with every
+>   copy unassigned; a projection for a deleted index is ignored.
+> - **Waiting works.** `wait_for_status`, `wait_for_nodes` (every upstream operator), `wait_for_active_shards`,
+>   `wait_for_no_initializing_shards`, and a named index all re-read the projections until they hold or `timeout`
+>   passes, then answer 408 with the full body. That needed dispatch off the Netty event loop, which it now is.
+> - **Staleness** needed the supervisor to rewrite `status/cluster` on a heartbeat, which it now does (its
+>   `FINDINGS_FROM_THE_CONTROL_PLANE.md`, item 1). Absent, or older than `heartbeat_ms` + 35 s, is answered as
+>   upstream answers no cluster manager: wait `cluster_manager_timeout`, then `503
+>   cluster_manager_not_discovered_exception`; with `local=true`, the last figures, red.
+> - **Not covered:** `level=awareness_attributes` is refused, since its per-value counts and weights are not
+>   projected. Document counts and store sizes for `_cat/indices` are still open, as you say.
+>
+> All three tests asked for are in `ClusterHealthHandlerTests`, the third as "only this tenant's indices"; the
+> node list belongs to `cluster.state` and comes with it.
 
 ### What changed on the data plane
 

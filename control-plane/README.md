@@ -10,14 +10,14 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-119 routes, 75 operation groups, 55 implemented, 20 stubbed
-(58 / 17 when the capabilities file declares script languages, contexts and grok patterns)
+119 routes, 75 operation groups, 56 implemented, 19 stubbed
+(59 / 16 when the capabilities file declares script languages, contexts and grok patterns)
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
 | `indices` | 61 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations; `create_data_stream`, `delete_data_stream` |
-| `cluster` | 21 | component template CRUD, `get_settings`, `put_settings`, `pending_tasks`, weighted routing (`get`/`put`/`delete_weighted_routing`) |
+| `cluster` | 21 | `health`, component template CRUD, `get_settings`, `put_settings`, `pending_tasks`, weighted routing (`get`/`put`/`delete_weighted_routing`) |
 | `snapshot` | 16 | repository registration: `create_repository`, `get_repository`, `delete_repository` |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`†, `get_script_context`† |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline`, `processor_grok`† |
@@ -49,7 +49,7 @@ curl -XPUT localhost:9400/_ingest/pipeline/p -H 'Content-Type: application/json'
 curl localhost:9400/_ingest/pipeline?pretty
 curl -XPUT localhost:9400/my-index -H 'Content-Type: application/json' \
      -d '{"settings":{"number_of_shards":2}}'
-curl -XGET localhost:9400/_cluster/health   # 501, not yet implemented
+curl -XGET localhost:9400/_cluster/state    # 501, not yet implemented
 ```
 
 ## Where this sits
@@ -762,6 +762,34 @@ does no path normalisation, so `..` in a key is inert — just part of the key. 
 implementation that maps keys onto paths *must* normalise or reject traversal sequences,
 or the isolation above is defeated one layer down.
 
+## Cluster health
+
+`cluster.health` is answered here rather than by a data node, which refuses it for a tenant
+([`FINDINGS_FROM_THE_DATA_PLANE.md`](FINDINGS_FROM_THE_DATA_PLANE.md), item 1). It is a read of what the
+supervisor projects under `tenant/<t>/status/` (`../supervisor/SUPERVISOR_KEYS.md` §1):
+
+- **The figures are the supervisor's.** Each index's status and counts come from its
+  `status/indices/<uuid>` document, which the supervisor computed against the copies the index asked for.
+  They are never recomputed from the copies listed there, which are only the observed ones, so a
+  recomputation would report a missing replica as green. Cluster-level figures are the sum over the selected
+  indices, so a filtered request and an unfiltered one agree.
+- **This service decides which indices exist.** An index created since the last pass is red with every copy
+  unassigned, and a projection whose index has been deleted is ignored. Indices are reported by the tenant's
+  own names.
+- **`status/cluster` is the freshness signal.** The supervisor rewrites it at least every `heartbeat_ms`,
+  last in a pass (its `FINDINGS_FROM_THE_CONTROL_PLANE.md`, item 1). Absent, or older than `heartbeat_ms`
+  plus 35 s of failover, means nothing is managing the tenant, which is upstream's "no cluster manager":
+  the request waits `cluster_manager_timeout`, then answers `503 cluster_manager_not_discovered_exception`.
+  With `local=true` it answers the last figures, red, with `discovered_cluster_manager: false`.
+- **`wait_for_*` waits**, re-reading every second until the conditions hold or `timeout` passes, then answers
+  `408` with the full body, as upstream does. That is what moved dispatch off the event loop; see
+  [Dispatch](#dispatch-runs-off-the-event-loop).
+
+The considered divergences are on `ClusterHealthHandler`: `relocating_shards`, `delayed_unassigned_shards`
+and `number_of_in_flight_fetch` are always 0; a closed index is green with no shards, as the supervisor
+reports it; an index whose primaries are initializing is red, the supervisor's rule, where upstream calls a
+new one yellow; and `level=awareness_attributes` is refused, since its per-value counts are not projected.
+
 ## Building
 
 Requires JDK 21.
@@ -855,6 +883,15 @@ handoff — validate the request, resolve templates, write index configuration, 
 register an index management task for the shard manager.
 
 ## Design notes
+
+### Dispatch runs off the event loop
+
+Every handler blocks: store calls are synchronous I/O against etcd or ZooKeeper, and `cluster.health` can
+wait up to its `timeout`. On a Netty event-loop thread either would stall every connection that thread
+serves, so each request is dispatched on a virtual thread and its response written back through the
+channel. At most 1024 are in flight; past that a request answers `429 rejected_execution_exception`, as a
+real cluster does when a thread pool's queue is full. A connection stops reading while one of its requests
+is in flight, so pipelined requests are answered in order.
 
 ### The router is hand-written on purpose
 
@@ -1007,8 +1044,8 @@ character for character against the server's response.
   as "data plane", which was right about consuming from a stream and wrong about deciding whether a shard
   should be consuming at all. `pause` and `resume` are now in scope; `get_state` is not — every field it
   returns is per-shard poller runtime (`poller_state`, `poller_paused`, `batch_start_pointer`,
-  `error_policy`, `is_primary`, the holding node) and the response pages over shards, so it is blocked on the
-  same data plane projection as `cluster.health`.
+  `error_policy`, `is_primary`, the holding node) and the response pages over shards, so it needs a projection
+  of per-shard poller state, which nothing publishes.
 - **The pause flag is a first-class index metadata field, not a setting.** Upstream it is
   `IndexMetadata.builder(...).ingestionStatus(...)` under the key `ingestion_status`, holding a single
   boolean `is_paused` that defaults to false. The obvious guess is `index.ingestion.paused` in the settings
@@ -1333,17 +1370,18 @@ request would normally get. Verified, and reproduced.
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
 - Everything about the operation groups that are still stubbed. With a full capabilities file that is
-  **17**, and there is no easy CRUD left among them: eight are snapshot data or administration
+  **16**, and there is no easy CRUD left among them: eight are snapshot data or administration
   operations that belong to another plane, one is the deferred `rollover`, three are decommission
-  awareness, and the remaining five — `cluster.health`, `cluster.state`, `indices.get_data_stream`,
+  awareness, and the remaining four — `cluster.state`, `indices.get_data_stream`,
   `indices.add_block`, `cluster.remote_info` — each have their reason recorded here or in
   [`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md). (The snapshot count read
   *seven* before and the total never added up; it is eight, and the arithmetic now closes.)
 - **`indices.get_data_stream` is stubbed for a specific reason, not just because it is next.** Its
   `status` field is a `HealthStatus` over the backing indices and the spec marks it **required**, so
   unlike `pending_tasks`' prose durations it cannot simply be omitted and leave a valid response. Health
-  is shard state, which is the same dependency that keeps `cluster.health` stubbed; when the management
-  plane projects it into the shared store this becomes an ordinary store read. `create_data_stream` and
+  is shard state, which kept it stubbed until the supervisor projected it; `cluster.health` now reads
+  those projections ([Cluster health](#cluster-health)), so this is an ordinary store read waiting to be
+  written. `create_data_stream` and
   `delete_data_stream` need none of it and are implemented.
 - **`indices.get_data_stream`'s other fields are unverified against ours** for the same reason — there is
   nothing to diff yet. The shape a real cluster returns *was* captured while probing:
