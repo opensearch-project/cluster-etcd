@@ -18,7 +18,8 @@ what its component should and should not do. This session owns:
 
 Components talk only through documents, never through each other's code:
 
-- **Findings from the data plane arrive in `FINDINGS_FROM_THE_DATA_PLANE.md`.** Answer each item in place with a
+- **Findings from the data plane arrive in `FINDINGS_FROM_THE_DATA_PLANE.md`**, and from the control plane in
+  `FINDINGS_FROM_THE_CONTROL_PLANE.md`. Answer each item in place with a
   status block at the top of the item (`> **Closed.** …`, `> **Supervisor half done.** …`), saying what was done
   and anything the other side must do next.
 - **Proposals for another component are written as a document in its tree**, not as code changes. See
@@ -68,9 +69,12 @@ Ownership decisions already made. Don't reopen them without a reason:
   `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` must stay `/var/run/docker.sock`. The reason is in `WORKING_NOTES.md`;
   the wrong setting looks more correct.
 
-## Where things stand (2026-10-01)
+## Where things stand (2026-10-07)
 
-**Last landed:** findings 12 and 13, both closed on both sides. Allocation ids and the in-sync set are carried
+**Last landed:** control plane finding 1: `status/cluster` is rewritten on a 10 s heartbeat and written last in its
+tenant's pass, so the control plane can tell an unmanaged tenant from a quiet one. Findings from the control plane now
+arrive in `FINDINGS_FROM_THE_CONTROL_PLANE.md`, answered in place like the data plane's. Before that: the
+`status/nodes` reading-side check, and findings 12 and 13, both closed on both sides. Allocation ids and the in-sync set are carried
 from the inventory into `status/indices` for document replication, `Promoter` promotes only a replica the lost
 primary last called in sync (`DESIGN.md` §28.10), `fake-node` publishes both, and the conformance suite gained
 `readIndexStatus`, a reading-side check of `status/indices`. An index that does not state its replication type is
@@ -84,14 +88,11 @@ promotion (§27–28, finding 11).
    an intended dual-run from `PRIMARY_CONFLICT`. This is the next design task.
 2. **The rest of §28:** `retain_remote_history` and `abandon_remote_terms`, the scoped metadata lock (§27.5),
    and the upstream search-replica pin (§27.3). None of it is built.
-3. **The data plane must implement `ContractNode.readNodeStatus`.** The reading-side check for `status/nodes`
-   landed on 2026-10-01 with three checks that fail on its side until it does, which fails the root build. Handed
-   over in the data plane's `MILESTONES.md`, under the shared conformance suite.
-4. **No way to promote an out-of-sync replica on purpose.** With no in-sync replica left, a docrep shard stays
+3. **No way to promote an out-of-sync replica on purpose.** With no in-sync replica left, a docrep shard stays
    without a primary; OpenSearch has `allocate_stale_primary` for this, and nothing here does.
-5. **Two projections still read the configured copy count rather than the authorised one:** `Differ` and
+4. **Two projections still read the configured copy count rather than the authorised one:** `Differ` and
    `StatusComputation` (§15.2). Health is per shard now, but within a shard copies are not counted by role.
-6. **Long-standing:** R5.3 snapshot metadata, cross-pool migration, the dedicated-pool ceiling, rollover, an
+5. **Long-standing:** R5.3 snapshot metadata, cross-pool migration, the dedicated-pool ceiling, rollover, an
    ordinary replica of a segment-replication index (open question 10), and the heat signal (proposed in
    `NODE_CONTRACT.md`).
 
