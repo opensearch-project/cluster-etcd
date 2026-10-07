@@ -19,6 +19,9 @@ import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.HttpServerKeepAliveHandler;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -40,6 +43,7 @@ public final class NettyHttpServer implements AutoCloseable {
 
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
+    private ExecutorService dispatchExecutor;
     private Channel channel;
 
     public NettyHttpServer(String host, int port, HttpRequestDispatcher dispatcher) {
@@ -53,6 +57,8 @@ public final class NettyHttpServer implements AutoCloseable {
         try {
             bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
             workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
+            dispatchExecutor = Executors.newVirtualThreadPerTaskExecutor();
+            Semaphore inFlight = new Semaphore(ControlPlaneHttpHandler.MAX_IN_FLIGHT);
 
             ServerBootstrap bootstrap = new ServerBootstrap()
                 .group(bossGroup, workerGroup)
@@ -70,7 +76,7 @@ public final class NettyHttpServer implements AutoCloseable {
                         // streaming. Revisit if bulk-style ndjson is ever in scope.
                         pipeline.addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH));
                         pipeline.addLast(new HttpServerKeepAliveHandler());
-                        pipeline.addLast(new ControlPlaneHttpHandler(dispatcher));
+                        pipeline.addLast(new ControlPlaneHttpHandler(dispatcher, dispatchExecutor, inFlight));
                     }
                 });
 
@@ -118,6 +124,11 @@ public final class NettyHttpServer implements AutoCloseable {
         if (workerGroup != null) {
             workerGroup.shutdownGracefully(0, 2, TimeUnit.SECONDS).awaitUninterruptibly();
             workerGroup = null;
+        }
+        if (dispatchExecutor != null) {
+            // Requests still in flight have nowhere to write their responses now; do not wait for them.
+            dispatchExecutor.shutdownNow();
+            dispatchExecutor = null;
         }
     }
 }

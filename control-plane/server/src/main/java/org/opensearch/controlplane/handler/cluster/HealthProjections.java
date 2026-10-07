@@ -1,0 +1,239 @@
+/*
+ * Copyright OpenSearch Software Foundation
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.opensearch.controlplane.handler.cluster;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import org.opensearch.controlplane.metadata.Settings;
+import org.opensearch.controlplane.resolver.IndexAbstractions;
+import org.opensearch.controlplane.rest.Json;
+import org.opensearch.controlplane.store.KeyValueStore;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.Optional;
+import java.util.TreeMap;
+
+/**
+ * What the supervisor has projected for a tenant, read once and composed into health figures.
+ *
+ * <p>Three sources, and the rule for each (supervisor {@code SUPERVISOR_KEYS.md} §1, control plane
+ * {@code FINDINGS_FROM_THE_DATA_PLANE.md} item 1):
+ *
+ * <ul>
+ *   <li><b>{@code status/indices/<uuid>}</b> gives each index's status and counts, computed by the supervisor
+ *       against the copies the index asked for. They are served as they are. The documents list only observed
+ *       copies, so recomputing health from them would miss every copy that is wanted and placed nowhere, and
+ *       report a missing replica as green.</li>
+ *   <li><b>{@code status/cluster}</b> gives the node counts, and is the freshness signal for the whole tenant:
+ *       it is rewritten at least every {@code heartbeat_ms}, last in a pass, so a fresh one means everything
+ *       else that pass computed has been written too.</li>
+ *   <li><b>{@code indices/<name>}</b>, this service's own documents, decide which indices exist. An index the
+ *       supervisor has not projected yet is reported red with every copy unassigned, which is what it is until
+ *       a pass places it. A projection for an index that no longer exists here is ignored.</li>
+ * </ul>
+ *
+ * <p>Cluster-level status and counts are always the sum over the selected indices' documents rather than
+ * {@code status/cluster}'s own totals, so that filtered and unfiltered requests agree and an index created
+ * since the last pass counts in both.
+ */
+final class HealthProjections {
+
+    static final String CLUSTER_KEY = "status/cluster";
+    static final String INDICES_PREFIX = "status/indices/";
+
+    /**
+     * How much older than {@code heartbeat_ms} {@code status/cluster} may be before nothing is managing the
+     * tenant: a lease TTL of 15 s, a pass of 2 s, and margin for clock skew between the two processes, which
+     * compare wall clocks. The supervisor agreed this in its {@code FINDINGS_FROM_THE_CONTROL_PLANE.md}, item 1.
+     */
+    static final long FAILOVER_ALLOWANCE_MS = 35_000;
+
+    /** What a supervisor that predates the heartbeat publishes as {@code heartbeat_ms}; read as the current default. */
+    static final long DEFAULT_HEARTBEAT_MS = 10_000;
+
+    enum Status {
+        GREEN, YELLOW, RED;
+
+        static Status of(String value) {
+            return switch (value == null ? "" : value.toLowerCase(java.util.Locale.ROOT)) {
+                case "green" -> GREEN;
+                case "yellow" -> YELLOW;
+                // An unrecognised value can only come from a newer supervisor; do not report it as healthy.
+                default -> RED;
+            };
+        }
+
+        Status worst(Status other) {
+            return compareTo(other) >= 0 ? this : other;
+        }
+
+        String wire() {
+            return name().toLowerCase(java.util.Locale.ROOT);
+        }
+    }
+
+    /** One copy of a shard as the supervisor saw it. */
+    record Copy(String role, String state) {
+        boolean started() {
+            return "STARTED".equals(state);
+        }
+    }
+
+    /** One index's health: the supervisor's figures, or the unplaced figures for one it has not projected. */
+    record IndexHealth(
+        String name,
+        Status status,
+        int numberOfShards,
+        int numberOfReplicas,
+        int copiesPerShard,
+        int activePrimaryShards,
+        int activeShards,
+        int initializingShards,
+        int unassignedShards,
+        NavigableMap<Integer, List<Copy>> shards
+    ) {}
+
+    /** Status and counts over a set of indices. Relocating shards are always zero: no copy here relocates. */
+    record Totals(Status status, int activePrimaryShards, int activeShards, int initializingShards, int unassignedShards) {
+
+        static Totals over(Collection<IndexHealth> indices) {
+            Status status = Status.GREEN;
+            int primaries = 0;
+            int active = 0;
+            int initializing = 0;
+            int unassigned = 0;
+            for (IndexHealth index : indices) {
+                status = status.worst(index.status());
+                primaries += index.activePrimaryShards();
+                active += index.activeShards();
+                initializing += index.initializingShards();
+                unassigned += index.unassignedShards();
+            }
+            return new Totals(status, primaries, active, initializing, unassigned);
+        }
+    }
+
+    private final JsonNode cluster;
+    private final NavigableMap<String, IndexHealth> indices;
+
+    private HealthProjections(JsonNode cluster, NavigableMap<String, IndexHealth> indices) {
+        this.cluster = cluster;
+        this.indices = indices;
+    }
+
+    static HealthProjections read(KeyValueStore store) {
+        JsonNode cluster = store.get(CLUSTER_KEY).map(versioned -> parse(versioned.value())).orElse(null);
+
+        Map<String, JsonNode> byUuid = new HashMap<>();
+        store.scanPrefix(INDICES_PREFIX).values().forEach(versioned -> {
+            JsonNode status = parse(versioned.value());
+            byUuid.put(status.path("index_uuid").asText(), status);
+        });
+
+        NavigableMap<String, IndexHealth> indices = new TreeMap<>();
+        store.scanPrefix(IndexAbstractions.INDEX_KEY_PREFIX).forEach((key, versioned) -> {
+            String name = key.substring(IndexAbstractions.INDEX_KEY_PREFIX.length());
+            JsonNode metadata = parse(versioned.value());
+            JsonNode projected = byUuid.get(metadata.path("uuid").asText());
+            indices.put(name, projected != null ? projected(name, projected) : unprojected(name, metadata));
+        });
+        return new HealthProjections(cluster, indices);
+    }
+
+    /**
+     * Whether a supervisor is managing the tenant: {@code status/cluster} exists and is no older than its
+     * heartbeat plus a failover. Absent means no supervisor has projected the tenant yet.
+     */
+    boolean fresh(long nowMillis) {
+        if (cluster == null) {
+            return false;
+        }
+        long heartbeat = cluster.path("heartbeat_ms").asLong(0);
+        long allowed = (heartbeat > 0 ? heartbeat : DEFAULT_HEARTBEAT_MS) + FAILOVER_ALLOWANCE_MS;
+        return nowMillis - cluster.path("observed_at").asLong(0) <= allowed;
+    }
+
+    int numberOfNodes() {
+        return cluster == null ? 0 : cluster.path("number_of_nodes").asInt(0);
+    }
+
+    int numberOfDataNodes() {
+        return cluster == null ? 0 : cluster.path("number_of_data_nodes").asInt(0);
+    }
+
+    /** Every index this service knows of, by the tenant's own name. */
+    NavigableMap<String, IndexHealth> indices() {
+        return indices;
+    }
+
+    Optional<IndexHealth> index(String name) {
+        return Optional.ofNullable(indices.get(name));
+    }
+
+    private static IndexHealth projected(String name, JsonNode status) {
+        NavigableMap<Integer, List<Copy>> shards = new TreeMap<>();
+        status.path("shards").properties().forEach(shard -> {
+            List<Copy> copies = new ArrayList<>();
+            shard.getValue().forEach(copy -> copies.add(new Copy(copy.path("role").asText(), copy.path("state").asText())));
+            shards.put(Integer.parseInt(shard.getKey()), copies);
+        });
+        int replicas = status.path("number_of_replicas").asInt(0);
+        return new IndexHealth(
+            // The tenant's name, not the projection's: the projection's is the same today, and this one is the
+            // name every other operation answers with.
+            name,
+            Status.of(status.path("status").asText(null)),
+            status.path("number_of_shards").asInt(0),
+            replicas,
+            1 + replicas + status.path("number_of_search_replicas").asInt(0),
+            status.path("active_primary_shards").asInt(0),
+            status.path("active_shards").asInt(0),
+            status.path("initializing_shards").asInt(0),
+            status.path("unassigned_shards").asInt(0),
+            shards
+        );
+    }
+
+    /**
+     * An index no pass has projected yet. Open, nothing is placed, so it is red with every copy unassigned, as
+     * the supervisor would report it. Closed, it wants no copies, which the supervisor reports as green.
+     */
+    private static IndexHealth unprojected(String name, JsonNode metadata) {
+        Settings settings = Settings.forIndex(metadata.path("settings"));
+        int shards = intSetting(settings, "index.number_of_shards", 1);
+        int replicas = intSetting(settings, "index.number_of_replicas", 0);
+        int copies = 1 + replicas + intSetting(settings, "index.number_of_search_replicas", 0);
+        boolean open = "close".equals(metadata.path("state").asText("open")) == false;
+        NavigableMap<Integer, List<Copy>> placed = new TreeMap<>();
+        if (open) {
+            for (int shard = 0; shard < shards; shard++) {
+                placed.put(shard, List.of());
+            }
+        }
+        return new IndexHealth(
+            name, open ? Status.RED : Status.GREEN, shards, replicas, copies, 0, 0, 0, open ? shards * copies : 0, placed);
+    }
+
+    private static int intSetting(Settings settings, String key, int fallback) {
+        try {
+            return settings.get(key).map(Integer::parseInt).orElse(fallback);
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static JsonNode parse(byte[] value) {
+        try {
+            return Json.parse(value);
+        } catch (IOException e) {
+            throw new IllegalStateException("corrupt status projection", e);
+        }
+    }
+}
