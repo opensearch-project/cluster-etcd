@@ -79,16 +79,24 @@ final class HealthProjections {
         }
     }
 
-    /** One copy of a shard as the supervisor saw it. */
-    record Copy(String role, String state) {
+    /**
+     * One copy of a shard as the supervisor saw it. {@code allocationId} and {@code inSync} are present on a
+     * document-replication copy only, carried verbatim ({@code SUPERVISOR_KEYS.md}, finding 12); {@code inSync}
+     * is set on a primary.
+     */
+    record Copy(String nodeId, String role, String state, String allocationId, List<String> inSync) {
         boolean started() {
             return "STARTED".equals(state);
         }
     }
 
-    /** One index's health: the supervisor's figures, or the unplaced figures for one it has not projected. */
+    /**
+     * One index's health: the supervisor's figures, or the unplaced figures for one it has not projected.
+     * {@code document} is this service's own index document, which {@code cluster.state} renders.
+     */
     record IndexHealth(
         String name,
+        JsonNode document,
         Status status,
         int numberOfShards,
         int numberOfReplicas,
@@ -122,19 +130,23 @@ final class HealthProjections {
 
     private final JsonNode cluster;
     private final NavigableMap<String, IndexHealth> indices;
+    private final NavigableMap<String, Long> revisions;
 
-    private HealthProjections(JsonNode cluster, NavigableMap<String, IndexHealth> indices) {
+    private HealthProjections(JsonNode cluster, NavigableMap<String, IndexHealth> indices, NavigableMap<String, Long> revisions) {
         this.cluster = cluster;
         this.indices = indices;
+        this.revisions = revisions;
     }
 
     static HealthProjections read(KeyValueStore store) {
         JsonNode cluster = store.get(CLUSTER_KEY).map(versioned -> parse(versioned.value())).orElse(null);
 
+        NavigableMap<String, Long> revisions = new TreeMap<>();
         Map<String, JsonNode> byUuid = new HashMap<>();
-        store.scanPrefix(INDICES_PREFIX).values().forEach(versioned -> {
+        store.scanPrefix(INDICES_PREFIX).forEach((key, versioned) -> {
             JsonNode status = parse(versioned.value());
             byUuid.put(status.path("index_uuid").asText(), status);
+            revisions.put(key, versioned.revision());
         });
 
         NavigableMap<String, IndexHealth> indices = new TreeMap<>();
@@ -142,9 +154,20 @@ final class HealthProjections {
             String name = key.substring(IndexAbstractions.INDEX_KEY_PREFIX.length());
             JsonNode metadata = parse(versioned.value());
             JsonNode projected = byUuid.get(metadata.path("uuid").asText());
-            indices.put(name, projected != null ? projected(name, projected) : unprojected(name, metadata));
+            indices.put(name, projected != null ? projected(name, metadata, projected) : unprojected(name, metadata));
+            revisions.put(key, versioned.revision());
         });
-        return new HealthProjections(cluster, indices);
+        return new HealthProjections(cluster, indices, revisions);
+    }
+
+    /**
+     * The store revision of every index document and index projection read, by key. What {@code cluster.state}
+     * derives its {@code version} and {@code state_uuid} from, alongside the documents it reads itself.
+     * {@code status/cluster} is deliberately absent: it is rewritten every heartbeat whether or not anything
+     * changed, which would make the version move every ten seconds.
+     */
+    NavigableMap<String, Long> revisions() {
+        return revisions;
     }
 
     /**
@@ -177,11 +200,21 @@ final class HealthProjections {
         return Optional.ofNullable(indices.get(name));
     }
 
-    private static IndexHealth projected(String name, JsonNode status) {
+    private static IndexHealth projected(String name, JsonNode document, JsonNode status) {
         NavigableMap<Integer, List<Copy>> shards = new TreeMap<>();
         status.path("shards").properties().forEach(shard -> {
             List<Copy> copies = new ArrayList<>();
-            shard.getValue().forEach(copy -> copies.add(new Copy(copy.path("role").asText(), copy.path("state").asText())));
+            shard.getValue().forEach(copy -> {
+                List<String> inSync = null;
+                if (copy.has("in_sync")) {
+                    inSync = new ArrayList<>();
+                    for (JsonNode id : copy.get("in_sync")) {
+                        inSync.add(id.asText());
+                    }
+                }
+                copies.add(new Copy(copy.path("node_id").asText(null), copy.path("role").asText(), copy.path("state").asText(),
+                    copy.path("allocation_id").asText(null), inSync));
+            });
             shards.put(Integer.parseInt(shard.getKey()), copies);
         });
         int replicas = status.path("number_of_replicas").asInt(0);
@@ -189,6 +222,7 @@ final class HealthProjections {
             // The tenant's name, not the projection's: the projection's is the same today, and this one is the
             // name every other operation answers with.
             name,
+            document,
             Status.of(status.path("status").asText(null)),
             status.path("number_of_shards").asInt(0),
             replicas,
@@ -218,7 +252,7 @@ final class HealthProjections {
             }
         }
         return new IndexHealth(
-            name, open ? Status.RED : Status.GREEN, shards, replicas, copies, 0, 0, 0, open ? shards * copies : 0, placed);
+            name, metadata, open ? Status.RED : Status.GREEN, shards, replicas, copies, 0, 0, 0, open ? shards * copies : 0, placed);
     }
 
     private static int intSetting(Settings settings, String key, int fallback) {
