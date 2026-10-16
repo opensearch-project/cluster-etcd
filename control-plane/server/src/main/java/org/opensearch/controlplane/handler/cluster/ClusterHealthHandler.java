@@ -4,16 +4,14 @@
  */
 package org.opensearch.controlplane.handler.cluster;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
-import org.opensearch.controlplane.handler.cluster.HealthProjections.Copy;
-import org.opensearch.controlplane.handler.cluster.HealthProjections.IndexHealth;
-import org.opensearch.controlplane.handler.cluster.HealthProjections.Status;
-import org.opensearch.controlplane.handler.cluster.HealthProjections.Totals;
+import org.opensearch.controlplane.handler.cluster.StatusProjections.Copy;
+import org.opensearch.controlplane.handler.cluster.StatusProjections.IndexHealth;
+import org.opensearch.controlplane.handler.cluster.StatusProjections.Status;
+import org.opensearch.controlplane.handler.cluster.StatusProjections.Totals;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
-import org.opensearch.controlplane.handler.indices.IndexManagementTasks;
 import org.opensearch.controlplane.resolver.IndexAbstractions;
 import org.opensearch.controlplane.resolver.IndexNameExpressionResolver;
 import org.opensearch.controlplane.resolver.IndexResolution;
@@ -37,7 +35,7 @@ import java.util.Optional;
  *
  * <p>Handed here by the data plane, which refuses both for a tenant (its {@code FINDINGS_FROM_THE_DATA_PLANE.md},
  * item 1, in this component). A read of documents the supervisor writes, so it needs no node. See
- * {@link HealthProjections} for which document supplies what, and why the figures are the supervisor's rather
+ * {@link StatusProjections} for which document supplies what, and why the figures are the supervisor's rather
  * than recomputed.
  *
  * <h2>Waiting</h2>
@@ -146,7 +144,7 @@ public final class ClusterHealthHandler implements OperationHandler {
         long deadline = start + Math.min(parsed.timeout().toNanos(), MAX_WAIT.toNanos());
         long clusterManagerDeadline = start + Math.min(parsed.clusterManagerTimeout().toNanos(), MAX_WAIT.toNanos());
         while (true) {
-            HealthProjections projections = HealthProjections.read(context.store());
+            StatusProjections projections = StatusProjections.read(context.store());
             boolean fresh = projections.fresh(context.nowEpochMillis());
             if (fresh == false && parsed.local() == false) {
                 if (System.nanoTime() - clusterManagerDeadline >= 0) {
@@ -313,7 +311,7 @@ public final class ClusterHealthHandler implements OperationHandler {
     /** The indices a request reports on, and whether it named one that does not exist. */
     private record Selection(List<IndexHealth> indices, boolean missing) {}
 
-    private static Selection select(Request parsed, HealthProjections projections, OperationContext context) {
+    private static Selection select(Request parsed, StatusProjections projections, OperationContext context) {
         if (parsed.expressions().isEmpty()) {
             return new Selection(List.copyOf(projections.indices().values()), false);
         }
@@ -330,7 +328,7 @@ public final class ClusterHealthHandler implements OperationHandler {
         return new Selection(selected, missing);
     }
 
-    private static boolean satisfied(Request parsed, HealthProjections projections, Totals totals, Status status, boolean missing) {
+    private static boolean satisfied(Request parsed, StatusProjections projections, Totals totals, Status status, boolean missing) {
         int met = 0;
         if (parsed.waitForStatus() != null && status.compareTo(parsed.waitForStatus()) <= 0) met++;
         if (parsed.waitForNoRelocating()) met++;
@@ -354,19 +352,14 @@ public final class ClusterHealthHandler implements OperationHandler {
         RestRequest request,
         Request parsed,
         OperationContext context,
-        HealthProjections projections,
+        StatusProjections projections,
         Selection selection,
         Totals totals,
         Status status,
         boolean fresh,
         boolean timedOut
     ) {
-        long now = context.nowEpochMillis();
-        List<JsonNode> pending = IndexManagementTasks.pending(context.store());
-        long longestWait = pending.stream()
-            .mapToLong(task -> Math.max(0, now - task.path(IndexManagementTasks.SUBMITTED_AT).asLong(now)))
-            .max()
-            .orElse(0);
+        HealthFigures.PendingTasks pending = HealthFigures.pendingTasks(context.store(), context.nowEpochMillis());
 
         ObjectNode body = Json.object();
         body.put("cluster_name", identity.clusterName());
@@ -382,10 +375,10 @@ public final class ClusterHealthHandler implements OperationHandler {
         body.put("initializing_shards", totals.initializingShards());
         body.put("unassigned_shards", totals.unassignedShards());
         body.put("delayed_unassigned_shards", 0);
-        body.put("number_of_pending_tasks", pending.size());
+        body.put("number_of_pending_tasks", pending.count());
         body.put("number_of_in_flight_fetch", 0);
-        body.put("task_max_waiting_in_queue_millis", longestWait);
-        body.put("active_shards_percent_as_number", activeShardsPercent(status, projections));
+        body.put("task_max_waiting_in_queue_millis", pending.longestWaitMillis());
+        body.put("active_shards_percent_as_number", HealthFigures.activeShardsPercent(status, projections));
 
         if (parsed.level().equals("indices") || parsed.level().equals("shards")) {
             ObjectNode indices = body.putObject("indices");
@@ -424,19 +417,5 @@ public final class ClusterHealthHandler implements OperationHandler {
         shard.put("relocating_shards", 0);
         shard.put("initializing_shards", initializing);
         shard.put("unassigned_shards", Math.max(0, index.copiesPerShard() - copies.size()));
-    }
-
-    /**
-     * {@code ClusterStateHealth}: exactly 100 when green; otherwise active over every copy of every index,
-     * whatever the request selected. Upstream divides zero by zero there and renders NaN; this answers 100,
-     * since with no copies there is nothing inactive.
-     */
-    private static double activeShardsPercent(Status status, HealthProjections projections) {
-        if (status == Status.GREEN) {
-            return 100.0;
-        }
-        Totals all = Totals.over(projections.indices().values());
-        int total = all.activeShards() + all.initializingShards() + all.unassignedShards();
-        return total == 0 ? 100.0 : ((double) all.activeShards() / total) * 100;
     }
 }

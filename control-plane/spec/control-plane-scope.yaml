@@ -57,8 +57,7 @@ target_opensearch_version: '3.9.0'
 # Namespaces excluded wholesale. Value is the reason (shown in the scope report).
 # ---------------------------------------------------------------------------
 excluded_namespaces:
-  cat: "text/plain tabular rendering plus the v/h/s/format machinery; deferred"
-  list: "paginated cat-style tabular output; same rendering machinery as cat; deferred"
+  list: "paginated cat-style tabular output; shares cat's table rendering, which exists now, but adds pagination; deferred"
   security: "requires an authn/authz backend and the security config index; deferred"
 
   nodes: "per-node runtime state; a standalone control plane has no data nodes to report on"
@@ -126,6 +125,7 @@ reviewed_namespaces:
   - ingestion
   - snapshot
   - search_pipeline
+  - cat
 
 # ---------------------------------------------------------------------------
 # In scope. These get a generated route and a handler slot.
@@ -205,6 +205,14 @@ included_operations:
   # it needs no hardware anyone has to provision.
   - indices.rollover
 
+  # -- cat: the four that the data plane refuses for a tenant, because each calls cluster.health or
+  #    cluster.state internally, so they have nowhere else to be answered. The tables are views of
+  #    the same documents those two read. The rest of the namespace is classified below.
+  - cat.health
+  - cat.indices
+  - cat.shards
+  - cat.nodes
+
   # -- cluster: cluster state, settings, component templates, coordination.
   - cluster.health
   - cluster.state
@@ -251,6 +259,29 @@ included_operations:
 # Out of scope, with the reason. Value is shown in the scope report.
 # ---------------------------------------------------------------------------
 excluded_operations:
+  # -- cat: the rest of the namespace. The table machinery exists now, so the first group is a matter of
+  #    adding a handler; they wait for a reason to, not for a design.
+  cat.aliases: "answerable from alias documents; not yet needed, add with the table machinery already in place"
+  cat.templates: "answerable from template documents; not yet needed"
+  cat.repositories: "answerable from repository documents; not yet needed"
+  cat.pending_tasks: "answerable from task records; not yet needed"
+  cat.nodeattrs: "answerable from status/nodes; not yet needed"
+  cat.master: "there is no elected cluster manager to report; the table would always be empty"
+  cat.cluster_manager: "there is no elected cluster manager to report; the table would always be empty"
+  cat.help: "lists the cat endpoints; not yet needed"
+  cat.count: "a document count, which nothing projects yet; see FINDINGS_FROM_THE_CONTROL_PLANE.md in the data plane"
+  cat.allocation: "per-node disk usage, which is operator-facing and not projected into a tenant's key space"
+  cat.recovery: "shard recovery progress, node-local runtime"
+  cat.segments: "shard-level segment statistics"
+  cat.segment_replication: "shard-level replication statistics"
+  cat.fielddata: "node-local heap usage"
+  cat.thread_pool: "node-local runtime"
+  cat.plugins: "per-node installed plugins; operator-facing"
+  cat.tasks: "deferred with the tasks namespace, pending the task identity model"
+  cat.snapshots: "snapshot data, which belongs to another plane"
+  cat.pit_segments: "point-in-time readers are data plane"
+  cat.all_pit_segments: "point-in-time readers are data plane"
+
   # -- _core: the data plane.
   search: "data plane"
   search_shards: "requires shard routing table and allocation state"
