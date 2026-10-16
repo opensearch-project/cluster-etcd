@@ -48,6 +48,47 @@ public final class TimeValues {
             + "] as a time value: unit is missing or unrecognized");
     }
 
+    /**
+     * {@code TimeValue.toString()}: the largest unit the value reaches, to one decimal place that is truncated
+     * rather than rounded and dropped when it is zero. {@code 0} is {@code 0s}; {@code 3200ms} is {@code 3.2s};
+     * {@code 15ms} stays {@code 15ms}.
+     */
+    public static String format(Duration duration) {
+        long nanos = duration.toNanos();
+        if (nanos == 0) {
+            return "0s";
+        }
+        double value = nanos;
+        String suffix = "nanos";
+        if (nanos >= ChronoUnit.DAYS.getDuration().toNanos()) {
+            value = nanos / (double) ChronoUnit.DAYS.getDuration().toNanos();
+            suffix = "d";
+        } else if (nanos >= ChronoUnit.HOURS.getDuration().toNanos()) {
+            value = nanos / (double) ChronoUnit.HOURS.getDuration().toNanos();
+            suffix = "h";
+        } else if (nanos >= ChronoUnit.MINUTES.getDuration().toNanos()) {
+            value = nanos / (double) ChronoUnit.MINUTES.getDuration().toNanos();
+            suffix = "m";
+        } else if (nanos >= ChronoUnit.SECONDS.getDuration().toNanos()) {
+            value = nanos / (double) ChronoUnit.SECONDS.getDuration().toNanos();
+            suffix = "s";
+        } else if (nanos >= ChronoUnit.MILLIS.getDuration().toNanos()) {
+            value = nanos / (double) ChronoUnit.MILLIS.getDuration().toNanos();
+            suffix = "ms";
+        } else if (nanos >= ChronoUnit.MICROS.getDuration().toNanos()) {
+            value = nanos / (double) ChronoUnit.MICROS.getDuration().toNanos();
+            suffix = "micros";
+        }
+        // Strings.format1Decimals: one digit after the point, truncated, and none if that digit is zero.
+        String text = String.valueOf(value);
+        int point = text.indexOf('.') + 1;
+        int exponent = text.indexOf('E');
+        String whole = text.substring(0, point - 1);
+        char fraction = text.charAt(point);
+        String tail = exponent == -1 ? "" : text.substring(exponent);
+        return (fraction == '0' ? whole : text.substring(0, point) + fraction) + tail + suffix;
+    }
+
     private static Duration of(String value, String normalized, String suffix, ChronoUnit unit, String setting) {
         String number = normalized.substring(0, normalized.length() - suffix.length()).trim();
         long amount;
