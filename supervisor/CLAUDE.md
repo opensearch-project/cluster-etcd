@@ -86,8 +86,9 @@ promotion (§27–28, finding 11).
 1. **Somewhere to record that a drain or dual-run is intended.** Open question 11 (announced deployments) and
    §28.9. It blocks three things: intentional demotion (a drain), the rollback dual-run (§27.4), and exempting
    an intended dual-run from `PRIMARY_CONFLICT`. This is the next design task.
-2. **The rest of §28:** `retain_remote_history` and `abandon_remote_terms`, the scoped metadata lock (§27.5),
-   and the upstream search-replica pin (§27.3). None of it is built.
+2. **The rest of §28:** `retain_remote_history` and `abandon_remote_terms`, and the upstream search-replica pin
+   (§27.3). None of it is built. The scoped metadata lock (§27.5) is no longer needed by anything planned, since
+   dual-runs are for dedicated pools only (§29.4).
 3. **No way to promote an out-of-sync replica on purpose.** With no in-sync replica left, a docrep shard stays
    without a primary; OpenSearch has `allocate_stale_primary` for this, and nothing here does.
 4. **Two projections still read the configured copy count rather than the authorised one:** `Differ` and
