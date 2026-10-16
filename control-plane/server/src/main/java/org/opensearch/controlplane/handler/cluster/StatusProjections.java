@@ -43,10 +43,10 @@ import java.util.TreeMap;
  * {@code status/cluster}'s own totals, so that filtered and unfiltered requests agree and an index created
  * since the last pass counts in both.
  */
-final class HealthProjections {
+public final class StatusProjections {
 
-    static final String CLUSTER_KEY = "status/cluster";
-    static final String INDICES_PREFIX = "status/indices/";
+    public static final String CLUSTER_KEY = "status/cluster";
+    public static final String INDICES_PREFIX = "status/indices/";
 
     /**
      * How much older than {@code heartbeat_ms} {@code status/cluster} may be before nothing is managing the
@@ -58,10 +58,10 @@ final class HealthProjections {
     /** What a supervisor that predates the heartbeat publishes as {@code heartbeat_ms}; read as the current default. */
     static final long DEFAULT_HEARTBEAT_MS = 10_000;
 
-    enum Status {
+    public enum Status {
         GREEN, YELLOW, RED;
 
-        static Status of(String value) {
+        public static Status of(String value) {
             return switch (value == null ? "" : value.toLowerCase(java.util.Locale.ROOT)) {
                 case "green" -> GREEN;
                 case "yellow" -> YELLOW;
@@ -70,11 +70,11 @@ final class HealthProjections {
             };
         }
 
-        Status worst(Status other) {
+        public Status worst(Status other) {
             return compareTo(other) >= 0 ? this : other;
         }
 
-        String wire() {
+        public String wire() {
             return name().toLowerCase(java.util.Locale.ROOT);
         }
     }
@@ -84,8 +84,8 @@ final class HealthProjections {
      * document-replication copy only, carried verbatim ({@code SUPERVISOR_KEYS.md}, finding 12); {@code inSync}
      * is set on a primary.
      */
-    record Copy(String nodeId, String role, String state, String allocationId, List<String> inSync) {
-        boolean started() {
+    public record Copy(String nodeId, String role, String state, String allocationId, List<String> inSync) {
+        public boolean started() {
             return "STARTED".equals(state);
         }
     }
@@ -94,7 +94,7 @@ final class HealthProjections {
      * One index's health: the supervisor's figures, or the unplaced figures for one it has not projected.
      * {@code document} is this service's own index document, which {@code cluster.state} renders.
      */
-    record IndexHealth(
+    public record IndexHealth(
         String name,
         JsonNode document,
         Status status,
@@ -109,9 +109,9 @@ final class HealthProjections {
     ) {}
 
     /** Status and counts over a set of indices. Relocating shards are always zero: no copy here relocates. */
-    record Totals(Status status, int activePrimaryShards, int activeShards, int initializingShards, int unassignedShards) {
+    public record Totals(Status status, int activePrimaryShards, int activeShards, int initializingShards, int unassignedShards) {
 
-        static Totals over(Collection<IndexHealth> indices) {
+        public static Totals over(Collection<IndexHealth> indices) {
             Status status = Status.GREEN;
             int primaries = 0;
             int active = 0;
@@ -131,14 +131,23 @@ final class HealthProjections {
     private final JsonNode cluster;
     private final NavigableMap<String, IndexHealth> indices;
     private final NavigableMap<String, Long> revisions;
+    private final NavigableMap<String, JsonNode> nodes;
 
-    private HealthProjections(JsonNode cluster, NavigableMap<String, IndexHealth> indices, NavigableMap<String, Long> revisions) {
+    private StatusProjections(
+        JsonNode cluster,
+        NavigableMap<String, IndexHealth> indices,
+        NavigableMap<String, Long> revisions,
+        NavigableMap<String, JsonNode> nodes
+    ) {
         this.cluster = cluster;
         this.indices = indices;
         this.revisions = revisions;
+        this.nodes = nodes;
     }
 
-    static HealthProjections read(KeyValueStore store) {
+    public static final String NODES_PREFIX = "status/nodes/";
+
+    public static StatusProjections read(KeyValueStore store) {
         JsonNode cluster = store.get(CLUSTER_KEY).map(versioned -> parse(versioned.value())).orElse(null);
 
         NavigableMap<String, Long> revisions = new TreeMap<>();
@@ -157,16 +166,31 @@ final class HealthProjections {
             indices.put(name, projected != null ? projected(name, metadata, projected) : unprojected(name, metadata));
             revisions.put(key, versioned.revision());
         });
-        return new HealthProjections(cluster, indices, revisions);
+
+        // The tenant's own nodes, by node id. A lost node is not here: the supervisor leaves it out, and its
+        // copies out of the index projections, so the three agree.
+        NavigableMap<String, JsonNode> nodes = new TreeMap<>();
+        store.scanPrefix(NODES_PREFIX).forEach((key, versioned) -> {
+            JsonNode node = parse(versioned.value());
+            nodes.put(node.path("node_id").asText(key.substring(NODES_PREFIX.length())), node);
+            revisions.put(key, versioned.revision());
+        });
+        return new StatusProjections(cluster, indices, revisions, nodes);
+    }
+
+    /** The tenant's nodes as the supervisor projects them, by node id: {@code status/nodes/<id>} documents. */
+    public NavigableMap<String, JsonNode> nodes() {
+        return nodes;
     }
 
     /**
-     * The store revision of every index document and index projection read, by key. What {@code cluster.state}
-     * derives its {@code version} and {@code state_uuid} from, alongside the documents it reads itself.
+     * The store revision of every index document, index projection and node projection read, by key. What
+     * {@code cluster.state} derives its {@code version} and {@code state_uuid} from, alongside the documents it
+     * reads itself.
      * {@code status/cluster} is deliberately absent: it is rewritten every heartbeat whether or not anything
      * changed, which would make the version move every ten seconds.
      */
-    NavigableMap<String, Long> revisions() {
+    public NavigableMap<String, Long> revisions() {
         return revisions;
     }
 
@@ -174,7 +198,7 @@ final class HealthProjections {
      * Whether a supervisor is managing the tenant: {@code status/cluster} exists and is no older than its
      * heartbeat plus a failover. Absent means no supervisor has projected the tenant yet.
      */
-    boolean fresh(long nowMillis) {
+    public boolean fresh(long nowMillis) {
         if (cluster == null) {
             return false;
         }
@@ -183,20 +207,20 @@ final class HealthProjections {
         return nowMillis - cluster.path("observed_at").asLong(0) <= allowed;
     }
 
-    int numberOfNodes() {
+    public int numberOfNodes() {
         return cluster == null ? 0 : cluster.path("number_of_nodes").asInt(0);
     }
 
-    int numberOfDataNodes() {
+    public int numberOfDataNodes() {
         return cluster == null ? 0 : cluster.path("number_of_data_nodes").asInt(0);
     }
 
     /** Every index this service knows of, by the tenant's own name. */
-    NavigableMap<String, IndexHealth> indices() {
+    public NavigableMap<String, IndexHealth> indices() {
         return indices;
     }
 
-    Optional<IndexHealth> index(String name) {
+    public Optional<IndexHealth> index(String name) {
         return Optional.ofNullable(indices.get(name));
     }
 

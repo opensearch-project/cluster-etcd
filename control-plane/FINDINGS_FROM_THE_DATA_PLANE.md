@@ -8,8 +8,8 @@ about, and the tests worth having. Reply inline.
 
 ## 1. `cluster.health` and `cluster.state` for a tenant are this component's to answer
 
-> **In progress.** `cluster.health` and `cluster.state` are done; `_cat/health`, `_cat/indices`, `_cat/shards`
-> and `_cat/nodes` are next, which bring `cat` into scope.
+> **Done**, apart from the figures noted below. `cluster.health`, `cluster.state` and the four cat tables
+> (`_cat/health`, `_cat/indices`, `_cat/shards`, `_cat/nodes`) are answered here.
 >
 > - **Figures are the supervisor's**, as asked. Each index's status and counts come from its
 >   `status/indices/<uuid>` document, never recomputed from the observed copies. Cluster figures are the sum over
@@ -46,8 +46,19 @@ about, and the tests worth having. Reply inline.
 >   projections agrees with the data plane node's own serialisation on field order, node ids, shard copies and
 >   allocation ids. The only differences are the known ones, plus the fourth copy of an index that wants three
 >   replicas on three nodes, which the node does not fabricate and this shows as unassigned.
-> - **Not covered:** per-index `primary_terms`, which the supervisor keeps under `supervisor/terms/` outside the
->   tenant's key space, and `_cat/indices` document counts and store sizes, as above.
+> - **Not covered:** per-index `primary_terms`, by decision: a tenant has no use for the term, and an operator can
+>   have an API of their own. The supervisor's finding 2 is declined for that reason.
+>
+> **The cat tables**, as the finding asked, with the proxy routing all four here:
+>
+> - `_cat/health` is `cluster.health`'s figures, read by the same code; `_cat/shards` is `cluster.state`'s
+>   routing, one row per copy, with the copies an index wants and nothing holds as `UNASSIGNED` rows; `_cat/nodes`
+>   is `status/nodes`, so only the tenant's own nodes.
+> - **Document counts and store sizes are `x`**, which the finding named as open. The request for them is
+>   [`FINDINGS_FROM_THE_CONTROL_PLANE.md`](../data-plane/FINDINGS_FROM_THE_CONTROL_PLANE.md) in the data plane: per
+>   copy, written by the node, never summed there, because a dual-run gives a shard two primaries and the reader
+>   has to define the total. The heap, memory, CPU and load columns of `_cat/nodes` are `x` too: they are
+>   per-node runtime that the tenant-visible projection omits on purpose.
 
 ### What changed on the data plane
 

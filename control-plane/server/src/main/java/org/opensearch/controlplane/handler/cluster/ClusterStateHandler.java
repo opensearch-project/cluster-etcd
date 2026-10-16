@@ -8,7 +8,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
-import org.opensearch.controlplane.handler.cluster.HealthProjections.IndexHealth;
+import org.opensearch.controlplane.handler.cluster.StatusProjections.IndexHealth;
 import org.opensearch.controlplane.handler.core.ClusterIdentity;
 import org.opensearch.controlplane.handler.core.ClusterUuid;
 import org.opensearch.controlplane.handler.template.Templates;
@@ -99,7 +99,6 @@ public final class ClusterStateHandler implements OperationHandler {
     private static final Set<String> METRICS = Set.of(
         "version", "master_node", "cluster_manager_node", "blocks", "nodes", "metadata", "routing_table", "routing_nodes");
 
-    private static final Duration DEFAULT_CLUSTER_MANAGER_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration DEFAULT_WAIT_FOR_TIMEOUT = Duration.ofMinutes(1);
 
     /** {@code ClusterStateRequest}'s index options: open indices, and a missing name is simply skipped. */
@@ -133,7 +132,7 @@ public final class ClusterStateHandler implements OperationHandler {
         Long waitForMetadataVersion;
         try {
             clusterManagerTimeout = ClusterRequests.timeValue(
-                request, ClusterRequests.clusterManagerTimeoutParam(request), DEFAULT_CLUSTER_MANAGER_TIMEOUT);
+                request, ClusterRequests.clusterManagerTimeoutParam(request), ClusterRequests.DEFAULT_CLUSTER_MANAGER_TIMEOUT);
             waitForTimeout = ClusterRequests.timeValue(request, "wait_for_timeout", DEFAULT_WAIT_FOR_TIMEOUT);
             waitForMetadataVersion = waitForMetadataVersion(request);
         } catch (IllegalArgumentException e) {
@@ -216,7 +215,7 @@ public final class ClusterStateHandler implements OperationHandler {
      * which is the same freedom a scan has.
      */
     private record Snapshot(
-        HealthProjections projections,
+        StatusProjections projections,
         NavigableMap<String, JsonNode> nodes,
         NavigableMap<String, JsonNode> legacyTemplates,
         Map<String, List<String>> aliasesByIndex,
@@ -227,18 +226,11 @@ public final class ClusterStateHandler implements OperationHandler {
     ) {
 
         static Snapshot read(KeyValueStore store) {
-            HealthProjections projections = HealthProjections.read(store);
+            StatusProjections projections = StatusProjections.read(store);
             NavigableMap<String, Long> metadataRevisions = new TreeMap<>();
             NavigableMap<String, Long> routingRevisions = new TreeMap<>();
             projections.revisions().forEach((key, revision) ->
                 (key.startsWith(IndexAbstractions.INDEX_KEY_PREFIX) ? metadataRevisions : routingRevisions).put(key, revision));
-
-            NavigableMap<String, JsonNode> nodes = new TreeMap<>();
-            store.scanPrefix("status/nodes/").forEach((key, versioned) -> {
-                JsonNode node = parse(versioned.value());
-                nodes.put(node.path("node_id").asText(key.substring("status/nodes/".length())), node);
-                routingRevisions.put(key, versioned.revision());
-            });
 
             NavigableMap<String, JsonNode> templates = new TreeMap<>();
             store.scanPrefix(Templates.LEGACY_KEY_PREFIX).forEach((key, versioned) -> {
@@ -261,7 +253,7 @@ public final class ClusterStateHandler implements OperationHandler {
 
             NavigableMap<String, Long> all = new TreeMap<>(metadataRevisions);
             all.putAll(routingRevisions);
-            return new Snapshot(projections, nodes, templates, aliasesByIndex, clusterUuid, metadataVersion,
+            return new Snapshot(projections, projections.nodes(), templates, aliasesByIndex, clusterUuid, metadataVersion,
                 Math.max(metadataVersion, routingVersion), digest(clusterUuid, all));
         }
 

@@ -8,6 +8,10 @@ import org.opensearch.controlplane.capability.DataPlaneCapabilities;
 import org.opensearch.controlplane.capability.PermissiveCapabilities;
 import org.opensearch.controlplane.capability.PermissiveSettings;
 import org.opensearch.controlplane.capability.SettingsRegistry;
+import org.opensearch.controlplane.handler.cat.CatHealthHandler;
+import org.opensearch.controlplane.handler.cat.CatIndicesHandler;
+import org.opensearch.controlplane.handler.cat.CatNodesHandler;
+import org.opensearch.controlplane.handler.cat.CatShardsHandler;
 import org.opensearch.controlplane.handler.cluster.ClusterHealthHandler;
 import org.opensearch.controlplane.handler.cluster.ClusterStateHandler;
 import org.opensearch.controlplane.handler.cluster.GetClusterSettingsHandler;
@@ -139,6 +143,10 @@ public final class ControlPlaneHandlers {
             .register(new PendingTasksHandler())
             .register(new ClusterHealthHandler(identity))
             .register(new ClusterStateHandler(identity))
+            .register(new CatHealthHandler(identity))
+            .register(new CatIndicesHandler())
+            .register(new CatShardsHandler())
+            .register(new CatNodesHandler())
             // ingest and search pipelines are the same API twice; see PipelineKind
             .register(new PutPipelineHandler(PipelineKind.ingest(), capabilities))
             .register(new GetPipelineHandler(PipelineKind.ingest()))

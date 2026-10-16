@@ -111,7 +111,11 @@ per-node documents gain nothing.
 
 ## 2. `cluster.state` cannot show `primary_terms`, because the terms are outside the tenant's key space
 
-> **Open.** Optional: nothing is blocked on it, and the control plane renders a valid `cluster.state` without it.
+> **Declined.** The primary term is the mechanism by which the system guarantees a single winner when two
+> copies both claim to be the primary, under push-based ingestion. A tenant has no use for it: in the intended
+> setup the system takes care of it and the tenant does not think about it. An operator who needs it can have an
+> operator-facing API, which is the place for it. So `cluster.state` omits `primary_terms` and `primary_terms_map`
+> by decision, not as a gap, and nothing is asked of this side. The finding stays below for the reasoning.
 
 ### What the control plane does today
 

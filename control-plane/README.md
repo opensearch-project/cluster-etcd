@@ -10,8 +10,8 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-119 routes, 75 operation groups, 57 implemented, 18 stubbed
-(60 / 15 when the capabilities file declares script languages, contexts and grok patterns)
+125 routes, 79 operation groups, 61 implemented, 18 stubbed
+(64 / 15 when the capabilities file declares script languages, contexts and grok patterns)
 ```
 
 | namespace | routes | implemented |
@@ -22,6 +22,7 @@ Early. The full control plane surface is routed; the rest returns `501 Not Imple
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`†, `get_script_context`† |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline`, `processor_grok`† |
 | `search_pipeline` | 4 | `put`, `get`, `delete` |
+| `cat` | 6 | `health`, `indices`, `shards`, `nodes`: the four a tenant's `cluster.health` and `cluster.state` calls were behind. Nineteen others are classified and out of scope |
 | `ingestion` | 2 | `pause`, `resume` — *controlling* pull-based ingestion. `get_state` is out of scope |
 
 **† Three operations are registered only when the capabilities file declares their data**:
@@ -213,7 +214,7 @@ service can serve a request. That is why `indices.get_mapping` is in scope while
 `indices.stats`, `indices.refresh`, and `indices.analyze` are not, even though all
 four live in the `indices` namespace.
 
-Currently out of scope wholesale: `cat` and `list` (text/plain table rendering),
+Currently out of scope wholesale: `list` (cat-style tables with pagination),
 `security` (needs an auth backend), the index-management plugins (`ism`, `sm`,
 `rollups`, `transforms`, `wlm`), and everything node- or shard-level. Each is one
 line to re-enable.
@@ -829,6 +830,49 @@ Considered divergences, on `ClusterStateHandler` and `ClusterStateSections`:
 - A `wait_for_metadata_version` that times out answers `200` with `wait_for_timed_out: true` and the cluster name
   and uuid; upstream builds that response with no state and, as far as the source shows, fails serialising it.
 - Keyed collections come out sorted, where upstream emits hash order.
+
+## Cat tables
+
+`_cat/health`, `_cat/indices`, `_cat/shards` and `_cat/nodes` are answered here because the data plane refuses
+`cluster.health` and `cluster.state` for a tenant and each of them calls one of the two. They are views of the
+same documents (see [Cluster health and state](#cluster-health-and-state)), read by the same code: `_cat/health`
+uses `cluster.health`'s figures and pending-task count, and `_cat/shards` uses the routing `cluster.state` renders,
+so the tables cannot disagree with the JSON APIs. The other nineteen `cat` groups are classified in the scope
+file; the metadata-only ones (`aliases`, `templates`, `repositories`, `pending_tasks`, `nodeattrs`) are one handler
+each now that the table machinery exists.
+
+**The table machinery follows `RestTable`**, checked against a node's output byte for byte: columns by name or
+alias, shown as typed (`h`), wildcards, a header with `v`, `s` with `:asc`/`:desc` comparing values not text,
+`?help`, `format=json` as an array of objects of strings with `null` for blank, `Accept: application/json`, and a
+`time` unit for the one time column. Defaults, aliases, descriptions and alignment are those of the node's own
+`?help`. A column this service cannot fill is not listed, and asking for one is silently dropped, as for any unknown
+name; `_cat/nodes`' disk, JVM and file-descriptor columns, `_cat/indices`' `pri.`-paired statistics, and
+`_cat/shards`' `unassigned.*` are not supported.
+
+**Document counts and store sizes print `x`.** That is `docs.count`, `docs.deleted`, `store.size` and
+`pri.store.size` in `_cat/indices`; `docs`, `store` and `docs.deleted` in `_cat/shards`; and heap, memory, CPU and
+load in `_cat/nodes`. `x` is what OpenSearch writes where it cannot say either, and a closed index leaves its
+statistics blank as upstream does. Nothing reports the first group per copy yet; the data plane's
+[`FINDINGS_FROM_THE_CONTROL_PLANE.md`](../data-plane/FINDINGS_FROM_THE_CONTROL_PLANE.md) asks for it, and says why
+a sum cannot be taken by the node: a rollout can run two primaries of a shard at once, so "the primaries' size" is
+whatever the reader defines. The definition there, and the one used here once the figures exist, is that
+`docs.count` and `pri.store.size` sum each shard's *projected* primary (the old one during a dual-run) and
+`store.size` sums every copy, since that is the disk in use.
+
+**Where it differs from OpenSearch**, on the handlers:
+
+- Rows come out sorted (by index and shard, or by node name), where upstream's order is a hash map's.
+- An unknown `s` column is a `400`, where upstream throws and answers `500`.
+- Padding is always exact; upstream's pad width is a `byte` that wraps for a gap of 128 or more.
+- `format=yaml`, `smile` and `cbor` are refused with a `400`; upstream writes them. Any other unknown format is
+  text, as upstream reads it.
+- Without a supervisor each table waits `cluster_manager_timeout` and answers `503`, as `cluster.health` does;
+  `local=true` takes the last documents. `?help` needs none.
+- `_cat/indices` leaves hidden indices out unless `expand_wildcards` includes them, and `pri=true` does not add
+  the paired columns to an `h` list. `_cat/shards` lists no shadow primary yet: the supervisor will project the
+  second primary of a dual-run beside the first rather than as a shard copy, and nothing here reads it.
+- `_cat/nodes`' `node.role` is `d` for a data node and `-` for one that only coordinates, and `node.roles` names
+  the supervisor's roles; `cluster_manager` is `x`, as upstream writes it with no cluster manager elected.
 
 ## Building
 
