@@ -23,7 +23,6 @@ import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.rest.RestStatus;
-import org.opensearch.controlplane.rest.TimeValues;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -78,11 +77,7 @@ public final class ClusterHealthHandler implements OperationHandler {
     /** Upstream's default for {@code timeout}, and so for {@code cluster_manager_timeout}. */
     static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
 
-    /** A request holds a dispatch slot while it waits, so no wait is unbounded, {@code timeout=-1} included. */
-    static final Duration MAX_WAIT = Duration.ofMinutes(5);
-
-    /** How often a waiting request re-reads. The supervisor passes every 2 s, so faster finds nothing new. */
-    private static final Duration POLL = Duration.ofSeconds(1);
+    static final Duration MAX_WAIT = ClusterRequests.MAX_WAIT;
 
     private static final List<String> PRIORITIES = List.of("IMMEDIATE", "URGENT", "HIGH", "NORMAL", "LOW", "LANGUID");
 
@@ -90,7 +85,7 @@ public final class ClusterHealthHandler implements OperationHandler {
     private final Duration poll;
 
     public ClusterHealthHandler(ClusterIdentity identity) {
-        this(identity, POLL);
+        this(identity, ClusterRequests.POLL);
     }
 
     ClusterHealthHandler(ClusterIdentity identity, Duration poll) {
@@ -157,7 +152,7 @@ public final class ClusterHealthHandler implements OperationHandler {
                 if (System.nanoTime() - clusterManagerDeadline >= 0) {
                     return ErrorResponses.clusterManagerNotDiscovered(request);
                 }
-                sleepUntil(clusterManagerDeadline);
+                ClusterRequests.sleepUntil(clusterManagerDeadline, poll);
                 continue;
             }
 
@@ -171,7 +166,7 @@ public final class ClusterHealthHandler implements OperationHandler {
             if (satisfied || System.nanoTime() - deadline >= 0) {
                 return render(request, parsed, context, projections, selection, totals, status, fresh, satisfied == false);
             }
-            sleepUntil(deadline);
+            ClusterRequests.sleepUntil(deadline, poll);
         }
     }
 
@@ -179,9 +174,9 @@ public final class ClusterHealthHandler implements OperationHandler {
 
     /** The validation {@code ClusterHealthRequest.validate} runs, reported as it reports it. */
     private static Optional<RestResponse> validate(RestRequest request) {
-        if (request.param("master_timeout") != null && request.param("cluster_manager_timeout") != null) {
-            return Optional.of(ErrorResponses.structured(RestStatus.BAD_REQUEST, "parse_exception",
-                "Please only use one of the request parameters [master_timeout, cluster_manager_timeout].", request));
+        Optional<RestResponse> both = ClusterRequests.rejectBothManagerTimeouts(request);
+        if (both.isPresent()) {
+            return both;
         }
         if (request.param("wait_for_relocating_shards") != null) {
             return Optional.of(ErrorResponses.illegalArgument(request,
@@ -211,10 +206,9 @@ public final class ClusterHealthHandler implements OperationHandler {
             ? List.of()
             : Arrays.stream(index.split(",")).filter(name -> name.isEmpty() == false).toList();
 
-        Duration timeout = timeValue(request, "timeout", DEFAULT_TIMEOUT);
-        String clusterManagerParam = request.param("cluster_manager_timeout") != null
-            ? "cluster_manager_timeout" : "master_timeout";
-        Duration clusterManagerTimeout = timeValue(request, clusterManagerParam, timeout);
+        Duration timeout = ClusterRequests.timeValue(request, "timeout", DEFAULT_TIMEOUT);
+        Duration clusterManagerTimeout =
+            ClusterRequests.timeValue(request, ClusterRequests.clusterManagerTimeoutParam(request), timeout);
 
         // Upstream recognises three levels and silently reads anything else as cluster.
         String level = request.param("level", "cluster");
@@ -257,15 +251,6 @@ public final class ClusterHealthHandler implements OperationHandler {
             activeShardsCondition(request.param("wait_for_active_shards")),
             waitForNodes
         );
-    }
-
-    private static Duration timeValue(RestRequest request, String name, Duration fallback) {
-        String value = request.param(name);
-        if (value == null) {
-            return fallback;
-        }
-        Duration parsed = TimeValues.parse(value, name);
-        return parsed == null ? MAX_WAIT : parsed;
     }
 
     /** {@code ActiveShardCount.parseString}: {@code all}, a count, or {@code default}; null when it waits for nothing. */
@@ -360,16 +345,6 @@ public final class ClusterHealthHandler implements OperationHandler {
             && nodesCondition(parsed.waitForNodes()).holds(projections.numberOfNodes())) met++;
         if (parsed.expressions().isEmpty() == false && missing == false) met++;
         return met == parsed.conditions();
-    }
-
-    private void sleepUntil(long deadlineNanos) {
-        long remaining = deadlineNanos - System.nanoTime();
-        try {
-            Thread.sleep(Duration.ofNanos(Math.max(0, Math.min(remaining, poll.toNanos()))));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException("interrupted while waiting for cluster health", e);
-        }
     }
 
     // ------------------------------------------------------------------ rendering
