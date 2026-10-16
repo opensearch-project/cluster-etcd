@@ -61,7 +61,7 @@ record TemplateKind(
     /** {@code /_template} — the pre-composable form, still supported and still different. */
     static TemplateKind legacy() {
         return new TemplateKind(
-            "templates/legacy/", "index_patterns", true, null, null, null, null, true,
+            Templates.LEGACY_KEY_PREFIX, "index_patterns", true, null, null, null, null, true,
             "indices.put_template", "indices.get_template",
             "indices.delete_template", "indices.exists_template"
         );

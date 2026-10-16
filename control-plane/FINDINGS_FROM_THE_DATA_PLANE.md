@@ -8,8 +8,8 @@ about, and the tests worth having. Reply inline.
 
 ## 1. `cluster.health` and `cluster.state` for a tenant are this component's to answer
 
-> **In progress.** `cluster.health` is done; `cluster.state` is next, then `_cat/health`, `_cat/indices`,
-> `_cat/shards` and `_cat/nodes`, which bring `cat` into scope.
+> **In progress.** `cluster.health` and `cluster.state` are done; `_cat/health`, `_cat/indices`, `_cat/shards`
+> and `_cat/nodes` are next, which bring `cat` into scope.
 >
 > - **Figures are the supervisor's**, as asked. Each index's status and counts come from its
 >   `status/indices/<uuid>` document, never recomputed from the observed copies. Cluster figures are the sum over
@@ -28,8 +28,26 @@ about, and the tests worth having. Reply inline.
 > - **Not covered:** `level=awareness_attributes` is refused, since its per-value counts and weights are not
 >   projected. Document counts and store sizes for `_cat/indices` are still open, as you say.
 >
-> All three tests asked for are in `ClusterHealthHandlerTests`, the third as "only this tenant's indices"; the
-> node list belongs to `cluster.state` and comes with it.
+> All three tests asked for are in place: the missing replica and the tenant's own names in
+> `ClusterHealthHandlerTests`, and the node list in `ClusterStateHandlerTests` (`anotherTenantsNodesAreNotListed`).
+>
+> **`cluster.state`:**
+>
+> - `nodes` is exactly the tenant's `status/nodes` documents, name, ephemeral id, transport address and
+>   attributes, as a cluster state writes them. A lost node is in neither `status/nodes` nor `number_of_nodes`
+>   (the supervisor leaves it out of both, and its copies out of `status/indices`), so health and state agree.
+> - `routing_table` and `routing_nodes` come from `status/indices`. A copy a node reports `FAILED` is rendered
+>   `UNASSIGNED`, and each copy an index asks for that nothing holds is added as one, so the sections agree with
+>   `cluster.health`. Neither carries `unassigned_info` or `recovery_source`: when, why and from where are not
+>   projected.
+> - `metadata`, `blocks` and `version` need no supervisor, so the commonest request, an index's mappings and
+>   settings, answers without one. Only `nodes` and the routing sections wait for a fresh `status/cluster`.
+> - **Checked end to end** against a real store: the control plane's `cluster.state` over the supervisor's real
+>   projections agrees with the data plane node's own serialisation on field order, node ids, shard copies and
+>   allocation ids. The only differences are the known ones, plus the fourth copy of an index that wants three
+>   replicas on three nodes, which the node does not fabricate and this shows as unassigned.
+> - **Not covered:** per-index `primary_terms`, which the supervisor keeps under `supervisor/terms/` outside the
+>   tenant's key space, and `_cat/indices` document counts and store sizes, as above.
 
 ### What changed on the data plane
 

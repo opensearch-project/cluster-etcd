@@ -109,7 +109,85 @@ per-node documents gain nothing.
 
 ---
 
+## 2. `cluster.state` cannot show `primary_terms`, because the terms are outside the tenant's key space
+
+> **Open.** Optional: nothing is blocked on it, and the control plane renders a valid `cluster.state` without it.
+
+### What the control plane does today
+
+`cluster.state` is composed from `status/indices/<uuid>`, `status/nodes/<id>` and the control plane's own
+documents (see its `README.md`, "Cluster state"). Checked end to end against this service's real projections, it
+agrees with a node's own serialisation of `ClusterState` on everything it renders. It leaves out
+`metadata.indices.<index>.primary_terms` and `primary_terms_map`, the one per-index field of any consequence that
+a client could plausibly read and that nothing here lets it fill in.
+
+The terms exist: `supervisor/terms/<tenant-id>/<index-uuid>` holds `{"shards": {"0": 3, ...}}`, the highest term
+issued per shard (`SUPERVISOR_KEYS.md`, `DESIGN.md` §28.6). But that key is in the root store, outside
+`tenant/<t>/`, and the control plane hands every handler a store confined to the requesting tenant. Reading it
+would mean a handler that can see the whole store, which is the thing that confinement exists to prevent.
+
+### What is asked
+
+**Copy the term map into the index projection** as a `primary_terms` field of `tenant/<t>/status/indices/<uuid>`:
+
+```json
+"primary_terms": { "0": 3, "1": 1 }
+```
+
+- **Same shape and meaning as the counter's `shards`**, written by the same lease holder in the same pass. The
+  control plane would render it as `primary_terms` and `primary_terms_map`, as a cluster state does.
+- **It changes only when a primary is placed**, so it does not make the document noisier. An index document that
+  is rewritten when placement changes is already rewritten then.
+- **Absent while no counter exists**, not `0` or `{}`: a new index has no term until its first primary is placed,
+  and the control plane will omit the field rather than invent one.
+- **Never used to decide anything on this side.** The counter stays the only source of truth, and the copy is a
+  read-only view of it, taken after the counter write that makes a new term real, so a projection never shows a
+  term the counter has not recorded.
+
+### What a change should be careful about
+
+- **Order within a pass.** The counter is written before any assignment carrying a new term, and the projection
+  is computed from the observation. Project the counter value that was current when the pass began, or the one it
+  wrote, but never one it merely intends to write.
+- **Size.** Eight bytes a shard, against the 512 KiB budget on this document.
+- **A counter that exists and does not parse** is left alone (`SUPERVISOR_KEYS.md`); the projection should omit
+  the field then, not fail the pass.
+
+### Tests worth having
+
+- a promotion advances the shard's term in the projection, and only that shard's;
+- an index with no primary yet has no `primary_terms`;
+- a pass that does not place a primary does not rewrite the document;
+- an unparseable counter leaves the rest of the projection written.
+
+---
+
+## 3. `SUPERVISOR_KEYS.md` says `liveness` can be `lost`, but a lost node is never published
+
+> **Open.** A wording fix, found while checking that `cluster.health` and `cluster.state` agree about nodes.
+
+`SUPERVISOR_KEYS.md` describes `status/nodes/<id>.liveness` as `live`, `stale` or `lost`, and tells a reader to
+treat every value but `lost` as reachable. `StatusComputation.nodeStatuses` skips any node whose
+`copiesCount()` is false, and that is exactly `liveness != LOST`, so a lost node's document is never written and
+one already written is reaped on the next pass. The same test keeps a lost node out of `placementsOf`, so its
+copies drop out of `status/indices` too.
+
+That is the right behaviour, and it is what lets the control plane's two operations agree: `number_of_nodes` in
+`status/cluster`, the node list in `cluster.state`, and the copies in `routing_table` all leave a lost node out
+together, and `cluster.health` reports the copies it held as unassigned. The control plane relies on it.
+
+What needs fixing is the sentence, which suggests a reader can see a `lost` node. Either say that the field is
+`live` or `stale` in practice and `lost` is reserved, or say that a lost node disappears from the subtree. Which
+is true should be stated so that nobody adds a `lost` branch to a reader on the strength of the current wording,
+and so that this stays true: **if a lost node were ever published, the three figures above would stop agreeing.**
+
+---
+
 ## Where these came from
 
 Item 1 came from implementing `cluster.health` in the control plane. Checking how to detect a stale projection
 meant reading `StatusProjector`, which showed that `observed_at` stops moving whenever nothing changes.
+
+Items 2 and 3 came from implementing `cluster.state`. Item 3 began as a suspicion that lost nodes were counted
+in `number_of_nodes` while absent from the node list; reading `nodeStatuses` showed they are left out of both, and
+the finding is the wording that suggested otherwise.

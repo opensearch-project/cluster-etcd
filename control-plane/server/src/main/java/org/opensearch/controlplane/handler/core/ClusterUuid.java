@@ -18,7 +18,7 @@ import java.util.Base64;
  * store, so each tenant gets its own — a tenant sees a coherent virtual cluster of its own rather
  * than one shared identity.
  */
-final class ClusterUuid {
+public final class ClusterUuid {
 
     /** Under the tenant prefix, so it is per-tenant. */
     static final String KEY = "cluster/uuid";
@@ -28,7 +28,7 @@ final class ClusterUuid {
     private ClusterUuid() {}
 
     /** Reads the stored UUID, generating and persisting one on first call. */
-    static String resolve(KeyValueStore store) {
+    public static String resolve(KeyValueStore store) {
         return store.get(KEY)
             .map(versioned -> new String(versioned.value(), StandardCharsets.UTF_8))
             .orElseGet(() -> generateAndStore(store));

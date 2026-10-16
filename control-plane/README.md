@@ -10,14 +10,14 @@ surface, generated from the
 Early. The full control plane surface is routed; the rest returns `501 Not Implemented`.
 
 ```
-119 routes, 75 operation groups, 56 implemented, 19 stubbed
-(59 / 16 when the capabilities file declares script languages, contexts and grok patterns)
+119 routes, 75 operation groups, 57 implemented, 18 stubbed
+(60 / 15 when the capabilities file declares script languages, contexts and grok patterns)
 ```
 
 | namespace | routes | implemented |
 |---|---|---|
 | `indices` | 61 | `create` (composable + legacy template application), `exists`, `delete`, `put_mapping`, `put_settings`, `open`, `close`; the read set — `get`, `get_settings`, `get_mapping`, `get_field_mapping`, `resolve_index`; the full alias set; template CRUD + both simulate operations; `create_data_stream`, `delete_data_stream` |
-| `cluster` | 21 | `health`, component template CRUD, `get_settings`, `put_settings`, `pending_tasks`, weighted routing (`get`/`put`/`delete_weighted_routing`) |
+| `cluster` | 21 | `health`, `state`, component template CRUD, `get_settings`, `put_settings`, `pending_tasks`, weighted routing (`get`/`put`/`delete_weighted_routing`) |
 | `snapshot` | 16 | repository registration: `create_repository`, `get_repository`, `delete_repository` |
 | `_core` (info, ping, stored scripts) | 10 | `info`, `ping`, `put_script`, `get_script`, `delete_script`, `get_script_languages`†, `get_script_context`† |
 | `ingest` | 5 | `put_pipeline`, `get_pipeline`, `delete_pipeline`, `processor_grok`† |
@@ -49,7 +49,7 @@ curl -XPUT localhost:9400/_ingest/pipeline/p -H 'Content-Type: application/json'
 curl localhost:9400/_ingest/pipeline?pretty
 curl -XPUT localhost:9400/my-index -H 'Content-Type: application/json' \
      -d '{"settings":{"number_of_shards":2}}'
-curl -XGET localhost:9400/_cluster/state    # 501, not yet implemented
+curl -XGET localhost:9400/_remote/info      # 501, not yet implemented
 ```
 
 ## Where this sits
@@ -762,9 +762,9 @@ does no path normalisation, so `..` in a key is inert — just part of the key. 
 implementation that maps keys onto paths *must* normalise or reject traversal sequences,
 or the isolation above is defeated one layer down.
 
-## Cluster health
+## Cluster health and state
 
-`cluster.health` is answered here rather than by a data node, which refuses it for a tenant
+`cluster.health` and `cluster.state` are answered here rather than by a data node, which refuses it for a tenant
 ([`FINDINGS_FROM_THE_DATA_PLANE.md`](FINDINGS_FROM_THE_DATA_PLANE.md), item 1). It is a read of what the
 supervisor projects under `tenant/<t>/status/` (`../supervisor/SUPERVISOR_KEYS.md` §1):
 
@@ -789,6 +789,46 @@ The considered divergences are on `ClusterHealthHandler`: `relocating_shards`, `
 and `number_of_in_flight_fetch` are always 0; a closed index is green with no shards, as the supervisor
 reports it; an index whose primaries are initializing is red, the supervisor's rule, where upstream calls a
 new one yellow; and `level=awareness_attributes` is refused, since its per-value counts are not projected.
+
+### Cluster state
+
+`GET /_cluster/state[/{metric}[/{index}]]` is composed from documents, with no cluster state behind it:
+
+| section | from | needs a supervisor |
+|---|---|---|
+| `metadata` | this service's index documents, aliases and legacy templates | no |
+| `blocks` | index `state` and `index.blocks.*` settings; the no-cluster-manager block when stale | no |
+| `nodes` | `status/nodes`: the tenant's own nodes, by the supervisor's design | yes |
+| `routing_table`, `routing_nodes` | `status/indices`, plus one `UNASSIGNED` entry for each copy an index wants and nothing holds | yes |
+| `version`, `state_uuid` | store revisions of the documents above | no |
+
+So `GET /_cluster/state/metadata/my-index`, the commonest use, answers whether or not a supervisor is running.
+A request for `nodes` or either routing section waits `cluster_manager_timeout` (30 s) for a fresh
+`status/cluster` and then answers `503 cluster_manager_not_discovered_exception`; `local=true` answers the
+last documents instead. Whenever `blocks` is included and the supervisor is stale, block 2, "no cluster-manager",
+is in it. Shapes and field order were checked against a node's serialisation of `ClusterState` and against the
+supervisor's real projections.
+
+**`version` and `state_uuid` are derived, not counted.** `state_uuid` is a digest of every (key, revision) the
+response is composed from, so it changes whenever one is written or removed. `version` is the highest such
+revision: it rises with writes, but removing the newest document can lower it, and it is a count on etcd and
+ZooKeeper and a clock reading on a backend with per-key revisions. A change signal, not a clock.
+`wait_for_metadata_version` waits for the highest *metadata* revision to reach the number given, with the same
+caveat; a heartbeat rewrite of `status/cluster` moves neither.
+
+Considered divergences, on `ClusterStateHandler` and `ClusterStateSections`:
+
+- `master_node` and `cluster_manager_node` are null and `cluster_coordination` is empty at term 0: there is no
+  elected cluster manager or voting configuration.
+- Metadata customs are not rendered (`index-graveyard`, composable and component templates, data streams,
+  stored scripts, pipelines, repositories); each has its own read operation.
+- Per index, the version counters, `routing_num_shards`, `primary_terms` and `split_shards_metadata` are absent,
+  as are `unassigned_info` and `recovery_source` on a shard: none is projected. `in_sync_allocations` is
+  present for a document-replication index only.
+- A closed index has no routing table, and so no entry in `routing_table`.
+- A `wait_for_metadata_version` that times out answers `200` with `wait_for_timed_out: true` and the cluster name
+  and uuid; upstream builds that response with no state and, as far as the source shows, fails serialising it.
+- Keyed collections come out sorted, where upstream emits hash order.
 
 ## Building
 
@@ -1370,9 +1410,9 @@ request would normally get. Verified, and reproduced.
   explicit comma-separated list where *some* IDs match and others do not (partial
   match is assumed to be a 200 here).
 - Everything about the operation groups that are still stubbed. With a full capabilities file that is
-  **16**, and there is no easy CRUD left among them: eight are snapshot data or administration
+  **15**, and there is no easy CRUD left among them: eight are snapshot data or administration
   operations that belong to another plane, one is the deferred `rollover`, three are decommission
-  awareness, and the remaining four — `cluster.state`, `indices.get_data_stream`,
+  awareness, and the remaining three — `indices.get_data_stream`,
   `indices.add_block`, `cluster.remote_info` — each have their reason recorded here or in
   [`docs/where-the-hard-parts-are.md`](docs/where-the-hard-parts-are.md). (The snapshot count read
   *seven* before and the total never added up; it is eight, and the arithmetic now closes.)

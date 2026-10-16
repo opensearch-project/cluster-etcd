@@ -12,6 +12,9 @@ import java.util.List;
 /** The twelve template handlers: four operations across three kinds. */
 public final class Templates {
 
+    /** Where legacy {@code _template} definitions live; {@code cluster.state} renders them under {@code metadata.templates}. */
+    public static final String LEGACY_KEY_PREFIX = "templates/legacy/";
+
     private Templates() {}
 
     public static List<OperationHandler> handlers(SettingsRegistry registry) {

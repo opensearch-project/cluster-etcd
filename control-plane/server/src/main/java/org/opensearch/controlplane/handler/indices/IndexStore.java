@@ -37,7 +37,7 @@ import java.util.TreeMap;
  * <p>Every index carries a UUID, because OpenSearch's own errors expose it: the already-exists
  * message is {@code index [name/uuid] already exists}, so a client can see it.
  */
-final class IndexStore {
+public final class IndexStore {
 
     /** Shared with the resolver, which scans the same prefix. */
     static final String KEY_PREFIX = IndexAbstractions.INDEX_KEY_PREFIX;
@@ -125,7 +125,7 @@ final class IndexStore {
      * Lucene and OpenSearch version the index was built with, which this service has no honest value
      * for. See the README's considered divergences.
      */
-    static Settings reportedSettings(JsonNode metadata) {
+    public static Settings reportedSettings(JsonNode metadata) {
         Settings settings = Settings.forIndex(metadata.path("settings"));
         if (metadata.hasNonNull("uuid")) {
             settings = settings.with("index.uuid", metadata.get("uuid").asText());
