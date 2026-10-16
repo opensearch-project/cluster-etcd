@@ -1759,6 +1759,12 @@ yellow index with an explanation, which is the correct end state for a one-node 
 
 ## 24. Announced deployments — future work, not implemented
 
+> **Partly superseded by §29.** The signal is an **operator-owned, cluster-wide** document, not a tenant-facing
+> control-plane API: draining nodes is "the machines and the timing of changes to them" (§25.1), and the control
+> plane's own sweep reached the same conclusion (`../control-plane/docs/tenants-and-operators.md`, §2). A control-plane
+> adapter may still write the document for a deployment system, once that side can tell an operator from a tenant
+> (§29.7). §24.1–24.3's reasoning stands and §29 builds on it; §24.4's role flip is §29.3's handoff.
+
 **Nothing here exists.** It is recorded because two or three of the decisions are much cheaper to make now than
 to retrofit, and because one of them changes the value of a change already on the table (§23.2).
 
@@ -2391,8 +2397,8 @@ never lowers a copy's term in place.
 
 ### 28.9 What this does not decide
 
-- **Where "a deployment is in progress for this shard" lives.** Two `PRIMARY` copies of one shard are, today, a
-  surplus. The differ and the reaper need to know a dual-run is intended, and that is desired state, not an
+- **Where "a deployment is in progress for this shard" lives.** *(Designed in §29: `deployments/<id>`.)*
+  Two `PRIMARY` copies of one shard are, today, a surplus. The differ and the reaper need to know a dual-run is intended, and that is desired state, not an
   assignment field — the announced-deployments document recorded as future work is its natural home.
 - **The upstream pin.** Until it lands, a search replica's term is recorded and has no effect on what it reads, so
   the roll-forward and roll-back steps move nothing.
@@ -2423,3 +2429,403 @@ terms a replica must be in every set.
 
 **The cost is per-copy bytes on docrep copies only**: 165 bytes per copy rather than 93, so a node whose every copy
 is docrep fits about 3,160 copies rather than 5,600 (`NODE_CONTRACT.md`, measured).
+
+---
+
+## 29. Intended change: drains and dual-runs
+
+**Status: designed, not built.** This is open question 11 and §28.9's first item. It blocks three things: demoting a
+primary on purpose (a drain), the rollback dual-run (§27.4), and telling an intended pair of primaries from a split
+(`PRIMARY_CONFLICT`). It is written down before any of it is built because, as with §28, most of the cost is in
+choices that are expensive to retrofit.
+
+### 29.1 The problem is telling intent from failure
+
+Everything this service does about a node going quiet, or about a shard with two primaries, assumes something went
+wrong. That is correct as long as nobody ever does either on purpose. A deployment does both: it takes nodes away for
+minutes and expects them back, and under §27.4 it runs a second primary beside the first so that it can roll back.
+Without a way to say so, the first looks like a loss to be repaired and the second like a split to be resolved, and
+the repairs are exactly the damage the deployment was arranged to avoid.
+
+**The intent belongs to the operator.** Both are about the machines and the timing of changes to them, which is
+§25.1's definition of operator-owned, and the control plane, which serves tenants and cannot tell an operator from a
+tenant at its boundary, has concluded that node draining is not its to offer. So §24's assumption, that the control
+plane would grow `_cluster/deployment` and publish the result for tenants to call, is superseded: the operator, or the
+deployment system acting for one, writes a cluster-wide document, and nobody else writes it. Whether that goes through
+an operator-only control-plane endpoint or straight to the store is left open (§29.7), because the document is the
+interface either way.
+
+**Upstream's model, checked against OpenSearch 3.10.0-SNAPSHOT's source, is narrow and worth matching where it
+reaches.** `POST /_cluster/deployment/{id}/{action}` moves a deployment between two states, `DRAIN` and `FINISH`
+(`DeploymentState`), naming its nodes by attributes that must all match (`DeploymentStateService.nodeMatchesAttributes`).
+While a node is in `DRAIN`:
+
+- `DeploymentAllocationDecider` refuses a **primary** there, for both `canAllocate` and `canRemain`, so the allocator
+  moves primaries off by ordinary relocation. Replicas are untouched.
+- `OperationRouting.filterDrainedNodes` leaves the node's copies out of search routing, falling back to all of them if
+  that would leave none.
+- Two deployments may not target the same attribute value, and all deployments must use the same attribute keys
+  (`DeploymentManagerService.validateNoOverlappingValues`, `validateConsistentKeys`).
+
+There is no deadline, and keeping replicas in place across the restart is left to tuning the delayed-allocation
+timeout. Both are the parts §24.2 argued this service must do differently.
+
+### 29.2 One document per deployment, level-triggered
+
+```
+deployments/<deployment-id>                                       operator-owned; supervisors only read it
+supervisor/status/pools/<pool-id>/deployments/<deployment-id>     progress, written by the pool's owner
+```
+
+The key is **cluster-wide**, outside any tenant or pool prefix like `tenants/<id>`. Upstream's API is cluster-wide and
+selects nodes by attributes, so one document covers a zone across every pool, and a deployment system does not have to
+know how the fleet is divided among supervisors. Every supervisor reads it each pass and applies it to the nodes in the
+pools it owns, and writes progress for those pools only, so every key still has one writer.
+
+**Pools are not a concept the document knows**, and need not be. An operator who wants a per-pool deployment puts the
+pool in a node attribute and selects on it; the document cannot tell that the attribute is a pool, and does not need to.
+
+The state names are upstream's where upstream has them, and ours where it does not. Upstream's `DeploymentState` is
+`DRAIN` and `FINISH` today, with further phases intended, and ours are the same kind of thing: a phase of one
+deployment, named by the system that drives it.
+
+```json
+{ "state": "DRAIN", "attributes": { "zone": "z1" }, "intent": "return", "until": 1790900000000 }
+```
+
+```json
+{ "state": "DIAL_UP", "attributes": { "zone": "z1" }, "dial": 0.25 }
+```
+
+```json
+{ "state": "ROLLBACK", "attributes": { "zone": "z1" }, "concurrent_recoveries": 8 }
+```
+
+**`attributes` are given once, when the deployment starts with a `DRAIN`, and every later transition names only the
+deployment**, as upstream's does. They select the nodes under deployment, every one of which must match: going down
+during the drain, and the same nodes carrying the new software once it has been pushed and started. A deployment system
+that selects a zone drains the zone, redeploys it and dials it up with one selection throughout, and needs no second
+description of the new side. The old side needs none either: it is the primaries already running, on the nodes the
+selection leaves out. A transition may carry fields of its own, optional and specific to the state: `dial` for
+`DIAL_UP`, `concurrent_recoveries` for `ROLLBACK` (§29.4), and `intent` and `until` for `DRAIN`, which are read in
+that state only.
+
+`FINISH` is not a state a document is left in. As upstream does, it **removes the deployment**: the end of a drain, and
+for a dual-run the commit (§29.4).
+
+**The state machine is strict, and validated where the document is written.** Upstream delivered it in pieces, with
+`DRAIN` straight to `FINISH` as the first, so that is valid and the rest are the steps of a dual-run:
+
+| from | to | meaning |
+|---|---|---|
+| (none) | `DRAIN` | starts the deployment, with its `attributes` |
+| `DRAIN` | `FINISH` | a drain alone: the nodes return, and nothing else changes |
+| `DRAIN` | `SHADOW` | the new software has been pushed and started on the selected nodes |
+| `SHADOW` | `DIAL_UP` | with the first `dial` |
+| `DIAL_UP` | `DIAL_UP` | a different `dial`, higher or lower. Down to 0 keeps the new writer alive and unloaded, for investigation |
+| `SHADOW`, `DIAL_UP` | `ROLLBACK` | the new writer is not good |
+| `DIAL_UP` with `dial` 1 | `FINISH` | the commit |
+| `ROLLBACK` | `FINISH` | the end of a rollback, with nothing committed |
+
+`FINISH` from `SHADOW`, or from `DIAL_UP` short of full, is refused: it would commit a writer that had not been shown
+to carry the traffic. The supervisor-app command enforces the table and so will any adapter. **The supervisor cannot:**
+it is level-triggered and reads a state, never the transition that led to it, so a writer that jumps the table is acted
+on as asked and a key deleted mid-run is reported as a commit, as §29.4 says.
+
+**Nodes do not move in lock-step, and the deployment system waits for all of them.** It advances only when every node
+has reached the same point, so the status document says whether the current state has been **reached**, and for what is
+left, which nodes and shards:
+
+| state | reached when |
+|---|---|
+| `DRAIN` | no primary is on a selected node, and with `intent: remove` no copy |
+| `SHADOW` | a new primary has started for every shard in scope |
+| `DIAL_UP` | every shard has f × its search replicas, rounded up, following the new writer (assigned, until the pin exists: §29.4) |
+| `ROLLBACK` | every search replica is back on the old term, the new primary has gone and retention is released |
+
+A selected node that returns before its neighbours is not a state of its own. The deployment is in one state, and every
+selected node is held to it, so a node back early still takes no primary until the system has moved to `SHADOW`.
+
+Each document is **desired state**, read every pass and re-derived from scratch, never an event (§24.2). The rules that
+follow from that:
+
+- **No two deployments may select one node.** Two that do raise `DEPLOYMENT_CONFLICT` and both are ignored for that
+  node, which is the same refusal-to-guess as two default pools (`Pools`). Upstream rejects the overlap at write time;
+  with no single writer path to reject it on, it is detected on read instead.
+- **An unknown `state`, or a document that cannot be read, holds nothing** and raises a finding. A drain that fails to
+  parse must not be read as "no drain": that is the same mistake as reading unreadable cluster settings as empty,
+  so an unreadable deployment document **freezes the nodes it may cover**: no new primaries there, nothing reaped,
+  until it reads again. It cannot be known which nodes it covers, so in practice that is every pool the supervisor owns,
+  and the finding is critical.
+- **Progress is never written into the document.** The deployment system polls the status document, the way
+  upstream's `GET /_cluster/deployment` is polled, and advances the document itself.
+
+The supervisor-app gains commands to write and delete these, as it has `--define-pool`, but the document is the
+interface: a deployment system that writes the key directly is using it as intended.
+
+**The writer is a deployment system, not a person.** It knows which nodes are going down, when the new software has
+been pushed, when the process has started, and how long to bake before moving on to the next set; the supervisor knows
+none of that and should not try to. So every transition below is **the deployment system's to make**, by rewriting the
+document, and the supervisor's job is to make the state it asks for safe and to say how far it has got. That is also why
+the status document, not the CLI, is the thing worth designing carefully: it is what such a system polls to decide
+whether to proceed.
+
+### 29.3 A drain
+
+A drain says the selected nodes are about to stop serving. `intent` is what happens to them afterwards, and the two
+values want different treatment of everything except the primaries.
+
+**Primaries move off, whatever the intent.** No new primary is placed on a draining node (a `DeploymentDecider`,
+alongside the other allocation deciders), and every existing primary there is handed off. The handoff is the in-place
+role flip ��24.4 predicted would have three customers, and how it is done depends on what fences the old primary:
+
+| index | handoff, in one pass unless stated | the fence |
+|---|---|---|
+| docrep | counter N → N+1; a replica the old primary lists in its `in_sync` becomes `PRIMARY` at N+1; the old copy becomes `REPLICA` at N+1 (§28.7) | the term: a replica at N+1 rejects the old primary's operations, so it cannot acknowledge a write once the new term is in play |
+| segrep, pull ingestion | a new `PRIMARY` at N+1 on a node not draining, restored from the remote store; the old one is withdrawn once the new one is `STARTED` | the remote store's term ordering (§27.1); both consume one stream, so the brief overlap is harmless |
+| segrep, push ingestion | withdraw the old primary, then place a new one at N+1 | none is reachable in `segments_only` mode (§27.5), so the window with no primary is the fence: §12's demote-before-promote |
+
+Two details make the docrep row work:
+
+- **The in-sync set comes from the live primary's own inventory**, the same rule as §28.10 with the primary present
+  rather than lost. If no replica outside the drain is in it, the shard **first gains one**. The drain authorises one
+  extra copy of that shard through `IndexConfig.copiesAuthorisedFor` (§15.2), the ordinary planner places it on a node
+  not draining, and the handoff waits until the primary reports it in sync. The seam built for autoscaling is what
+  makes this a placement rather than a new mechanism. When the drain ends, the extra copy is a surplus and §14.5
+  removes it.
+- **The old copy is demoted, not dropped**, when the intent is `return`. OpenSearch has no in-place demotion, so the
+  data plane rebuilds it as a replica that recovers from the new primary. Mostly from files it already has, so it is
+  cheap, and the shard does not lose a copy to the deployment. That is the one new obligation on the data plane here:
+  today a `PRIMARY` entry rewritten as `REPLICA` is not a case it has been asked to handle.
+
+**Replicas stay, for `intent: return`.** A draining node's copies keep counting, its silence does not become `LOST`
+until `until` plus the ordinary lost threshold, it is not reaped, and nothing replaces its copies. That is the half
+upstream gets by timeout tuning, and it falls out here because "does this copy count" is already a question with one
+answer in the code (`copiesCount`). Liveness stays what was **observed** (§24.2): a draining node that has gone quiet
+is still `STALE`, and the drain is the reason nothing is done about it.
+
+**Replicas move too, for `intent: remove`**, which is a decommission. Each copy is built elsewhere and only then
+dropped, by §14.5's add-before-remove, and the node is reapable once it holds nothing. `until` is optional here. A
+removal does not expire, because nothing is expected back.
+
+**Searches move off.** `status/nodes/<id>` gains `"draining": true`, and a coordinator fabricates upstream's
+`DeploymentMetadata` for those nodes, so that `OperationRouting.filterDrainedNodes`, with its fallback, does the
+steering unchanged. One field, and upstream's own routing does the rest.
+
+**Nothing rebalances onto or off a draining node**, and a pool with a drain in progress does not rebalance at all.
+Load readings are wrong in both directions while traffic shifts (§24.3).
+
+**The deadline is load-bearing (§24.2).** `until` is required for `intent: return`. Once it passes, the drain reads
+as absent for everything except search routing, which keeps the node out until it heartbeats again. The ordinary
+liveness ladder resumes, and `DEPLOYMENT_EXPIRED` is raised. §24.3's inversion applies: a node expected back that has
+not returned is more certainly gone, so its reap may come sooner. A deployment system that crashes half way leaves
+expired drains, which is a slow return to normal rather than a permanent small outage.
+
+**Done is visible.** The status document lists, per selected node, the primaries and (for `remove`) the copies still
+on it, and `drained: true` when there are none. That is the signal a deployment system waits for before taking the
+node down.
+
+### 29.4 A dual-run
+
+This is the case vanilla OpenSearch cannot represent at all, and the reason is worth stating precisely, because it is
+also why it is cheap here. Every writer publishing to a remote store is a primary, and a cluster state in which a shard
+has two primaries is invalid, so upstream can never support several writers, whatever phases it gains. A primary's term
+also changes only by promotion, so "two primaries at different terms, both serving, either of which may be the one
+kept" is not a state a cluster manager can hold. Here an assignment is per node and the term is per copy (§28.1), and
+each primary sees only itself, so the state is two ordinary entries. The remote store already orders writers by term (§27.1), and pull-based ingestion keeps both primaries fed
+from one stream (§27.4).
+
+**Preconditions, each refused with a reason rather than worked around:**
+
+- every index in scope is segment-replicated with pull-based ingestion. Under push ingestion or document replication,
+  two primaries are a split, whatever the layout (§27.5);
+- every node on both sides declares `primary_terms` and a retention feature, and the old primaries' nodes declare
+  `abandon_remote_terms` (§28.3–28.5);
+- **the pool is dedicated.** Multi-tenant pools serve lower-priority use cases and do not carry the swing capacity a
+  second set of writers needs (§29.8), so a dual-run on one is refused rather than deferred. That also means this design
+  needs no scoped retention, so §27.5's scoped lock, which a shared pool would have wanted, is no longer on its path.
+
+- the selected nodes can hold a second primary of every shard in scope. The new side is a whole parallel set of
+  writers, which is swing capacity (§29.8). The ordinary allocator decides, and a shard it cannot place reports
+  `UNPLACEABLE` and holds `SHADOW` from being reached rather than going ahead without it.
+
+**The phases** are §28.7's table, stepped by the deployment system through `state`. `SHADOW` and `DIAL_UP` are the phase names upstream intends for this shape, and `ROLLBACK` is ours. For every primary in scope:
+
+| `state` | what the supervisor maintains |
+|---|---|
+| `SHADOW` | counter N → N+1 once; a new `PRIMARY` at N+1 on a selected node, `retain_remote_history: N`; the old `PRIMARY` stays at N on its node, `retain_remote_history: N`; search replicas stay at N |
+| `DIAL_UP`, `dial` f | a fraction f of each shard's search replicas raised to N+1 in place |
+| `ROLLBACK` | moved search replicas rebuilt at N; the new primary withdrawn; once it has gone, `abandon_remote_terms: N` on the old primary; once that is acknowledged, retention released |
+| `FINISH` (the document deleted) | every search replica at N+1; retention released on both; the old primary withdrawn |
+
+`FINISH` after `ROLLBACK` removes the deployment with nothing committed, and `FINISH` is valid from `DIAL_UP` only at `dial` 1 (§29.2). A deployment system that deletes the key directly, bypassing that, is committing whatever state it was in, and the supervisor reports that it was.
+
+**`dial` is a fraction of each shard's search replicas, not a count.** The number moved is f × the replicas the shard
+has, rounded up, so any non-zero fraction moves at least one and `1` moves all. A fraction means the same thing for a
+shard with two search replicas and one with twenty, which is what a gradual rollout is about, and the deployment system
+owns the bake time between raising it.
+
+**A dial may also fall, and a fall to 0 is how a failure is investigated without being undone.** The new nodes are
+kept alive, broken as they are, and nothing follows them: no search replica is on the new term, and nothing is routed
+to the new primary (below). It is not a `ROLLBACK`, which ends the deployment: the new primary stays, its history is
+still retained at the old term, and nothing is abandoned, so the deployment can be dialled up again once the cause is
+found, or rolled back. A search replica can move to the new term in place and not back (§27.3), so lowering the dial
+rebuilds the surplus ones on the old term. That is the machinery a rollback uses, under the same recovery limit.
+`FINISH` from there is refused, as from any `DIAL_UP` short of full.
+
+**The status reports who each search replica follows, per writer.** For each index, and rolled up for the deployment:
+how many search replicas follow the term-N primary and how many the term-N+1 one, as counts and as a share. That is the
+figure an operator watches during a rollout: the share on the old writer falls and the share on the new one rises, and
+a rollback reverses it. Per-shard detail appears only for shards not yet at the target, which bounds the document's
+size. **Until the upstream pin exists this is what the supervisor *told* each replica, not what it reads**, because a
+search replica reads the newest metadata whatever its term says (§27.3) and nothing reports which it chose. The status
+says so on the field, so that nobody mistakes an assignment for an observation.
+
+**A rollback is aggressive on purpose.** The old primary is known good and the new one is not, so getting search
+replicas back onto the old term outranks every other piece of work and is not paced like routine recovery. Two things
+would pace it today: the per-node limit on concurrent recoveries (`ThrottlingDecider`, 2 by default) and the per-pass
+work ceiling. A rollback lifts the first to a higher limit for the copies it is rebuilding: the supervisor's own configuration holds
+the default, and a `ROLLBACK` document may override it with `concurrent_recoveries`. The second cannot bind below what a
+pool's shards need. It costs little where it matters most: a remote-store restore is paid for by
+the target, and the source does nothing (§14.3), so draining the new term out is limited by how fast the targets pull.
+
+**The index projection shows one primary per shard, always.** During a dual-run two primaries of a shard are both
+started, and `status/indices` lists every observed copy, which is how a coordinator learns what to route to. A coordinator
+fabricates a routing table from it, and a routing table with two primaries for one shard is invalid, which is exactly the
+state upstream cannot hold and this design holds only because each primary sees itself alone (§29.4). So the second
+primary must never reach a reader as one. The supervisor projects the **old** primary as the shard's `PRIMARY` throughout
+and puts the new one in a sibling `shadow_primaries` map keyed by shard, which an older reader ignores, as every additive
+field is ignored (§28.2). Nothing is routed to a shadow primary, which is also what makes a dial of 0 mean no traffic.
+At `FINISH` the roles swap in one write, as the old primary is withdrawn. Checked on the data plane's side by a new
+conformance check, since a coordinator that is handed two primaries is one it cannot be shown to survive.
+
+**What has to learn about it**, which is most of the build:
+
+- `Differ`: no `PRIMARY_CONFLICT` for a pair the deployment describes, meaning old at N on a node the selection leaves
+  out and new at N+1 on a selected node. Any other second primary is still a split, and is reported.
+- `SurplusReaper`: the old primary is not surplus.
+- `Applier.dropSupersededPrimaries`: the old primary is recorded below the shard's current term. That is exactly what
+  the rule drops, correctly, everywhere except here, so it is exempted while the deployment names it.
+- `Planner` and a `DeploymentDecider`: the new primary goes only on a selected node, through the ordinary allocator.
+- `StatusComputation`: the projection above, one primary per shard and the shadow in a sibling.
+- `TermLedger`: the counter advances once per shard per deployment, guarded like the promotion in flight (§28).
+
+**The search-replica pin is still upstream's** (§27.3). Until it lands, a search replica reads the newest metadata
+whatever its term says, so the first upload at N+1 moves every replica at once and `DIAL_UP` changes nothing. Stated
+plainly, because it changes what the feature is: **without the pin a dual-run is a fast, data-preserving rollback,
+not a canary.** The old primary never stopped, so rolling back is withdrawing the new primary, abandoning N+1 and
+rebuilding the replicas, with no restore and no lost writes. A gradual rollout needs the pin.
+
+**Failures inside a dual-run** reduce to cases that already have answers:
+
+- the old primary is lost: the new one is simply the primary. Rollback is no longer possible, and the status says so.
+- the new one is lost: `SHADOW` places another, at N+2, since terms only go up. Retention is still at N.
+- **the document is deleted mid-run**: there is no intent left, so the ordinary rules apply. `dropSupersededPrimaries`
+  withdraws the lower-term primary, which is a commit. That is the safe direction, because the higher term is what
+  readers already prefer. But it is an outcome nobody chose, so it is reported. Deleting the document is not a way to
+  roll back, and the supervisor-app command that deletes it refuses unless the status says the phase is complete.
+
+### 29.5 What this asks of others
+
+- **The data plane**: rebuild a copy whose entry changes from `PRIMARY` to `REPLICA` in place, as a replica recovering
+  from the new primary (§29.3). Fabricate `DeploymentMetadata` from `draining` in `status/nodes`. Implement
+  `abandon_remote_terms`; the retention switch is already done (§27.3).
+- **The control plane**: probably an adapter, and later (§29.7). The document is the interface, so nothing here needs
+  one. A deployment system that already speaks upstream's `POST /_cluster/deployment/{id}/{action}` would be spared
+  writing a store client, and the control plane serves that REST surface. A mutating operator endpoint first needs the
+  control plane to tell an operator from a tenant, which it cannot yet do for anything that writes.
+- **Upstream**: the search-replica pin (§27.3), for gradual rollouts only.
+
+### 29.6 Order of building
+
+1. **Drain with `intent: return`, docrep and segrep-pull.** This unblocks the data plane's normal deploy path ("zone
+   by zone, so in a three-zone deployment every primary moves twice per deploy", its M9 notes). The term fence makes
+   the docrep half cheap, and the data plane has already proved promotion.
+2. `draining` in `status/nodes`, so searches move with the primaries.
+3. `intent: remove`, which is mostly the planner and the reaper already in place.
+4. Dual-run `SHADOW`, `FINISH` and `ROLLBACK` on dedicated pools.
+5. `DIAL_UP`, once upstream has the pin.
+
+**`PrimaryMoveDecider` changes with step 1.** Its refusals still say that this service keeps no primary term and that
+two segment-replication primaries corrupt the remote path, and §27–28 overturned both. The handoff above is a primary
+move, so rebalancing primaries becomes possible by the same mechanism. That closes the gap §13's open question 7 left,
+a pool whose imbalance is all in primaries.
+
+### 29.7 Decisions this section takes, and the ones it leaves open
+
+Taken, each for the reason given above: the document is operator-owned and cluster-wide; it is level-triggered, with
+progress in a separate status document; an unreadable deployment freezes rather than releases; `until` is required for
+`return`; a drain demotes rather than drops; dual-runs are for dedicated pools only; deleting a
+dual-run is a commit, never a rollback. And, settled in discussion with Michael:
+
+- **`dial` is a fraction** of each shard's search replicas, and the status reports the share following each writer
+  (§29.4). A rollback rebuilds aggressively from the known-good term.
+- **An expired drain keeps the node out of search routing until it heartbeats again.** Keeping a node out of routing
+  is functionally the same as removing it and much less costly while the real state is uncertain.
+- **A deployment that does not converge notifies an operator, and nothing acts on it.** The supervisor raises
+  `DEPLOYMENT_OVERDUE` past a configured age, and a threshold rule over it, like the ones in `MONITORING.md` §5.1,
+  does the alerting outside the supervisor (§9's guardrails). Corrective actions may be automated later, as operating the
+  system teaches which ones are right, and that makes the notification more important rather than less: a stuck
+  deployment is by definition a case nobody has automated away.
+- **The document is the interface, and it is cluster-wide.** Pools are not in it. Operators who want a per-pool
+  deployment add the pool as a node attribute and select on it.
+- **A deployment starts with `DRAIN`, which gives its `attributes`, and every later transition names only the
+  deployment.** The nodes under deployment are one set throughout. The state machine is strict, with `DRAIN` to `FINISH`
+  valid as a drain alone, and `FINISH` valid from `DIAL_UP` only at full dial (§29.2). **The dial may fall**, to 0 for
+  an investigation that keeps broken nodes alive and unloaded (§29.4). Nodes do not move together; the
+  deployment system waits until the status says the state has been reached.
+- **The phases are ours to name and to contribute upstream**, `SHADOW` and `DIAL_UP` among them, with `ROLLBACK` ours.
+  Several writers will never be possible upstream, which is why the dual-run belongs to this design.
+
+To do, and not blocking the first steps of §29.6:
+
+1. **Operator authority for mutating operations.** The control plane will need to tell an operator from a tenant, and
+   today treats a request without a tenant id as an operator's. That is acceptable for reading, since a tenant seeing
+   cluster health harms nobody, and unacceptable for a drain or a dual-run. Until it is solved, the control plane serves
+   no deployment endpoint, and a deployment system writes the document itself.
+2. **The adapter's shape**, once there is something to put it behind: upstream's API, with the extra phases and the
+   transition table (§29.2) enforced where the call is made. The extra phases are the contribution that makes the same
+   call work for a dual-run.
+
+A rollback's recovery limit is not a one-way door: the supervisor's configuration holds the default and `ROLLBACK`
+may override it, with the number chosen when it is built.
+
+Open: swing capacity (§29.8), which a dual-run needs and a drain does not, so it does not block the first steps of §29.6.
+
+### 29.8 Swing capacity
+
+**Both deployment styles need it.** A rolling in-place deployment and a blue-green one each run a second set of writers
+beside the first, and a second set of primaries for every shard in scope is a whole extra layer of capacity. It may
+already be in the pool, or an operator's tooling may provision it for the length of a deployment. **Provisioning is not
+the supervisor's.** Keeping that capacity out of ordinary use is, because it may become a permanent fixture of a pool,
+sitting idle between deployments, and a supervisor that sees empty nodes will fill them. So this is a core capability, not
+a deployment detail.
+
+**A node can be reserved.** Regular placement ignores a reserved node:
+
+- no new copy, of any role, is placed on it, and it is neither a source nor a target of rebalancing;
+- it is left out of the load mean and the fair share, and out of the count of nodes that could take a shard, or the
+  balancer would see a pool with empty nodes and the diff would claim capacity nobody may use;
+- copies it already holds stay where they are, still count as copies, and its liveness is judged like any node's;
+- **one exception: a deployment's selection lets it take that deployment's new primaries**, which is `SHADOW`'s placement.
+
+It is **operator-owned**, being a fact about the machines (§25.1), and it is a decision the operator reverses whenever it
+wants, which is also **emergency scaling**: clearing the reservation makes the node regular, and the ordinary balancer
+fills it. No second mechanism is needed, and the supervisor never lifts a reservation itself.
+
+**The marker is a `reserved` field on `pools/nodes/<node-id>`**, the operator's existing per-node document, whose `pool`
+becomes optional because a node may be reserved where it is. One document rather than a second key, because moving a
+node and reserving it are then one write. With two keys, a node moved into a pool and reserved afterwards is regular for
+the moment between them, and a supervisor that sees an empty regular node fills it. It is per node rather than by
+attribute because the reservation moves: **in a blue-green deployment the roles swap.** After `FINISH` the new primaries
+sit on the nodes that were reserved, and the operator reserves the old ones instead. Doing that by editing a document is
+live; doing it by attribute would restart nodes. A pool definition that selects reserved nodes by attribute is an easy
+addition if marking many nodes one at a time becomes a chore, and the two compose. A node could also declare itself
+reserved in its registration, from its deployment configuration, as it declares its pool, with this document overriding
+it; nothing needs that yet.
+
+Until the swap, a reserved node holding live primaries is not an error, and is not moved. The pool's status says it is
+there, so that it is visible rather than forgotten.
+
+**Not decided:** whether the same mechanism should also express capacity held back for a tenant's growth, which has the
+same shape and a different owner. It does not need to be, and should not be settled while only deployments want it.
