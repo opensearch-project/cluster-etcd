@@ -164,7 +164,7 @@ public final class Applier {
             // Nothing to say. Worth checking explicitly now that every placeable node is considered every pass:
             // writing an identical assignment would bump its version and revision, which the node reads as a
             // change and the liveness tracker reads as activity. A no-op write is not free, it is noise.
-            if (unchanged(observed.assignment(), next)) {
+            if (unchanged(observed, next, observation)) {
                 continue;
             }
 
@@ -550,13 +550,18 @@ public final class Applier {
      * <p>Two cases, and the first is easy to miss: a node that was never told anything and has nothing to be told
      * must be left alone rather than handed an empty document, because an absent key already means exactly that.
      */
-    private static boolean unchanged(Assignment existing, Assignment next) {
+    private static boolean unchanged(Observation.NodeObservation observed, Assignment next, Observation observation) {
+        Assignment existing = observed.assignment();
         if (existing == null) {
-            // Nothing was said before and there is nothing to say now, so saying it would be a document whose
-            // whole content is "no instructions" -- which is what the absence of the key already means. Without
-            // this, every placeable node with no shards and no tenants to coordinate got an empty assignment the
-            // moment the applier stopped skipping empty plans.
-            return next.tenants().isEmpty();
+            if (next.tenants().isEmpty() == false) {
+                return false;
+            }
+            // Absent means "keep what you have", so an empty document is a real instruction for a node that still
+            // holds copies: a node reaped while lost and back again, whose primaries were replaced. Written only when
+            // every copy it holds is started somewhere else, the same judgement NodeReaper makes before deleting a
+            // node's documents, so a lost or never-written key never tells a node to drop the only copy of a shard.
+            boolean holdsNothing = observed.inventory() == null || observed.inventory().copyCount() == 0;
+            return holdsNothing || NodeReaper.copyOnlyThisNodeHas(observed, observation) != null;
         }
         // An existing assignment emptied by this pass is a real instruction: drop everything. Only the tenants
         // map is compared, because version and timestamp differ on every rebuild and including them would make
