@@ -1893,4 +1893,51 @@ class ActingTests {
         assertTrue(conflict.get(0).because().contains(NODE.value()), conflict.get(0).because());
         assertTrue(conflict.get(0).because().contains(NODE_B.value()), conflict.get(0).because());
     }
+
+    @Test
+    void aReapedNodeThatReturnsHoldingAReplacedPrimaryIsToldToDropIt() {
+        // A was primary, was lost, and its primary was replaced on B. A was then reaped, which deletes its assignment,
+        // and came back still holding the old copy. An absent assignment means "keep what you have", so unless the
+        // supervisor writes an empty one, A keeps serving the shard beside B indefinitely.
+        FakeNode a = node(NODE);
+        a.start();
+        createIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 6; pass++) {
+            supervisor.tick();
+            a.tick();
+            advance();
+        }
+        assertEquals(1, startedCopiesOf(0, a), "A holds the primary before it is lost");
+
+        FakeNode b = node(NODE_B);
+        b.start();
+        for (int pass = 0; pass < 150 && startedCopiesOf(0, b) == 0; pass++) {
+            supervisor.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(1, startedCopiesOf(0, b), "the primary is replaced on B while A is lost");
+
+        // What the reaper and the returning node leave behind: no assignment for A, while A has rewritten its
+        // registration and reports the copy it still holds.
+        store.delete(Keys.nodeAssignment(NODE));
+        a.start();
+        store.put(Keys.nodeShards(NODE), NodeJson.write(a.inventory()));
+
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        Assignment toldA = NodeJson.readAssignment(store.get(Keys.nodeAssignment(NODE)).orElseThrow(
+            () -> new AssertionError("A was never told anything, so it keeps its copy")).value());
+        assertTrue(toldA.tenants().isEmpty(), () -> "A should be told to hold nothing, was told " + toldA.tenants());
+        assertEquals(0, a.inventory().copyCount(), "A drops the copy it was no longer assigned");
+        assertEquals(1, startedCopiesOf(0, b), "B keeps the primary");
+        assertTrue(supervisor.lastDiffOf(POOL).of(FindingKind.PRIMARY_CONFLICT).isEmpty(),
+            () -> "nothing reports two primaries once A has let go: " + supervisor.lastDiffOf(POOL).findings());
+    }
 }

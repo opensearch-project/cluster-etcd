@@ -74,7 +74,7 @@ public final class NodeReaper {
     }
 
     /** One copy, as either of the two records of it names it. */
-    private record Copy(TenantId tenant, String indexUuid, int shard) {}
+    record Copy(TenantId tenant, String indexUuid, int shard) {}
 
     private final KeyValueStore store;
     private final LivenessTracker liveness;
@@ -185,7 +185,7 @@ public final class NodeReaper {
      * reporting it has no inventory entry for it; a node holding a copy the supervisor has already withdrawn has
      * no assignment entry for it.
      */
-    private Copy copyOnlyThisNodeHas(Observation.NodeObservation node, Observation observation) {
+    static Copy copyOnlyThisNodeHas(Observation.NodeObservation node, Observation observation) {
         for (Copy copy : copiesOf(node)) {
             Observation.DesiredState desired = observation.tenants().get(copy.tenant());
             if (desired == null) {
