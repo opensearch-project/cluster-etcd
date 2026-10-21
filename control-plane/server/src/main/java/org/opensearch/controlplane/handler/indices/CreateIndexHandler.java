@@ -10,6 +10,7 @@ import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
 import org.opensearch.controlplane.handler.template.TemplateComposition;
+import org.opensearch.controlplane.metadata.IngestionSourceValidation;
 import org.opensearch.controlplane.metadata.SettingsValidation;
 import org.opensearch.controlplane.rest.ErrorResponses;
 import org.opensearch.controlplane.rest.Json;
@@ -63,7 +64,9 @@ import java.util.Optional;
  * registry: an unknown setting is a 400 and a private one is rejected with the wording
  * {@code MetadataCreateIndexService} uses. What is not checked is whether a value is well-formed, so
  * {@code index.replication.type: "segment"} is accepted here and rejected on a real cluster, which
- * insists on {@code "SEGMENT"}. Values remain the data plane's authority.
+ * insists on {@code "SEGMENT"}. Values remain the data plane's authority, with one exception: a pull-based
+ * index's {@code index.ingestion_source.*} values are checked by {@link IngestionSourceValidation}, because a
+ * bad one is otherwise acknowledged and then fails on every node it is placed on.
  *
  * <p>Static settings are deliberately permitted — this is where {@code index.number_of_shards} is set.
  * Only {@code indices.put_settings} rejects them.
@@ -161,6 +164,11 @@ public final class CreateIndexHandler implements OperationHandler {
         }
         if (problems.notUserSettable().isEmpty() == false) {
             return ErrorResponses.privateSettingsRejected(request, problems.notUserSettable(), null);
+        }
+        Optional<String> ingestionProblem =
+            IngestionSourceValidation.checkCreate(effective.settings(), DEFAULT_REPLICATION_TYPE);
+        if (ingestionProblem.isPresent()) {
+            return ErrorResponses.illegalArgument(request, ingestionProblem.get());
         }
 
         String uuid = IndexStore.newUuid();
