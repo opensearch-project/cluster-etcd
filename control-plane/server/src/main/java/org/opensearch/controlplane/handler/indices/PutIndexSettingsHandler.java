@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
+import org.opensearch.controlplane.metadata.IngestionSourceValidation;
 import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.metadata.SettingsValidation;
 import org.opensearch.controlplane.resolver.IndicesOptions;
@@ -128,6 +129,10 @@ public final class PutIndexSettingsHandler implements OperationHandler {
         }
         if (problems.notUserSettable().isEmpty() == false) {
             return ErrorResponses.privateSettingOnUpdate(request, problems.notUserSettable().getFirst());
+        }
+        Optional<String> ingestionProblem = IngestionSourceValidation.checkUpdate(assignments);
+        if (ingestionProblem.isPresent()) {
+            return ErrorResponses.illegalArgument(request, ingestionProblem.get());
         }
 
         IndexExpressions.Resolved resolved =
