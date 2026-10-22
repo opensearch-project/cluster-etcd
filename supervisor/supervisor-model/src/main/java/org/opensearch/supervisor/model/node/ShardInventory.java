@@ -88,7 +88,8 @@ public record ShardInventory(
         Long sizeBytes,
         String reason,
         String allocationId,
-        List<String> inSync
+        List<String> inSync,
+        String relocationTargetAllocationId
     ) {
 
         public static final int MAX_REASON_LENGTH = 512;
@@ -104,12 +105,33 @@ public record ShardInventory(
 
         /** Without the document-replication fields, which is every segment-replication copy. */
         public ShardCopy(ShardRole role, ShardState state, Long sizeBytes, String reason) {
-            this(role, state, sizeBytes, reason, null, null);
+            this(role, state, sizeBytes, reason, null, null, null);
+        }
+
+        /** Not the source of a relocation, which is every copy but a primary being moved. */
+        public ShardCopy(
+            ShardRole role,
+            ShardState state,
+            Long sizeBytes,
+            String reason,
+            String allocationId,
+            List<String> inSync
+        ) {
+            this(role, state, sizeBytes, reason, allocationId, inSync, null);
         }
 
         /** The same copy carrying a document-replication identity, and an in-sync set if it is a primary. */
         public ShardCopy withReplicationIds(String allocationId, List<String> inSync) {
-            return new ShardCopy(role, state, sizeBytes, reason, allocationId, inSync);
+            return new ShardCopy(role, state, sizeBytes, reason, allocationId, inSync, relocationTargetAllocationId);
+        }
+
+        /**
+         * The same copy as the source of a relocation, naming the allocation id its node minted for the target
+         * ({@code NODE_CONTRACT.md}, <i>Proposed: relocating a document-replication primary</i>). Published for as long
+         * as the source's node holds the relocating entry, which is until it applies the withdrawal.
+         */
+        public ShardCopy withRelocationTarget(String targetAllocationId) {
+            return new ShardCopy(role, state, sizeBytes, reason, allocationId, inSync, targetAllocationId);
         }
 
         /** Whether this copy is a started primary, which is what {@code active_primary_shards} counts. */

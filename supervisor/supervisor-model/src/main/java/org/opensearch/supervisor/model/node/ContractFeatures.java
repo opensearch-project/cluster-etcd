@@ -14,5 +14,13 @@ public final class ContractFeatures {
      */
     public static final String PRIMARY_TERMS = "primary_terms";
 
+    /**
+     * The node honours {@code relocating_to} and {@code relocating_from} by relocating a document-replication primary,
+     * as OpenSearch does: one routing entry, a peer recovery from the source and a handoff of the primary context
+     * ({@code DESIGN.md} §29.9). Required on both nodes before the supervisor asks for one, because a node that ignored
+     * {@code relocating_from} would build the target as a fresh primary, which is two primaries at one term.
+     */
+    public static final String PRIMARY_RELOCATION = "primary_relocation";
+
     private ContractFeatures() {}
 }

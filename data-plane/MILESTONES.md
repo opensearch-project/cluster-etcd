@@ -1309,6 +1309,15 @@ anything but `lost` as reachable — the supervisor now agrees). The checks are 
 since a `DiscoveryNode` has no coordinator role to carry. Reachable is the gate `CoordinatorViewSource` applies
 before routing to a peer: not lost, and addressable.
 
+**From the supervisor, 2026-10-22: four relocation checks fail here until the adapter reports relocations.** The
+format for relocating a docrep primary is in `NODE_CONTRACT.md`, *Proposed: relocating a document-replication
+primary*, and the supervisor's model and projection now carry it, though nothing asks for a relocation yet. Two of the
+checks need `readAssignment` to report `relocating_to` and `relocating_from` per copy, through the five-argument
+`Understood`; two need `readIndexStatus` to report each shard's relocation as it read it from the projection, through
+the three-argument `UnderstoodPeers` and `ContractNode.Relocation(source, target, targetAllocationId)`. Empty maps mean
+"relocates nothing"; the old constructors pass null, which is what fails. Reporting the parse is enough for these
+checks; building the relocating pair is the separate work your reply describes.
+
 The original note follows.
 
 ## The shared conformance suite: why

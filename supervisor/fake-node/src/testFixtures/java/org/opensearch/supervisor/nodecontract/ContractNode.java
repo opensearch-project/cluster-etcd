@@ -158,13 +158,27 @@ public interface ContractNode {
      */
     record UnderstoodPeers(
         java.util.Map<PeerCopy, String> allocationIds,
-        java.util.Map<Integer, List<String>> inSync
+        java.util.Map<Integer, List<String>> inSync,
+        java.util.Map<Integer, Relocation> relocations
     ) {
         public UnderstoodPeers {
             allocationIds = java.util.Map.copyOf(allocationIds);
             inSync = java.util.Map.copyOf(inSync);
+            relocations = relocations == null ? null : java.util.Map.copyOf(relocations);
+        }
+
+        /** Saying nothing about relocation, for an implementation that has not been extended yet. */
+        public UnderstoodPeers(java.util.Map<PeerCopy, String> allocationIds, java.util.Map<Integer, List<String>> inSync) {
+            this(allocationIds, inSync, null);
         }
     }
+
+    /**
+     * A shard's relocation as a node read it from the index projection: the source's node, the target's, and the
+     * allocation id the source's node minted for the target, under which the target's node builds its copy. The id is
+     * null where the projection carries none yet, and a node then builds nothing.
+     */
+    record Relocation(NodeId source, NodeId target, String targetAllocationId) {}
 
     /**
      * A node's reading of an assignment, in terms the suite can compare.
@@ -184,18 +198,37 @@ public interface ContractNode {
      *     Every copy must appear. It is the value the node <em>acts on</em>, not the parse: a node that read the field
      *     and then fabricated 1 regardless is the failure {@code contract_features} exists to rule out, and only
      *     reporting what it will use can catch it.
+     * @param relocatingTo for each copy this node will relocate, the node it relocates to; and {@code relocatingFrom},
+     *     for each copy it will build as a relocation's target, the source's node ({@code NODE_CONTRACT.md},
+     *     <i>Proposed: relocating a document-replication primary</i>). Empty when the document relocates nothing. Null
+     *     from an implementation that does not say, which fails the relocation checks: a node that ignored
+     *     {@code relocating_from} would build the target as a fresh primary, two primaries at one term.
      */
     record Understood(
         java.util.Map<org.opensearch.supervisor.model.TenantId,
             java.util.Set<org.opensearch.supervisor.model.node.NodeRole>> roles,
         List<ContractCopy> copies,
-        java.util.Map<ContractCopy, Long> primaryTerms
+        java.util.Map<ContractCopy, Long> primaryTerms,
+        java.util.Map<ContractCopy, NodeId> relocatingTo,
+        java.util.Map<ContractCopy, NodeId> relocatingFrom
     ) {
 
         public Understood {
             roles = java.util.Map.copyOf(roles);
             copies = List.copyOf(copies);
             primaryTerms = java.util.Map.copyOf(primaryTerms);
+            relocatingTo = relocatingTo == null ? null : java.util.Map.copyOf(relocatingTo);
+            relocatingFrom = relocatingFrom == null ? null : java.util.Map.copyOf(relocatingFrom);
+        }
+
+        /** Saying nothing about relocation, for an implementation that has not been extended yet. */
+        public Understood(
+            java.util.Map<org.opensearch.supervisor.model.TenantId,
+                java.util.Set<org.opensearch.supervisor.model.node.NodeRole>> roles,
+            List<ContractCopy> copies,
+            java.util.Map<ContractCopy, Long> primaryTerms
+        ) {
+            this(roles, copies, primaryTerms, null, null);
         }
 
         /**
@@ -207,7 +240,7 @@ public interface ContractNode {
                 java.util.Set<org.opensearch.supervisor.model.node.NodeRole>> roles,
             List<ContractCopy> copies
         ) {
-            this(roles, copies, java.util.Map.of());
+            this(roles, copies, java.util.Map.of(), null, null);
         }
 
         /** Copies sorted, so two implementations that agree are not reported as differing on iteration order. */

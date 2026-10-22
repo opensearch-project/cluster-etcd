@@ -226,7 +226,9 @@ public final class Applier {
                 indices.put(place.indexUuid(), new Assignment.IndexAssignment(
                     place.indexName(), place.configRevision(), shards,
                     index == null ? null : index.ingestionReset(),
-                    index == null ? null : termsFor(index, shards)
+                    index == null ? null : termsFor(index, shards),
+                    index == null ? null : relocationsFor(index.relocatingTo(), shards),
+                    index == null ? null : relocationsFor(index.relocatingFrom(), shards)
                 ));
                 tenants.put(place.tenant(), tenant == null
                     ? Assignment.TenantAssignment.data(indices)
@@ -256,7 +258,8 @@ public final class Applier {
                     indices.remove(remove.indexUuid());
                 } else {
                     indices.put(remove.indexUuid(), new Assignment.IndexAssignment(
-                        index.name(), index.configRevision(), shards, index.ingestionReset(), termsFor(index, shards)
+                        index.name(), index.configRevision(), shards, index.ingestionReset(), termsFor(index, shards),
+                        relocationsFor(index.relocatingTo(), shards), relocationsFor(index.relocatingFrom(), shards)
                     ));
                 }
 
@@ -465,7 +468,8 @@ public final class Applier {
                         Assignment.IndexAssignment index = indexEntry.getValue();
                         indices.put(uuid, new Assignment.IndexAssignment(
                             index.name(), index.configRevision(), shards, index.ingestionReset(),
-                            termsFor(index, shards)));
+                            termsFor(index, shards), relocationsFor(index.relocatingTo(), shards),
+                            relocationsFor(index.relocatingFrom(), shards)));
                     }
                 }
             }
@@ -493,6 +497,24 @@ public final class Applier {
         Map<Integer, Long> kept = new java.util.TreeMap<>();
         shards.keySet().forEach(shard -> kept.put(shard, index.primaryTerms().get(shard)));
         return kept;
+    }
+
+    /**
+     * The entry's relocations for the shards it still holds as {@code PRIMARY}, or null. Carried through every rebuild,
+     * because an entry rebuilt without its relocation tells the target's node to build a fresh primary while the
+     * source still holds one; and dropped for a shard no longer held as primary, which a relocation cannot name.
+     */
+    private static Map<Integer, NodeId> relocationsFor(Map<Integer, NodeId> relocating, Map<Integer, ShardRole> shards) {
+        if (relocating == null) {
+            return null;
+        }
+        Map<Integer, NodeId> kept = new java.util.TreeMap<>();
+        relocating.forEach((shard, node) -> {
+            if (shards.get(shard) == ShardRole.PRIMARY) {
+                kept.put(shard, node);
+            }
+        });
+        return kept.isEmpty() ? null : kept;
     }
 
     /** The term this node was last told for a shard: its observed entry's, or 1 when that carried none. */

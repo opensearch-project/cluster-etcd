@@ -134,6 +134,10 @@ into every assignment, which would store it once per reader and rewrite every co
   routing entries from them. Never constructed and never carried forward: a copy whose inventory has no id is
   published without one, and an id leaves with the copy. Both change only when placement does, so they do not make
   the document noisier. Absent on every `SEGMENT` index, even if a node publishes them.
+- **`relocating_to`** and **`relocation_target_allocation_id`** on a docrep primary that is the source of a
+  relocation, until it completes (`NODE_CONTRACT.md`, *Proposed: relocating a document-replication primary*). A
+  relocating pair is always **one** primary here: the source until the target has started, and from then the target,
+  with the source left out even while its node still reports it. A reader never sees two primaries of one shard.
 - **`number_of_search_replicas`** and **`ingestion_paused`** come straight from the index document's settings,
   and are here for the same reason as `config_revision`: a reader needs to know whether what it is looking at
   reflects the settings it just wrote. `ingestion_paused` is the one field here that is a *desired* state rather
