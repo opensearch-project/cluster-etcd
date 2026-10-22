@@ -216,8 +216,12 @@ document — that data is already in `nodes/heartbeat/<id>` for anyone entitled 
 }
 ```
 
-`liveness` is `live`, `stale` or `lost`, on the two-threshold rule in `NODE_CONTRACT.md`. A reader treats every
-value but `lost` as reachable, an unrecognised one included, since only a newer supervisor could have written it.
+`liveness` is `live` or `stale`, on the two-threshold rule in `NODE_CONTRACT.md`. **A lost node is not published**:
+its document is removed on the pass it is declared lost, and its copies leave `status/indices` with it, so a lost
+node is absent from the node list, from `number_of_nodes` in `status/cluster`, and from routing, all together. Readers
+rely on that agreement, so it must stay true. `lost` remains a value a reader understands, and treats as unreachable,
+and a reader treats every other value as reachable, an unrecognised one included, since only a newer supervisor could
+have written it.
 **A node not yet seen alive is not listed**: one registered with no heartbeat, or with a heartbeat that has never
 been readable, has no liveness to publish and no address worth connecting to, and appears once it heartbeats.
 Projecting it used to fail the pass, because the observer's `UNKNOWN` cannot be written.
