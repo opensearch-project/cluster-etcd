@@ -508,6 +508,51 @@ public final class NodeContractChecks {
                 understood.toString());
         }));
 
+        // ------------------------------------------------------------ relocating a docrep primary (§29.9)
+
+        checks.add(new Check("aRelocationIsUnderstoodPerCopy", harness -> {
+            // Both ends of a relocation are PRIMARY in shards, so the role says nothing about it. A node that ignored
+            // relocating_from would build the target as a fresh primary while the source still holds one, which is two
+            // primaries at one term; one that ignored relocating_to would never hand off.
+            List<ContractCopy> asked = exampleCopies();
+            ContractNode.Understood understood = harness.node().readAssignment(assignmentWith(harness,
+                Set.of(NodeRole.DATA), asked, Map.of(0, 4L, 1, 4L), Map.of(0, PEER), Map.of(1, PEER)));
+
+            assertNotNull(understood.relocatingTo(), "readAssignment does not report relocating_to or relocating_from"
+                + " (NODE_CONTRACT.md, Proposed: relocating a document-replication primary)");
+            assertEquals(Map.of(asked.get(0), PEER), understood.relocatingTo(), "shard 0 relocates to the peer");
+            assertEquals(Map.of(asked.get(1), PEER), understood.relocatingFrom(), "shard 1 is the target of one from it");
+        }));
+
+        checks.add(new Check("anAssignmentWithoutRelocationsIsUnderstoodAsRelocatingNothing", harness -> {
+            ContractNode.Understood understood = harness.node().readAssignment(
+                assignmentWith(harness, Set.of(NodeRole.DATA), exampleCopies(), Map.of(0, 4L, 1, 4L)));
+
+            assertNotNull(understood.relocatingTo(), "readAssignment does not report relocations at all");
+            assertTrue(understood.relocatingTo().isEmpty(), understood.relocatingTo().toString());
+            assertTrue(understood.relocatingFrom().isEmpty(), understood.relocatingFrom().toString());
+        }));
+
+        checks.add(new Check("aRelocationInTheProjectionIsUnderstoodAsPublished", harness -> {
+            // The target's node builds its copy under the id the source's node minted, read from the projection. A
+            // node that minted its own would never be recovered to: peer recovery waits for the source to see it.
+            ContractNode.UnderstoodPeers understood = readIndexStatus(harness, relocatingStatus(harness, "qT0b9XwHR5aqzO8u1fN2Ag"));
+
+            assertNotNull(understood.relocations(), "readIndexStatus does not report relocations");
+            assertEquals(new ContractNode.Relocation(PEER, harness.node().nodeId(), "qT0b9XwHR5aqzO8u1fN2Ag"),
+                understood.relocations().get(0), understood.relocations().toString());
+        }));
+
+        checks.add(new Check("aRelocationNotYetMintedIsUnderstoodWithNoTargetId", harness -> {
+            // Before the source's node has applied relocating_to, the projection names the target and no id. The
+            // target's node builds nothing until there is one.
+            ContractNode.UnderstoodPeers understood = readIndexStatus(harness, relocatingStatus(harness, null));
+
+            assertNotNull(understood.relocations(), "readIndexStatus does not report relocations");
+            assertEquals(new ContractNode.Relocation(PEER, harness.node().nodeId(), null), understood.relocations().get(0),
+                understood.relocations().toString());
+        }));
+
         // ------------------------------------------------------------ a peer's projection
 
         checks.add(new Check("aPeerIsUnderstoodAsTheSupervisorWroteIt", harness -> {
@@ -552,6 +597,21 @@ public final class NodeContractChecks {
         assertNotNull(understood, "readNodeStatus is not implemented by this node's adapter, so nothing has checked"
             + " how it reads tenant/<t>/status/nodes/<node-id>");
         return understood;
+    }
+
+    /**
+     * A docrep index whose shard 0 primary, on {@link #PEER}, is relocating to the node under test, as the supervisor
+     * projects it while the target recovers: one primary, the source, naming the target and the id minted for it.
+     */
+    private static byte[] relocatingStatus(Harness harness, String targetAllocationId) {
+        IndexStatus status = new IndexStatus(
+            ContractFixtures.INDEX_NAME, ContractFixtures.INDEX_UUID, ContractFixtures.CONFIG_REVISION,
+            HealthStatus.GREEN, Replication.DOCUMENT, 1, 0, 0, false,
+            Map.of(0, List.of(new IndexStatus.ShardPlacement(PEER, ShardRole.PRIMARY, ShardState.STARTED,
+                "ULHF36LvSIa6sReNU-zHoA", List.of("ULHF36LvSIa6sReNU-zHoA"), harness.node().nodeId(), targetAllocationId))),
+            1788969977933L, 10432L
+        );
+        return status.toBytes();
     }
 
     /** {@link #PEER}'s projection, built by the supervisor's own writer, with the contract document's example values. */
@@ -610,6 +670,17 @@ public final class NodeContractChecks {
         List<ContractCopy> copies,
         Map<Integer, Long> terms
     ) {
+        return assignmentWith(harness, roles, copies, terms, null, null);
+    }
+
+    private static byte[] assignmentWith(
+        Harness harness,
+        Set<NodeRole> roles,
+        List<ContractCopy> copies,
+        Map<Integer, Long> terms,
+        Map<Integer, NodeId> relocatingTo,
+        Map<Integer, NodeId> relocatingFrom
+    ) {
         Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>();
         Map<String, Map<Integer, ShardRole>> shardsByIndex = new LinkedHashMap<>();
         for (ContractCopy copy : copies) {
@@ -618,7 +689,8 @@ public final class NodeContractChecks {
         }
         for (ContractCopy copy : copies) {
             indices.put(copy.indexUuid(), new Assignment.IndexAssignment(
-                copy.indexName(), copy.configRevision(), shardsByIndex.get(copy.indexUuid()), null, terms));
+                copy.indexName(), copy.configRevision(), shardsByIndex.get(copy.indexUuid()), null, terms,
+                relocatingTo, relocatingFrom));
         }
 
         return NodeJson.write(new Assignment(

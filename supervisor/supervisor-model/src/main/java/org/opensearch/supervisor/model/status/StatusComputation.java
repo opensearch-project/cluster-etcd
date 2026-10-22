@@ -180,7 +180,7 @@ public final class StatusComputation {
         // Carried for document replication only, where a node builds its peers' routing entries from them. A
         // segment-replication copy resolves no peers, so whatever a node publishes there is left out.
         boolean carryReplicationIds = index.replication() == Replication.DOCUMENT;
-        List<IndexStatus.ShardPlacement> placements = new ArrayList<>();
+        Map<NodeId, ShardInventory.ShardCopy> reported = new TreeMap<>(java.util.Comparator.comparing(NodeId::value));
         observation.nodes().forEach((nodeId, node) -> {
             if (node.copiesCount() == false || node.inventory() == null) {
                 return;
@@ -195,14 +195,125 @@ public final class StatusComputation {
             }
             ShardInventory.ShardCopy copy = held.shards().get(shard);
             if (copy != null) {
-                placements.add(carryReplicationIds
-                    ? new IndexStatus.ShardPlacement(nodeId, copy.role(), copy.state(), copy.allocationId(),
-                        copy.role() == ShardRole.PRIMARY ? copy.inSync() : null)
-                    : new IndexStatus.ShardPlacement(nodeId, copy.role(), copy.state()));
+                reported.put(nodeId, copy);
             }
         });
-        placements.sort(java.util.Comparator.comparing(placement -> placement.nodeId().value()));
+
+        Relocations relocations = carryReplicationIds
+            ? Relocations.of(tenant, indexUuid, shard, reported, observation)
+            : Relocations.NONE;
+
+        List<IndexStatus.ShardPlacement> placements = new ArrayList<>();
+        reported.forEach((nodeId, copy) -> {
+            if (relocations.hidden().contains(nodeId)) {
+                return;
+            }
+            if (carryReplicationIds == false) {
+                placements.add(new IndexStatus.ShardPlacement(nodeId, copy.role(), copy.state()));
+                return;
+            }
+            Relocations.Source source = relocations.sources().get(nodeId);
+            placements.add(new IndexStatus.ShardPlacement(nodeId, copy.role(), copy.state(), copy.allocationId(),
+                copy.role() == ShardRole.PRIMARY ? copy.inSync() : null,
+                source == null ? null : source.target(),
+                source == null ? null : source.targetAllocationId()));
+        });
         return placements;
+    }
+
+    /**
+     * A shard's relocating pair, as the projection must show it: one primary throughout ({@code NODE_CONTRACT.md},
+     * <i>Proposed: relocating a document-replication primary</i>). A node holding no primary of the shard cannot tell
+     * two reported primaries apart and keeps whichever comes last, so listing both would route its traffic by accident.
+     *
+     * <p>Until the target has started, the source is listed, with the target's node and the id minted for it, and the
+     * target is not. From then on the target is listed and the source is not, even while the source's node still reports
+     * its copy because it has not applied its withdrawal. The pair is linked by the id the source's node publishes,
+     * which it keeps publishing until that withdrawal, because the completion pass rewrites the assignments first; and,
+     * before that id is minted, by the two assignments.
+     *
+     * @param hidden the nodes whose reported copy of this shard is not listed
+     * @param sources for a listed source, where it is relocating to
+     */
+    private record Relocations(Set<NodeId> hidden, Map<NodeId, Source> sources) {
+
+        static final Relocations NONE = new Relocations(Set.of(), Map.of());
+
+        record Source(NodeId target, String targetAllocationId) {}
+
+        static Relocations of(
+            TenantId tenant,
+            String indexUuid,
+            int shard,
+            Map<NodeId, ShardInventory.ShardCopy> reported,
+            Observation observation
+        ) {
+            Set<NodeId> hidden = new java.util.HashSet<>();
+            Map<NodeId, Source> sources = new LinkedHashMap<>();
+            reported.forEach((sourceNode, copy) -> {
+                if (copy.role() != ShardRole.PRIMARY) {
+                    return;
+                }
+                String minted = copy.relocationTargetAllocationId();
+                NodeId assignedTarget = relocating(observation, sourceNode, tenant, indexUuid, shard, true);
+                if (minted == null && assignedTarget == null) {
+                    return;
+                }
+                NodeId targetNode = null;
+                for (Map.Entry<NodeId, ShardInventory.ShardCopy> candidate : reported.entrySet()) {
+                    ShardInventory.ShardCopy other = candidate.getValue();
+                    if (candidate.getKey().equals(sourceNode) || other.role() != ShardRole.PRIMARY) {
+                        continue;
+                    }
+                    boolean byId = minted != null && minted.equals(other.allocationId());
+                    boolean byAssignment = candidate.getKey().equals(assignedTarget)
+                        && sourceNode.equals(relocating(observation, candidate.getKey(), tenant, indexUuid, shard, false));
+                    if (byId || byAssignment) {
+                        targetNode = candidate.getKey();
+                    }
+                }
+                if (targetNode != null && reported.get(targetNode).state() == ShardState.STARTED) {
+                    // Handed off: the target is the primary, and the source serves nothing.
+                    hidden.add(sourceNode);
+                    return;
+                }
+                if (targetNode != null) {
+                    hidden.add(targetNode);
+                }
+                sources.put(sourceNode, new Source(targetNode != null ? targetNode : assignedTarget, minted));
+            });
+            // A copy assigned as a relocation's target is never a primary of its own before it has started, whatever
+            // became of its source: if the source is gone, the relocation is cancelled and the copy dropped.
+            reported.forEach((node, copy) -> {
+                if (copy.role() == ShardRole.PRIMARY && copy.state() != ShardState.STARTED
+                    && relocating(observation, node, tenant, indexUuid, shard, false) != null) {
+                    hidden.add(node);
+                }
+            });
+            return new Relocations(Set.copyOf(hidden), Map.copyOf(sources));
+        }
+
+        /** The other end this node's assignment names for the shard: where it relocates to, or from. */
+        private static NodeId relocating(
+            Observation observation,
+            NodeId node,
+            TenantId tenant,
+            String indexUuid,
+            int shard,
+            boolean to
+        ) {
+            Observation.NodeObservation observed = observation.nodes().get(node);
+            if (observed == null || observed.assignment() == null) {
+                return null;
+            }
+            var tenantAssignment = observed.assignment().tenants().get(tenant);
+            var entry = tenantAssignment == null ? null : tenantAssignment.indices().get(indexUuid);
+            if (entry == null) {
+                return null;
+            }
+            Map<Integer, NodeId> relocating = to ? entry.relocatingTo() : entry.relocatingFrom();
+            return relocating == null ? null : relocating.get(shard);
+        }
     }
 
     private static HealthStatus worse(HealthStatus a, HealthStatus b) {

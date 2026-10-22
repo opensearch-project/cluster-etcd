@@ -309,6 +309,110 @@ class StatusComputationTests {
             .contains("\"replication\":\"DOCUMENT\""), new String(status.toBytes(), java.nio.charset.StandardCharsets.UTF_8));
     }
 
+    // ---------------------------------------------------------------- a relocating primary (DESIGN.md §29.9)
+
+    private static final NodeId NODE_C = NodeId.of("nodeCCCCCCCCCCCCCCCCCC");
+
+    /** A node reporting one docrep copy of shard 0, and assigned that shard with the given relocation, if any. */
+    private static Observation.NodeObservation relocatingNode(
+        NodeId id,
+        ShardInventory.ShardCopy copy,
+        Liveness liveness,
+        Map<Integer, NodeId> to,
+        Map<Integer, NodeId> from
+    ) {
+        Observation.NodeObservation base = node(id, liveness, Map.of(), copy == null ? null : Map.of(0, copy));
+        org.opensearch.supervisor.model.node.Assignment assignment = new org.opensearch.supervisor.model.node.Assignment(
+            1, POOL, 1, id, 1L, Map.of(ACME, new org.opensearch.supervisor.model.node.Assignment.TenantAssignment(
+                java.util.Set.of(org.opensearch.supervisor.model.node.NodeRole.DATA), Map.of(UUID,
+                    new org.opensearch.supervisor.model.node.Assignment.IndexAssignment("my-index", 3041,
+                        Map.of(0, ShardRole.PRIMARY), null, null, to, from)))));
+        return new Observation.NodeObservation(id, base.registration(), base.heartbeat(), base.inventory(),
+            base.liveness(), base.pool(), assignment, 7);
+    }
+
+    private static ShardInventory.ShardCopy primary(ShardState state, String allocationId, String target) {
+        return copy(ShardRole.PRIMARY, state).withReplicationIds(allocationId, java.util.List.of(allocationId))
+            .withRelocationTarget(target);
+    }
+
+    private static List<IndexStatus.ShardPlacement> primariesOf(IndexStatus status) {
+        return status.shards().get(0).stream().filter(placement -> placement.role() == ShardRole.PRIMARY).toList();
+    }
+
+    @Test
+    void beforeTheTargetsIdIsMintedTheSourceIsTheOnePrimaryAndNamesWhereItIsGoing() {
+        // A node holding no primary of the shard keeps whichever of two reported primaries comes last, so the pair is
+        // one primary from the first pass. Linked by the two assignments, since nothing has been minted yet.
+        IndexStatus status = statusOf(docrepIndex(), Map.of(
+            NODE_A, relocatingNode(NODE_A, primary(ShardState.STARTED, "alloc-a", null), Liveness.LIVE, Map.of(0, NODE_B), null),
+            NODE_B, relocatingNode(NODE_B, primary(ShardState.INITIALIZING, "alloc-b", null), Liveness.LIVE, null, Map.of(0, NODE_A))
+        ));
+
+        List<IndexStatus.ShardPlacement> primaries = primariesOf(status);
+        assertEquals(1, primaries.size(), primaries.toString());
+        assertEquals(NODE_A, primaries.get(0).nodeId());
+        assertEquals(NODE_B, primaries.get(0).relocatingTo());
+        assertEquals(null, primaries.get(0).relocationTargetAllocationId());
+    }
+
+    @Test
+    void whileTheTargetRecoversTheSourceCarriesTheIdItMinted() {
+        IndexStatus status = statusOf(docrepIndex(), Map.of(
+            NODE_A, relocatingNode(NODE_A, primary(ShardState.STARTED, "alloc-a", "alloc-t"), Liveness.LIVE, Map.of(0, NODE_B), null),
+            NODE_B, relocatingNode(NODE_B, primary(ShardState.INITIALIZING, "alloc-t", null), Liveness.LIVE, null, Map.of(0, NODE_A))
+        ));
+
+        List<IndexStatus.ShardPlacement> primaries = primariesOf(status);
+        assertEquals(1, primaries.size(), primaries.toString());
+        assertEquals(NODE_A, primaries.get(0).nodeId());
+        assertEquals("alloc-t", primaries.get(0).relocationTargetAllocationId(), "the id the target's node builds under");
+
+        // And on the wire, where a node reads it.
+        IndexStatus.ShardPlacement read = IndexStatus.from(status.toBytes()).shards().get(0).get(0);
+        assertEquals(NODE_B, read.relocatingTo());
+        assertEquals("alloc-t", read.relocationTargetAllocationId());
+    }
+
+    @Test
+    void onceTheTargetHasStartedItIsThePrimaryEvenWhileTheSourceIsStillReported() {
+        // The completion pass rewrites the assignments first: B is a plain primary and A's entry is withdrawn, but A's
+        // node has not applied that yet and still reports its handed-off copy, with the id it minted. That id is the link.
+        IndexStatus status = statusOf(docrepIndex(), Map.of(
+            NODE_A, node(NODE_A, Liveness.LIVE, Map.of(), Map.of(0, primary(ShardState.STARTED, "alloc-a", "alloc-t"))),
+            NODE_B, relocatingNode(NODE_B, primary(ShardState.STARTED, "alloc-t", null), Liveness.LIVE, null, null)
+        ));
+
+        List<IndexStatus.ShardPlacement> primaries = primariesOf(status);
+        assertEquals(1, primaries.size(), primaries.toString());
+        assertEquals(NODE_B, primaries.get(0).nodeId());
+        assertEquals(null, primaries.get(0).relocatingTo());
+    }
+
+    @Test
+    void aTargetWhoseSourceIsLostIsNotAPrimaryOfItsOwnBeforeItHasStarted() {
+        // The relocation is cancelled and the copy dropped; until then it is not something to route writes to.
+        IndexStatus status = statusOf(docrepIndex(), Map.of(
+            NODE_A, relocatingNode(NODE_A, primary(ShardState.STARTED, "alloc-a", "alloc-t"), Liveness.LOST, Map.of(0, NODE_B), null),
+            NODE_B, relocatingNode(NODE_B, primary(ShardState.INITIALIZING, "alloc-t", null), Liveness.LIVE, null, Map.of(0, NODE_A)),
+            NODE_C, node(NODE_C, Liveness.LIVE, Map.of(), Map.of(0, docrep(ShardRole.REPLICA, "alloc-c")))
+        ));
+
+        assertTrue(primariesOf(status).isEmpty(), status.shards().toString());
+        assertEquals(HealthStatus.RED, status.status());
+    }
+
+    @Test
+    void aSegmentReplicationIndexIsProjectedAsReportedWhateverItsNodesPublish() {
+        IndexStatus status = statusOf(index(true, 1, 0), Map.of(
+            NODE_A, relocatingNode(NODE_A, primary(ShardState.STARTED, "alloc-a", "alloc-t"), Liveness.LIVE, Map.of(0, NODE_B), null)
+        ));
+
+        IndexStatus.ShardPlacement only = status.shards().get(0).get(0);
+        assertEquals(null, only.relocatingTo());
+        assertEquals(null, only.relocationTargetAllocationId());
+    }
+
     @Test
     void placementOrderIsStableSoAnUnchangedProjectionIsNotRewritten() {
         var nodes = Map.of(

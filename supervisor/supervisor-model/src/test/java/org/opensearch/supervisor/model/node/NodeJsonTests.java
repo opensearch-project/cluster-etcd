@@ -557,6 +557,71 @@ class NodeJsonTests {
         assertThrows(IllegalArgumentException.class, () -> withTerms(Map.of(0, 0L, 1, 4L)));
     }
 
+    // ------------------------------------------------------------ relocating a docrep primary (DESIGN.md §29.9)
+
+    private static final NodeId TARGET = NodeId.of("72ZSKeRtQmuqOGyPvYzmLw");
+
+    private static Assignment relocating(Map<Integer, NodeId> to, Map<Integer, NodeId> from) {
+        return new Assignment(1, PoolId.of("shared-a"), 7, NODE, 1L, Map.of(
+            ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
+                "uzKxLWZu4nPSrTknEcDpoA", new Assignment.IndexAssignment("my-index", 3041,
+                    Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA), null, Map.of(0, 4L, 1, 4L), to, from)))));
+    }
+
+    @Test
+    void relocationFieldsRoundTripAsSiblingsOfShardsNamingTheOtherNode() throws Exception {
+        byte[] bytes = NodeJson.write(relocating(Map.of(0, TARGET), null));
+        JsonNode index = parse(bytes).get("tenants").get("acme").get("indices").get("uzKxLWZu4nPSrTknEcDpoA");
+
+        assertEquals("PRIMARY", index.get("shards").get("0").asText(), "the role is unchanged: a source is the primary");
+        assertEquals(TARGET.value(), index.get("relocating_to").get("0").asText());
+        assertTrue(index.get("relocating_from") == null, index.toString());
+        assertEquals(TARGET, NodeJson.readAssignment(bytes).tenants().get(ACME).indices()
+            .get("uzKxLWZu4nPSrTknEcDpoA").relocatingTo().get(0));
+    }
+
+    @Test
+    void anEntryRelocatingNothingIsByteIdenticalToOneWrittenBeforeRelocationExisted() {
+        org.junit.jupiter.api.Assertions.assertArrayEquals(NodeJson.write(withTerms(Map.of(0, 4L, 1, 4L))),
+            NodeJson.write(relocating(Map.of(), null)));
+    }
+
+    @Test
+    void onlyAPrimaryIsRelocatedAndACopyIsOneEndOrTheOther() {
+        assertThrows(IllegalArgumentException.class, () -> relocating(Map.of(1, TARGET), null), "shard 1 is a replica");
+        assertThrows(IllegalArgumentException.class, () -> relocating(Map.of(2, TARGET), null), "shard 2 is not held");
+        assertThrows(IllegalArgumentException.class, () -> relocating(Map.of(0, TARGET), Map.of(0, TARGET)));
+        assertThrows(IllegalArgumentException.class, () -> relocating(Map.of(0, NODE), null), "to itself");
+    }
+
+    @Test
+    void everyCopierCarriesTheRelocation() {
+        // An entry rebuilt without its relocation would tell the target's node to build a fresh primary while the
+        // source still holds one.
+        Assignment.IndexAssignment entry = relocating(Map.of(0, TARGET), null)
+            .tenants().get(ACME).indices().get("uzKxLWZu4nPSrTknEcDpoA");
+
+        assertEquals(entry.relocatingTo(), entry.withPrimaryTerms(Map.of(0, 5L, 1, 5L)).relocatingTo());
+        assertEquals(entry.relocatingTo(), entry.withIngestionReset(null).relocatingTo());
+    }
+
+    @Test
+    void theSourcesMintedTargetIdRoundTripsOnItsInventoryCopy() throws Exception {
+        ShardInventory inventory = new ShardInventory(NODE, "eph", 1L, Map.of(ACME, new ShardInventory.TenantShards(Map.of(
+            "uzKxLWZu4nPSrTknEcDpoA", new ShardInventory.IndexShards("my-index", 3041, Map.of(
+                0, ShardInventory.ShardCopy.of(ShardRole.PRIMARY, ShardState.STARTED, 1000)
+                    .withReplicationIds("ULHF36LvSIa6sReNU-zHoA", java.util.List.of("ULHF36LvSIa6sReNU-zHoA"))
+                    .withRelocationTarget("qT0b9XwHR5aqzO8u1fN2Ag")))))));
+
+        byte[] bytes = NodeJson.write(inventory);
+        JsonNode copy = parse(bytes).get("tenants").get("acme").get("indices").get("uzKxLWZu4nPSrTknEcDpoA")
+            .get("shards").get("0");
+
+        assertEquals("qT0b9XwHR5aqzO8u1fN2Ag", copy.get("relocation_target_allocation_id").asText());
+        assertEquals("qT0b9XwHR5aqzO8u1fN2Ag", NodeJson.readInventory(bytes).tenants().get(ACME).indices()
+            .get("uzKxLWZu4nPSrTknEcDpoA").shards().get(0).relocationTargetAllocationId());
+    }
+
     @Test
     void contractFeaturesRoundTripAndKeepWhatThisBuildDoesNotKnow() {
         // A node newer than this supervisor declares features it has no name for. Dropping them on the way in would

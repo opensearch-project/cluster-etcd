@@ -40,6 +40,18 @@ public record Assignment(
     public Assignment {
         Objects.requireNonNull(nodeId, "nodeId");
         tenants = tenants == null ? Map.of() : Map.copyOf(tenants);
+        for (TenantAssignment tenant : tenants.values()) {
+            for (IndexAssignment index : tenant.indices().values()) {
+                for (Map<Integer, NodeId> relocating : java.util.Arrays.asList(index.relocatingTo(), index.relocatingFrom())) {
+                    if (relocating != null && relocating.containsValue(nodeId)) {
+                        throw new IllegalArgumentException(
+                            "assignment for node [" + nodeId + "] relocates index [" + index.name() + "] to or from itself;"
+                                + " a relocation moves a primary between two nodes"
+                        );
+                    }
+                }
+            }
+        }
         if (version < 1) {
             throw new IllegalArgumentException(
                 "assignment version must start at 1, was " + version
@@ -214,11 +226,33 @@ public record Assignment(
         long configRevision,
         Map<Integer, ShardRole> shards,
         IngestionReset ingestionReset,
-        Map<Integer, Long> primaryTerms
+        Map<Integer, Long> primaryTerms,
+        Map<Integer, NodeId> relocatingTo,
+        Map<Integer, NodeId> relocatingFrom
     ) {
 
         public IndexAssignment {
             shards = shards == null ? Map.of() : Map.copyOf(shards);
+            // Null rather than empty, as for the terms: an entry relocating nothing is byte-identical to one written
+            // before relocation existed.
+            relocatingTo = relocatingTo == null || relocatingTo.isEmpty()
+                ? null
+                : Collections.unmodifiableMap(new java.util.TreeMap<>(relocatingTo));
+            relocatingFrom = relocatingFrom == null || relocatingFrom.isEmpty()
+                ? null
+                : Collections.unmodifiableMap(new java.util.TreeMap<>(relocatingFrom));
+            requireRelocatingPrimaries(name, shards, relocatingTo, "relocating_to");
+            requireRelocatingPrimaries(name, shards, relocatingFrom, "relocating_from");
+            if (relocatingTo != null && relocatingFrom != null) {
+                for (Integer shard : relocatingTo.keySet()) {
+                    if (relocatingFrom.containsKey(shard)) {
+                        throw new IllegalArgumentException(
+                            "assignment for index [" + name + "] shard " + shard + " is both relocating to another node"
+                                + " and from one; a copy is one end of a relocation or the other"
+                        );
+                    }
+                }
+            }
             // Null rather than empty when there are none, so the field is omitted from the bytes: an assignment
             // written by a supervisor that issues no terms must be byte-identical to one written before terms existed.
             primaryTerms = primaryTerms == null || primaryTerms.isEmpty()
@@ -252,7 +286,46 @@ public record Assignment(
 
         /** Without a reset, which is every assignment but the handful that carry one. */
         public IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards) {
-            this(name, configRevision, shards, null, null);
+            this(name, configRevision, shards, null, null, null, null);
+        }
+
+        /** Relocating nothing, which is every entry but those of a primary being moved. */
+        public IndexAssignment(
+            String name,
+            long configRevision,
+            Map<Integer, ShardRole> shards,
+            IngestionReset ingestionReset,
+            Map<Integer, Long> primaryTerms
+        ) {
+            this(name, configRevision, shards, ingestionReset, primaryTerms, null, null);
+        }
+
+        /**
+         * A relocation's fields name a shard this entry holds as {@code PRIMARY}, and nothing else: both ends of a
+         * relocation are the primary, the source until the handoff and the target after it.
+         */
+        private static void requireRelocatingPrimaries(
+            String name,
+            Map<Integer, ShardRole> shards,
+            Map<Integer, NodeId> relocating,
+            String field
+        ) {
+            if (relocating == null) {
+                return;
+            }
+            relocating.forEach((shard, node) -> {
+                if (node == null) {
+                    throw new IllegalArgumentException(
+                        "assignment for index [" + name + "] shard " + shard + " has " + field + " with no node"
+                    );
+                }
+                if (shards.get(shard) != ShardRole.PRIMARY) {
+                    throw new IllegalArgumentException(
+                        "assignment for index [" + name + "] carries " + field + " for shard " + shard + ", which it holds"
+                            + " as " + shards.get(shard) + "; only a primary is relocated"
+                    );
+                }
+            });
         }
 
         public IndexAssignment(
@@ -261,16 +334,23 @@ public record Assignment(
             Map<Integer, ShardRole> shards,
             IngestionReset ingestionReset
         ) {
-            this(name, configRevision, shards, ingestionReset, null);
+            this(name, configRevision, shards, ingestionReset, null, null, null);
         }
 
+        // Every copier carries every field. An entry rebuilt without its relocation would tell the target's node to
+        // build a fresh primary while the source still holds one.
         public IndexAssignment withIngestionReset(IngestionReset reset) {
-            return new IndexAssignment(name, configRevision, shards, reset, primaryTerms);
+            return new IndexAssignment(name, configRevision, shards, reset, primaryTerms, relocatingTo, relocatingFrom);
         }
 
         /** The same entry with these terms, or with none. Pass only terms for shards this entry holds. */
         public IndexAssignment withPrimaryTerms(Map<Integer, Long> terms) {
-            return new IndexAssignment(name, configRevision, shards, ingestionReset, terms);
+            return new IndexAssignment(name, configRevision, shards, ingestionReset, terms, relocatingTo, relocatingFrom);
+        }
+
+        /** The same entry relocating these shards, or none. Pass only shards this entry holds as {@code PRIMARY}. */
+        public IndexAssignment withRelocations(Map<Integer, NodeId> to, Map<Integer, NodeId> from) {
+            return new IndexAssignment(name, configRevision, shards, ingestionReset, primaryTerms, to, from);
         }
 
         /** The term this node is told for a shard: its entry, or 1 when the supervisor issued none. */

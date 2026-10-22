@@ -95,19 +95,31 @@ public record IndexStatus(
      *     builds its peers' routing entries from them: peer recovery is keyed on the replica's id, and a primary's
      *     in-sync set is what a replica checks to learn it has been dropped. Never constructed here, and never carried
      *     forward once the inventory stops reporting the copy.
+     * @param relocatingTo and {@code relocationTargetAllocationId} are on the shard's primary while it is the source of
+     *     a relocation that has not completed: the target's node, and the allocation id the source's node minted for it
+     *     ({@code NODE_CONTRACT.md}, <i>Proposed: relocating a document-replication primary</i>). The target is not
+     *     listed as a copy of its own until it has started, and from then the source is not listed at all, so a reader
+     *     is never shown two primaries of one shard.
      */
     public record ShardPlacement(
         NodeId nodeId,
         ShardRole role,
         ShardState state,
         String allocationId,
-        List<String> inSync
+        List<String> inSync,
+        NodeId relocatingTo,
+        String relocationTargetAllocationId
     ) {
         public ShardPlacement {
             Objects.requireNonNull(nodeId, "nodeId");
             Objects.requireNonNull(role, "role");
             Objects.requireNonNull(state, "state");
             inSync = inSync == null ? null : List.copyOf(inSync);
+        }
+
+        /** Not relocating, which is every copy but a primary being moved. */
+        public ShardPlacement(NodeId nodeId, ShardRole role, ShardState state, String allocationId, List<String> inSync) {
+            this(nodeId, role, state, allocationId, inSync, null, null);
         }
 
         /** Without the document-replication fields, which is every segment-replication copy. */

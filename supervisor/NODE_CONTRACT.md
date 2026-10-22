@@ -606,7 +606,12 @@ declared, `applied` and the deferred reasons confirm the instruction.
 
 ### Proposed: relocating a document-replication primary
 
-**Status: proposed, not built on either side.** The reasoning is `DESIGN.md` §29.9: a planned move of a docrep primary,
+**Status: the format is built on the supervisor's side, and nothing writes it yet.** The model reads and writes every
+field below, the index projection shows a relocating pair as one primary, and the conformance suite has four
+reading-side checks (`aRelocationIsUnderstoodPerCopy`, `anAssignmentWithoutRelocationsIsUnderstoodAsRelocatingNothing`,
+`aRelocationInTheProjectionIsUnderstoodAsPublished`, `aRelocationNotYetMintedIsUnderstoodWithNoTargetId`), which fail
+on a node's side until its adapter reports what it read. The supervisor does not yet ask for a relocation, and the data
+plane does not yet perform one. The reasoning is `DESIGN.md` §29.9: a planned move of a docrep primary,
 which a drain makes, is OpenSearch's primary relocation, with its handoff of the primary context, so that the move needs
 no term change, loses no write, and keeps the other replicas in the group. Only between nodes that declare
 `primary_relocation` in `contract_features`.

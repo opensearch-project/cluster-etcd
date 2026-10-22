@@ -139,7 +139,12 @@ class FakeNodeContractTests extends NodeContractTests {
             var status = org.opensearch.supervisor.model.status.IndexStatus.from(document);
             Map<ContractNode.PeerCopy, String> ids = new LinkedHashMap<>();
             Map<Integer, List<String>> inSync = new LinkedHashMap<>();
+            Map<Integer, ContractNode.Relocation> relocations = new LinkedHashMap<>();
             status.shards().forEach((shard, placements) -> placements.forEach(placement -> {
+                if (placement.relocatingTo() != null) {
+                    relocations.put(shard, new ContractNode.Relocation(placement.nodeId(), placement.relocatingTo(),
+                        placement.relocationTargetAllocationId()));
+                }
                 if (placement.allocationId() != null) {
                     ids.put(new ContractNode.PeerCopy(placement.nodeId(), shard, placement.role()),
                         placement.allocationId());
@@ -149,7 +154,7 @@ class FakeNodeContractTests extends NodeContractTests {
                     inSync.put(shard, placement.inSync());
                 }
             }));
-            return new ContractNode.UnderstoodPeers(ids, inSync);
+            return new ContractNode.UnderstoodPeers(ids, inSync, relocations);
         }
 
         @Override
@@ -160,6 +165,8 @@ class FakeNodeContractTests extends NodeContractTests {
             // rather than what the adapter thinks the document says.
             List<ContractCopy> copies = new java.util.ArrayList<>();
             Map<ContractCopy, Long> terms = new LinkedHashMap<>();
+            Map<ContractCopy, NodeId> relocatingTo = new LinkedHashMap<>();
+            Map<ContractCopy, NodeId> relocatingFrom = new LinkedHashMap<>();
             FakeNode.desiredOf(parsed).forEach((desired, role) -> {
                 ContractCopy copy = new ContractCopy(
                     desired.tenant(), desired.indexUuid(), desired.indexName(), desired.configRevision(),
@@ -168,8 +175,15 @@ class FakeNodeContractTests extends NodeContractTests {
                 copies.add(copy);
                 // fake-node fabricates no cluster state, so the parse is all it has; honest for the same reason its
                 // roles half is.
-                terms.put(copy, parsed.tenants().get(desired.tenant()).indices().get(desired.indexUuid())
-                    .primaryTermOf(desired.shard()));
+                Assignment.IndexAssignment entry = parsed.tenants().get(desired.tenant()).indices().get(desired.indexUuid());
+                terms.put(copy, entry.primaryTermOf(desired.shard()));
+                // The same for relocation, which fake-node does not perform: the parse is what it would act on.
+                if (entry.relocatingTo() != null && entry.relocatingTo().containsKey(desired.shard())) {
+                    relocatingTo.put(copy, entry.relocatingTo().get(desired.shard()));
+                }
+                if (entry.relocatingFrom() != null && entry.relocatingFrom().containsKey(desired.shard())) {
+                    relocatingFrom.put(copy, entry.relocatingFrom().get(desired.shard()));
+                }
             });
 
             // The roles half is the parse, and honestly so: fake-node does not act on roles at all -- it walks
@@ -178,7 +192,7 @@ class FakeNodeContractTests extends NodeContractTests {
             Map<TenantId, Set<NodeRole>> roles = new LinkedHashMap<>();
             parsed.tenants().forEach((tenant, entry) -> roles.put(tenant, entry.roles()));
 
-            return new ContractNode.Understood(roles, copies, terms);
+            return new ContractNode.Understood(roles, copies, terms, relocatingTo, relocatingFrom);
         }
 
         private Assignment assignmentFor(List<ContractCopy> copies) {
