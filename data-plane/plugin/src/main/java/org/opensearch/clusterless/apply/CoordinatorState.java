@@ -259,7 +259,22 @@ public final class CoordinatorState implements NodeState {
                     // below follows the table rather than the projection, so the two cannot disagree.
                     continue;
                 }
-                if (primariesHere.contains(shardNumber) && copy.role() != ShardRole.PRIMARY && copy.state() == ShardState.STARTED
+                if (primariesHere.contains(shardNumber) && copy.role() == ShardRole.PRIMARY) {
+                    // Another copy reported as primary, beside the one this node holds. One shard has one primary entry:
+                    // ReplicationTracker.invariant asserts that a primary-mode copy is its table's primary, and the server
+                    // fails the copy when it is not. The projection follows observation, so it shows the copy this one
+                    // replaced -- a lost or withdrawn primary's, or a relocation's source after its handoff -- until the
+                    // supervisor sees the change. The assignment is the authority for what this node holds, so this
+                    // node's primary is the one routed. Any copy type: a segrep handoff overlaps two primaries as well.
+                    logger.debug(
+                        "clusterless: not routing {}/{} on [{}]: reported primary, and this node holds the primary",
+                        index,
+                        shardNumber,
+                        copy.node()
+                    );
+                    continue;
+                }
+                if (primariesHere.contains(shardNumber) && copy.state() == ShardState.STARTED
                     && documentReplicated(routed)) {
                     Set<String> tracked = trackedHere.get(shardNumber);
                     if (tracked == null || tracked.contains(copy.allocationId()) == false) {

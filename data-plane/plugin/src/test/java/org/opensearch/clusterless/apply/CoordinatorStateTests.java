@@ -633,6 +633,22 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         assertEquals(2, state.nodes().getSize());
     }
 
+    public void testANodeHoldingThePrimaryRoutesNoOtherCopyAsPrimary() {
+        // The pass on which this node's copy became primary reads a projection written before it did, which still shows
+        // the copy it replaced as the primary. Routed as well, it is a second primary in the table: primaryShard() is
+        // whichever came last, and ReplicationTracker.invariant asserts that a primary-mode copy is its table's primary,
+        // so the server fails the copy just promoted. Left out even though the tracker holds it: a primary is not a replica.
+        ClusterState first = docrepPrimary(ClusterState.EMPTY_STATE, copy(PEER, ShardRole.PRIMARY, ShardState.STARTED), holdingPeer());
+
+        IndexShardRoutingTable shard = shardTable(first);
+        assertEquals("one primary: " + shard, 1, shard.shards().stream().filter(ShardRouting::primary).count());
+        assertEquals(LOCAL, shard.primaryShard().currentNodeId());
+        assertEquals("and so the in-sync set is this primary's to say", Set.of(localPrimaryId(first)), inSync(first));
+
+        ClusterState second = docrepPrimary(first, copy(PEER, ShardRole.PRIMARY, ShardState.STARTED), holdingPeer());
+        assertTrue("the pass after changes nothing", StateEquivalence.sameContent(first, second));
+    }
+
     public void testADocrepPeerIsRoutedUnderTheAllocationIdItsNodePublished() {
         // Peer recovery waits until the recovering replica's own id is in the primary's routing table, so an id minted
         // here, as every peer's once was, is one no recovery ever matches.
