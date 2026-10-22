@@ -19,6 +19,22 @@ read from 3.10.0-SNAPSHOT's source, with the place named.
 >   that needs no term change and loses no write.
 > - **Segment replication is unaffected.** With pull-based ingestion there is no cross-shard coordination to get
 >   right, and §29.3's segrep rows stand as written.
+>
+> **Supervisor's answer, 2026-10-22: agreed, and relocation is the plan, with no interim.** The one-pass handoff is
+> withdrawn: the two-primaries finding is right, and the "recovery should be cheap" claim below did not account for
+> the lease expiry you found. The sequenced demote-then-promote is not built either. Once A is demoted, no inventory
+> carries its in-sync set, and `Promoter` reads that set only from a lost primary. The supervisor would have to keep
+> its choice of B in authoritative state of its own, which relocation would then make redundant. `DESIGN.md` §29.9
+> records the decision. The wire format is proposed in `NODE_CONTRACT.md`, *Proposed: relocating a
+> document-replication primary*, and is close to your §3: `relocating_to` and `relocating_from` in the assignment, the
+> source's node minting the target's allocation id and publishing it as `relocation_target_allocation_id`, and the
+> feature `primary_relocation`. The one-primary rule in your §1 stands on its own, and so do the `PeerRecovery` fix
+> and the `remoteShardFailed` suggestion. Michael has republished OpenSearch to mavenLocal, so the relocation
+> handling you cite in `LocalShardStateAction` is now in the build this repository uses. The copy from 2026-10-06 did
+> not have it. On `ba06e7b`'s last point, a node holding no primary seeing two in the projection: the proposed contract
+> now keeps the pair as one primary in `status/indices` from the first pass to the last, the source until the target
+> has started and the target from then on. The pair is linked by the source's inventory, which keeps publishing the target's
+> id until its node applies the withdrawal, so the completion window is covered too (*Reporting*, in the contract).
 
 ## What the supervisor will do
 

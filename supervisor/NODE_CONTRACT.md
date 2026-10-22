@@ -570,6 +570,7 @@ supervisor ignores feature strings it does not recognise. Absent means none.
 | `retain_remote_history` | `retain_remote_history`, by turning segment cleanup off for the whole node |
 | `retain_remote_history_scoped` | the same field, by a metadata lock covering only that shard |
 | `abandon_remote_terms` | `abandon_remote_terms` below |
+| `primary_relocation` | `relocating_to` and `relocating_from`, *Proposed: relocating a document-replication primary* |
 
 An index entry in the assignment gains three optional fields, siblings of `shards`, which is unchanged:
 
@@ -602,6 +603,70 @@ A node defers, with a reason, a term for a shard not in `shards`, either remote-
 
 **No inventory field.** The inventory has no room for another per-copy field, and none is needed: with the feature
 declared, `applied` and the deferred reasons confirm the instruction.
+
+### Proposed: relocating a document-replication primary
+
+**Status: proposed, not built on either side.** The reasoning is `DESIGN.md` §29.9: a planned move of a docrep primary,
+which a drain makes, is OpenSearch's primary relocation, with its handoff of the primary context, so that the move needs
+no term change, loses no write, and keeps the other replicas in the group. Only between nodes that declare
+`primary_relocation` in `contract_features`.
+
+**The assignment.** Two optional siblings of `shards`, keyed by shard, each naming the other end by node id:
+
+```json
+"shards": { "0": "PRIMARY" }, "primary_terms": { "0": 4 }, "relocating_to": { "0": "72ZSKeRtQmuqOGyPvYzmLw" }
+```
+
+```json
+"shards": { "0": "PRIMARY" }, "primary_terms": { "0": 4 }, "relocating_from": { "0": "pv1sDMfZRxSTMiW5VrbN9w" }
+```
+
+The first is the source's entry, the second the target's. Both carry the source's term, which a relocation does not
+change. A node defers, with a reason, either field on a shard that is not `PRIMARY` in `shards`, and a
+`relocating_from` whose source it cannot see started in the projection.
+
+**The target's allocation id is the source's to mint**, because in a routing table the relocation is one entry, the
+source's, and the target is derived from it. The source's node mints the id when it applies `relocating_to`, and
+publishes it on its own copy in the inventory:
+
+```json
+"0": { "role": "PRIMARY", "state": "STARTED", "allocation_id": "ULHF36LvSIa6sReNU-zHoA",
+       "relocation_target_allocation_id": "qT0b9XwHR5aqzO8u1fN2Ag" }
+```
+
+**The source's node keeps publishing it for as long as it holds the relocating entry**, which is until it applies the
+withdrawal, not only while its assignment says `relocating_to`. The supervisor carries it verbatim into
+`tenant/<t>/status/indices/<uuid>`, on the source's copy, beside a `relocating_to` naming the target's node. The target's node builds its copy only once the projection shows that id, and
+both nodes then fabricate the same relocating entry, so no table holds two primaries. That is the existing rule, each
+copy routed under the id its own node publishes, extended to a pair.
+
+**Reporting.** As for any move, the source reports its copy `STARTED` and the target `INITIALIZING` until it starts,
+both with the role `PRIMARY`; there is still no `RELOCATING` state on the wire. The supervisor tells the pair from two
+primaries by the assignments it wrote. Once the target reports its copy started as primary, the supervisor rewrites it
+as a plain `PRIMARY` and withdraws the source's entry, in one pass.
+
+**The projection shows the pair as one primary, from the first pass to the last.** A node holding no primary of the
+shard, a replica or a coordinator, cannot tell two reported primaries apart, and keeps whichever comes last. So
+`status/indices` never lists both ends as primaries:
+
+- **Until the target has started**, the source is the shard's `PRIMARY`, carrying `relocating_to` and
+  `relocation_target_allocation_id`. The target is not listed as a copy of its own.
+- **Once the target reports started**, it is the shard's `PRIMARY`, and the source is not listed, even while the
+  source's node still reports its copy because it has not yet applied the withdrawal. After the handoff the source
+  serves nothing, and a write reaching it is forwarded to the target.
+
+**The pair is linked by the source's inventory, not only by the assignments**, because the completion pass rewrites
+the assignments first. On the next pass the source's entry no longer says `relocating_to`, but its node still reports
+the copy, with the `relocation_target_allocation_id` it minted. A reported primary whose published target is reported
+started is a handed-off source: it is not projected, and it is not a `PRIMARY_CONFLICT`. Cancellation is the reverse
+window, and needs no rule, because a target is never listed before it has started. **So a reader needs no rule of its
+own** for a relocation: the projection never shows it two primaries.
+
+Each node fabricates its own copy from its assignment, never from the projection, so the source's and target's nodes
+are unaffected by which end the projection shows.
+
+**Cancelling** is the same two fields being dropped. If the target's entry is withdrawn before it has started, its node
+drops the copy and the source stays primary.
 
 ### Routing is not here, and neither is peer wiring
 

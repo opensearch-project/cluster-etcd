@@ -83,9 +83,9 @@ promotion (§27–28, finding 11).
 
 **Open threads, roughly in priority order:**
 
-1. **Somewhere to record that a drain or dual-run is intended.** Open question 11 (announced deployments) and
-   §28.9. It blocks three things: intentional demotion (a drain), the rollback dual-run (§27.4), and exempting
-   an intended dual-run from `PRIMARY_CONFLICT`. This is the next design task.
+1. **Build the docrep drain as a primary relocation** (`DESIGN.md` §29.9). The design is §29 and the wire format
+   is proposed in `NODE_CONTRACT.md`. Start with the contract and the conformance check, since the data plane must
+   build the relocating pair; then the deployment reader, `RelocatePrimary`, and the `reached` status.
 2. **The rest of §28:** `retain_remote_history` and `abandon_remote_terms`, and the upstream search-replica pin
    (§27.3). None of it is built. The scoped metadata lock (§27.5) is no longer needed by anything planned, since
    dual-runs are for dedicated pools only (§29.4).
