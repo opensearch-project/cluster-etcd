@@ -161,7 +161,23 @@ public enum FindingKind {
     UNRECOGNISED_STATE(WARNING),
 
     /** A document under a prefix we own that could not be parsed at all. */
-    UNREADABLE_DOCUMENT(WARNING);
+    UNREADABLE_DOCUMENT(WARNING),
+
+    /**
+     * A deployment that cannot be acted on as written: it does not parse, its state is not one this build knows, or a
+     * field is missing or out of range ({@code DESIGN.md} §29.2). Critical because it freezes nodes rather than
+     * releasing them: the ones it selects, or the whole pool if it does not parse.
+     */
+    DEPLOYMENT_INVALID(CRITICAL),
+
+    /** A node selected by more than one deployment. Frozen rather than given to either. */
+    DEPLOYMENT_CONFLICT(CRITICAL),
+
+    /**
+     * A drain whose nodes were to return, past its {@code until}. It reads as absent, so its nodes are back on the
+     * ordinary liveness ladder; the likeliest cause is a deployment system that stopped part way.
+     */
+    DEPLOYMENT_EXPIRED(WARNING);
 
     /** Findings older than this many passes escalate, if their kind escalates at all. */
     public static final long ESCALATE_AFTER_PASSES = 10;

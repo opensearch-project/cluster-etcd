@@ -49,6 +49,7 @@ decidable from the key alone.
 | `pools/definitions/<pool-id>` | operator | supervisors | `DESIGN.md` §2 |
 | `pools/bindings/<tenant-id>` | operator, **and the outgoing owner on a rebind** | supervisors | `DESIGN.md` §2, §4 |
 | `pools/nodes/<node-id>` | operator | supervisors | `DESIGN.md` §2 |
+| `deployments/<deployment-id>` | operator, or the deployment system acting for one | every supervisor, for the nodes of its own pools | `DESIGN.md` §29 |
 | `supervisor/members/<supervisor-id>` | that supervisor | supervisors, operators | R6.1 |
 | `supervisor/pools/<pool-id>/lease` | supervisors | supervisors, operators | R6.1, R6.2 |
 | `supervisor/leases/housekeeping` | supervisors | supervisors | `DESIGN.md` §3 |
@@ -445,6 +446,24 @@ Optional. A node's pool normally comes from the `pool` field of its own registra
 takes from its deployment configuration, so a node deployed into a pool needs no write here at all. This key
 **overrides** that, which is how a node moves between pools without being redeployed — one key, one CAS, and
 its shard copies move with it. Precedence is stated once, in `NODE_CONTRACT.md`, and both sides must agree.
+
+### `deployments/<deployment-id>` — operator-written, cluster-wide
+
+```json
+{ "state": "DRAIN", "attributes": { "zone": "z1" }, "intent": "return", "until": 1790900000000 }
+```
+
+One deployment, written by the deployment system that drives it and read by every supervisor each pass; no
+supervisor writes it. The design is `DESIGN.md` §29: `state` is `DRAIN`, `SHADOW`, `DIAL_UP` or `ROLLBACK`;
+`attributes` select the nodes under deployment, all of which must match, and stay the same for the deployment's life;
+`intent` (`return`, the default, or `remove`) and `until` (epoch millis, required for `return`) are read in `DRAIN`,
+`dial` (0 to 1) in `DIAL_UP`, and `concurrent_recoveries` in `ROLLBACK`. `FINISH` removes the deployment: delete the
+key. **Read, and resolved to nodes; not yet acted on.**
+
+What cannot be acted on as written **freezes rather than releases** (`DESIGN.md` §29.10): a document that does not
+parse freezes every node of the pool, one that parses and is invalid freezes the nodes it selects, and so does a node
+selected by two. `DEPLOYMENT_INVALID` and `DEPLOYMENT_CONFLICT` report them; `DEPLOYMENT_EXPIRED` reports a returning
+drain past its `until`, which reads as absent.
 
 ### `supervisor/members/<supervisor-id>`
 

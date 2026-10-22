@@ -16,7 +16,19 @@ import java.util.Objects;
  * @param indexUuid the uuid, never the name. A name is reused, and a subject keyed on one would carry an
  *     index's age over to its deleted predecessor's successor.
  */
-public record Subject(TenantId tenant, String indexUuid, Integer shard, NodeId node, PoolId pool, String taskId) {
+public record Subject(
+    TenantId tenant,
+    String indexUuid,
+    Integer shard,
+    NodeId node,
+    PoolId pool,
+    String taskId,
+    String deployment
+) {
+
+    public Subject(TenantId tenant, String indexUuid, Integer shard, NodeId node, PoolId pool, String taskId) {
+        this(tenant, indexUuid, shard, node, pool, taskId, null);
+    }
 
     public static Subject ofShard(TenantId tenant, String indexUuid, int shard) {
         return new Subject(tenant, indexUuid, shard, null, null, null);
@@ -46,6 +58,14 @@ public record Subject(TenantId tenant, String indexUuid, Integer shard, NodeId n
         return new Subject(tenant, null, null, null, null, taskId);
     }
 
+    /**
+     * A deployment, as seen by one pool: each supervisor reports on the nodes of its own pools, so two pools' findings
+     * about one deployment are two findings.
+     */
+    public static Subject ofDeployment(PoolId pool, String deploymentId) {
+        return new Subject(null, null, null, null, pool, null, deploymentId);
+    }
+
     /** A short stable rendering, used as the key in projected documents and in oscillation history. */
     public String key() {
         StringBuilder key = new StringBuilder();
@@ -66,6 +86,9 @@ public record Subject(TenantId tenant, String indexUuid, Integer shard, NodeId n
         }
         if (taskId != null) {
             key.append("task:").append(taskId);
+        }
+        if (deployment != null) {
+            key.append("deployment:").append(deployment);
         }
         return key.isEmpty() ? "-" : key.toString();
     }

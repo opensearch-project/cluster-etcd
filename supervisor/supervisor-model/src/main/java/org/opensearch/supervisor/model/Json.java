@@ -75,6 +75,10 @@ public final class Json {
         registerWireEnum(module, org.opensearch.supervisor.model.node.ResetMode.class,
             org.opensearch.supervisor.model.node.ResetMode::from);
         registerWireEnum(module, AllocationEnable.class, AllocationEnable::from);
+        registerWireEnum(module, org.opensearch.supervisor.model.deploy.DeploymentState.class,
+            org.opensearch.supervisor.model.deploy.DeploymentState::from);
+        registerWireEnum(module, org.opensearch.supervisor.model.deploy.DrainIntent.class,
+            org.opensearch.supervisor.model.deploy.DrainIntent::from);
 
         return JsonMapper.builder()
             .addModule(module)

@@ -363,6 +363,21 @@ class ObserverTests {
     }
 
     @Test
+    void deploymentsAreReadClusterWideAndAnUnparseableOneIsReportedUnderItsKey() {
+        // Cluster-wide, outside every tenant and pool prefix: a deployment selects nodes by attribute across pools.
+        store.put(Keys.deployment("zone-1"), new org.opensearch.supervisor.model.deploy.Deployment(
+            org.opensearch.supervisor.model.deploy.DeploymentState.DRAIN, Map.of("zone", "z1"),
+            org.opensearch.supervisor.model.deploy.DrainIntent.RETURN, 1_790_900_000_000L, null, null).toBytes());
+        store.put(Keys.deployment("broken"), "{ not json".getBytes(StandardCharsets.UTF_8));
+
+        Observation observation = observe();
+
+        assertEquals(Set.of("zone-1"), observation.deployments().keySet());
+        assertEquals(Map.of("zone", "z1"), observation.deployments().get("zone-1").attributes());
+        assertTrue(observation.unreadable().contains(Keys.deployment("broken")), observation.unreadable().toString());
+    }
+
+    @Test
     void anUnreadableIndexDocumentCostsOnlyThatIndex() {
         writeIndex(1, 0);
         store.put(Keys.indicesPrefix(ACME) + "broken", "{ not json".getBytes(StandardCharsets.UTF_8));
