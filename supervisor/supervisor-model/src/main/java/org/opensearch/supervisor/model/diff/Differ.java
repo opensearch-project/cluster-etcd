@@ -46,6 +46,7 @@ public final class Differ {
         taskFindings(observation, findings);
         unreadableFindings(observation, findings);
         deploymentFindings(observation, findings);
+        drainFindings(observation, findings);
 
         return new Diff(observation.pass(), observation.pool(), ages.age(findings, observation.pass()));
     }
@@ -224,7 +225,16 @@ public final class Differ {
         List<Finding> findings
     ) {
         Subject subject = Subject.ofShard(key.tenant(), key.indexUuid(), key.shard());
-        long primaries = copies.stream().filter(copy -> copy.role() == ShardRole.PRIMARY).count();
+        // A relocating pair is one primary, not two (DESIGN.md §29.9), by the same answer the projection gives.
+        org.opensearch.supervisor.model.observe.RelocatingPairs pairs =
+            index.replication() == org.opensearch.supervisor.model.status.Replication.DOCUMENT
+                ? org.opensearch.supervisor.model.observe.RelocatingPairs.of(key.tenant(), key.indexUuid(), key.shard(),
+                    observation)
+                : null;
+        long primaries = copies.stream()
+            .filter(copy -> copy.role() == ShardRole.PRIMARY)
+            .filter(copy -> pairs == null || pairs.hidden().contains(copy.node()) == false)
+            .count();
         long servingPrimaries = copies.stream()
             .filter(copy -> copy.role() == ShardRole.PRIMARY && copy.state() == ShardState.STARTED)
             .count();
@@ -376,6 +386,43 @@ public final class Differ {
     }
 
     // ---------------------------------------------------------------- deployments (DESIGN.md §29.2)
+
+    /** A primary still on a node under a drain in force: the work a drain is waiting on (§29.3). */
+    private static void drainFindings(Observation observation, List<Finding> findings) {
+        if (observation.deployments().isEmpty()) {
+            return;
+        }
+        observation.nodes().forEach((nodeId, node) -> {
+            if (node.copiesCount() == false || node.inventory() == null) {
+                return;
+            }
+            var covered = org.opensearch.supervisor.model.deploy.DeploymentCoverage.ofNode(observation, nodeId);
+            if (covered == null || covered.draining() == false) {
+                return;
+            }
+            node.inventory().tenants().forEach((tenant, held) -> {
+                var desired = observation.tenants().get(tenant);
+                if (desired == null) {
+                    return;
+                }
+                held.indices().forEach((uuid, index) -> {
+                    var config = desired.indicesByUuid().get(uuid);
+                    if (config == null || config.open() == false) {
+                        return;
+                    }
+                    index.shards().forEach((shard, copy) -> {
+                        if (copy.role() == ShardRole.PRIMARY && copy.state() == ShardState.STARTED) {
+                            findings.add(Finding.of(FindingKind.PRIMARY_ON_DRAINING_NODE,
+                                Subject.ofShardCopy(tenant, uuid, shard, nodeId), observation.pass(),
+                                "index [" + config.name() + "] shard " + shard + " has its primary on [" + nodeId
+                                    + "], which drain [" + covered.id() + "] is emptying; the primary moves off before"
+                                    + " the drain is reached"));
+                        }
+                    });
+                });
+            });
+        });
+    }
 
     private static void deploymentFindings(Observation observation, List<Finding> findings) {
         var coverage = org.opensearch.supervisor.model.deploy.DeploymentCoverage.of(observation);

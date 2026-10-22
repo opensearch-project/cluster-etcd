@@ -207,6 +207,10 @@ public final class Applier {
             existing == null ? Map.of() : existing.tenants()
         );
 
+        // Before this pass's instructions, and judged on the assignment as observed: a relocation this pass writes is
+        // not yet in any observation, and judging it now would cancel it on the pass that starts it.
+        progressRelocations(observed, observation, tenants);
+
         for (Instruction instruction : changes) {
             // Positive patterns rather than this codebase's usual `== false` guard: flow scoping extends a
             // pattern variable through `!` but not through `== false`, so the binding would not be in scope.
@@ -235,45 +239,9 @@ public final class Applier {
                     // Keeps whatever else this node does for the tenant -- coordinating for it, most likely.
                     : tenant.withIndices(indices).with(NodeRole.DATA));
             } else if (instruction instanceof Instruction.RemoveCopy remove) {
-                Assignment.TenantAssignment tenant = tenants.get(remove.tenant());
-                if (tenant == null) {
-                    continue;
-                }
-                Assignment.IndexAssignment index = tenant.indices().get(remove.indexUuid());
-                if (index == null) {
-                    continue;
-                }
-                Map<Integer, ShardRole> shards = new LinkedHashMap<>(index.shards());
-                if (shards.remove(remove.shard()) == null) {
-                    continue;
-                }
-
-                Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>(tenant.indices());
-                if (shards.isEmpty()) {
-                    // Prune the index rather than leaving an entry with no shards in it. Not cosmetic: an
-                    // assignment is a complete statement of desired state, and an empty index entry says
-                    // "this node is responsible for this index, holding nothing", which is a different claim
-                    // from silence. It would also accumulate one dead entry per index a node ever held,
-                    // against a document with a size budget.
-                    indices.remove(remove.indexUuid());
-                } else {
-                    indices.put(remove.indexUuid(), new Assignment.IndexAssignment(
-                        index.name(), index.configRevision(), shards, index.ingestionReset(), termsFor(index, shards),
-                        relocationsFor(index.relocatingTo(), shards), relocationsFor(index.relocatingFrom(), shards)
-                    ));
-                }
-
-                if (indices.isEmpty()) {
-                    // No data left for this tenant, so the DATA role goes -- and with it the whole entry unless
-                    // the node also coordinates for the tenant, which is a job that holds no shards by design.
-                    tenant.withIndices(indices).without(NodeRole.DATA)
-                        .ifPresentOrElse(
-                            remaining -> tenants.put(remove.tenant(), remaining),
-                            () -> tenants.remove(remove.tenant())
-                        );
-                } else {
-                    tenants.put(remove.tenant(), tenant.withIndices(indices));
-                }
+                withdraw(tenants, remove.tenant(), remove.indexUuid(), remove.shard());
+            } else if (instruction instanceof Instruction.RelocatePrimary relocate) {
+                startRelocation(observed.nodeId(), relocate, tenants);
             }
         }
 
@@ -435,6 +403,11 @@ public final class Applier {
             if (instruction instanceof Instruction.PlaceCopy place && place.role() == ShardRole.PRIMARY) {
                 placedHere.add(place.tenant() + "/" + place.indexUuid() + "/" + place.shard());
             }
+            // A relocation's target is new to this node's assignment, so it records no term and reads as 1, which
+            // would look superseded the moment the counter is above 1.
+            if (instruction instanceof Instruction.RelocatePrimary relocate && observed.nodeId().equals(relocate.target())) {
+                placedHere.add(relocate.tenant() + "/" + relocate.indexUuid() + "/" + relocate.shard());
+            }
         }
 
         for (var tenantEntry : Set.copyOf(tenants.entrySet())) {
@@ -497,6 +470,172 @@ public final class Applier {
         Map<Integer, Long> kept = new java.util.TreeMap<>();
         shards.keySet().forEach(shard -> kept.put(shard, index.primaryTerms().get(shard)));
         return kept;
+    }
+
+    /**
+     * Removes one shard from this node's assignment, which is the instruction to stop serving it: an assignment is a
+     * complete desired set. A removal that finds nothing to remove is a silent no-op, because the state it asks for
+     * already holds.
+     */
+    private static void withdraw(Map<TenantId, Assignment.TenantAssignment> tenants, TenantId tenantId, String uuid, int shard) {
+        Assignment.TenantAssignment tenant = tenants.get(tenantId);
+        if (tenant == null) {
+            return;
+        }
+        Assignment.IndexAssignment index = tenant.indices().get(uuid);
+        if (index == null) {
+            return;
+        }
+        Map<Integer, ShardRole> shards = new LinkedHashMap<>(index.shards());
+        if (shards.remove(shard) == null) {
+            return;
+        }
+
+        Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>(tenant.indices());
+        if (shards.isEmpty()) {
+            // Prune the index rather than leaving an entry with no shards in it. Not cosmetic: an assignment is a
+            // complete statement of desired state, and an empty index entry says "this node is responsible for this
+            // index, holding nothing", which is a different claim from silence. It would also accumulate one dead
+            // entry per index a node ever held, against a document with a size budget.
+            indices.remove(uuid);
+        } else {
+            indices.put(uuid, new Assignment.IndexAssignment(
+                index.name(), index.configRevision(), shards, index.ingestionReset(), termsFor(index, shards),
+                relocationsFor(index.relocatingTo(), shards), relocationsFor(index.relocatingFrom(), shards)
+            ));
+        }
+
+        if (indices.isEmpty()) {
+            // No data left for this tenant, so the DATA role goes -- and with it the whole entry unless the node also
+            // coordinates for the tenant, which is a job that holds no shards by design.
+            tenant.withIndices(indices).without(NodeRole.DATA)
+                .ifPresentOrElse(remaining -> tenants.put(tenantId, remaining), () -> tenants.remove(tenantId));
+        } else {
+            tenants.put(tenantId, tenant.withIndices(indices));
+        }
+    }
+
+    /**
+     * Writes this node's end of a relocation ({@code DESIGN.md} §29.9): the source's entry gains {@code relocating_to},
+     * and the target's gains the shard as {@code PRIMARY} with {@code relocating_from}. Both carry the source's term,
+     * which {@link #applyPrimaryTerms} stamps from the counter like any other copy's.
+     */
+    private static void startRelocation(NodeId self, Instruction.RelocatePrimary relocate,
+                                        Map<TenantId, Assignment.TenantAssignment> tenants) {
+        Assignment.TenantAssignment tenant = tenants.get(relocate.tenant());
+        Assignment.IndexAssignment index = tenant == null ? null : tenant.indices().get(relocate.indexUuid());
+        if (self.equals(relocate.source())) {
+            if (index == null || index.shards().get(relocate.shard()) != ShardRole.PRIMARY) {
+                // Not this node's primary after all; the target's half alone is cancelled on a later pass.
+                return;
+            }
+            Map<Integer, NodeId> to = new java.util.TreeMap<>(index.relocatingTo() == null ? Map.of() : index.relocatingTo());
+            to.put(relocate.shard(), relocate.target());
+            Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>(tenant.indices());
+            indices.put(relocate.indexUuid(), index.withRelocations(to, index.relocatingFrom()));
+            tenants.put(relocate.tenant(), tenant.withIndices(indices));
+        } else if (self.equals(relocate.target())) {
+            Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>(tenant == null ? Map.of() : tenant.indices());
+            Map<Integer, ShardRole> shards = new LinkedHashMap<>(index == null ? Map.of() : index.shards());
+            shards.put(relocate.shard(), ShardRole.PRIMARY);
+            Map<Integer, NodeId> from = new java.util.TreeMap<>(
+                index == null || index.relocatingFrom() == null ? Map.of() : index.relocatingFrom());
+            from.put(relocate.shard(), relocate.source());
+            indices.put(relocate.indexUuid(), new Assignment.IndexAssignment(
+                relocate.indexName(), relocate.configRevision(), shards,
+                index == null ? null : index.ingestionReset(), null,
+                index == null ? null : relocationsFor(index.relocatingTo(), shards), from));
+            tenants.put(relocate.tenant(), tenant == null
+                ? Assignment.TenantAssignment.data(indices)
+                : tenant.withIndices(indices).with(NodeRole.DATA));
+        }
+    }
+
+    /**
+     * Completes or cancels this node's end of every relocation in flight, from what is observed (§29.9). Nothing
+     * remembers a move: each end decides from the two nodes' reports and assignments, so a supervisor that crashed
+     * between passes, or a write that lost its compare-and-set, leaves a state the next pass resolves.
+     *
+     * <ul>
+     *   <li><b>A source</b> is withdrawn once its target reports the shard started as primary, which completes the move;
+     *       and drops {@code relocating_to} if its target's node is gone or no longer names it, which cancels it.
+     *   <li><b>A target</b> drops {@code relocating_from}, becoming a plain primary, once it reports the shard started as
+     *       primary; and is withdrawn before then if its source's node is gone or no longer names it. A source that is
+     *       lost is then an ordinary failover.
+     * </ul>
+     */
+    private static void progressRelocations(Observation.NodeObservation observed, Observation observation,
+                                            Map<TenantId, Assignment.TenantAssignment> tenants) {
+        if (observed.assignment() == null) {
+            return;
+        }
+        NodeId self = observed.nodeId();
+        observed.assignment().tenants().forEach((tenantId, assigned) -> assigned.indices().forEach((uuid, entry) -> {
+            if (entry.relocatingTo() != null) {
+                entry.relocatingTo().forEach((shard, target) -> {
+                    if (startedPrimary(observation.nodes().get(target), tenantId, uuid, shard)) {
+                        withdraw(tenants, tenantId, uuid, shard);
+                    } else if (names(observation.nodes().get(target), tenantId, uuid, shard, self, false) == false) {
+                        setRelocation(tenants, tenantId, uuid, shard, true, null);
+                    }
+                });
+            }
+            if (entry.relocatingFrom() != null) {
+                entry.relocatingFrom().forEach((shard, source) -> {
+                    if (startedPrimary(observed, tenantId, uuid, shard)) {
+                        setRelocation(tenants, tenantId, uuid, shard, false, null);
+                    } else if (names(observation.nodes().get(source), tenantId, uuid, shard, self, true) == false) {
+                        withdraw(tenants, tenantId, uuid, shard);
+                    }
+                });
+            }
+        }));
+    }
+
+    /** Whether this node, still counted, reports the shard started as primary. */
+    private static boolean startedPrimary(Observation.NodeObservation node, TenantId tenant, String uuid, int shard) {
+        if (node == null || node.copiesCount() == false || node.inventory() == null) {
+            return false;
+        }
+        var held = node.inventory().tenants().get(tenant);
+        var index = held == null ? null : held.indices().get(uuid);
+        var copy = index == null ? null : index.shards().get(shard);
+        return copy != null && copy.role() == ShardRole.PRIMARY && copy.state() == org.opensearch.supervisor.model.node.ShardState.STARTED;
+    }
+
+    /** Whether the other end, still counted, names this node as its partner in its assignment. */
+    private static boolean names(Observation.NodeObservation other, TenantId tenant, String uuid, int shard, NodeId self,
+                                 boolean asTarget) {
+        if (other == null || other.copiesCount() == false || other.assignment() == null) {
+            return false;
+        }
+        var assigned = other.assignment().tenants().get(tenant);
+        var entry = assigned == null ? null : assigned.indices().get(uuid);
+        if (entry == null) {
+            return false;
+        }
+        Map<Integer, NodeId> relocating = asTarget ? entry.relocatingTo() : entry.relocatingFrom();
+        return relocating != null && self.equals(relocating.get(shard));
+    }
+
+    /** Sets or clears one shard's {@code relocating_to} or {@code relocating_from} in this node's entry. */
+    private static void setRelocation(Map<TenantId, Assignment.TenantAssignment> tenants, TenantId tenantId, String uuid,
+                                      int shard, boolean to, NodeId value) {
+        Assignment.TenantAssignment tenant = tenants.get(tenantId);
+        Assignment.IndexAssignment index = tenant == null ? null : tenant.indices().get(uuid);
+        if (index == null) {
+            return;
+        }
+        Map<Integer, NodeId> map = new java.util.TreeMap<>(
+            (to ? index.relocatingTo() : index.relocatingFrom()) == null ? Map.of() : (to ? index.relocatingTo() : index.relocatingFrom()));
+        if (value == null) {
+            map.remove(shard);
+        } else {
+            map.put(shard, value);
+        }
+        Map<String, Assignment.IndexAssignment> indices = new LinkedHashMap<>(tenant.indices());
+        indices.put(uuid, to ? index.withRelocations(map, index.relocatingFrom()) : index.withRelocations(index.relocatingTo(), map));
+        tenants.put(tenantId, tenant.withIndices(indices));
     }
 
     /**

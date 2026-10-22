@@ -170,6 +170,13 @@ public enum FindingKind {
      */
     DEPLOYMENT_INVALID(CRITICAL),
 
+    /**
+     * A started primary on a node under a drain in force: what the drain is waiting for, and what the planner moves off
+     * ({@code DESIGN.md} §29.9). Expected while a drain runs, so it begins as information and escalates with age, the
+     * same rule as torn desired state: the alarm is a primary that has not moved, not one that has yet to.
+     */
+    PRIMARY_ON_DRAINING_NODE(INFO, true),
+
     /** A node selected by more than one deployment. Frozen rather than given to either. */
     DEPLOYMENT_CONFLICT(CRITICAL),
 

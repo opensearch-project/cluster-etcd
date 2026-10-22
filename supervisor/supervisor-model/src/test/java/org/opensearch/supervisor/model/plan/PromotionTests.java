@@ -254,4 +254,19 @@ class PromotionTests {
             Node.of(B).holding(0, ShardRole.REPLICA).declaringPrimaryTerms().attribute("zone", "z1"));
         assertEquals(B, ((Instruction.PlaceCopy) plan(onlyB).instructions().get(0)).node());
     }
+
+    @Test
+    void aRelocationTargetIsNotMistakenForAPromotionInFlight() {
+        // C is assigned PRIMARY and does not report it, which is also what a promotion in flight looks like. But it is
+        // a relocation's target, and its source A is lost: this is an ordinary failover, which must not wait on C.
+        Observation observation = observe(index(1, 1, Replication.DOCUMENT), counter(Map.of(0, 1L), 3),
+            Node.of(A).holding(0, ShardRole.PRIMARY).told(0, ShardRole.PRIMARY, 1).lost(),
+            Node.of(B).holding(0, ShardRole.REPLICA).told(0, ShardRole.REPLICA, 1).declaringPrimaryTerms(),
+            Node.of(C).relocationTargetOf(0, A, 1).declaringPrimaryTerms());
+
+        Plan plan = plan(observation);
+
+        assertEquals(1, plan.instructions().size(), refusalFor(plan, observation));
+        assertEquals(B, ((Instruction.PlaceCopy) plan.instructions().get(0)).node(), "the replica is promoted");
+    }
 }

@@ -45,6 +45,10 @@ public final class FakeNode {
 
     private final Map<Integer, Long> shardSizes = new TreeMap<>();
     private long allocationsMinted;
+    /** The target allocation id minted for each shard this node is relocating away, by tenant/uuid/shard. */
+    private final Map<String, String> mintedTargets = new java.util.HashMap<>();
+    /** The allocation id a relocation target is built under: the one its source minted, by tenant/uuid/shard. */
+    private final Map<String, String> targetIds = new java.util.HashMap<>();
     private ShardInventory inventory;
     private String inventoryDigest;
     private long appliedVersion = Heartbeat.NO_ASSIGNMENT;
@@ -212,7 +216,17 @@ public final class FakeNode {
             Desired want = entry.getKey();
             ShardInventory.ShardCopy have = held.get(want);
 
-            if (have == null) {
+            NodeId source = relocatingFrom(assignment, want);
+            if (have == null && source != null) {
+                // A relocation's target is built under the id its source minted, read from the projection, and not
+                // at all until there is one: built otherwise, it would be a fresh primary beside its source.
+                String minted = mintedBy(source, want);
+                if (minted == null) {
+                    continue;
+                }
+                targetIds.put(keyOf(want), minted);
+                next.put(want, ShardInventory.ShardCopy.of(entry.getValue(), ShardState.INITIALIZING));
+            } else if (have == null) {
                 // A brand-new copy exists on disk before it can serve, and it already knows what it is
                 // going to be. The role is set immediately; only the state has to catch up.
                 next.put(want, ShardInventory.ShardCopy.of(entry.getValue(), ShardState.INITIALIZING));
@@ -226,7 +240,10 @@ public final class FakeNode {
             }
         }
         // Anything held and not desired is absent from next, and so is gone. Nothing models a slow delete.
-        next.replaceAll((where, copy) -> withReplicationIds(where, copy, held.get(where), indices));
+        next.replaceAll((where, copy) -> withRelocation(where, withReplicationIds(where, copy, held.get(where), indices),
+            assignment, indices));
+        mintedTargets.keySet().retainAll(next.keySet().stream().map(FakeNode::keyOf).collect(java.util.stream.Collectors.toSet()));
+        targetIds.keySet().retainAll(next.keySet().stream().map(FakeNode::keyOf).collect(java.util.stream.Collectors.toSet()));
 
         appliedVersion = assignment.version();
         failureDetail = null;
@@ -297,7 +314,9 @@ public final class FakeNode {
         }
         String allocationId = before != null && before.allocationId() != null
             ? before.allocationId()
-            // The ephemeral id is fresh per process, so a restarted node cannot mint an id its predecessor used.
+            // A relocation's target has its id from its source; anything else mints its own. The ephemeral id is
+            // fresh per process, so a restarted node cannot mint an id its predecessor used.
+            : targetIds.containsKey(keyOf(where)) ? targetIds.get(keyOf(where))
             : ephemeralId + "-" + (++allocationsMinted);
         if (copy.role() != ShardRole.PRIMARY) {
             return copy.withReplicationIds(allocationId, null);
@@ -318,6 +337,56 @@ public final class FakeNode {
             }
         });
         return copy.withReplicationIds(allocationId, List.copyOf(inSync));
+    }
+
+    /**
+     * A source of a relocation publishes the target's allocation id, minted once, for as long as it holds the
+     * relocating entry ({@code NODE_CONTRACT.md}, <i>Proposed: relocating a document-replication primary</i>); every
+     * other copy publishes none. This node holds no data, so the handoff itself is the target starting.
+     */
+    private ShardInventory.ShardCopy withRelocation(Desired where, ShardInventory.ShardCopy copy, Assignment assignment,
+                                                    Map<String, IndexConfig> indices) {
+        Assignment.IndexAssignment entry = entryOf(assignment, where);
+        boolean relocatingAway = entry != null && entry.relocatingTo() != null
+            && entry.relocatingTo().containsKey(where.shard()) && copy.role() == ShardRole.PRIMARY && copy.allocationId() != null;
+        if (relocatingAway == false) {
+            mintedTargets.remove(keyOf(where));
+            return copy.withRelocationTarget(null);
+        }
+        String minted = mintedTargets.computeIfAbsent(keyOf(where), ignored -> ephemeralId + "-" + (++allocationsMinted));
+        return copy.withRelocationTarget(minted);
+    }
+
+    /** The node this one's assignment names as the source of a relocation of the shard, or null. */
+    private static NodeId relocatingFrom(Assignment assignment, Desired want) {
+        Assignment.IndexAssignment entry = entryOf(assignment, want);
+        return entry == null || entry.relocatingFrom() == null ? null : entry.relocatingFrom().get(want.shard());
+    }
+
+    private static Assignment.IndexAssignment entryOf(Assignment assignment, Desired want) {
+        var tenant = assignment.tenants().get(want.tenant());
+        return tenant == null ? null : tenant.indices().get(want.indexUuid());
+    }
+
+    /** The target allocation id the projection shows the source minted for this shard, or null. */
+    private String mintedBy(NodeId source, Desired want) {
+        return store.get(Keys.indexStatus(want.tenant(), want.indexUuid())).map(versioned -> {
+            try {
+                for (IndexStatus.ShardPlacement placement : IndexStatus.from(versioned.value()).shards()
+                    .getOrDefault(want.shard(), List.of())) {
+                    if (placement.nodeId().equals(source) && nodeId.equals(placement.relocatingTo())) {
+                        return placement.relocationTargetAllocationId();
+                    }
+                }
+                return null;
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }).orElse(null);
+    }
+
+    private static String keyOf(Desired where) {
+        return where.tenant() + "/" + where.indexUuid() + "/" + where.shard();
     }
 
     /** Whether the inventory now says exactly what the assignment asked for: right role, and serving. */

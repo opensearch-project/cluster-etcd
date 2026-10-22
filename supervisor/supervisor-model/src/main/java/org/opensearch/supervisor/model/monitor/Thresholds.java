@@ -80,6 +80,8 @@ public final class Thresholds {
         rules.put(FindingKind.DEPLOYMENT_INVALID, new Rule(5, Alert.Severity.CRITICAL));
         rules.put(FindingKind.DEPLOYMENT_CONFLICT, new Rule(5, Alert.Severity.CRITICAL));
         rules.put(FindingKind.DEPLOYMENT_EXPIRED, new Rule(5, Alert.Severity.WARNING));
+        // A handoff is a peer recovery, minutes at most; a primary that has not moved in sixty passes is stuck.
+        rules.put(FindingKind.PRIMARY_ON_DRAINING_NODE, new Rule(60, Alert.Severity.WARNING));
 
         // A request that will never be honoured. Not urgent, and it must not be silent.
         rules.put(FindingKind.DESIRED_COPY_IGNORED, new Rule(30, Alert.Severity.WARNING));

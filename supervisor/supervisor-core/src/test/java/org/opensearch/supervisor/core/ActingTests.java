@@ -1794,6 +1794,153 @@ class ActingTests {
         }
     }
 
+    // ---------------------------------------------------------------- relocating a docrep primary (DESIGN.md §29.9)
+
+    private FakeNode relocatingNode(NodeId id, String zone, boolean declaresRelocation) {
+        java.util.Set<String> features = declaresRelocation
+            ? java.util.Set.of(org.opensearch.supervisor.model.node.ContractFeatures.PRIMARY_TERMS,
+                org.opensearch.supervisor.model.node.ContractFeatures.PRIMARY_RELOCATION)
+            : java.util.Set.of(org.opensearch.supervisor.model.node.ContractFeatures.PRIMARY_TERMS);
+        return new FakeNode(store, new Registration(
+            id, "placeholder", id.value(), POOL, EnumSet.of(NodeRole.DATA),
+            "10.0.0." + id.value().charAt(4), 9300, "3.7.0", remoteStoreNode(zone), 5000, 0L, features
+        ), clock, "eph-" + id.value());
+    }
+
+    private void drainZone(String zone) {
+        store.put(Keys.deployment("deploy-" + zone), new org.opensearch.supervisor.model.deploy.Deployment(
+            org.opensearch.supervisor.model.deploy.DeploymentState.DRAIN, Map.of("zone", zone),
+            org.opensearch.supervisor.model.deploy.DrainIntent.RETURN, clock.millis() + 3_600_000L, null, null).toBytes());
+    }
+
+    private NodeId primaryHolder(FakeNode... nodes) {
+        for (FakeNode node : nodes) {
+            if (roleHeldBy(node, 0) == ShardRole.PRIMARY) {
+                return node.nodeId();
+            }
+        }
+        return null;
+    }
+
+    private long projectedPrimaries() {
+        return org.opensearch.supervisor.model.status.IndexStatus.from(store.get(Keys.indexStatus(ACME, UUID))
+            .orElseThrow().value()).shards().get(0).stream()
+            .filter(placement -> placement.role() == ShardRole.PRIMARY).count();
+    }
+
+    @Test
+    void aDrainRelocatesADocrepPrimaryAtTheSameTermWithOnePrimaryShownThroughout() {
+        FakeNode a = relocatingNode(NODE, "z1", true);
+        FakeNode b = relocatingNode(NODE_B, "z2", true);
+        a.start();
+        b.start();
+        createDocrepIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        NodeId before = primaryHolder(a, b);
+        assertTrue(before != null, "precondition: the primary is placed");
+        long term = counterFor(0);
+        FakeNode source = before.equals(NODE) ? a : b;
+        NodeId target = before.equals(NODE) ? NODE_B : NODE;
+
+        drainZone(before.equals(NODE) ? "z1" : "z2");
+        for (int pass = 0; pass < 15; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+            // A node holding no primary keeps whichever of two reported primaries comes last, so one must be shown.
+            assertTrue(projectedPrimaries() <= 1, "pass " + pass + ": " + projectedPrimaries() + " primaries projected");
+            assertTrue(supervisor.lastDiffOf(POOL).of(org.opensearch.supervisor.model.diff.FindingKind.PRIMARY_CONFLICT)
+                .isEmpty(), "pass " + pass + ": a relocating pair is not a split");
+        }
+
+        assertEquals(target, primaryHolder(a, b), "the primary moved off the drained node");
+        assertTrue(source.inventory().copyCount() == 0, "and the source holds nothing: " + source.inventory());
+        assertEquals(term, counterFor(0), "at the same term: a relocation is not a promotion");
+        assertEquals(term, toldTerm(target, 0));
+        var entry = assignmentOf(target).tenants().get(ACME).indices().get(UUID);
+        assertTrue(entry.relocatingFrom() == null, "the target is a plain primary once it has started: " + entry);
+        assertTrue(supervisor.lastDiffOf(POOL).of(org.opensearch.supervisor.model.diff.FindingKind.PRIMARY_ON_DRAINING_NODE)
+            .isEmpty(), "and the drain has nothing left to wait for");
+    }
+
+    @Test
+    void aRelocationWhoseTargetIsLostIsCancelledAndTheSourceStaysPrimary() {
+        // Nothing remembers a move: the source sees its target gone and drops relocating_to on its own.
+        FakeNode a = relocatingNode(NODE, "z1", true);
+        FakeNode b = relocatingNode(NODE_B, "z2", true);
+        a.start();
+        b.start();
+        createDocrepIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        NodeId before = primaryHolder(a, b);
+        FakeNode source = before.equals(NODE) ? a : b;
+        NodeId target = before.equals(NODE) ? NODE_B : NODE;
+        drainZone(before.equals(NODE) ? "z1" : "z2");
+        for (int pass = 0; pass < 3; pass++) {
+            supervisor.tick();
+            source.tick();
+            advance();
+        }
+        var relocating = assignmentOf(before).tenants().get(ACME).indices().get(UUID).relocatingTo();
+        assertEquals(Map.of(0, target), relocating, "precondition: the relocation was written");
+
+        // The target never ticks again, so it is eventually lost, with its copy never built.
+        for (int pass = 0; pass < 60; pass++) {
+            supervisor.tick();
+            source.tick();
+            advance();
+        }
+
+        assertEquals(before, primaryHolder(source), "the source is still the primary");
+        var entry = assignmentOf(before).tenants().get(ACME).indices().get(UUID);
+        assertEquals(ShardRole.PRIMARY, entry.shards().get(0));
+        assertTrue(entry.relocatingTo() == null, "and no longer relocating: " + entry);
+    }
+
+    @Test
+    void aPrimaryOnANodeThatCannotRelocateStaysAndSaysWhy() {
+        // A node that ignored relocating_from would build the target as a fresh primary: two at one term.
+        FakeNode a = relocatingNode(NODE, "z1", false);
+        FakeNode b = relocatingNode(NODE_B, "z2", false);
+        a.start();
+        b.start();
+        createDocrepIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 10; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        NodeId before = primaryHolder(a, b);
+        drainZone(before.equals(NODE) ? "z1" : "z2");
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+
+        assertEquals(before, primaryHolder(a, b), "nothing moved");
+        String diff = new String(store.get(Keys.tenantDiff(ACME)).orElseThrow().value(),
+            java.nio.charset.StandardCharsets.UTF_8);
+        assertTrue(diff.contains("PRIMARY_ON_DRAINING_NODE"), diff);
+        assertTrue(diff.contains("does not declare [primary_relocation]"), diff);
+    }
+
     @Test
     void aReturningOldPrimaryIsNotToldItIsPrimaryAtTheNewTerm() {
         // The case neither side had tested. A was primary at term N and was lost; B was promoted at N+1. A's
