@@ -291,6 +291,8 @@ place is most of the value.
 | `TASK_STUCK` | 10 passes | WARNING | one per deleted index is the §22.1 signature |
 | `PROJECTION_STALE` | 100 passes | WARNING | `STALE_CONFIG` was here and the kind is gone: a copy behind on configuration is a copy mid-update, and a stuck update is `TASK_STUCK` |
 | `UNREADABLE_DOCUMENT`, `UNRECOGNISED_STATE` | 5 passes | WARNING | a version skew or a codec bug |
+| `DEPLOYMENT_INVALID`, `DEPLOYMENT_CONFLICT` | 5 passes | CRITICAL | nodes are frozen until the deployment system corrects its document (`DESIGN.md` §29.2) |
+| `DEPLOYMENT_EXPIRED` | 5 passes | WARNING | a drain's deadline passed with its nodes not back; its deployment system may have stopped |
 | `TORN_DESIRED_STATE` | never | — | R2.5 says this is normal. Alerting on it is the classic mistake |
 
 Two rows deserve their reasoning.

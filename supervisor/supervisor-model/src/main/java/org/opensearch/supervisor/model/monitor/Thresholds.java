@@ -75,6 +75,11 @@ public final class Thresholds {
         // A version skew or a codec bug. Either way somebody has to look at bytes.
         rules.put(FindingKind.UNREADABLE_DOCUMENT, new Rule(5, Alert.Severity.WARNING));
         rules.put(FindingKind.UNRECOGNISED_STATE, new Rule(5, Alert.Severity.WARNING));
+        // A deployment that cannot be acted on freezes nodes, and two selecting one node freeze it; both wait for the
+        // deployment system, which nothing else will correct. An expired drain has already released its nodes.
+        rules.put(FindingKind.DEPLOYMENT_INVALID, new Rule(5, Alert.Severity.CRITICAL));
+        rules.put(FindingKind.DEPLOYMENT_CONFLICT, new Rule(5, Alert.Severity.CRITICAL));
+        rules.put(FindingKind.DEPLOYMENT_EXPIRED, new Rule(5, Alert.Severity.WARNING));
 
         // A request that will never be honoured. Not urgent, and it must not be silent.
         rules.put(FindingKind.DESIRED_COPY_IGNORED, new Rule(30, Alert.Severity.WARNING));

@@ -59,6 +59,7 @@ public final class Observer {
     private final RevisionCache<PrimaryTerms> primaryTerms = new RevisionCache<>();
     private final RevisionCache<org.opensearch.supervisor.model.settings.ClusterSettings> settings =
         new RevisionCache<>();
+    private final RevisionCache<org.opensearch.supervisor.model.deploy.Deployment> deployments = new RevisionCache<>();
 
     /** Inventories are cached by the digest their bytes hashed to, not by revision — see below. */
     private final Map<NodeId, DigestedInventory> inventories = new HashMap<>();
@@ -91,7 +92,31 @@ public final class Observer {
             terms.put(tenant, termsOf(tenant, unreadable));
         }
 
-        return new Observation(currentPass, now, pool, tenants, nodes, unreadable, terms);
+        return new Observation(currentPass, now, pool, tenants, nodes, unreadable, terms, deploymentsOf(unreadable));
+    }
+
+    // ---------------------------------------------------------------- deployments
+
+    /**
+     * Every deployment, cluster-wide, read every pass: a deployment selects nodes by attribute across all pools, and
+     * this pool's share of it is decided from the observation ({@code DeploymentCoverage}). One that cannot be parsed
+     * is reported under its key, which freezes the pool rather than releasing whatever it was holding.
+     */
+    private Map<String, org.opensearch.supervisor.model.deploy.Deployment> deploymentsOf(List<String> unreadable) {
+        Map<String, org.opensearch.supervisor.model.deploy.Deployment> read = new java.util.TreeMap<>();
+        var keys = store.scanPrefix(Keys.DEPLOYMENTS_PREFIX);
+        deployments.retain(keys.keySet());
+        for (var entry : keys.entrySet()) {
+            String id = Keys.idAfter(Keys.DEPLOYMENTS_PREFIX, entry.getKey());
+            try {
+                read.put(id, deployments.get(entry.getKey(), entry.getValue().revision(),
+                    ignored -> org.opensearch.supervisor.model.deploy.Deployment.from(entry.getValue().value())));
+            } catch (RuntimeException e) {
+                deployments.forget(entry.getKey());
+                unreadable.add(entry.getKey());
+            }
+        }
+        return read;
     }
 
     // ---------------------------------------------------------------- nodes

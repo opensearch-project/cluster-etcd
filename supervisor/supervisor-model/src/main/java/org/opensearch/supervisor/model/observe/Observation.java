@@ -40,7 +40,8 @@ public record Observation(
     Map<TenantId, DesiredState> tenants,
     Map<NodeId, NodeObservation> nodes,
     List<String> unreadable,
-    Map<TenantId, Map<String, TermCounter>> terms
+    Map<TenantId, Map<String, TermCounter>> terms,
+    Map<String, org.opensearch.supervisor.model.deploy.Deployment> deployments
 ) {
 
     /**
@@ -67,6 +68,20 @@ public record Observation(
         (terms == null ? Map.<TenantId, Map<String, TermCounter>>of() : terms)
             .forEach((tenant, counters) -> copied.put(tenant, Map.copyOf(counters)));
         terms = Map.copyOf(copied);
+        deployments = deployments == null ? Map.of() : Map.copyOf(deployments);
+    }
+
+    /** Without deployments: an observation taken before any were read, and most tests. */
+    public Observation(
+        long pass,
+        Instant observedAt,
+        PoolId pool,
+        Map<TenantId, DesiredState> tenants,
+        Map<NodeId, NodeObservation> nodes,
+        List<String> unreadable,
+        Map<TenantId, Map<String, TermCounter>> terms
+    ) {
+        this(pass, observedAt, pool, tenants, nodes, unreadable, terms, Map.of());
     }
 
     /** Without term counters: an observation taken before any were issued, and most tests. */

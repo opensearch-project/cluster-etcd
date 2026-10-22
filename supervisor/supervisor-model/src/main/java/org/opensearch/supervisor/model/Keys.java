@@ -175,6 +175,21 @@ public final class Keys {
         return POOL_NODES_PREFIX + node.value();
     }
 
+    // ---------------------------------------------------------------- deployments
+
+    /**
+     * Operator-owned and cluster-wide, outside every tenant and pool prefix ({@code DESIGN.md} §29.2): a deployment
+     * selects nodes by attribute across every pool, and every supervisor reads it for the pools it owns.
+     */
+    public static final String DEPLOYMENTS_PREFIX = "deployments/";
+
+    public static String deployment(String deploymentId) {
+        if (deploymentId == null || deploymentId.isEmpty() || deploymentId.contains("/")) {
+            throw new IllegalArgumentException("a deployment id is one non-empty path segment, was [" + deploymentId + "]");
+        }
+        return DEPLOYMENTS_PREFIX + deploymentId;
+    }
+
     // ---------------------------------------------------------------- supervisor bookkeeping
 
     public static final String MEMBERS_PREFIX = "supervisor/members/";

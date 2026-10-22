@@ -137,8 +137,8 @@ class KeysTests {
      * identifier types are what enforce "no id contains a slash", and a {@code String} parameter is how
      * that protection gets bypassed by accident.
      *
-     * <p>Two exemptions, both checked rather than assumed: {@code indexUuid} and {@code supervisorId} have
-     * no type yet and are validated inline instead. Every builder exempted here is also in the escape test below.
+     * <p>Three exemptions, all checked rather than assumed: {@code indexUuid}, {@code supervisorId} and a deployment
+     * id have no type yet and are validated inline instead. Every builder exempted here is also in the escape test below.
      */
     @Test
     void keyBuildersTakeIdentifierTypes() {
@@ -155,7 +155,7 @@ class KeysTests {
                     continue;
                 }
                 if (method.getName().equals("indexStatus") || method.getName().equals("primaryTerms")
-                    || method.getName().startsWith("member")) {
+                    || method.getName().startsWith("member") || method.getName().equals("deployment")) {
                     continue;
                 }
                 offenders.add(method.getName() + "(" + parameter.getType().getSimpleName() + ")");
@@ -172,6 +172,7 @@ class KeysTests {
         assertThrows(IllegalArgumentException.class, () -> Keys.indexStatus(ACME, bad));
         assertThrows(IllegalArgumentException.class, () -> Keys.primaryTerms(ACME, bad));
         assertThrows(IllegalArgumentException.class, () -> Keys.member(bad));
+        assertThrows(IllegalArgumentException.class, () -> Keys.deployment(bad));
     }
 
     @Test

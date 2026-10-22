@@ -2557,8 +2557,8 @@ selected node is held to it, so a node back early still takes no primary until t
 Each document is **desired state**, read every pass and re-derived from scratch, never an event (§24.2). The rules that
 follow from that:
 
-- **No two deployments may select one node.** Two that do raise `DEPLOYMENT_CONFLICT` and both are ignored for that
-  node, which is the same refusal-to-guess as two default pools (`Pools`). Upstream rejects the overlap at write time;
+- **No two deployments may select one node.** *(Refined in §29.10: the node is frozen, not ignored.)* Two that do
+  raise `DEPLOYMENT_CONFLICT` and both are ignored for that node, which is the same refusal-to-guess as two default pools (`Pools`). Upstream rejects the overlap at write time;
   with no single writer path to reject it on, it is detected on read instead.
 - **An unknown `state`, or a document that cannot be read, holds nothing** and raises a finding. A drain that fails to
   parse must not be read as "no drain": that is the same mistake as reading unreadable cluster settings as empty,
@@ -2907,3 +2907,28 @@ primary writing at a stale term. A failover can still strand the lost primary's 
 acknowledged (the demotion proposal, "The fence"), and that is the case to revisit when it is built.
 
 The wire format is in `NODE_CONTRACT.md`, *Proposed: relocating a document-replication primary*.
+
+### 29.10 The deployment reader, as built
+
+**Built 2026-10-22: the document is read and resolved to nodes, and nothing acts on it yet.** `Deployment` in
+`supervisor-model` is the document, read every pass from `deployments/` by the observer; `DeploymentCoverage`, a pure
+function of the observation like the differ, says which deployment covers each node of the pool. The decider, the
+relocation and the `reached` status will all read that one answer.
+
+Two rules were settled while building it, both tightening §29.2 in the same direction: **whatever cannot be acted on as
+written freezes, and never releases.**
+
+- **A document that parses but is invalid freezes the nodes it selects**, rather than holding nothing. That includes
+  an unrecognised state, which is the likeliest form of a newer deployment system: its selection is readable, so only
+  its nodes are frozen. A document that does not parse at all still freezes the whole pool, because nothing about its
+  selection can be known.
+- **A node selected by two deployments is frozen**, rather than ignored by both. Ignoring both would release whatever
+  either was holding.
+
+A frozen node takes no new primary and is not reaped. Those effects arrive with the decider and the relocation; the
+coverage that decides them is in place. `FINISH` in a stored document is invalid, since it means "delete this". An
+expired returning drain is not frozen: it reads as absent and is reported (`DEPLOYMENT_EXPIRED`).
+
+Not yet: the supervisor-app commands that write and advance the document, which are where the transition table is
+enforced (§29.2), and `DEPLOYMENT_OVERDUE`, which belongs with the `reached` status it measures.
+

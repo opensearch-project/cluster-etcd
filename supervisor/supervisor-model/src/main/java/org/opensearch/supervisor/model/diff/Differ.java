@@ -45,6 +45,7 @@ public final class Differ {
         shardFindings(observation, findings);
         taskFindings(observation, findings);
         unreadableFindings(observation, findings);
+        deploymentFindings(observation, findings);
 
         return new Diff(observation.pass(), observation.pool(), ages.age(findings, observation.pass()));
     }
@@ -374,10 +375,38 @@ public final class Differ {
         });
     }
 
+    // ---------------------------------------------------------------- deployments (DESIGN.md §29.2)
+
+    private static void deploymentFindings(Observation observation, List<Finding> findings) {
+        var coverage = org.opensearch.supervisor.model.deploy.DeploymentCoverage.of(observation);
+        for (String id : coverage.unreadable()) {
+            findings.add(Finding.of(FindingKind.DEPLOYMENT_INVALID, Subject.ofDeployment(observation.pool(), id),
+                observation.pass(), "deployment [" + id + "] cannot be parsed, so which nodes it selects is unknown; every"
+                    + " node of this pool is frozen, taking no new primary and not reaped, until it reads again"));
+        }
+        coverage.invalid().forEach((id, problems) -> findings.add(Finding.of(FindingKind.DEPLOYMENT_INVALID,
+            Subject.ofDeployment(observation.pool(), id), observation.pass(),
+            "deployment [" + id + "] cannot be acted on as written: " + String.join("; ", problems)
+                + ". The nodes it selects are frozen, taking no new primary and not reaped, rather than released")));
+        coverage.conflicts().forEach((node, ids) -> findings.add(Finding.of(FindingKind.DEPLOYMENT_CONFLICT,
+            Subject.ofNode(node), observation.pass(),
+            "node [" + node + "] is selected by " + ids.size() + " deployments " + ids + "; it is frozen rather than"
+                + " given to either, and the deployment system should not have written the second")));
+        for (String id : coverage.expired()) {
+            findings.add(Finding.of(FindingKind.DEPLOYMENT_EXPIRED, Subject.ofDeployment(observation.pool(), id),
+                observation.pass(), "drain [" + id + "] is past its until, so it reads as absent and its nodes are back on"
+                    + " the ordinary liveness ladder; the deployment system that wrote it may have stopped part way"));
+        }
+    }
+
     // ---------------------------------------------------------------- unreadable documents
 
     private static void unreadableFindings(Observation observation, List<Finding> findings) {
         for (String key : observation.unreadable()) {
+            if (key.startsWith(org.opensearch.supervisor.model.Keys.DEPLOYMENTS_PREFIX)) {
+                // Reported as DEPLOYMENT_INVALID, which says what it freezes.
+                continue;
+            }
             findings.add(Finding.of(
                 FindingKind.UNREADABLE_DOCUMENT,
                 Subject.ofPool(observation.pool()),

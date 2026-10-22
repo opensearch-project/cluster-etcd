@@ -84,9 +84,11 @@ promotion (§27–28, finding 11).
 **Open threads, roughly in priority order:**
 
 1. **Build the docrep drain as a primary relocation** (`DESIGN.md` §29.9). The wire format is in the model and the
-   projection, and the conformance suite has four reading-side checks that fail on the data plane's side until its
-   adapter reports relocations (handed over in its `MILESTONES.md`). Next on this side: the deployment reader,
-   `RelocatePrimary` with the differ's and reaper's exemptions, and the `reached` status. `fake-node` reports what it
+   projection, and both sides pass the conformance suite's four reading-side checks. The data plane reads the fields
+   but does not declare `primary_relocation`, and defers a relocation with a reason if sent one; building the
+   relocating pair is its next piece (`03b97d1`). The deployment reader is built (§29.10):
+   documents are read and resolved to nodes, and nothing acts on them yet. Next on this side: the `DeploymentDecider`
+   and freezing, `RelocatePrimary` with the differ's and reaper's exemptions, and the `reached` status. `fake-node` reports what it
    parses but performs no relocation; it will need to, to test `RelocatePrimary` end to end.
 2. **The rest of §28:** `retain_remote_history` and `abandon_remote_terms`, and the upstream search-replica pin
    (§27.3). None of it is built. The scoped metadata lock (§27.5) is no longer needed by anything planned, since
