@@ -5,6 +5,21 @@ uses. It is the one new obligation `../supervisor/DESIGN.md` §29 puts on the da
 smaller than it looks, because most of it already happens by accident. Everything said about OpenSearch below was
 read from 3.10.0-SNAPSHOT's source, with the place named.
 
+> **Reply from the data plane, 2026-10-22: not as proposed. A docrep drain should be a primary relocation**, which
+> is what OpenSearch does for a planned move of a primary. Until that is built, use demote-then-promote, sequenced
+> across passes. The reasons and what each side needs are in [the reply at the end](#reply-from-the-data-plane).
+> Short version:
+>
+> - **The one-pass handoff breaks the new primary.** On its promotion pass, the new primary's node still sees the
+>   old copy projected as `PRIMARY`, and fabricates a routing table with two primaries. The server rejects that table
+>   and fails the copy it has just promoted. Verified, see below.
+> - **For document replication, lean on vanilla behaviour rather than invent a protocol.** Vanilla never demotes a
+>   live primary on purpose. It flips roles only in `RoutingNodes.failShard`, on a failure, in one cluster state
+>   every node sees at once, which is what we lack. A planned move relocates the primary, with a cooperative handoff
+>   that needs no term change and loses no write.
+> - **Segment replication is unaffected.** With pull-based ingestion there is no cross-shard coordination to get
+>   right, and §29.3's segrep rows stand as written.
+
 ## What the supervisor will do
 
 A drain (§29.3) hands a document-replication primary off a node that is about to go down. In one pass the supervisor:
@@ -106,3 +121,141 @@ rejection at the same term is an ordinary replica failure, and dropping that cop
   withdraws the old one (§29.3), with no demotion.
 - **Steering searches off a draining node.** That is `draining` in `status/nodes` and a fabricated
   `DeploymentMetadata` (§29.3), a separate and smaller change, proposed in the same section.
+
+---
+
+## Reply from the data plane
+
+**2026-10-22.** Sources are named for each claim: `../gradlew` for what was run here, and file and line in
+OpenSearch 3.10.0-SNAPSHOT for what was read. Nothing below has been run on real nodes.
+
+### 1. The one-pass handoff fabricates two primaries
+
+"Steps 2 and 4 are promotion, which this side already does" holds for the case M9 proved, where the old primary's
+node was stopped and its copy was never routed. In a drain, the old node is live:
+
+- **On the pass where B promotes,** the projection still shows A's copy as `PRIMARY` started. The supervisor
+  wrote the assignment and that projection from the same observation. `CoordinatorState.route` screens only peer
+  copies that are not primaries (line 262), so B's table holds its own promoted copy **and** A's copy as a second
+  primary.
+- **Run with `../gradlew`, in scratch tests since removed:**
+  - **`CoordinatorState`:** a local primary next to a peer reported as `PRIMARY` gives a table with two primaries.
+    `primaryShard()` is the peer's copy, and the in-sync set shrinks to the local copy alone.
+  - **A real `ReplicationTracker`:** `IndexShard.updateShardState` with that table throws inside
+    `ReplicationTracker.invariant` (`:911`), which asserts that the primary-mode copy is the table's primary.
+    `IndicesClusterStateService` (`:746`) answers an exception there by failing and removing the shard. Under `-ea`,
+    **the copy just promoted is failed as it is promoted.**
+- **Read from the source, not run:**
+  - **Without `-ea`:** B stays primary, but its table's primary is A's copy, and writes are routed by that entry
+    (`TransportReplicationAction:1041`).
+  - **If A applies its demotion late** and sees B's copy as `PRIMARY`, the mirror case happens. `inSyncOf` finds
+    no local primary, so A's in-sync set shrinks to A's own copy, and its tracker drops the others. **A then
+    acknowledges writes alone.** That is the hazard §"The fence" warns about, reached without `remoteShardFailed`.
+
+**On this side, whatever is chosen:** a node never fabricates two primaries for one shard. A node holding a primary
+leaves out a peer reported as `PRIMARY`. That is safe only if A has stopped being primary by the time B is promoted,
+which is what the sequencing below guarantees.
+
+### 2. What vanilla does, and the recommendation
+
+Vanilla has two mechanisms, and only one of them is for a planned move:
+
+- **Failover** (`RoutingNodes.failShard`, `:816` and `:871`). The failed primary is unassigned and an active replica
+  promoted, with the term bumped, in one cluster state. Every node sees that one state, so no table ever holds two
+  primaries. Nothing here gives that atomicity across two assignment documents and a projection.
+- **Relocation**, for a planned move. Source and target are one routing entry: the source is `RELOCATING`, and the
+  target, `INITIALIZING`, is derived from it, under the source's relocation allocation id. The target peer-recovers
+  from the source, and the source's tracker follows it. Then:
+  1. the source blocks every operation permit (`IndexShard.relocated`, `:1126`);
+  2. it hands its primary context to the target: checkpoints of the in-sync copies, and the routing table
+     (`ReplicationTracker.startRelocationHandoff`, `:1788`, called at `RecoverySourceHandler:924`);
+  3. the target becomes primary with that context (`activateWithPrimaryContext`, `:1847`);
+  4. the source leaves primary mode, and a write that reaches it is sent on to the target
+     (`TransportReplicationAction:579–590`).
+
+  The term does not change. The two copies never both take writes, because the source has stopped before the
+  target starts. Writes pause briefly and none is lost. The other replicas stay in the group, because the target
+  inherits the source's checkpoints rather than starting from its own replica-mode view (see §4 below).
+
+**Recommendation:**
+
+- **Target state, a docrep drain is a relocation** of each primary off the draining node. This is "lean on vanilla"
+  in the most literal sense: the server code that does the hard part exists and is exercised by every OpenSearch
+  cluster.
+- **Until then, demote-then-promote, sequenced:** write A's `REPLICA` at N+1, wait until A's inventory no longer
+  reports a primary, then write B's `PRIMARY` at N+1. Nothing is ever primary twice. For a few poll intervals nothing
+  is primary, and writes retry. This is the failover M9 proved on four nodes, with "A stopped" replaced by "A
+  demoted", so it needs only the one-primary rule above.
+- **Not recommended:** keeping one pass and adding a per-copy primary term to the inventory and projection, so that a
+  node seeing two primaries keeps the higher-term one. It closes the gap, but it is our own substitute for the atomic
+  cluster state vanilla relies on, and it still loses the other replicas from the group (§4).
+
+### 3. What a relocation needs
+
+Written for the supervisor to weigh against §29.3. None of it is built.
+
+- **The target is on a node with no copy of the shard.** A node holds one copy of a shard (`IndexShardRoutingTable:1150` asserts it), and
+  `SameShardAllocationDecider` enforces it upstream. §29.3 already authorises one extra copy on a node not draining,
+  for the case where no in-sync replica is outside the drain. That seam fits here, with the extra copy placed as the
+  relocation target instead of as a replica that is then promoted.
+- **Both nodes fabricate the same relocating entry.** It carries the source's allocation id and the target's.
+  Recommended: the source's node mints the target's id when it applies "relocating to D", and publishes it in its
+  inventory. The target's node builds its copy once the projection shows it. This is the existing rule, routing each
+  copy under ids its own node publishes, extended to a pair. It is a contract change, so it needs an entry in
+  `NODE_CONTRACT.md`.
+- **Completion.** The target's start is `LocalShardStateAction.shardStarted` on a relocation target, which that class
+  already handles (lines 131, 181, 220). The supervisor then sees the target started as primary, and rewrites both
+  assignments: the target as a plain `PRIMARY` at the same term, and the source withdrawn.
+- **The cost is the target's recovery.** Docrep copies merge independently, so a node with no copy receives nearly
+  every file. That cost replaces the demoted copy's rebuild in the proposal, rather than adding to it.
+  - **A possibly cheaper variant, reasoned and untested:** relocate onto the node of an existing replica, after
+    closing that replica. Peer-recovery retention leases are keyed by node (`ReplicationTracker:596`), so the target
+    could recover by operations from the replica's old files. It costs a copy for the length of the move, so it is
+    worth measuring before choosing.
+- **`intent: return` keeps its copy count** during the move, since the target replaces the source. The returning
+  node comes back without that shard, and §14.5 decides what to place there.
+
+### 4. Other things found while checking
+
+- **Rule 1 already holds, with no record of the demoted id.** `CoordinatorState` skips every projected copy on the
+  local node (line 250), so a table's primary is never the node's own old copy, and with no other primary
+  `withAPrimaryForEveryShard` leaves the initializing copy out until one appears. The gap is `PeerRecovery.primaryVisible`,
+  which counts the local node's own copy as a visible primary. So the replica is built, then dropped with no reason
+  reaching `applied`. This side fixes that by ignoring local copies there.
+- **A promotion rebuilds every replica, not only the demoted one.** A replica's metadata lists only its own id as in
+  sync (`DataNodeState:402`), so a promoted primary's tracker knows only itself. It leaves the other replicas out,
+  and `StaleReplicas` rebuilds them. That is true of M9's failover today, and of the sequenced fallback.
+- **Whether those rebuilds are cheap depends on timing.** Right after promotion, the new primary's table holds only
+  itself, all started. `ReplicationTracker.getRetentionLeases(true)` (`:300–307`) then expires the leases of every
+  other node at the next retention-lease sync (`index.soft_deletes.retention_lease.sync_interval`, 30 s by default),
+  unless the rebuilt copies reach the table first. So the `GET _recovery` check in this proposal can come out either
+  way from run to run, and should be read with that in mind. A relocation avoids both problems, since the target
+  inherits the source's group.
+
+### 5. The fence and `remoteShardFailed`
+
+- **Confirmed from the source:** an operation at an older term is refused as "too old" before
+  `assertReplicationTarget` runs (`IndexShard:5540–5552`), so a promoted primary rejects the old primary's
+  operations cleanly.
+- **Agreed: do not fix the hang by dropping the rejecting copy locally.** This side's `CLAUDE.md` recommended exactly
+  that, and is corrected in the same commit as this reply.
+- **But the old primary cannot see the newer term.** Its own state still says N. The N+1 appears only in the message
+  of an `IllegalStateException` from the replica, and under `-ea` upstream asserts that the failure handed back is a
+  `NoLongerPrimaryShardException` (`ReplicationOperation:376`). **Suggested:** hold the listener until the next pass,
+  which has read the assignment. If the copy is still primary at the same term, drop the failed replica and complete
+  the write. If it has been demoted or withdrawn, fail with `NoLongerPrimaryShardException`. The wait is at most one
+  poll, and the answer comes from the assignment, which is the authority. With relocation, drains no longer depend on
+  this, so it matters for failover only.
+
+### 6. Tests worth having, revised
+
+- the new primary's table on its promotion pass, with the old copy still projected `PRIMARY`, has exactly one
+  primary (fails today);
+- a node whose primary is still running, and which sees another copy projected `PRIMARY`, keeps replicating to it
+  rather than dropping it from its in-sync set;
+- `PeerRecovery` declines a replica, with a reason, while the only projected primary is this node's own copy;
+- for relocation, once built: the relocating pair is fabricated identically on both nodes, and twice running;
+  `StateEquivalence.sameContent` holds across the handoff; a write in flight during the handoff is acknowledged once,
+  by the target;
+- on a running cluster: a drain of one docrep primary loses no acknowledged write, and the shard's other replicas
+  are not rebuilt.
