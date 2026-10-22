@@ -53,7 +53,7 @@ public record Registration(
      * <p><b>So a feature goes in here only once this node acts on it.</b> Listing one early is not optimism, it is
      * an instruction the supervisor will issue and nothing will carry out.
      */
-    public static final Set<String> IMPLEMENTED_FEATURES = Set.of("primary_terms");
+    public static final Set<String> IMPLEMENTED_FEATURES = Set.of("primary_terms", "primary_relocation");
 
     /**
      * A registration that declares no optional features, which is what absence means on the wire.

@@ -1236,6 +1236,89 @@ fails loudly there rather than silently. Worth watching:
   replica logs `rebuilding this node's replica of … its primary [...] does not hold it in sync`, recovers, and
   appears in the new primary's `in_sync`.
 
+### Primary relocation, built (2026-10-22)
+
+A docrep drain moves each primary by OpenSearch's own relocation (supervisor `DESIGN.md` §29.9, the format in
+`NODE_CONTRACT.md`, *Proposed: relocating a document-replication primary*). It replaced the demote-and-promote this
+side reviewed in `docs/proposed-demotion-in-place.md`. A relocation is one routing entry, the source's, with the
+target derived from it, so both nodes have to build the same entry under the same two allocation ids. Nobody else
+builds it for them.
+
+**What each end does:**
+
+- **The source's node** relocates its started primary (`ShardRouting.relocate`, which mints the target's id) and keeps
+  that entry pass after pass. It publishes the minted id as `relocation_target_allocation_id` for as long as it holds
+  the entry, and adds the target's node to its state, because it replicates to the target from the start. Dropping
+  `relocating_to` cancels the relocation, keeping the source's id.
+- **The target's node** waits until the projection shows the source's started primary relocating here with that id,
+  then builds the source's entry exactly: `RelocatingEntry`, through `AllocationId.fromXContent` and a subclass of
+  `ShardRouting` that reaches its protected constructor, written out and read back so the state holds a plain one. The
+  server then recovers the target from the source and hands off. `LocalShardStateAction` starts it by replacing the
+  source's entry, and from then it is a plain primary here, whatever the assignment still says.
+- **`PrimaryRelocations`**, once per pass after the peer view, decides what can be acted on. A source needs the
+  target's node in the peer view. A target needs the published id, keeps the ids from its live state while
+  recovering, and remembers a target it saw recovering that has since gone. That target failed, and
+  `LocalShardStateAction` cancelled the relocation. It is declined with a reason, not rebuilt under the same id, which
+  the server would never create again.
+- **`CoordinatorState`** routes no projected copy on a node the pair already names, puts both ends' nodes in the
+  state, treats a target as holding the index, and computes the target's in-sync set from its own tracker once the
+  handoff has put it in primary mode.
+
+**Found on the way:** `DataNodeState`'s reuse test, `started() || initializing()`, does not count a `RELOCATING`
+entry, so without explicit handling the source's copy would have been rebuilt as a fresh primary on its next pass.
+`PrimaryTerms` rebuilt every index with terms through a constructor that would have dropped relocations;
+`DesiredIndex.with` now keeps them.
+
+**Verified with `../gradlew build`:**
+
+- **`PrimaryRelocationReplicationTests`** runs a real recovery and handoff between two shards in the replication
+  harness, each given the table and in-sync set its own node fabricates. The target's entry built from the published
+  ids equals the source's. The target takes over, its tracker accepts the in-sync set `CoordinatorState` computes for
+  it, twice, both before and after completion, and the other replica stays a replication target. It passed 70
+  iterations across seeds.
+  - **Reverting the target's in-sync rule** fails it. Handing the new primary the fallback set (the source's id
+    alone) is rejected by the server's tracker, which drops the replica while it is still in the table.
+  - **A first version hung** under some seeds: the target shard had its own random primary term, below the source's,
+    so replaying operations tripped an assertion on a recovery thread. The target now takes the source's metadata,
+    as its node's fabrication does.
+- **`RelocationFabricationTests`** covers both ends across passes (`sameContent`), cancellation, completion, and each
+  `PrimaryRelocations` decision. Reverting each of five pieces fails it with that piece's symptom:
+  - **keeping the relocating entry:** the minted id changes every pass;
+  - **skipping the pair's other end:** the server asserts two copies of a shard on one node;
+  - **a target holding the index:** coordinator metadata at term 1;
+  - **reaching the pair's nodes:** the other end is missing from the state;
+  - **remembering a failed target:** it is rebuilt under the same id.
+- **The inventory** publishes the minted id on the source, and reports the derived target as an initializing primary
+  under its own id.
+
+**Not proven:**
+
+- **No real nodes yet.** The harness runs both shards in one process, and the server's transport recovery, the
+  forwarding of writes from a handed-off source, and the supervisor's completion pass have not met this code.
+- **A target that fails leaves the source's writes waiting.** The source replicates to the target, a write to a
+  target that has failed calls `remoteShardFailed`, and that waits for a cluster manager (the upstream item in
+  `CLAUDE.md`). The relocation clears when the supervisor cancels it, but a write already waiting may never complete.
+  Handling `remoteShardFailed` locally for a relocation target is safe in a way it is not for a replica: a target is
+  never a newer term's fence. So cancelling the relocation there would fix this case on its own.
+- **A target that fails before this node has ever seen it recovering** is rebuilt once under the same id. The server
+  then skips it, and the target looks recovering for ever. That window is one pass interval.
+- **Cancelling after the handoff** makes the server fail the source's copy (`IndexShard.updateShardState` refuses to
+  move a relocated copy back to primary mode). That is correct, since the target is the primary by then, but it is
+  untested here.
+- **Cheap recovery** has not been measured: a target on a node with no copy receives nearly every file.
+
+### For the first relocation run
+
+- **The source's log:** `relocating this node's primary of … to [<target>], as allocation id [<X>]`.
+- **The target's log:** `building this node's copy of … as the target of a relocation from [<source>], as allocation
+  id [<X>]`, then a peer recovery and the handoff.
+- **The source's inventory** carries `relocation_target_allocation_id: <X>`, and `status/indices` shows one primary
+  throughout.
+- **Watch for:** `source shard is not marked yet as relocating`, or `source node does not have the shard listed in its
+  state`. Either means the two ends disagree about the entry.
+- **Writes during the move:** none should be lost, and the other replicas should not log `rebuilding this node's
+  replica`.
+
 ## M10. Cluster-manager actions — **done on this side; the fleet view is the control plane's**
 
 - `cluster.health` and `cluster.state` answered from the projections; mutations refused with a reason naming
@@ -1325,6 +1408,9 @@ not declare `primary_relocation`, so `DesiredStateResolver` defers both fields w
 built, since a fresh primary beside its source is two primaries at one term (reverting that makes
 `testARelocationTargetIsNotBuiltByANodeThatDoesNotImplementRelocation` fail with the target built). A source stays
 primary. Not proven: no supervisor writes these yet, so only the suite's documents have been read.
+
+**Superseded the same day: the relocation is built, and `primary_relocation` is declared.** The deferral above is
+gone; see *Primary relocation, built* under M9.
 
 The original note follows.
 

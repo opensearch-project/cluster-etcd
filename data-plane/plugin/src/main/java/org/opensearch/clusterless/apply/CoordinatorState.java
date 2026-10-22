@@ -218,13 +218,33 @@ public final class CoordinatorState implements NodeState {
         Set<Integer> shardsWithAPrimary = new java.util.HashSet<>();
         Map<Integer, Integer> searchOnlyPerShard = new java.util.HashMap<>();
         Set<Integer> primariesHere = new java.util.HashSet<>();
+        // Shards whose primary is relocating to this node, so that this node's copy is the derived target.
+        Set<Integer> targetsHere = new java.util.HashSet<>();
+        // Per shard, the nodes this node's own entries already name. A relocating entry names two, and a peer copy on
+        // either is that entry's other end: routing it again would put a second primary beside the pair.
+        Map<Integer, Set<String>> namedHere = new java.util.HashMap<>();
         if (existing != null) {
             for (IndexShardRoutingTable shard : existing) {
                 for (ShardRouting copy : shard) {
                     indexRouting.addShard(copy);
-                    heldHere |= localNode.getId().equals(copy.currentNodeId());
+                    boolean target = copy.relocating() && localNode.getId().equals(copy.relocatingNodeId());
+                    heldHere |= localNode.getId().equals(copy.currentNodeId()) || target;
                     if (copy.primary() && localNode.getId().equals(copy.currentNodeId())) {
                         primariesHere.add(copy.id());
+                    }
+                    if (copy.primary() && target) {
+                        targetsHere.add(copy.id());
+                    }
+                    Set<String> named = namedHere.computeIfAbsent(copy.id(), id -> new java.util.HashSet<>());
+                    for (String node : new String[] { copy.currentNodeId(), copy.relocatingNodeId() }) {
+                        if (node != null) {
+                            named.add(node);
+                            if (localNode.getId().equals(node) == false) {
+                                // The other end has to be in this state's nodes: the target recovers from the source,
+                                // and the source replicates to the target.
+                                reached.add(NodeId.of(node));
+                            }
+                        }
                     }
                     count(shards, shardsWithAPrimary, searchOnlyPerShard, copy.id(), copy.primary(), copy.isSearchOnly());
                 }
@@ -232,10 +252,13 @@ public final class CoordinatorState implements NodeState {
         }
 
         // Under document replication, the copies this node's primaries hold in sync, read once per shard so that what is
-        // routed and what is called in sync come from the same reading. Null where the tracker cannot say.
+        // routed and what is called in sync come from the same reading. Null where the tracker cannot say. A relocation's
+        // target is asked too, and answers once the handoff has put it in primary mode.
         Map<Integer, Set<String>> trackedHere = new java.util.HashMap<>();
         if (documentReplicated(routed)) {
-            for (Integer shardNumber : primariesHere) {
+            Set<Integer> asked = new java.util.HashSet<>(primariesHere);
+            asked.addAll(targetsHere);
+            for (Integer shardNumber : asked) {
                 Set<String> tracked = trackedInSync.of(new ShardId(index, shardNumber));
                 if (tracked != null) {
                     trackedHere.put(shardNumber, tracked);
@@ -250,6 +273,10 @@ public final class CoordinatorState implements NodeState {
                 if (localNode.getId().equals(copy.node().value())) {
                     // Mine. Already in the table above, from the assignment, which is the authority for this node
                     // -- the projection is the supervisor's observation of it and may be a pass behind.
+                    continue;
+                }
+                if (namedHere.getOrDefault(shardNumber, Set.of()).contains(copy.node().value())) {
+                    // The other end of this node's relocating entry, already in the table as part of it.
                     continue;
                 }
                 if (routed.needs(shardNumber, copy.role()) == false) {
@@ -274,7 +301,8 @@ public final class CoordinatorState implements NodeState {
                     );
                     continue;
                 }
-                if (primariesHere.contains(shardNumber) && copy.state() == ShardState.STARTED
+                boolean actingPrimary = primariesHere.contains(shardNumber) || (targetsHere.contains(shardNumber) && trackedHere.containsKey(shardNumber));
+                if (actingPrimary && copy.state() == ShardState.STARTED
                     && documentReplicated(routed)) {
                     Set<String> tracked = trackedHere.get(shardNumber);
                     if (tracked == null || tracked.contains(copy.allocationId()) == false) {
@@ -372,11 +400,19 @@ public final class CoordinatorState implements NodeState {
      */
     public static Set<String> inSyncOf(IndexShardRoutingTable shard, String localNodeId, Set<String> tracked) {
         ShardRouting primary = shard.primaryShard();
-        if (primary == null || localNodeId.equals(primary.currentNodeId()) == false || tracked == null) {
+        if (primary == null || tracked == null) {
+            return null;
+        }
+        boolean here = localNodeId.equals(primary.currentNodeId());
+        // A relocation's target, once the handoff has made it the primary. Its tracker holds the source's set.
+        boolean targetHere = primary.relocating() && localNodeId.equals(primary.relocatingNodeId());
+        if (here == false && targetHere == false) {
             return null;
         }
         Set<String> ids = new java.util.TreeSet<>();
-        ids.add(primary.allocationId().getId());
+        if (here) {
+            ids.add(primary.allocationId().getId());
+        }
         for (ShardRouting copy : shard.assignedShards()) {
             if (tracked.contains(copy.allocationId().getId())) {
                 ids.add(copy.allocationId().getId());

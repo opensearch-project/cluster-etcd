@@ -210,6 +210,33 @@ public class ClusterStateInventorySourceTests extends OpenSearchTestCase {
         assertNull(copy.inSync());
     }
 
+    // ---------------------------------------------------------------- a relocating primary
+
+    public void testARelocationsSourcePublishesTheIdItMintedForTheTarget() {
+        // The target's node builds its copy under this id, read from the projection; the supervisor links the pair by it
+        // after the completion pass has rewritten the assignments.
+        ShardRouting relocating = startedPrimary(0, LOCAL).relocate(OTHER, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
+
+        ShardInventory.HeldCopy copy = tracking(stateWith("DOCUMENT", relocating), TrackedInSync.UNKNOWN).heldCopies().get(0);
+
+        assertEquals(ShardState.STARTED, copy.state());
+        assertEquals(relocating.allocationId().getId(), copy.allocationId());
+        assertEquals(relocating.allocationId().getRelocationId(), copy.relocationTargetAllocationId());
+    }
+
+    public void testARelocationsTargetIsReportedAsAnInitializingPrimaryUnderItsOwnId() {
+        // The target is derived from the source's entry, not held as one of its own; RoutingNodes puts it on this node.
+        ShardRouting relocating = startedPrimary(0, OTHER).relocate(LOCAL, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
+
+        List<ShardInventory.HeldCopy> copies = tracking(stateWith("DOCUMENT", relocating), TrackedInSync.UNKNOWN).heldCopies();
+
+        assertEquals(copies.toString(), 1, copies.size());
+        assertEquals(ShardRole.PRIMARY, copies.get(0).role());
+        assertEquals(ShardState.INITIALIZING, copies.get(0).state());
+        assertEquals(relocating.allocationId().getRelocationId(), copies.get(0).allocationId());
+        assertNull("only the source publishes the target's id", copies.get(0).relocationTargetAllocationId());
+    }
+
     // ---------------------------------------------------------------- fixtures
 
     private static ClusterStateInventorySource tracking(ClusterState state, TrackedInSync inSync) {

@@ -141,12 +141,19 @@ public final class ClusterStateInventorySource implements ShardInventorySource {
         // default is IndexConfig's in case it ever does not.
         String allocationId = null;
         List<String> inSync = null;
+        String relocationTarget = null;
         String replication = indexMetadata.getSettings().get(IndexConfig.REPLICATION_TYPE, IndexConfig.DEFAULT_REPLICATION);
         if ("DOCUMENT".equalsIgnoreCase(replication.trim())) {
             allocationId = routing.allocationId().getId();
             if (routing.primary()) {
                 Set<String> tracked = trackedInSync.of(routing.shardId());
                 inSync = tracked == null || tracked.isEmpty() ? null : List.copyOf(tracked);
+            }
+            if (routing.relocating()) {
+                // The id this node minted for the target, which the target's node builds its copy under. Published for as
+                // long as the relocating entry is held, which is until the source's entry is withdrawn: the supervisor
+                // links the pair through it after the completion pass has rewritten the assignments.
+                relocationTarget = routing.allocationId().getRelocationId();
             }
         }
 
@@ -161,7 +168,8 @@ public final class ClusterStateInventorySource implements ShardInventorySource {
             sizeBytes,
             null,
             allocationId,
-            inSync
+            inSync,
+            relocationTarget
         );
     }
 }

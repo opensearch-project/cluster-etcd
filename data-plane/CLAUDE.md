@@ -111,12 +111,12 @@ Decides arguments that would otherwise be settled by what is easiest on a laptop
 - **Live shard splitting is not the plan** — stand up a new index, restore, delete out-of-shard documents, resume
   from the checkpoint.
 
-## Where things stand (2026-10-06)
+## Where things stand (2026-10-22)
 
 M1–M10 are done on this side. M10's fleet view of `cluster.health` and `cluster.state` is the control plane's, by
 decision; this side refuses those for a request with `x-tenant-id`, and answers with its own view without one (control
 plane `FINDINGS_FROM_THE_DATA_PLANE.md`, item 1). Left: M11 (watch), and runs for M5 (many tenants at once) and M6 (a
-rebalancer move). **M9 (document replication) was confirmed by a failover** on four nodes
+rebalancer move), and a first real run of a docrep primary relocation (built 2026-10-22). **M9 (document replication) was confirmed by a failover** on four nodes
 (each in its own `./gradlew run -PstartNode=N`, the upstream change for exactly this): the primary's node was stopped,
 a replica was promoted in place, and the others rebuilt and recovered from it. See `MILESTONES.md`, *Finding 12, built*,
 and the runs after it. Document replication is not supported on a remote-store node, by decision: a pool runs one
@@ -135,15 +135,21 @@ review of the one-repository import was worked through on 2026-09-30.
 superseded primary go on acknowledging writes alone, and the old primary cannot tell the cases apart from its own state
 (its term is still the old one). Hold the listener until the next pass has read the assignment: still primary at the
 same term, drop the copy and complete; demoted or withdrawn, fail with `NoLongerPrimaryShardException`, which
-`ReplicationOperation.onNoLongerPrimary` asserts. See `docs/proposed-demotion-in-place.md`, the reply, §5.
+`ReplicationOperation.onNoLongerPrimary` asserts. See `docs/proposed-demotion-in-place.md`, the reply, §5. One case is
+safe to handle locally at once: a failed **relocation target**, which is never a newer term's fence. Cancelling the
+relocation there (as `LocalShardStateAction.localShardFailed` already does for the target's own node) would stop a
+failed target from leaving the source's writes waiting.
 
 **Waiting on the supervisor, also:** `retain_remote_history` and `abandon_remote_terms` (DESIGN.md §27). Add each to
 `Registration.IMPLEMENTED_FEATURES` only once this side acts on it — declaring a feature is a promise the supervisor
-relies on. The drain flow is not built there yet; promotion happens only on a lost primary. For docrep, this side
-has asked for a drain to be a **primary relocation** (vanilla's planned move: cooperative handoff, same term), with
-demote-then-promote sequenced across passes until then. A one-pass role flip fabricates two primaries on the new
-primary's node and fails it (`docs/proposed-demotion-in-place.md`, the reply). The user's direction: for docrep, lean
-on existing vanilla OpenSearch behaviour; segrep with pull-based ingestion needs no cross-shard coordination.
+relies on. A docrep drain is a **primary relocation** (vanilla's planned move: cooperative handoff, same term,
+supervisor `DESIGN.md` §29.9), with no interim. A one-pass role flip fabricates two primaries on the new primary's
+node and fails it (`docs/proposed-demotion-in-place.md`, the reply). **Built on this side, with `primary_relocation`
+declared, 2026-10-22, and not yet run on real nodes** (`MILESTONES.md`, *Primary relocation, built*). Both nodes build
+the one relocating entry under the same two ids: the source mints the target's (`ShardRouting.relocate`), and the
+target builds the source's entry from the projection (`RelocatingEntry`); `PrimaryRelocations` decides per pass what can
+be acted on. The user's direction: for docrep, lean on existing vanilla OpenSearch behaviour; segrep with pull-based
+ingestion needs no cross-shard coordination.
 
 **Upstream, owned by the user:** removing the `RoutingNodes` assertion that every shard has a primary (load-bearing
 for search replicas *and* for docrep replicas, see `PeerRecovery`); the `InternalEngine.trimUnsafeCommits` guard for

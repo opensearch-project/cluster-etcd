@@ -166,6 +166,18 @@ public class NodeDocumentsTests extends OpenSearchTestCase {
             + "\"allocation_id\":\"3YLXESN2TkSC5FYhEDzvNg\"}"));
     }
 
+    public void testARelocationsSourceCarriesTheIdItMintedForTheTarget() {
+        ShardInventory inventory = inventoryOf(
+            new ShardInventory.HeldCopy(ACME, INDEX_UUID, "my-index", 3041, 0, ShardRole.PRIMARY, ShardState.STARTED, 4_823_012L, null,
+                "ULHF36LvSIa6sReNU-zHoA", List.of("ULHF36LvSIa6sReNU-zHoA"), "qT0b9XwHR5aqzO8u1fN2Ag")
+        );
+
+        String json = json(NodeDocuments.write(inventory));
+
+        assertTrue(json, json.contains("\"allocation_id\":\"ULHF36LvSIa6sReNU-zHoA\",\"in_sync\":[\"ULHF36LvSIa6sReNU-zHoA\"],"
+            + "\"relocation_target_allocation_id\":\"qT0b9XwHR5aqzO8u1fN2Ag\"}"));
+    }
+
     public void testTheInSyncSetIsWrittenInOneOrderWhateverOrderItWasReadIn() {
         // The inventory is rewritten only when its bytes change, and a set read from the tracker has no order.
         byte[] one = NodeDocuments.write(inventoryOf(docrep(0, ShardRole.PRIMARY, "b", List.of("b", "a", "c"))));

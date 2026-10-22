@@ -100,7 +100,7 @@ public final class PrimaryTerms {
                 );
             });
 
-            kept.put(index.key(), new DesiredState.DesiredIndex(index.key(), index.config(), roles, terms));
+            kept.put(index.key(), index.with(roles, terms));
         }
 
         if (declined.isEmpty()) {

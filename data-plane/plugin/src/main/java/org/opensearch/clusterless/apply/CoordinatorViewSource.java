@@ -179,6 +179,12 @@ public interface CoordinatorViewSource {
                             .filter(copy -> forPeers.needs(shard, copy.role()))
                             .forEach(copy -> wanted.add(copy.node()))
                     );
+                if (mine != null) {
+                    // A relocation's target, which the projection does not list until it has started. Its node has to be
+                    // in this node's state from the start: the source replicates every write to the target while it
+                    // recovers, and a replica on a node the state does not contain fails as an unknown node.
+                    mine.relocatingTo().values().forEach(wanted::add);
+                }
             });
         }
 

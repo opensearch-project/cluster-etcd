@@ -5,6 +5,7 @@
 package org.opensearch.clusterless.apply;
 
 import org.opensearch.clusterless.contract.IndexConfig;
+import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.clusterless.contract.TenantId;
 
@@ -81,11 +82,17 @@ public record DesiredState(
      * @param config read from the store, already checked against the uuid the assignment named
      * @param shards the copies this node should hold, and what each should be
      */
+    /**
+     * @param relocatingTo the shards whose primary this node is to relocate, to the node named
+     * @param relocatingFrom the shards this node is to build as a relocation's target; see {@link IncomingRelocation}
+     */
     public record DesiredIndex(
         IndexKey key,
         IndexConfig config,
         Map<Integer, ShardRole> shards,
-        Map<Integer, Long> primaryTerms
+        Map<Integer, Long> primaryTerms,
+        Map<Integer, NodeId> relocatingTo,
+        Map<Integer, IncomingRelocation> relocatingFrom
     ) {
 
         public DesiredIndex {
@@ -93,6 +100,8 @@ public record DesiredState(
             Objects.requireNonNull(config, "config");
             shards = shards == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(shards));
             primaryTerms = primaryTerms == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(primaryTerms));
+            relocatingTo = relocatingTo == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(relocatingTo));
+            relocatingFrom = relocatingFrom == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(relocatingFrom));
         }
 
         /** An index whose terms the supervisor has not stated, which is every one until it issues them. */
@@ -100,17 +109,36 @@ public record DesiredState(
             this(key, config, shards, Map.of());
         }
 
+        /** Relocating nothing. */
+        public DesiredIndex(IndexKey key, IndexConfig config, Map<Integer, ShardRole> shards, Map<Integer, Long> primaryTerms) {
+            this(key, config, shards, primaryTerms, Map.of(), Map.of());
+        }
+
         /**
-         * The same index holding only {@code kept}, with the terms of those shards.
+         * The same index holding only {@code kept}, with the terms and relocations of those shards.
          *
          * <p>How a step that declines some copies must rebuild the index. The three-argument constructor states
          * no terms, which is a claim that the supervisor issued none, and a promoted primary rebuilt that way went
-         * into the fabrication at term 1.
+         * into the fabrication at term 1. A relocation dropped the same way would build its target as a fresh primary.
          */
         public DesiredIndex withShards(Map<Integer, ShardRole> kept) {
-            Map<Integer, Long> terms = new TreeMap<>(primaryTerms);
-            terms.keySet().retainAll(kept.keySet());
-            return new DesiredIndex(key, config, kept, terms);
+            return with(kept, primaryTerms);
+        }
+
+        /** The same index with these roles and terms, keeping the relocations of the shards it still holds. */
+        public DesiredIndex with(Map<Integer, ShardRole> roles, Map<Integer, Long> terms) {
+            Map<Integer, Long> keptTerms = new TreeMap<>(terms);
+            keptTerms.keySet().retainAll(roles.keySet());
+            Map<Integer, NodeId> to = new TreeMap<>(relocatingTo);
+            to.keySet().retainAll(roles.keySet());
+            Map<Integer, IncomingRelocation> from = new TreeMap<>(relocatingFrom);
+            from.keySet().retainAll(roles.keySet());
+            return new DesiredIndex(key, config, roles, keptTerms, to, from);
+        }
+
+        /** The same index with these relocations, for the step that decides which ones can be acted on. */
+        public DesiredIndex withRelocations(Map<Integer, NodeId> to, Map<Integer, IncomingRelocation> from) {
+            return new DesiredIndex(key, config, shards, primaryTerms, to, from);
         }
 
         /** The term this node's cluster state should name for a shard, or 1 where the supervisor said nothing. */
@@ -124,6 +152,26 @@ public record DesiredState(
 
         public String uuid() {
             return key.uuid();
+        }
+    }
+
+    /**
+     * A relocation this node is the target of: the source's node, and, once {@link PrimaryRelocations} has read them
+     * from the projection, the source's allocation id and the one the source's node minted for the target. Built only
+     * with both ids, since the target's routing entry is derived from the source's and has to name exactly those.
+     */
+    public record IncomingRelocation(NodeId source, String sourceAllocationId, String targetAllocationId) {
+
+        public IncomingRelocation {
+            Objects.requireNonNull(source, "source");
+        }
+
+        public static IncomingRelocation from(NodeId source) {
+            return new IncomingRelocation(source, null, null);
+        }
+
+        public boolean resolved() {
+            return sourceAllocationId != null && targetAllocationId != null;
         }
     }
 

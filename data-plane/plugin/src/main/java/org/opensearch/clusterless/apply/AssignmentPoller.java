@@ -78,6 +78,7 @@ public final class AssignmentPoller {
     private final CoordinatorViewSource coordinatedShards;
     private final IngestionResets ingestionResets;
     private final StaleReplicas staleReplicas;
+    private final PrimaryRelocations relocations;
     private final boolean applyEnabled;
 
     /** What the poller needs of the fabricator: everything a pass decides, and nothing it has to decide itself. */
@@ -191,6 +192,7 @@ public final class AssignmentPoller {
         this.reaper = Objects.requireNonNull(reaper, "reaper");
         this.ingestionResets = ingestionResets;
         this.staleReplicas = new StaleReplicas(nodeId.value());
+        this.relocations = new PrimaryRelocations(nodeId.value());
         this.remoteRecovery = remoteRecovery;
         this.coordinatedShards = coordinatedShards == null ? CoordinatorViewSource.NONE : coordinatedShards;
         this.applyEnabled = applyEnabled;
@@ -259,6 +261,9 @@ public final class AssignmentPoller {
             // RoutingNodes asserts a primary exists for every shard and an assertion on the applier thread exits the
             // node rather than declining a copy. See PeerRecovery.
             desired = PeerRecovery.reduce(desired, coordinated, live);
+            // Which primary relocations can be acted on, and, for a target, under which ids: those come from the
+            // projection, which is why this follows the view too. Once per pass, because it remembers failed targets.
+            desired = relocations.reduce(desired, coordinated, live);
             // And a term that went backwards, which also needs the live state: a copy already running at a higher
             // term is not rebuilt at a lower one, it is declined with a reason. See PrimaryTerms for why saying so
             // matters more than the server's own refusal would.
