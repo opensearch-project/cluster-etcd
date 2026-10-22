@@ -131,12 +131,19 @@ review of the one-repository import was worked through on 2026-09-30.
 
 **Upstream, owned by the user, for M9:** `remoteShardFailed` waits for a cluster manager that never comes
 (`ClusterManagerNodeChangePredicate` refuses every state without one), so a docrep write whose replica fails hangs.
-Handle it locally, as `localShardFailed` now is: drop the id from the in-sync set, unassign the peer's entry, and
-complete the listener. `StaleReplicas` then rebuilds the dropped replica.
+**Do not** fix it by dropping the failed copy locally: when the rejection is a newer term's fence, that lets a
+superseded primary go on acknowledging writes alone, and the old primary cannot tell the cases apart from its own state
+(its term is still the old one). Hold the listener until the next pass has read the assignment: still primary at the
+same term, drop the copy and complete; demoted or withdrawn, fail with `NoLongerPrimaryShardException`, which
+`ReplicationOperation.onNoLongerPrimary` asserts. See `docs/proposed-demotion-in-place.md`, the reply, §5.
 
 **Waiting on the supervisor, also:** `retain_remote_history` and `abandon_remote_terms` (DESIGN.md §27). Add each to
 `Registration.IMPLEMENTED_FEATURES` only once this side acts on it — declaring a feature is a promise the supervisor
-relies on. The drain flow (planned demotion) is not built there yet; promotion happens only on a lost primary.
+relies on. The drain flow is not built there yet; promotion happens only on a lost primary. For docrep, this side
+has asked for a drain to be a **primary relocation** (vanilla's planned move: cooperative handoff, same term), with
+demote-then-promote sequenced across passes until then. A one-pass role flip fabricates two primaries on the new
+primary's node and fails it (`docs/proposed-demotion-in-place.md`, the reply). The user's direction: for docrep, lean
+on existing vanilla OpenSearch behaviour; segrep with pull-based ingestion needs no cross-shard coordination.
 
 **Upstream, owned by the user:** removing the `RoutingNodes` assertion that every shard has a primary (load-bearing
 for search replicas *and* for docrep replicas, see `PeerRecovery`); the `InternalEngine.trimUnsafeCommits` guard for
