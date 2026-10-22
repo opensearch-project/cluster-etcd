@@ -168,7 +168,13 @@ would mean a handler that can see the whole store, which is the thing that confi
 
 ## 3. `SUPERVISOR_KEYS.md` says `liveness` can be `lost`, but a lost node is never published
 
-> **Open.** A wording fix, found while checking that `cluster.health` and `cluster.state` agree about nodes.
+> **Closed.** `SUPERVISOR_KEYS.md` now says `liveness` is `live` or `stale` in practice and that a lost node is
+> not published: its document is removed and its copies leave `status/indices` on the same pass, so the node list,
+> `number_of_nodes` and routing leave it out together, and that this agreement is relied on. `lost` stays a value a
+> reader understands, since the conformance suite holds both readers to treating it as unreachable. Checked in
+> `StatusComputation`: `nodeStatuses` and `placementsOf` both skip a node whose copies do not count, which is exactly
+> a lost one, and since `3847d0e` a node not yet seen alive is left out of `status/nodes` as well. Nothing more is
+> asked of your side.
 
 `SUPERVISOR_KEYS.md` describes `status/nodes/<id>.liveness` as `live`, `stale` or `lost`, and tells a reader to
 treat every value but `lost` as reachable. `StatusComputation.nodeStatuses` skips any node whose
