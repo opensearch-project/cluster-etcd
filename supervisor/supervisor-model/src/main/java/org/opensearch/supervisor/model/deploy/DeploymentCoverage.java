@@ -51,6 +51,8 @@ public record DeploymentCoverage(
     /**
      * One node's deployment.
      *
+     * @param id and {@code deployment} are null for a node no deployment selects that is frozen only because some
+     *     deployment in the pool could not be parsed
      * @param frozen covered by an invalid deployment, by two, or in a pool with an unreadable one
      * @param expired a returning drain past its {@code until}, which reads as absent
      */
@@ -58,7 +60,17 @@ public record DeploymentCoverage(
 
         /** Whether the deployment is in force for this node: neither frozen nor expired. */
         public boolean active() {
-            return frozen == false && expired == false;
+            return deployment != null && frozen == false && expired == false;
+        }
+
+        /** Whether this node is under a drain in force, and so takes no new primary. */
+        public boolean draining() {
+            return active() && deployment.state() == DeploymentState.DRAIN;
+        }
+
+        /** Whether this node is under a drain in force that removes it, and so takes no new copy at all. */
+        public boolean removing() {
+            return draining() && deployment.effectiveIntent() == DrainIntent.REMOVE;
         }
     }
 
@@ -85,6 +97,45 @@ public record DeploymentCoverage(
         }
         Covered covered = byNode.get(node);
         return covered != null && covered.frozen();
+    }
+
+    /**
+     * The deployment covering one node, or null, and whether it is frozen: what {@link #of} says about that node, at
+     * the cost of the deployments alone, for a decider asked once per candidate.
+     */
+    public static Covered ofNode(Observation observation, NodeId nodeId) {
+        if (observation.deployments().isEmpty() && anyUnreadable(observation) == false) {
+            return null;
+        }
+        boolean poolFrozen = anyUnreadable(observation);
+        Observation.NodeObservation node = observation.nodes().get(nodeId);
+        List<String> selecting = new ArrayList<>();
+        if (node != null && node.registration() != null) {
+            observation.deployments().forEach((id, deployment) -> {
+                if (deployment.selects(node.registration().attributes())) {
+                    selecting.add(id);
+                }
+            });
+        }
+        selecting.sort(String::compareTo);
+        if (selecting.isEmpty()) {
+            // Not this node's deployment, but an unreadable one may be: the pool is frozen whatever it selects.
+            return poolFrozen ? new Covered(null, null, true, false) : null;
+        }
+        String id = selecting.get(0);
+        Deployment deployment = observation.deployments().get(id);
+        boolean frozen = poolFrozen || selecting.size() > 1 || deployment.problems().isEmpty() == false;
+        boolean expired = frozen == false && deployment.expiredAt(observation.observedAt().toEpochMilli());
+        return new Covered(id, deployment, frozen, expired);
+    }
+
+    private static boolean anyUnreadable(Observation observation) {
+        for (String key : observation.unreadable()) {
+            if (key.startsWith(Keys.DEPLOYMENTS_PREFIX)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static DeploymentCoverage of(Observation observation) {
@@ -129,10 +180,8 @@ public record DeploymentCoverage(
             if (selecting.size() > 1) {
                 conflicts.put(nodeId, new TreeSet<>(selecting));
             }
-            String id = selecting.get(0);
-            boolean frozen = unreadable.isEmpty() == false || selecting.size() > 1 || invalid.containsKey(id);
-            byNode.put(nodeId, new Covered(id, observation.deployments().get(id), frozen,
-                frozen == false && expired.contains(id)));
+            // One answer per node, from the same function a decider asks, so the two cannot disagree.
+            byNode.put(nodeId, ofNode(observation, nodeId));
         });
 
         return new DeploymentCoverage(byNode, unreadable.isEmpty() == false, unreadable, invalid, conflicts, expired);

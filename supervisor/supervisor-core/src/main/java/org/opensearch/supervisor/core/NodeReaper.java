@@ -123,6 +123,21 @@ public final class NodeReaper {
                 continue;
             }
 
+            // A deployment's say first. A frozen node is left exactly as it is, and a node under a returning drain is
+            // expected back: its documents are what it comes back to (DESIGN.md §29.3). A node being removed is
+            // reapable, once it owes nothing.
+            var covered = org.opensearch.supervisor.model.deploy.DeploymentCoverage.ofNode(observation, nodeId);
+            if (covered != null && covered.frozen()) {
+                kept.add(new Kept(nodeId, "frozen by a deployment that cannot be acted on as written, and a frozen node"
+                    + " is not reaped"));
+                continue;
+            }
+            if (covered != null && covered.draining() && covered.removing() == false) {
+                kept.add(new Kept(nodeId, "under drain [" + covered.id() + "], whose nodes are expected back by its"
+                    + " until; it is reaped only once the drain has expired and the node is still gone"));
+                continue;
+            }
+
             // Everything the node still owes, which is the one thing that makes this destructive rather than
             // tidy. A reaped node that comes back has no assignment, and an assignment's absence means "hold
             // nothing" -- so reaping a node whose copy the pool never managed to replace would turn the operator

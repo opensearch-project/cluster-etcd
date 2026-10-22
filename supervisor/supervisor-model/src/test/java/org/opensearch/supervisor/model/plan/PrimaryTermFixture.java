@@ -52,6 +52,7 @@ final class PrimaryTermFixture {
         private final Map<Integer, Long> toldTerms = new LinkedHashMap<>();
         private boolean declaresTerms;
         private Liveness liveness = Liveness.LIVE;
+        private Map<String, String> attributes = Map.of();
 
         private Node(NodeId id) {
             this.id = id;
@@ -89,6 +90,13 @@ final class PrimaryTermFixture {
             return this;
         }
 
+        Node attribute(String key, String value) {
+            Map<String, String> next = new LinkedHashMap<>(attributes);
+            next.put(key, value);
+            attributes = next;
+            return this;
+        }
+
         Node lost() {
             liveness = Liveness.LOST;
             return this;
@@ -97,7 +105,7 @@ final class PrimaryTermFixture {
         Observation.NodeObservation build() {
             Registration registration = new Registration(
                 id, "eph", id.value(), POOL, Set.of(NodeRole.DATA),
-                "10.0.0." + (id.value().charAt(4) - 'A' + 1), 9300, "3.7.0", Map.of(), 5000, 1L,
+                "10.0.0." + (id.value().charAt(4) - 'A' + 1), 9300, "3.7.0", attributes, 5000, 1L,
                 declaresTerms ? Set.of(ContractFeatures.PRIMARY_TERMS) : Set.of()
             );
             ShardInventory inventory = held.isEmpty() ? null : new ShardInventory(id, "eph", 1L, Map.of(
@@ -121,6 +129,15 @@ final class PrimaryTermFixture {
         }
         return new Observation(5, Instant.EPOCH, POOL,
             Map.of(ACME, new Observation.DesiredState(Map.of(UUID, index))), observed, List.of(), terms);
+    }
+
+    /** {@link #observe}, under these deployments. */
+    static Observation observeUnder(IndexConfig index, Map<TenantId, Map<String, Observation.TermCounter>> terms,
+                                    Map<String, org.opensearch.supervisor.model.deploy.Deployment> deployments,
+                                    Node... nodes) {
+        Observation plain = observe(index, terms, nodes);
+        return new Observation(plain.pass(), plain.observedAt(), plain.pool(), plain.tenants(), plain.nodes(),
+            plain.unreadable(), plain.terms(), deployments);
     }
 
     static Map<TenantId, Map<String, Observation.TermCounter>> counter(Map<Integer, Long> shards, long revision) {

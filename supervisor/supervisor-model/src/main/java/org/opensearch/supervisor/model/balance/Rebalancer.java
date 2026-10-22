@@ -69,6 +69,8 @@ public final class Rebalancer {
         return List.of(
             // The operator's own answer first, so a refusal they caused reads before any the cluster caused.
             new RebalanceEnabledDecider(),
+            // Then a deployment in progress, which is also somebody's decision rather than the cluster's.
+            new DeploymentRebalanceDecider(),
             // Then whether balancing should be happening at all, before any per-move detail.
             new RecoveryPriorityDecider(),
             new PrimaryMoveDecider(),

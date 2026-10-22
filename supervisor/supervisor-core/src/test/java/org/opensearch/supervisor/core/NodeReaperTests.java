@@ -176,6 +176,71 @@ class NodeReaperTests {
         assertTrue(stored(Keys.nodeRegistration(LIVE)) == false, "the live node was never written here");
     }
 
+    // ---------------------------------------------------------------- deployments (DESIGN.md §29.3)
+
+    /** {@link #aNodeHoldingNothingAtAllIsReaped}'s node, in zone z1, under these deployments. */
+    private Observation emptyDeadNodeIn(Map<String, org.opensearch.supervisor.model.deploy.Deployment> deployments,
+        List<String> unreadable) {
+        writeDocumentsOf(DEAD, null, null);
+        observedAt(DEAD);
+        Registration zoned = new Registration(DEAD, "eph-" + DEAD.value(), DEAD.value(), POOL, EnumSet.of(NodeRole.DATA),
+            "10.0.0.A", 9300, "3.7.0", Map.of("zone", "z1"), 5000, 1L);
+        Observation.NodeObservation node = new Observation.NodeObservation(
+            DEAD, zoned, heartbeat(DEAD), null, Liveness.LOST, POOL, null, 5);
+        return new Observation(100, START, POOL, Map.of(ACME, new Observation.DesiredState(Map.of(UUID, index()))),
+            Map.of(DEAD, node), unreadable, Map.of(), deployments);
+    }
+
+    private static org.opensearch.supervisor.model.deploy.Deployment drain(
+        org.opensearch.supervisor.model.deploy.DrainIntent intent, Long until) {
+        return new org.opensearch.supervisor.model.deploy.Deployment(
+            org.opensearch.supervisor.model.deploy.DeploymentState.DRAIN, Map.of("zone", "z1"), intent, until, null, null);
+    }
+
+    @Test
+    void aNodeUnderAReturningDrainIsNotReaped() {
+        // It is expected back by the drain's until, and its documents are what it comes back to.
+        Observation observation = emptyDeadNodeIn(Map.of("zone-1",
+            drain(org.opensearch.supervisor.model.deploy.DrainIntent.RETURN, START.toEpochMilli() + 600_000)), List.of());
+
+        NodeReaper.Report report = new NodeReaper(store, liveness)
+            .reap(lostFor(NodeReaper.REAP_AFTER_LOST_PASSES), observation);
+
+        assertTrue(report.reaped().isEmpty(), report.reaped().toString());
+        assertTrue(report.kept().get(0).because().contains("under drain [zone-1]"), report.kept().toString());
+        assertTrue(stored(Keys.nodeRegistration(DEAD)));
+    }
+
+    @Test
+    void aNodeOnceItsReturningDrainHasExpiredIsReapedAsAnyOther() {
+        Observation observation = emptyDeadNodeIn(Map.of("zone-1",
+            drain(org.opensearch.supervisor.model.deploy.DrainIntent.RETURN, START.toEpochMilli() - 1)), List.of());
+
+        assertEquals(1, new NodeReaper(store, liveness).reap(lostFor(NodeReaper.REAP_AFTER_LOST_PASSES), observation)
+            .reaped().size());
+    }
+
+    @Test
+    void aNodeBeingRemovedIsReapedOnceItOwesNothing() {
+        Observation observation = emptyDeadNodeIn(Map.of("decommission",
+            drain(org.opensearch.supervisor.model.deploy.DrainIntent.REMOVE, null)), List.of());
+
+        assertEquals(1, new NodeReaper(store, liveness).reap(lostFor(NodeReaper.REAP_AFTER_LOST_PASSES), observation)
+            .reaped().size());
+    }
+
+    @Test
+    void aFrozenNodeIsNotReaped() {
+        Observation observation = emptyDeadNodeIn(Map.of(), List.of(Keys.deployment("broken")));
+
+        NodeReaper.Report report = new NodeReaper(store, liveness)
+            .reap(lostFor(NodeReaper.REAP_AFTER_LOST_PASSES), observation);
+
+        assertTrue(report.reaped().isEmpty(), report.reaped().toString());
+        assertTrue(report.kept().get(0).because().contains("frozen"), report.kept().toString());
+        assertTrue(stored(Keys.nodeRegistration(DEAD)));
+    }
+
     @Test
     void aNodeHoldingNothingAtAllIsReaped() {
         // The graveyard case: a data plane restarted on the same port a dozen times leaves a registration and a

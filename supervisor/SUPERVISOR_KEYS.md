@@ -458,7 +458,9 @@ supervisor writes it. The design is `DESIGN.md` §29: `state` is `DRAIN`, `SHADO
 `attributes` select the nodes under deployment, all of which must match, and stay the same for the deployment's life;
 `intent` (`return`, the default, or `remove`) and `until` (epoch millis, required for `return`) are read in `DRAIN`,
 `dial` (0 to 1) in `DIAL_UP`, and `concurrent_recoveries` in `ROLLBACK`. `FINISH` removes the deployment: delete the
-key. **Read, and resolved to nodes; not yet acted on.**
+key. **Acted on so far for placement only** (`DESIGN.md` §29.11): a drain takes no new primary, a removal no new copy,
+a pool with one in force is not rebalanced, and a node under a returning drain is not reaped. Existing primaries are
+not yet handed off.
 
 What cannot be acted on as written **freezes rather than releases** (`DESIGN.md` §29.10): a document that does not
 parse freezes every node of the pool, one that parses and is invalid freezes the nodes it selects, and so does a node

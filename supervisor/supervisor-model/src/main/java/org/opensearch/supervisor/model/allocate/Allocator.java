@@ -55,6 +55,8 @@ public final class Allocator {
         return List.of(
             // First, so that a refusal an operator caused reads before every refusal the cluster caused.
             new EnableAllocationDecider(),
+            // Next, and for the same reason: a drain is the operator's, or its deployment system's, decision.
+            new DeploymentDecider(),
             new NodeRoleDecider(),
             // Beside NodeRoleDecider, because both answer "this node fundamentally cannot hold this copy" and
             // both are cheaper to read than any rule about capacity.

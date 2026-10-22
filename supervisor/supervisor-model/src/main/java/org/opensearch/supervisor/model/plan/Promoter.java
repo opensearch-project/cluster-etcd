@@ -113,7 +113,12 @@ final class Promoter {
         }
 
         if (capable.isEmpty() == false) {
-            return new Outcome(capable.stream().min(Comparator.comparing(NodeId::value)).orElseThrow(), null);
+            // A node no deployment covers first, by node id: a promotion is a new primary, and a draining or frozen
+            // node takes none (DESIGN.md §29.3). Still onto one if nothing else can be promoted, because a shard with
+            // no primary is worse, and a drain's handoff moves it again.
+            return new Outcome(capable.stream()
+                .min(Comparator.comparing((NodeId node) -> underDeployment(observation, node)).thenComparing(NodeId::value))
+                .orElseThrow(), null);
         }
         if (incapable.isEmpty() == false) {
             return new Outcome(null, "a started replica of this shard survives on " + sorted(incapable)
@@ -181,6 +186,11 @@ final class Promoter {
         var tenantAssignment = node.assignment().tenants().get(tenant);
         var entry = tenantAssignment == null ? null : tenantAssignment.indices().get(index.uuid());
         return entry == null ? 1L : entry.primaryTermOf(shard);
+    }
+
+    private static boolean underDeployment(Observation observation, NodeId node) {
+        var covered = org.opensearch.supervisor.model.deploy.DeploymentCoverage.ofNode(observation, node);
+        return covered != null && (covered.draining() || covered.frozen());
     }
 
     private static List<NodeId> sorted(List<NodeId> nodes) {
