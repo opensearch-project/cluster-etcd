@@ -160,24 +160,33 @@ public class PluginNodeContractTests extends OpenSearchTestCase {
             Map<org.opensearch.supervisor.model.TenantId, java.util.Set<org.opensearch.supervisor.model.node.NodeRole>> roles =
                 new java.util.LinkedHashMap<>();
             List<ContractCopy> copies = new ArrayList<>();
+            Map<ContractCopy, org.opensearch.supervisor.model.NodeId> relocatingTo = new java.util.LinkedHashMap<>();
+            Map<ContractCopy, org.opensearch.supervisor.model.NodeId> relocatingFrom = new java.util.LinkedHashMap<>();
 
             assignment.tenants().forEach((tenant, forTenant) -> {
                 java.util.Set<org.opensearch.supervisor.model.node.NodeRole> understood = new java.util.LinkedHashSet<>();
                 forTenant.roles().forEach(role -> understood.add(nodeRoleOf(role)));
                 roles.put(org.opensearch.supervisor.model.TenantId.of(tenant.value()), understood);
 
-                forTenant.indices().forEach((uuid, index) -> index.shards().forEach((shard, role) -> copies.add(
-                    new ContractCopy(
+                forTenant.indices().forEach((uuid, index) -> index.shards().forEach((shard, role) -> {
+                    ContractCopy copy = new ContractCopy(
                         org.opensearch.supervisor.model.TenantId.of(tenant.value()),
                         uuid,
                         index.name(),
                         index.configRevision(),
                         shard,
                         supervisorRoleOf(role)
-                    )
-                )));
+                    );
+                    copies.add(copy);
+                    if (index.relocatingTo().containsKey(shard)) {
+                        relocatingTo.put(copy, org.opensearch.supervisor.model.NodeId.of(index.relocatingTo().get(shard).value()));
+                    }
+                    if (index.relocatingFrom().containsKey(shard)) {
+                        relocatingFrom.put(copy, org.opensearch.supervisor.model.NodeId.of(index.relocatingFrom().get(shard).value()));
+                    }
+                }));
             });
-            return new ContractNode.Understood(roles, copies, fabricatedTerms(assignment, copies));
+            return new ContractNode.Understood(roles, copies, fabricatedTerms(assignment, copies), relocatingTo, relocatingFrom);
         }
 
         /**
@@ -194,8 +203,19 @@ public class PluginNodeContractTests extends OpenSearchTestCase {
 
             Map<ContractNode.PeerCopy, String> allocationIds = new java.util.LinkedHashMap<>();
             Map<Integer, List<String>> inSync = new java.util.LinkedHashMap<>();
+            Map<Integer, ContractNode.Relocation> relocations = new java.util.LinkedHashMap<>();
             status.shards().forEach((shard, copies) -> {
                 for (IndexStatus.Copy copy : copies) {
+                    if (copy.relocatingTo() != null) {
+                        relocations.put(
+                            shard,
+                            new ContractNode.Relocation(
+                                org.opensearch.supervisor.model.NodeId.of(copy.node().value()),
+                                org.opensearch.supervisor.model.NodeId.of(copy.relocatingTo().value()),
+                                copy.relocationTargetAllocationId()
+                            )
+                        );
+                    }
                     String id = CoordinatorState.allocationIdFor(copy, documentReplicated);
                     if (id != null) {
                         allocationIds.put(
@@ -209,7 +229,7 @@ public class PluginNodeContractTests extends OpenSearchTestCase {
                     inSync.put(shard, published);
                 }
             });
-            return new ContractNode.UnderstoodPeers(allocationIds, inSync);
+            return new ContractNode.UnderstoodPeers(allocationIds, inSync, relocations);
         }
 
         /**

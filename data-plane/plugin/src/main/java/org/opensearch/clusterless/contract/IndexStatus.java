@@ -59,14 +59,31 @@ public record IndexStatus(
      *     keyed on it, so a node must use this one and never mint its own for someone else's copy.
      * @param inSync on a document-replication primary, the copies its own tracker holds in sync, itself included;
      *     null where none was published. Never empty when present, since a primary is in sync with itself.
+     * @param relocatingTo and {@code relocationTargetAllocationId}: on the primary of a shard being relocated, until
+     *     the target has started, the target's node and the allocation id the source's node minted for it, which is
+     *     null until that node has applied the relocation. Null on every other copy.
      */
-    public record Copy(NodeId node, ShardRole role, ShardState state, boolean serving, String allocationId, List<String> inSync) {
+    public record Copy(
+        NodeId node,
+        ShardRole role,
+        ShardState state,
+        boolean serving,
+        String allocationId,
+        List<String> inSync,
+        NodeId relocatingTo,
+        String relocationTargetAllocationId
+    ) {
 
         public Copy {
             Objects.requireNonNull(node, "node");
             role = role == null ? ShardRole.UNKNOWN : role;
             state = state == null ? ShardState.UNKNOWN : state;
             inSync = inSync == null ? null : List.copyOf(inSync);
+        }
+
+        /** A copy that is not the source of a relocation, which is every copy but a primary being moved. */
+        public Copy(NodeId node, ShardRole role, ShardState state, boolean serving, String allocationId, List<String> inSync) {
+            this(node, role, state, serving, allocationId, inSync, null, null);
         }
 
         /** A copy of an index that publishes neither field, which is every segment-replication copy. */
@@ -171,11 +188,24 @@ public record IndexStatus(
                     ShardState.from(Documents.string(copy, "state", null)),
                     Boolean.parseBoolean(Documents.string(copy, "serving", "false")),
                     blankAsNull(Documents.string(copy, "allocation_id", null)),
-                    strings(copy.get("in_sync"))
+                    strings(copy.get("in_sync")),
+                    nodeIdOrNull(Documents.string(copy, "relocating_to", null), what),
+                    blankAsNull(Documents.string(copy, "relocation_target_allocation_id", null))
                 )
             );
         }
         return List.copyOf(copies);
+    }
+
+    private static NodeId nodeIdOrNull(String value, String what) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return NodeId.of(value);
+        } catch (IllegalArgumentException e) {
+            throw new MalformedDocumentException(what + ": relocating_to [" + value + "] is not a node id", e);
+        }
     }
 
     private static String blankAsNull(String value) {

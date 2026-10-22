@@ -101,13 +101,20 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
      * @param reset a consumer-pointer reset to carry out once, or null. The one instruction in a document that
      *     is otherwise entirely desired state — see {@link IngestionReset} for why it could not live in the
      *     index document with the rest of the ingestion configuration.
+     * @param relocatingTo for each shard whose primary this node is to relocate, the target's node; and
+     *     {@code relocatingFrom}, for each it is to build as a relocation's target, the source's node
+     *     ({@code NODE_CONTRACT.md}, <i>Proposed: relocating a document-replication primary</i>). Both empty when
+     *     nothing is relocated, which is every entry this node has been given so far: it does not declare
+     *     {@code primary_relocation}, and {@link org.opensearch.clusterless.apply.DesiredStateResolver} defers both.
      */
     public record IndexAssignment(
         String name,
         long configRevision,
         Map<Integer, ShardRole> shards,
         IngestionReset reset,
-        Map<Integer, Long> primaryTerms
+        Map<Integer, Long> primaryTerms,
+        Map<Integer, NodeId> relocatingTo,
+        Map<Integer, NodeId> relocatingFrom
     ) {
 
         /**
@@ -120,6 +127,13 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
             Objects.requireNonNull(name, "name");
             shards = shards == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(shards));
             primaryTerms = primaryTerms == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(primaryTerms));
+            relocatingTo = relocatingTo == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(relocatingTo));
+            relocatingFrom = relocatingFrom == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(relocatingFrom));
+        }
+
+        /** Relocating nothing. */
+        public IndexAssignment(String name, long configRevision, Map<Integer, ShardRole> shards, IngestionReset reset, Map<Integer, Long> primaryTerms) {
+            this(name, configRevision, shards, reset, primaryTerms, Map.of(), Map.of());
         }
 
         /** An index with no reset outstanding, which is every index almost all of the time. */
@@ -307,7 +321,39 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
             shards.put(shardId, ShardRole.from(role == null ? null : String.valueOf(role)));
         });
 
-        return new IndexAssignment(name, configRevision, shards, readReset(document, what), readPrimaryTerms(document, what));
+        return new IndexAssignment(
+            name,
+            configRevision,
+            shards,
+            readReset(document, what),
+            readPrimaryTerms(document, what),
+            readRelocations(document, "relocating_to", what),
+            readRelocations(document, "relocating_from", what)
+        );
+    }
+
+    /** {@code relocating_to} or {@code relocating_from}: shard number to the other end's node id, siblings of {@code shards}. */
+    private static Map<Integer, NodeId> readRelocations(Map<String, Object> document, String field, String what) {
+        Map<String, Object> relocations = Documents.object(document, field);
+        if (relocations.isEmpty()) {
+            return Map.of();
+        }
+        Map<Integer, NodeId> byShard = new TreeMap<>();
+        relocations.forEach((shard, value) -> {
+            int shardId;
+            try {
+                shardId = Integer.parseInt(shard);
+            } catch (NumberFormatException e) {
+                throw new MalformedDocumentException(what, "[" + shard + "] in " + field + " is not a shard number");
+            }
+            String node = Documents.requireString(relocations, shard, what);
+            try {
+                byShard.put(shardId, NodeId.of(node));
+            } catch (IllegalArgumentException e) {
+                throw new MalformedDocumentException(what, field + " for shard [" + shard + "]: " + e.getMessage());
+            }
+        });
+        return byShard;
     }
 
     /**

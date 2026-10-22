@@ -7,6 +7,7 @@ package org.opensearch.clusterless.apply;
 import org.opensearch.clusterless.contract.Assignment;
 import org.opensearch.clusterless.contract.IndexConfig;
 import org.opensearch.clusterless.contract.MalformedDocumentException;
+import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.contract.NodeRole;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.clusterless.contract.TenantId;
@@ -185,6 +186,44 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
         documents.put("acme/my-index", documentReplicated(UUID));
 
         assertEquals(2, resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA))).copyCount());
+    }
+
+    public void testARelocationTargetIsNotBuiltByANodeThatDoesNotImplementRelocation() {
+        // Built as a fresh primary, it would be a second primary at one term beside its source. This node does not declare
+        // primary_relocation, so the supervisor should never ask; if it does, nothing is built and the reason says why.
+        documents.put("acme/my-index", documentReplicated(UUID));
+
+        DesiredState desired = resolver.resolve(relocating(Map.of(), Map.of(0, NodeId.of("72ZSKeRtQmuqOGyPvYzmLw"))));
+
+        assertEquals(1, desired.copyCount());
+        assertNull(desired.indices().values().iterator().next().shards().get(0));
+        assertEquals(desired.deferred().toString(), 1, desired.deferred().size());
+        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("primary_relocation"));
+    }
+
+    public void testARelocationSourceStaysPrimary() {
+        documents.put("acme/my-index", documentReplicated(UUID));
+
+        DesiredState desired = resolver.resolve(relocating(Map.of(0, NodeId.of("72ZSKeRtQmuqOGyPvYzmLw")), Map.of()));
+
+        assertEquals(2, desired.copyCount());
+        assertEquals(ShardRole.PRIMARY, desired.indices().values().iterator().next().shards().get(0));
+        assertEquals(desired.deferred().toString(), 1, desired.deferred().size());
+        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("stays primary"));
+    }
+
+    /** Shard 0 primary, relocating as given; shard 1 primary and left alone. */
+    private static Assignment relocating(Map<Integer, NodeId> to, Map<Integer, NodeId> from) {
+        Assignment.IndexAssignment index = new Assignment.IndexAssignment(
+            "my-index",
+            3041,
+            Map.of(0, ShardRole.PRIMARY, 1, ShardRole.PRIMARY),
+            null,
+            Map.of(),
+            to,
+            from
+        );
+        return new Assignment(7, 0, Map.of(ACME, new Assignment.TenantAssignment(java.util.Set.of(NodeRole.DATA), Map.of(UUID, index))));
     }
 
     private static IndexConfig documentReplicated(String uuid) {

@@ -1318,6 +1318,14 @@ the three-argument `UnderstoodPeers` and `ContractNode.Relocation(source, target
 "relocates nothing"; the old constructors pass null, which is what fails. Reporting the parse is enough for these
 checks; building the relocating pair is the separate work your reply describes.
 
+**Done here, 2026-10-22.** `Assignment.IndexAssignment` reads `relocating_to` and `relocating_from`, and
+`IndexStatus.Copy` reads `relocating_to` and `relocation_target_allocation_id`. The adapter reports all three, and all
+30 checks pass. With the adapter's old constructors restored, exactly the four relocation checks fail. This node does
+not declare `primary_relocation`, so `DesiredStateResolver` defers both fields with a reason. A relocation target is not
+built, since a fresh primary beside its source is two primaries at one term (reverting that makes
+`testARelocationTargetIsNotBuiltByANodeThatDoesNotImplementRelocation` fail with the target built). A source stays
+primary. Not proven: no supervisor writes these yet, so only the suite's documents have been read.
+
 The original note follows.
 
 ## The shared conformance suite: why
