@@ -97,7 +97,7 @@ public final class PeerRecovery {
                     // asked for, which is a health question rather than a buildability one.
                     return;
                 }
-                if (primaryVisible(coordinated, index.uuid(), shardNumber)) {
+                if (primaryVisible(coordinated, index.uuid(), shardNumber, localNodeId)) {
                     return;
                 }
                 if (startedHere(live, localNodeId, index, shardNumber)) {
@@ -152,12 +152,20 @@ public final class PeerRecovery {
         return false;
     }
 
-    private static boolean primaryVisible(CoordinatorView coordinated, String uuid, int shard) {
+    /**
+     * Not counting this node's own copy, which {@link CoordinatorState} never routes from the projection: a node told to
+     * hold a replica where it held the primary still sees its old copy projected as the primary until the supervisor
+     * observes the change, and a replica built against it would be left without a primary in the table.
+     */
+    private static boolean primaryVisible(CoordinatorView coordinated, String uuid, int shard, String localNodeId) {
         for (CoordinatorView.RoutedIndex routed : coordinated.indices()) {
             if (routed.uuid().equals(uuid) == false) {
                 continue;
             }
             for (IndexStatus.Copy copy : routed.placement().copiesOf(shard)) {
+                if (copy.node().value().equals(localNodeId)) {
+                    continue;
+                }
                 if (copy.role() == ShardRole.PRIMARY && CoordinatorState.routable(copy, true, coordinated.peers())) {
                     return true;
                 }

@@ -4,6 +4,9 @@
  */
 package org.opensearch.clusterless.apply;
 
+import org.opensearch.cluster.ClusterName;
+import org.opensearch.cluster.ClusterState;
+import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.clusterless.contract.IndexConfig;
 import org.opensearch.clusterless.contract.IndexStatus;
 import org.opensearch.clusterless.contract.NodeId;
@@ -97,6 +100,20 @@ public class PeerRecoveryTests extends OpenSearchTestCase {
 
         assertEquals(0, reduced.copyCount());
         assertTrue(reduced.deferred().get(0), reduced.deferred().get(0).contains("published allocation id"));
+    }
+
+    public void testThisNodesOwnCopyIsNotTheVisiblePrimary() {
+        // A node told to hold a replica where it held the primary: the projection still shows its old copy as the
+        // primary. CoordinatorState never routes this node's copies from the projection, so a replica built against
+        // that one would have no primary in the table, and would be dropped there with no reason given.
+        ClusterState live = ClusterState.builder(new ClusterName("clusterless"))
+            .nodes(DiscoveryNodes.builder().add(TestFixtures.localNode(PRIMARY_NODE)).localNodeId(PRIMARY_NODE))
+            .build();
+
+        DesiredState reduced = PeerRecovery.reduce(holding(Map.of(0, ShardRole.REPLICA), documentReplicated()), viewWith(ShardState.STARTED, true), live);
+
+        assertEquals(0, reduced.copyCount());
+        assertEquals(reduced.deferred().toString(), 1, reduced.deferred().size());
     }
 
     public void testAReplicaIsDeclinedWhenThePrimarysNodeCannotBeReached() {
