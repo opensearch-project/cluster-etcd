@@ -178,6 +178,24 @@ public final class DesiredStateResolver {
                 );
                 return;
             }
+            if (assigned.relocatingFrom().containsKey(shard)) {
+                // Built as a fresh primary, a relocation's target would be a second primary at one term beside its source,
+                // which still holds the shard. This node does not declare primary_relocation, so it builds nothing.
+                defer(
+                    deferred,
+                    key + "/" + shard + ": assigned as the target of a primary relocation from ["
+                        + assigned.relocatingFrom().get(shard) + "], which this node does not implement (primary_relocation)"
+                );
+                return;
+            }
+            if (assigned.relocatingTo().containsKey(shard)) {
+                // Kept as the primary it is, which is the safe half: nothing moves, and the supervisor sees why.
+                defer(
+                    deferred,
+                    key + "/" + shard + ": assigned to relocate its primary to [" + assigned.relocatingTo().get(shard)
+                        + "], which this node does not implement (primary_relocation); it stays primary here"
+                );
+            }
             switch (role) {
                 case PRIMARY -> buildable.put(shard, role);
                 case SEARCH_REPLICA -> {

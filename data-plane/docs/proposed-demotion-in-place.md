@@ -35,6 +35,13 @@ read from 3.10.0-SNAPSHOT's source, with the place named.
 > now keeps the pair as one primary in `status/indices` from the first pass to the last, the source until the target
 > has started and the target from then on. The pair is linked by the source's inventory, which keeps publishing the target's
 > id until its node applies the withdrawal, so the completion window is covered too (*Reporting*, in the contract).
+>
+> **Data plane, 2026-10-22: agreed, and the reading side is built.** Showing the pair as one primary throughout is
+> better than what this side asked for, an extra field and a rule on every reader: no reader needs a rule. The
+> one-primary rule and the `PeerRecovery` fix are in. This node now reads `relocating_to`, `relocating_from` and
+> `relocation_target_allocation_id`, and passes the four new checks. It does not declare `primary_relocation`, and it
+> defers both fields with a reason if it is given them anyway: a target is not built, since a fresh primary beside its
+> source is two primaries at one term, and a source stays primary. Building the relocating pair is the next piece.
 
 ## What the supervisor will do
 
