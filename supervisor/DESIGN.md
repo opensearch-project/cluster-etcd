@@ -2430,6 +2430,14 @@ terms a replica must be in every set.
 **The cost is per-copy bytes on docrep copies only**: 165 bytes per copy rather than 93, so a node whose every copy
 is docrep fits about 3,160 copies rather than 5,600 (`NODE_CONTRACT.md`, measured).
 
+**A promotion rebuilds every other replica, and not always cheaply** (found by the data plane, 2026-10-22). A promoted
+primary's tracker knows only itself, because a replica's fabricated metadata lists only its own id as in sync, so every
+other replica falls out of the group and `StaleReplicas` rebuilds it. Whether a rebuild recovers by operations or copies
+the shard depends on timing: with every copy in its table started, the new primary expires the retention lease of any
+node not in that table at the next lease sync (`ReplicationTracker.getRetentionLeases(true)`, read in OpenSearch
+3.10.0-SNAPSHOT), 30 s by default, and docrep copies merge independently, so a file-based recovery copies nearly
+everything. That is the price of a failover today. A planned move need not pay it (§29.9).
+
 ---
 
 ## 29. Intended change: drains and dual-runs
@@ -2585,6 +2593,9 @@ role flip ��24.4 predicted would have three customers, and how it is done de
 | segrep, pull ingestion | a new `PRIMARY` at N+1 on a node not draining, restored from the remote store; the old one is withdrawn once the new one is `STARTED` | the remote store's term ordering (§27.1); both consume one stream, so the brief overlap is harmless |
 | segrep, push ingestion | withdraw the old primary, then place a new one at N+1 | none is reachable in `segments_only` mode (§27.5), so the window with no primary is the fence: §12's demote-before-promote |
 
+> **The docrep row is superseded by §29.9.** A one-pass promote-and-demote fabricates two primaries on the new
+> primary's node, which the server rejects; a docrep drain is a primary relocation instead. The segrep rows stand.
+
 Two details make the docrep row work:
 
 - **The in-sync set comes from the live primary's own inventory**, the same rule as §28.10 with the primary present
@@ -2727,8 +2738,8 @@ rebuilding the replicas, with no restore and no lost writes. A gradual rollout n
 
 ### 29.5 What this asks of others
 
-- **The data plane**: rebuild a copy whose entry changes from `PRIMARY` to `REPLICA` in place, as a replica recovering
-  from the new primary (§29.3). Fabricate `DeploymentMetadata` from `draining` in `status/nodes`. Implement
+- **The data plane**: *(superseded by §29.9: a relocating pair, not demotion in place.)* Rebuild a copy whose entry
+  changes from `PRIMARY` to `REPLICA` in place, as a replica recovering from the new primary (§29.3). Fabricate `DeploymentMetadata` from `draining` in `status/nodes`. Implement
   `abandon_remote_terms`; the retention switch is already done (§27.3).
 - **The control plane**: probably an adapter, and later (§29.7). The document is the interface, so nothing here needs
   one. A deployment system that already speaks upstream's `POST /_cluster/deployment/{id}/{action}` would be spared
@@ -2738,7 +2749,7 @@ rebuilding the replicas, with no restore and no lost writes. A gradual rollout n
 
 ### 29.6 Order of building
 
-1. **Drain with `intent: return`, docrep and segrep-pull.** This unblocks the data plane's normal deploy path ("zone
+1. **Drain with `intent: return`, docrep and segrep-pull.** *(The docrep half is a primary relocation, §29.9.)* This unblocks the data plane's normal deploy path ("zone
    by zone, so in a three-zone deployment every primary moves twice per deploy", its M9 notes). The term fence makes
    the docrep half cheap, and the data plane has already proved promotion.
 2. `draining` in `status/nodes`, so searches move with the primaries.
@@ -2829,3 +2840,70 @@ there, so that it is visible rather than forgotten.
 
 **Not decided:** whether the same mechanism should also express capacity held back for a tenant's growth, which has the
 same shape and a different owner. It does not need to be, and should not be settled while only deployments want it.
+
+### 29.9 A docrep drain is a primary relocation
+
+**Decided 2026-10-22, after the data plane's reply** to the demotion proposal
+(`../data-plane/docs/proposed-demotion-in-place.md`). §29.3's docrep handoff was wrong, and its replacement is what
+vanilla OpenSearch already does for a planned move of a primary.
+
+**Why the one-pass handoff fails.** On the pass that promotes B, the index projection still shows A's copy as a started
+`PRIMARY`, because both came from one observation. B's node routes it, so its table holds two primaries, and
+`ReplicationTracker`'s invariant fails the copy just promoted. The data plane reproduced this. If A applies its demotion
+late, the mirror case leaves A acknowledging writes alone. Vanilla never meets either, because it flips roles only in
+`RoutingNodes.failShard`, in one cluster state every node sees at once, and nothing here is atomic across two assignment
+documents and a projection. Sequencing the handoff across passes, demoting first, would work, but it loses the old
+primary's in-sync set the moment it is demoted. `Promoter` reads that set only from a lost primary, so the supervisor
+would have to keep its choice in authoritative state of its own. That state would be thrown away once relocation
+existed, so it is not built.
+
+**A relocation needs no term change and loses no write**, and the server code doing the hard part runs in every
+OpenSearch cluster. The source and target are one routing entry, the target peer-recovers from the source and is
+tracked by it, the source blocks its operation permits, and it hands its primary context to the target: the in-sync
+copies' checkpoints and the routing table (`ReplicationTracker.startRelocationHandoff`, `activateWithPrimaryContext`). A
+write reaching the source afterwards is forwarded to the target (`TransportReplicationAction`). The two never both take
+writes, and **the other replicas stay in the group**, because the target inherits the source's tracker rather than
+starting from a replica's view of itself. That also avoids §28.10's rebuild of every replica. In clusterless mode, a
+started relocation target finishes the relocation locally, and a failure at either end cancels it, in
+`LocalShardStateAction`. That was checked in the build published to mavenLocal on 2026-10-22, not the one from 2026-10-06,
+which predates it.
+
+**What the supervisor does, per docrep primary on a draining node:**
+
+1. **Chooses a target**: a node not being drained, not reserved (§29.8), and holding no copy of the shard, since a node
+   holds one copy of a shard. The ordinary allocator chooses it, for the role `PRIMARY`, and counts it against the
+   recovery limit. The drain authorises the one extra copy this needs for the length of the move, through §15.2's seam,
+   and nothing reaps it as a surplus while the move is in flight.
+2. **Writes both entries in one pass, at the source's term.** A's entry stays `PRIMARY` and gains `relocating_to`, naming
+   B's node. B's entry is `PRIMARY` with `relocating_from`, naming A's. Each node fabricates the same single relocating
+   entry, so no table holds two primaries at any moment. This is a new instruction, `RelocatePrimary`, not a
+   `PlaceCopy`, because `TermLedger` advances the counter for every primary a plan places, and a relocation must not.
+3. **Waits.** A's node mints the target's allocation id and publishes it on its own copy. B's node builds its copy once
+   the projection carries that id, and recovers. The pair is not a `PRIMARY_CONFLICT`: the two assignments say it is a
+   relocation, and the differ reads the observed assignments as well as the inventories.
+   **The projection shows one primary throughout** (the data plane's finding, 2026-10-22: a node holding no primary
+   of the shard keeps whichever of two reported primaries comes last). Until B has started, A is the shard's
+   `PRIMARY` and B is not listed; from then, B is, and A is not, even before A's node has applied its withdrawal. The
+   link is A's published `relocation_target_allocation_id`, which its node keeps publishing until it applies the
+   withdrawal, because the completion pass rewrites the assignments first.
+4. **Completes** once B reports its copy started as primary. It rewrites B as a plain `PRIMARY`, at the same term, and
+   withdraws A's entry, in one pass. The drain's `reached` condition (§29.2) is that no primary remains on a selected node.
+
+**Cancelling.** If the drain ends first, or B's node is lost, both relocation fields are dropped and B's entry is
+withdrawn, which leaves A primary. If A is lost mid-move, this is an ordinary failover: `Promoter` promotes from A's last
+in-sync set, which an unstarted target is not in.
+
+**Only between nodes that declare `primary_relocation`** in `contract_features` (§28.3). A node that ignored the fields
+would build B's copy as a fresh primary, which is two primaries at one term. Without the feature, a docrep primary on a
+draining node stays where it is, and the status says why.
+
+**Not decided, and worth measuring first:** the data plane's cheaper variant, relocating onto the node of an existing
+replica after closing that replica. Leases are keyed by node, so the target might recover by operations from the
+replica's old files rather than copying the shard. It costs a copy for the length of the move. A general primary move
+for rebalancing (§29.6, `PrimaryMoveDecider`) can use the same instruction for docrep.
+
+**`remoteShardFailed` is not needed for this.** The source stops before the target starts, so a drain never leaves a
+primary writing at a stale term. A failover can still strand the lost primary's writes, which wait rather than being
+acknowledged (the demotion proposal, "The fence"), and that is the case to revisit when it is built.
+
+The wire format is in `NODE_CONTRACT.md`, *Proposed: relocating a document-replication primary*.
