@@ -24,6 +24,7 @@ import org.opensearch.cluster.routing.ShardRouting;
 import org.opensearch.cluster.routing.UnassignedInfo;
 import org.opensearch.clusterless.ClusterlessIndexSettings;
 import org.opensearch.clusterless.contract.IndexConfig;
+import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.index.Index;
@@ -381,7 +382,14 @@ public final class DataNodeState implements NodeState {
             long previousTerm = previousMetadata == null ? INITIAL_PRIMARY_TERM : previousMetadata.primaryTerm(shardNumber);
             builder.primaryTerm(shardNumber, Math.max(Math.max(assignedTerm, previousTerm), INITIAL_PRIMARY_TERM));
 
-            ShardRouting shardRouting = routingFor(shardId, role, previousRouting, assignedTerm);
+            ShardRouting shardRouting = routingFor(
+                shardId,
+                role,
+                previousRouting,
+                assignedTerm,
+                desiredIndex.relocatingTo().get(shardNumber),
+                desiredIndex.relocatingFrom().get(shardNumber)
+            );
             indexRouting.addShard(shardRouting);
 
             // Exactly the copies this pass described, and nothing carried forward. The set says which copies are
@@ -464,50 +472,71 @@ public final class DataNodeState implements NodeState {
      * fresh entry built here is the only way it is created again. Before that server change, the entry stayed as it
      * was, was reused with its allocation id, and the copy stayed absent while this state reported it started.
      */
-    private ShardRouting routingFor(ShardId shardId, ShardRole role, IndexRoutingTable previousRouting, long assignedTerm) {
+    private ShardRouting routingFor(
+        ShardId shardId,
+        ShardRole role,
+        IndexRoutingTable previousRouting,
+        long assignedTerm,
+        NodeId relocatingTo,
+        DesiredState.IncomingRelocation relocatingFrom
+    ) {
         boolean primary = role == ShardRole.PRIMARY;
         boolean searchOnly = role == ShardRole.SEARCH_REPLICA;
+        IndexShardRoutingTable previousShard = previousRouting == null ? null : previousRouting.shard(shardId.id());
 
-        if (previousRouting != null) {
-            IndexShardRoutingTable previousShard = previousRouting.shard(shardId.id());
-            if (previousShard != null) {
-                for (ShardRouting candidate : previousShard) {
-                    boolean mine = localNode.getId().equals(candidate.currentNodeId());
-                    if (mine && candidate.allocationId() != null && rebuild.contains(candidate.allocationId().getId())) {
-                        // Neither reused nor promoted: see StaleReplicas.
-                        continue;
-                    }
-                    boolean live = candidate.started() || candidate.initializing();
-                    boolean sameRole = candidate.primary() == primary && candidate.isSearchOnly() == searchOnly;
-                    if (mine && live && sameRole) {
-                        return candidate;
-                    }
-                    // A promotion, and it must keep the allocation id or it is not one. The server decides between
-                    // promoting in place and replacing the copy by whether the new routing entry is the same
-                    // allocation: a fresh id makes isSameAllocation false, so IndicesClusterStateService removes the
-                    // shard and creates another -- a full close and recovery, and at the old primary's term, which
-                    // is two copies believing they are primary at one term. moveActiveReplicaToPrimary keeps the id,
-                    // so updateShardState sees a started replica whose term went up and takes the branch that bumps
-                    // the term, resets the engine to the global checkpoint and fills sequence-number gaps.
-                    //
-                    // Only from a started plain replica: a search replica cannot be promoted (upstream refuses it,
-                    // since it has no history to promote), and an initializing copy cannot either -- updateShardState
-                    // asserts a promotion target is not initializing.
-                    boolean promoting = mine
-                        && primary
-                        && candidate.started()
-                        && candidate.primary() == false
-                        && candidate.isSearchOnly() == false;
-                    if (promoting) {
-                        logger.info(
-                            "clusterless: promoting this node's replica of {} to primary at term {}, in place",
-                            shardId,
-                            assignedTerm
-                        );
-                        return candidate.moveActiveReplicaToPrimary();
-                    }
+        if (previousShard != null) {
+            for (ShardRouting candidate : previousShard) {
+                boolean mine = localNode.getId().equals(candidate.currentNodeId());
+                if (mine && primary && candidate.primary() && (candidate.relocating() || relocatingTo != null)) {
+                    return relocationSource(candidate, relocatingTo);
                 }
             }
+        }
+
+        if (previousShard != null) {
+            for (ShardRouting candidate : previousShard) {
+                boolean mine = localNode.getId().equals(candidate.currentNodeId());
+                if (mine && candidate.allocationId() != null && rebuild.contains(candidate.allocationId().getId())) {
+                    // Neither reused nor promoted: see StaleReplicas.
+                    continue;
+                }
+                boolean live = candidate.started() || candidate.initializing();
+                boolean sameRole = candidate.primary() == primary && candidate.isSearchOnly() == searchOnly;
+                if (mine && live && sameRole) {
+                    return candidate;
+                }
+                // A promotion, and it must keep the allocation id or it is not one. The server decides between
+                // promoting in place and replacing the copy by whether the new routing entry is the same
+                // allocation: a fresh id makes isSameAllocation false, so IndicesClusterStateService removes the
+                // shard and creates another -- a full close and recovery, and at the old primary's term, which
+                // is two copies believing they are primary at one term. moveActiveReplicaToPrimary keeps the id,
+                // so updateShardState sees a started replica whose term went up and takes the branch that bumps
+                // the term, resets the engine to the global checkpoint and fills sequence-number gaps.
+                //
+                // Only from a started plain replica: a search replica cannot be promoted (upstream refuses it,
+                // since it has no history to promote), and an initializing copy cannot either -- updateShardState
+                // asserts a promotion target is not initializing.
+                boolean promoting = mine
+                    && primary
+                    && candidate.started()
+                    && candidate.primary() == false
+                    && candidate.isSearchOnly() == false;
+                if (promoting) {
+                    logger.info(
+                        "clusterless: promoting this node's replica of {} to primary at term {}, in place",
+                        shardId,
+                        assignedTerm
+                    );
+                    return candidate.moveActiveReplicaToPrimary();
+                }
+            }
+        }
+
+        if (primary && relocatingFrom != null && relocatingFrom.resolved()) {
+            // This node's copy is the target of a relocation, and is not an entry of its own: it is derived from the
+            // source's entry, which this node builds exactly as the source's node did. PrimaryRelocations has checked
+            // that the projection shows it; a target already started here was reused above, as a plain primary.
+            return relocationTarget(shardId, relocatingFrom, previousShard);
         }
 
         RecoverySource recoverySource;
@@ -540,6 +569,71 @@ public final class DataNodeState implements NodeState {
             recoverySource,
             new UnassignedInfo(UnassignedInfo.Reason.CLUSTER_RECOVERED, "assigned by the clusterless data plane")
         ).initialize(localNode.getId(), null, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
+    }
+
+    /**
+     * This node's primary, as the source of a relocation or no longer one.
+     *
+     * <p>A relocating entry is neither started nor initializing, so the reuse test below would not keep it, and would
+     * build a fresh primary in its place. Handled here instead, from the one entry: relocating to the node asked, kept;
+     * started, relocated, which mints the target's allocation id; relocating elsewhere, or no longer asked, cancelled.
+     * A cancellation after the handoff is refused by the server ({@code IndexShard.updateShardState} will not move a
+     * relocated copy back to primary mode) and fails the copy, which is right: the target is the primary by then.
+     */
+    private ShardRouting relocationSource(ShardRouting candidate, NodeId relocatingTo) {
+        String target = relocatingTo == null ? null : relocatingTo.value();
+        if (candidate.relocating()) {
+            if (candidate.relocatingNodeId().equals(target)) {
+                return candidate;
+            }
+            ShardRouting cancelled = candidate.cancelRelocation();
+            logger.info("clusterless: cancelling the relocation of this node's primary of {} to [{}]", candidate.shardId(), candidate.relocatingNodeId());
+            return target == null ? cancelled : relocate(cancelled, target);
+        }
+        if (candidate.started()) {
+            return relocate(candidate, target);
+        }
+        // Still initializing: there is nothing to hand off yet, so it stays as it is until it has started.
+        return candidate;
+    }
+
+    private ShardRouting relocate(ShardRouting started, String target) {
+        ShardRouting relocating = started.relocate(target, ShardRouting.UNAVAILABLE_EXPECTED_SHARD_SIZE);
+        logger.info(
+            "clusterless: relocating this node's primary of {} to [{}], as allocation id [{}]",
+            started.shardId(),
+            target,
+            relocating.allocationId().getRelocationId()
+        );
+        return relocating;
+    }
+
+    /** The source's entry relocating to this node, reused while it names the same two ids. */
+    private ShardRouting relocationTarget(ShardId shardId, DesiredState.IncomingRelocation incoming, IndexShardRoutingTable previousShard) {
+        if (previousShard != null) {
+            for (ShardRouting candidate : previousShard) {
+                if (candidate.relocating()
+                    && localNode.getId().equals(candidate.relocatingNodeId())
+                    && incoming.source().value().equals(candidate.currentNodeId())
+                    && candidate.allocationId().getId().equals(incoming.sourceAllocationId())
+                    && candidate.allocationId().getRelocationId().equals(incoming.targetAllocationId())) {
+                    return candidate;
+                }
+            }
+        }
+        logger.info(
+            "clusterless: building this node's copy of {} as the target of a relocation from [{}], as allocation id [{}]",
+            shardId,
+            incoming.source(),
+            incoming.targetAllocationId()
+        );
+        return RelocatingEntry.of(
+            shardId,
+            incoming.source().value(),
+            localNode.getId(),
+            incoming.sourceAllocationId(),
+            incoming.targetAllocationId()
+        );
     }
 
     private Settings settingsFor(DesiredState.DesiredIndex desiredIndex) {

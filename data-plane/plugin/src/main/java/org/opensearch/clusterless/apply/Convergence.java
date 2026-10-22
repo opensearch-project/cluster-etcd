@@ -101,7 +101,9 @@ public record Convergence(int desired, int serving, List<String> waitingFor) {
         if (shardTable == null) {
             return "ABSENT";
         }
-        for (ShardRouting copy : shardTable) {
+        for (ShardRouting entry : shardTable) {
+            // This node's copy may be a relocation's target, which is derived from the source's entry rather than held.
+            ShardRouting copy = entry.relocating() && localNodeId.equals(entry.relocatingNodeId()) ? entry.getTargetRelocatingShard() : entry;
             if (localNodeId.equals(copy.currentNodeId()) == false) {
                 continue;
             }

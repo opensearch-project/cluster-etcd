@@ -114,7 +114,8 @@ public record ShardInventory(NodeId nodeId, String ephemeralId, long generatedAt
         Long sizeBytes,
         String reason,
         String allocationId,
-        List<String> inSync
+        List<String> inSync,
+        String relocationTargetAllocationId
     ) {
 
         public static final int MAX_REASON_LENGTH = 512;
@@ -153,6 +154,26 @@ public record ShardInventory(NodeId nodeId, String ephemeralId, long generatedAt
                 }
                 inSync = inSync.stream().sorted().toList();
             }
+            if (relocationTargetAllocationId != null && role != ShardRole.PRIMARY) {
+                throw new IllegalArgumentException("only a primary is relocated, and this is a " + role);
+            }
+        }
+
+        /** A copy that is not the source of a relocation. */
+        public HeldCopy(
+            TenantId tenant,
+            String indexUuid,
+            String indexName,
+            long configRevision,
+            int shard,
+            ShardRole role,
+            ShardState state,
+            Long sizeBytes,
+            String reason,
+            String allocationId,
+            List<String> inSync
+        ) {
+            this(tenant, indexUuid, indexName, configRevision, shard, role, state, sizeBytes, reason, allocationId, inSync, null);
         }
 
         /** A copy that publishes neither replication field, which is every copy but a document-replication one. */

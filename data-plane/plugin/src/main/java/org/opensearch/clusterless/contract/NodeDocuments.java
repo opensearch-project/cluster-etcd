@@ -189,6 +189,9 @@ public final class NodeDocuments {
                 if (copy.inSync() != null) {
                     builder.array("in_sync", copy.inSync().toArray(new String[0]));
                 }
+                if (copy.relocationTargetAllocationId() != null) {
+                    builder.field("relocation_target_allocation_id", copy.relocationTargetAllocationId());
+                }
                 builder.endObject();
             }
             if (openIndex != null) {

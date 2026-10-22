@@ -188,28 +188,39 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
         assertEquals(2, resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA))).copyCount());
     }
 
-    public void testARelocationTargetIsNotBuiltByANodeThatDoesNotImplementRelocation() {
-        // Built as a fresh primary, it would be a second primary at one term beside its source. This node does not declare
-        // primary_relocation, so the supervisor should never ask; if it does, nothing is built and the reason says why.
+    public void testARelocationIsCarriedOnThePrimaryItNames() {
+        // Whether it can be acted on needs the peer view and the live state, so that is PrimaryRelocations' to decide.
         documents.put("acme/my-index", documentReplicated(UUID));
+        NodeId peer = NodeId.of("72ZSKeRtQmuqOGyPvYzmLw");
 
-        DesiredState desired = resolver.resolve(relocating(Map.of(), Map.of(0, NodeId.of("72ZSKeRtQmuqOGyPvYzmLw"))));
+        DesiredState.DesiredIndex source = resolver.resolve(relocating(Map.of(0, peer), Map.of())).indices().values().iterator().next();
+        DesiredState.DesiredIndex target = resolver.resolve(relocating(Map.of(), Map.of(1, peer))).indices().values().iterator().next();
 
-        assertEquals(1, desired.copyCount());
-        assertNull(desired.indices().values().iterator().next().shards().get(0));
-        assertEquals(desired.deferred().toString(), 1, desired.deferred().size());
-        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("primary_relocation"));
+        assertEquals(Map.of(0, peer), source.relocatingTo());
+        assertEquals(Map.of(1, DesiredState.IncomingRelocation.from(peer)), target.relocatingFrom());
+        assertEquals("both shards are still primaries here", 2, target.shards().size());
     }
 
-    public void testARelocationSourceStaysPrimary() {
+    public void testARelocationOnAShardNotHeldAsPrimaryIsIgnoredWithAReason() {
         documents.put("acme/my-index", documentReplicated(UUID));
+        Assignment.IndexAssignment index = new Assignment.IndexAssignment(
+            "my-index",
+            3041,
+            Map.of(0, ShardRole.PRIMARY, 1, ShardRole.REPLICA),
+            null,
+            Map.of(),
+            Map.of(),
+            Map.of(1, NodeId.of("72ZSKeRtQmuqOGyPvYzmLw"))
+        );
 
-        DesiredState desired = resolver.resolve(relocating(Map.of(0, NodeId.of("72ZSKeRtQmuqOGyPvYzmLw")), Map.of()));
+        DesiredState desired = resolver.resolve(
+            new Assignment(7, 0, Map.of(ACME, new Assignment.TenantAssignment(java.util.Set.of(NodeRole.DATA), Map.of(UUID, index))))
+        );
 
-        assertEquals(2, desired.copyCount());
-        assertEquals(ShardRole.PRIMARY, desired.indices().values().iterator().next().shards().get(0));
+        DesiredState.DesiredIndex resolved = desired.indices().values().iterator().next();
+        assertEquals("the replica is still built as a replica", ShardRole.REPLICA, resolved.shards().get(1));
+        assertTrue(resolved.relocatingFrom().isEmpty());
         assertEquals(desired.deferred().toString(), 1, desired.deferred().size());
-        assertTrue(desired.deferred().get(0), desired.deferred().get(0).contains("stays primary"));
     }
 
     /** Shard 0 primary, relocating as given; shard 1 primary and left alone. */

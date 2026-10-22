@@ -7,6 +7,7 @@ package org.opensearch.clusterless.apply;
 import org.opensearch.clusterless.contract.Assignment;
 import org.opensearch.clusterless.contract.IndexConfig;
 import org.opensearch.clusterless.contract.MalformedDocumentException;
+import org.opensearch.clusterless.contract.NodeId;
 import org.opensearch.clusterless.contract.ShardRole;
 import org.opensearch.clusterless.contract.TenantId;
 
@@ -178,23 +179,9 @@ public final class DesiredStateResolver {
                 );
                 return;
             }
-            if (assigned.relocatingFrom().containsKey(shard)) {
-                // Built as a fresh primary, a relocation's target would be a second primary at one term beside its source,
-                // which still holds the shard. This node does not declare primary_relocation, so it builds nothing.
-                defer(
-                    deferred,
-                    key + "/" + shard + ": assigned as the target of a primary relocation from ["
-                        + assigned.relocatingFrom().get(shard) + "], which this node does not implement (primary_relocation)"
-                );
-                return;
-            }
-            if (assigned.relocatingTo().containsKey(shard)) {
-                // Kept as the primary it is, which is the safe half: nothing moves, and the supervisor sees why.
-                defer(
-                    deferred,
-                    key + "/" + shard + ": assigned to relocate its primary to [" + assigned.relocatingTo().get(shard)
-                        + "], which this node does not implement (primary_relocation); it stays primary here"
-                );
+            if (role != ShardRole.PRIMARY && (assigned.relocatingTo().containsKey(shard) || assigned.relocatingFrom().containsKey(shard))) {
+                // Only a primary is relocated, so the field is ignored and the copy built as its role says.
+                defer(deferred, key + "/" + shard + ": a relocation was given for a shard assigned as " + role + "; only a primary is relocated");
             }
             switch (role) {
                 case PRIMARY -> buildable.put(shard, role);
@@ -254,7 +241,25 @@ public final class DesiredStateResolver {
         }
         Map<Integer, Long> terms = new LinkedHashMap<>();
         buildable.keySet().forEach(shard -> terms.put(shard, assigned.primaryTermOf(shard)));
-        indices.put(key, new DesiredState.DesiredIndex(key, config, buildable, terms));
+        // Relocations pass through on the primaries that carry them; whether each can be acted on needs the peer view and
+        // the live state, so PrimaryRelocations decides that.
+        Map<Integer, NodeId> relocatingTo = new LinkedHashMap<>();
+        Map<Integer, DesiredState.IncomingRelocation> relocatingFrom = new LinkedHashMap<>();
+        buildable.forEach((shard, role) -> {
+            if (role != ShardRole.PRIMARY) {
+                return;
+            }
+            NodeId to = assigned.relocatingTo().get(shard);
+            NodeId from = assigned.relocatingFrom().get(shard);
+            if (to != null && from != null) {
+                defer(deferred, key + "/" + shard + ": assigned to relocate both to and from another node; a copy is one end or the other");
+            } else if (to != null) {
+                relocatingTo.put(shard, to);
+            } else if (from != null) {
+                relocatingFrom.put(shard, DesiredState.IncomingRelocation.from(from));
+            }
+        });
+        indices.put(key, new DesiredState.DesiredIndex(key, config, buildable, terms, relocatingTo, relocatingFrom));
     }
 
     /**

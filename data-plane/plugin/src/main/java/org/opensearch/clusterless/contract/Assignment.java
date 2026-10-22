@@ -104,8 +104,7 @@ public record Assignment(long version, long generatedAt, Map<TenantId, TenantAss
      * @param relocatingTo for each shard whose primary this node is to relocate, the target's node; and
      *     {@code relocatingFrom}, for each it is to build as a relocation's target, the source's node
      *     ({@code NODE_CONTRACT.md}, <i>Proposed: relocating a document-replication primary</i>). Both empty when
-     *     nothing is relocated, which is every entry this node has been given so far: it does not declare
-     *     {@code primary_relocation}, and {@link org.opensearch.clusterless.apply.DesiredStateResolver} defers both.
+     *     nothing is relocated. {@link org.opensearch.clusterless.apply.PrimaryRelocations} decides what a pass can act on.
      */
     public record IndexAssignment(
         String name,
