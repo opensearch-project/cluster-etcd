@@ -233,4 +233,25 @@ class PromotionTests {
 
         assertEquals(B, ((Instruction.PlaceCopy) plan(observation).instructions().get(0)).node());
     }
+
+    @Test
+    void aPromotionPrefersAReplicaNoDeploymentCoversAndFallsBackToOne() {
+        // A promotion is a new primary, and a draining node takes none. B sorts first and is draining, so C is chosen;
+        // with C gone, B still is, because a shard with no primary is worse and the drain will move it again.
+        var drainB = Map.of("zone-1", new org.opensearch.supervisor.model.deploy.Deployment(
+            org.opensearch.supervisor.model.deploy.DeploymentState.DRAIN, Map.of("zone", "z1"),
+            org.opensearch.supervisor.model.deploy.DrainIntent.RETURN, Long.MAX_VALUE, null, null));
+        Observation both = PrimaryTermFixture.observeUnder(index(1, 2, Replication.DOCUMENT), counter(Map.of(0, 1L), 3),
+            drainB,
+            Node.of(A).told(0, ShardRole.PRIMARY, 1).lost(),
+            Node.of(B).holding(0, ShardRole.REPLICA).declaringPrimaryTerms().attribute("zone", "z1"),
+            Node.of(C).holding(0, ShardRole.REPLICA).declaringPrimaryTerms().attribute("zone", "z2"));
+        assertEquals(C, ((Instruction.PlaceCopy) plan(both).instructions().get(0)).node());
+
+        Observation onlyB = PrimaryTermFixture.observeUnder(index(1, 1, Replication.DOCUMENT), counter(Map.of(0, 1L), 3),
+            drainB,
+            Node.of(A).told(0, ShardRole.PRIMARY, 1).lost(),
+            Node.of(B).holding(0, ShardRole.REPLICA).declaringPrimaryTerms().attribute("zone", "z1"));
+        assertEquals(B, ((Instruction.PlaceCopy) plan(onlyB).instructions().get(0)).node());
+    }
 }

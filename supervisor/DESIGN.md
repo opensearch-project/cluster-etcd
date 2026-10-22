@@ -2932,3 +2932,29 @@ expired returning drain is not frozen: it reads as absent and is reported (`DEPL
 Not yet: the supervisor-app commands that write and advance the document, which are where the transition table is
 enforced (§29.2), and `DEPLOYMENT_OVERDUE`, which belongs with the `reached` status it measures.
 
+### 29.11 What a deployment refuses, as built
+
+**Built 2026-10-22: a deployment now keeps new work away from the nodes it covers.** It does not yet move anything
+already there; that is `RelocatePrimary` (§29.9). Every rule reads `DeploymentCoverage`, the one answer to which
+deployment covers which node, through a per-node lookup that costs only the deployments, so that a decider asked once
+per candidate stays cheap. The pool-wide view is built from the same lookup, so the two cannot disagree.
+
+| rule | where | effect |
+|---|---|---|
+| a returning drain takes no new primary | `DeploymentDecider` | a replica may still go there, as upstream allows: the node is coming back |
+| a removal takes no new copy of any role | `DeploymentDecider` | everything on it is moving off |
+| a frozen node takes no new primary | `DeploymentDecider` | a replica may still go there; freezing holds primaries |
+| a pool with a deployment in force, or anything frozen, is not rebalanced | `DeploymentRebalanceDecider` | `THROTTLE`, not `NO`: it is "not now", until the deployment ends |
+| a node under a returning drain is not reaped | `NodeReaper` | its documents are what it comes back to; once the drain expires it is reaped as any other |
+| a frozen node is not reaped | `NodeReaper` | left exactly as it is |
+| a promotion prefers a replica no deployment covers | `Promoter` | onto a draining or frozen node only if nothing else can be promoted |
+
+The last row is the one placement that does not go through the allocator. A promotion turns a replica into a primary
+where it stands, so without it a promotion would put a primary on the very node a drain is emptying. It still does so
+when that replica is the only one that can be promoted, because a shard with no primary is worse, and the drain's
+handoff will move it again.
+
+Not yet, and each is its own step: the handoff of existing primaries (§29.9), keeping a returning drain's replicas
+counted past the ordinary lost threshold until `until`, steering searches off a draining node (`draining` in
+`status/nodes`), and the dual-run's placement rules, which nothing exercises because nothing places a dual-run.
+
