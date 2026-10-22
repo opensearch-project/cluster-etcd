@@ -271,6 +271,29 @@ public final class Planner {
             ));
         }
 
+        // Primaries off draining nodes, after placement and before removals, so the work ceiling bounds them too. A
+        // docrep primary is relocated, as OpenSearch moves one (DESIGN.md §29.9).
+        for (Finding finding : diff.of(FindingKind.PRIMARY_ON_DRAINING_NODE)) {
+            if (finding.passes() < policy.minimumPasses()) {
+                continue;
+            }
+            if (instructions.size() >= policy.workCeiling()) {
+                ceilingHit = true;
+                break;
+            }
+            Relocation relocation = relocationFor(finding, observation, allocator, candidates, planned,
+                awarenessAttributes, maxCopiesPerNode, refuseCopiesSharingAHost);
+            if (relocation.refusal() != null) {
+                refusals.put(finding.refusalKey(), relocation.refusal());
+                continue;
+            }
+            Instruction.RelocatePrimary relocate = relocation.instruction();
+            planned.add(new AllocationContext.PlannedCopy(relocate.tenant(), relocate.indexUuid(), relocate.shard(),
+                ShardRole.PRIMARY, relocate.target()));
+            perTenant.merge(relocate.tenant(), 1, Integer::sum);
+            instructions.add(relocate);
+        }
+
         // Orphans before surpluses, of the two kinds of removal. A surplus copy is merely waste, and waiting a
         // pass costs disk; an orphan is holding up its index's deletion task and stopping its node from ever
         // reporting an assignment as applied, so it blocks other work rather than just occupying space.
@@ -327,6 +350,75 @@ public final class Planner {
 
         return new Plan(observation.pass(), observation.observedAt(), observation.pool(), epoch,
             instructions, ceilingHit, refusals, balance);
+    }
+
+    /** Either a relocation to write, or why this primary stays where it is for now. */
+    private record Relocation(Instruction.RelocatePrimary instruction, String refusal) {}
+
+    /**
+     * Where a primary on a draining node goes, if it can go anywhere yet ({@code DESIGN.md} §29.9).
+     *
+     * <p>Only between nodes that declare {@code primary_relocation}, because a node that ignored the fields would build
+     * the target as a fresh primary: two primaries at one term. The target is the ordinary allocator's choice for the
+     * role {@code PRIMARY}, which keeps it off the source, off any node with a copy of the shard, off draining nodes and
+     * under every limit, and counts it against the recovery limit.
+     */
+    private static Relocation relocationFor(
+        Finding finding,
+        Observation observation,
+        Allocator allocator,
+        List<NodeId> candidates,
+        List<AllocationContext.PlannedCopy> planned,
+        List<String> awarenessAttributes,
+        Integer maxCopiesPerNode,
+        boolean refuseCopiesSharingAHost
+    ) {
+        TenantId tenant = finding.subject().tenant();
+        String uuid = finding.subject().indexUuid();
+        int shard = finding.subject().shard();
+        NodeId source = finding.subject().node();
+        IndexConfig index = indexOf(observation, tenant, uuid);
+        Observation.NodeObservation sourceNode = observation.nodes().get(source);
+        if (index == null || sourceNode == null) {
+            return new Relocation(null, "the index or the node is no longer observed");
+        }
+        if (index.replication() != org.opensearch.supervisor.model.status.Replication.DOCUMENT) {
+            return new Relocation(null, "a segment-replication primary is handed off by placing a new one from the remote"
+                + " store, which is not built yet (DESIGN.md §29.3); it stays on the draining node until then");
+        }
+        var entry = sourceNode.assignment() == null || sourceNode.assignment().tenants().get(tenant) == null
+            ? null : sourceNode.assignment().tenants().get(tenant).indices().get(uuid);
+        if (entry != null && entry.relocatingTo() != null && entry.relocatingTo().containsKey(shard)) {
+            return new Relocation(null, "relocating to [" + entry.relocatingTo().get(shard) + "]; the move completes once"
+                + " the target reports its copy started as primary");
+        }
+        if (declaresRelocation(sourceNode) == false) {
+            return new Relocation(null, "node [" + source + "] does not declare ["
+                + org.opensearch.supervisor.model.node.ContractFeatures.PRIMARY_RELOCATION + "], so its primary cannot be"
+                + " relocated, and moving it any other way would lose writes or make two primaries at one term");
+        }
+        List<NodeId> able = candidates.stream()
+            .filter(node -> declaresRelocation(observation.nodes().get(node)))
+            .toList();
+        if (able.isEmpty()) {
+            return new Relocation(null, "no node this primary could move to declares ["
+                + org.opensearch.supervisor.model.node.ContractFeatures.PRIMARY_RELOCATION + "]");
+        }
+        AllocationContext context = new AllocationContext(tenant, index, shard, ShardRole.PRIMARY, observation,
+            awarenessAttributes, maxCopiesPerNode, refuseCopiesSharingAHost, planned);
+        Allocator.Outcome outcome = allocator.choose(context, able);
+        if (outcome.placed() == false) {
+            return new Relocation(null, "nowhere to relocate it to yet: " + outcome.refusal().because());
+        }
+        NodeId target = outcome.node().orElseThrow();
+        return new Relocation(new Instruction.RelocatePrimary(tenant, uuid, index.name(), shard, source, target,
+            index.configRevision(), finding.because() + "; relocating it to [" + target + "] at the same term, which"
+                + " hands its primary context over without losing a write"), null);
+    }
+
+    private static boolean declaresRelocation(Observation.NodeObservation node) {
+        return node != null && node.registration() != null
+            && node.registration().declares(org.opensearch.supervisor.model.node.ContractFeatures.PRIMARY_RELOCATION);
     }
 
     /**

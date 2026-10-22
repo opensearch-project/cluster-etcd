@@ -53,6 +53,7 @@ final class PrimaryTermFixture {
         private boolean declaresTerms;
         private Liveness liveness = Liveness.LIVE;
         private Map<String, String> attributes = Map.of();
+        private final Map<Integer, NodeId> relocatingFrom = new LinkedHashMap<>();
 
         private Node(NodeId id) {
             this.id = id;
@@ -90,6 +91,14 @@ final class PrimaryTermFixture {
             return this;
         }
 
+        /** Told to hold the shard as {@code PRIMARY}, as the target of a relocation from the source. */
+        Node relocationTargetOf(int shard, NodeId source, long term) {
+            told.put(shard, ShardRole.PRIMARY);
+            toldTerms.put(shard, term);
+            relocatingFrom.put(shard, source);
+            return this;
+        }
+
         Node attribute(String key, String value) {
             Map<String, String> next = new LinkedHashMap<>(attributes);
             next.put(key, value);
@@ -113,7 +122,8 @@ final class PrimaryTermFixture {
                     UUID, new ShardInventory.IndexShards("my-index", 3041, held)))));
             Assignment assignment = told.isEmpty() ? null : new Assignment(1, POOL, 1, id, 1L, Map.of(
                 ACME, new Assignment.TenantAssignment(Set.of(NodeRole.DATA), Map.of(
-                    UUID, new Assignment.IndexAssignment("my-index", 3041, told, null, toldTerms)))));
+                    UUID, new Assignment.IndexAssignment("my-index", 3041, told, null, toldTerms, null,
+                        relocatingFrom.isEmpty() ? null : relocatingFrom)))));
             Heartbeat heartbeat = new Heartbeat(id, "eph", 1L, Heartbeat.Applied.NONE, null, held.size(),
                 new Heartbeat.Capacity(2_000_000L, 1_000_000L, 10, 10, 0.1));
             return new Observation.NodeObservation(id, registration, heartbeat, inventory, liveness, POOL,

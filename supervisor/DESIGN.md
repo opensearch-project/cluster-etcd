@@ -2958,3 +2958,41 @@ Not yet, and each is its own step: the handoff of existing primaries (§29.9), k
 counted past the ordinary lost threshold until `until`, steering searches off a draining node (`draining` in
 `status/nodes`), and the dual-run's placement rules, which nothing exercises because nothing places a dual-run.
 
+### 29.12 `RelocatePrimary`, as built
+
+**Built 2026-10-22: a docrep primary on a node under a drain is relocated off it**, between nodes that declare
+`primary_relocation`, at the source's term. Tested end to end against `fake-node`, which now performs both ends; the data
+plane reads the fields and does not yet declare the feature, so nothing is sent to it.
+
+**How a move starts.** The differ raises `PRIMARY_ON_DRAINING_NODE` for every started primary on a node under a drain in
+force: what the drain is waiting for, and what its `reached` status will count. It begins as information and escalates
+with age, since a primary on a draining node is expected for a while. The planner answers it, after placement and before
+removals, with `Instruction.RelocatePrimary` to the ordinary allocator's choice for the role `PRIMARY` among nodes that
+declare the feature, which keeps the target off the source, off any node with a copy and off draining nodes, and counts
+it against the recovery limit. A segment-replication primary waits with a reason: its handoff (§29.3) is not built. A
+distinct instruction rather than a `PlaceCopy`, because the term ledger advances the counter for every primary a plan
+places.
+
+**How a move ends is derived, not remembered.** The applier writes both ends in one pass, and on every later pass each
+end decides from what is observed, before that pass's own instructions are applied, since a move written now is in no
+observation yet:
+
+| end | completes when | is cancelled when |
+|---|---|---|
+| source | its target reports the shard started as primary: the source is withdrawn | its target's node is gone, or no longer names it: `relocating_to` is dropped |
+| target | it reports the shard started as primary: `relocating_from` is dropped | its source's node is gone, or no longer names it: the target is withdrawn |
+
+A write that loses its compare-and-set leaves one end naming a partner that does not name it back, and the next pass
+cancels that end. A source lost mid-move is an ordinary failover: `Promoter` no longer mistakes a relocation's target for
+a promotion in flight, which it would otherwise have waited on for ever.
+
+**Exemptions, found by asking what a second primary breaks.** The differ does not call a linked pair a
+`PRIMARY_CONFLICT`. It reads the pair from `RelocatingPairs`, the same function the projection uses, so the two cannot
+link pairs differently. The surplus reaper and the differ's `SURPLUS_COPY` needed nothing, because both count per
+non-primary role and a pair adds a primary. `dropSupersededPrimaries` would have withdrawn a new target at once, its
+recorded term reading as 1 in an assignment that had never held the shard, so a target written this pass counts as
+placed.
+
+Not yet: segment replication's handoff, a returning drain's replicas counted until `until`, `draining` in `status/nodes`,
+the `reached` status, and the data plane's half of the relocating pair, which is in progress on its side.
+

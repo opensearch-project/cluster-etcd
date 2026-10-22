@@ -211,7 +211,12 @@ final class Promoter {
             return false;
         }
         var indexAssignment = tenantAssignment.indices().get(index.uuid());
-        return indexAssignment != null && indexAssignment.shards().get(shard) == ShardRole.PRIMARY;
+        // A relocation's target is assigned PRIMARY before it reports it too, and it is not a promotion: if its source is
+        // lost, the move is cancelled and this shard is an ordinary failover, which must not wait on it.
+        boolean relocationTarget = indexAssignment != null && indexAssignment.relocatingFrom() != null
+            && indexAssignment.relocatingFrom().containsKey(shard);
+        return indexAssignment != null && indexAssignment.shards().get(shard) == ShardRole.PRIMARY
+            && relocationTarget == false;
     }
 
     /** This node's started replica of the shard, or null. */

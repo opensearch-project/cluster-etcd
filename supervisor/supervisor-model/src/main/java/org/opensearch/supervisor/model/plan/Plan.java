@@ -98,11 +98,15 @@ public record Plan(
     public Map<NodeId, List<Instruction>> byNode() {
         Map<NodeId, List<Instruction>> byNode = new LinkedHashMap<>();
         for (Instruction instruction : instructions) {
-            NodeId node = switch (instruction) {
-                case Instruction.PlaceCopy place -> place.node();
-                case Instruction.RemoveCopy remove -> remove.node();
+            // A relocation is written to both of its nodes' assignments.
+            List<NodeId> nodes = switch (instruction) {
+                case Instruction.PlaceCopy place -> List.of(place.node());
+                case Instruction.RemoveCopy remove -> List.of(remove.node());
+                case Instruction.RelocatePrimary relocate -> List.of(relocate.source(), relocate.target());
             };
-            byNode.computeIfAbsent(node, ignored -> new java.util.ArrayList<>()).add(instruction);
+            for (NodeId node : nodes) {
+                byNode.computeIfAbsent(node, ignored -> new java.util.ArrayList<>()).add(instruction);
+            }
         }
         return byNode;
     }

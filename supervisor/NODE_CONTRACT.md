@@ -611,8 +611,8 @@ field below, the index projection shows a relocating pair as one primary, and th
 reading-side checks (`aRelocationIsUnderstoodPerCopy`, `anAssignmentWithoutRelocationsIsUnderstoodAsRelocatingNothing`,
 `aRelocationInTheProjectionIsUnderstoodAsPublished`, `aRelocationNotYetMintedIsUnderstoodWithNoTargetId`), which both
 implementations pass. The data plane reads the fields and does not yet declare `primary_relocation`: sent a relocation
-anyway, it defers both fields with a reason, building no target and keeping the source primary. The supervisor does not
-yet ask for one. The reasoning is `DESIGN.md` §29.9: a planned move of a docrep primary,
+anyway, it defers both fields with a reason, building no target and keeping the source primary. The supervisor asks for
+one only between nodes that declare `primary_relocation` (`DESIGN.md` §29.12), which `fake-node` does and performs. The reasoning is `DESIGN.md` §29.9: a planned move of a docrep primary,
 which a drain makes, is OpenSearch's primary relocation, with its handoff of the primary context, so that the move needs
 no term change, loses no write, and keeps the other replicas in the group. Only between nodes that declare
 `primary_relocation` in `contract_features`.

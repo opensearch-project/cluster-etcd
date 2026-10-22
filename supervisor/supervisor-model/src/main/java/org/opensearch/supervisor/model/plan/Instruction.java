@@ -45,6 +45,34 @@ public sealed interface Instruction {
     }
 
     /**
+     * Move a document-replication primary off its node, as OpenSearch relocates one ({@code DESIGN.md} §29.9).
+     *
+     * <p>Two assignments are written in one pass, at the source's term: the source's entry gains {@code relocating_to},
+     * and the target's gains the shard as {@code PRIMARY} with {@code relocating_from}. The target recovers from the
+     * source, the source hands over its primary context, and the move loses no write and changes no term. Not a
+     * {@link PlaceCopy}, because a primary placed is a primary at a new term, and this one must not be.
+     *
+     * <p>Nothing here completes or cancels it. Like every other end of a move, that is derived from what is observed
+     * on a later pass: the target reported started, or one end gone.
+     */
+    record RelocatePrimary(
+        TenantId tenant,
+        String indexUuid,
+        String indexName,
+        int shard,
+        NodeId source,
+        NodeId target,
+        long configRevision,
+        String because
+    ) implements Instruction {
+
+        @Override
+        public Subject subject() {
+            return Subject.ofShard(tenant, indexUuid, shard);
+        }
+    }
+
+    /**
      * Drop a copy of a shard from a node, by removing it from that node's assignment.
      *
      * <p><b>The only destructive instruction, and the reason it is safe is that it is never paired with an
