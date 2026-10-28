@@ -1,0 +1,341 @@
+/*
+ * Copyright OpenSearch Software Foundation
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package org.opensearch.controlplane.store.zookeeper;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIf;
+import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.KeyValueStoreContractTests;
+import org.opensearch.controlplane.store.KeyValueStores;
+
+import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * The ZooKeeper backend against the shared store contract, plus the behaviour only a real ensemble shows.
+ *
+ * <h2>Running these</h2>
+ *
+ * <p>They need a live ZooKeeper and are skipped without one:
+ *
+ * <pre>{@code
+ * ../gradlew :store-zookeeper:test -Dcontrolplane.zookeeper=localhost:2181
+ * }</pre>
+ *
+ * <p>Skipped rather than failed, and rather than started in-process, because the sandbox this was written
+ * in permits neither outbound connections nor listening sockets. {@link ZooKeeperKeysTests} carries the
+ * part that can be checked without a server, and it carries most of the risk: the path encoding is where
+ * a backend silently mangles keys, and every path it produces is validated by ZooKeeper's own
+ * {@code PathUtils}.
+ *
+ * <p>Each test gets a fresh root znode, so a failed run leaves its state behind for inspection without
+ * poisoning the next one.
+ */
+@EnabledIf(
+    value = "serverAvailable",
+    disabledReason = "needs Docker, or -Dcontrolplane.zookeeper=host:port pointing at a real ensemble"
+)
+class ZooKeeperKeyValueStoreTests extends KeyValueStoreContractTests {
+
+    /** Referenced by {@code @EnabledIf}; see {@link ZooKeeperTestServer}. */
+    static boolean serverAvailable() {
+        return ZooKeeperTestServer.available();
+    }
+
+    private static final AtomicInteger ROOTS = new AtomicInteger();
+
+    private final List<KeyValueStore> opened = new ArrayList<>();
+    private String root;
+
+    @BeforeEach
+    void freshRoot() {
+        root = "/cp-test-" + System.nanoTime() + "-" + ROOTS.incrementAndGet();
+    }
+
+    @AfterEach
+    void closeStores() {
+        opened.forEach(KeyValueStore::close);
+        opened.clear();
+    }
+
+    @Override
+    protected KeyValueStore newStore() {
+        try {
+            KeyValueStore store = KeyValueStores.open("zk://" + ZooKeeperTestServer.endpoint() + root);
+            opened.add(store);
+            return store;
+        } catch (Exception e) {
+            throw new IllegalStateException("could not open a ZooKeeper store at " + root, e);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // behaviour the contract cannot express, because it is backend-specific
+    // ------------------------------------------------------------------
+
+    /**
+     * A key can be the parent of another key, and deleting it must not take the subtree with it.
+     * ZooKeeper refuses to delete a znode with children, so this is the case the framing byte exists for.
+     */
+    @Test
+    void deletingAKeyThatIsAlsoAParentKeepsItsDescendants() {
+        KeyValueStore store = newStore();
+        store.put("a", bytes("parent"));
+        store.put("a/b", bytes("child"));
+
+        assertTrue(store.delete("a"));
+        assertEquals(Optional.empty(), store.get("a"), "the key is gone");
+        assertEquals(Optional.of("child"), asString(store, "a/b"), "the subtree survived");
+        assertEquals(List.of("a/b"), List.copyOf(store.scanPrefix("a").keySet()),
+            "a scan must not resurrect the deleted parent");
+    }
+
+    /** And the name is then free again, at a new revision. */
+    @Test
+    void aDeletedParentKeyCanBeRecreated() {
+        KeyValueStore store = newStore();
+        store.put("a", bytes("first"));
+        store.put("a/b", bytes("child"));
+        store.delete("a");
+
+        long revision = store.put("a", bytes("second"), KeyValueStore.ABSENT);
+        assertEquals(Optional.of("second"), asString(store, "a"));
+        assertEquals(revision, store.get("a").orElseThrow().revision());
+    }
+
+    /**
+     * Intermediate znodes are structure, not keys, so they must never appear in a scan. Without the
+     * framing byte {@code tenant/acme} would show up as an empty-valued key of its own.
+     */
+    @Test
+    void intermediateNodesAreNotKeys() {
+        KeyValueStore store = newStore();
+        store.put("tenant/acme/indices/one", bytes("1"));
+
+        assertEquals(Optional.empty(), store.get("tenant"));
+        assertEquals(Optional.empty(), store.get("tenant/acme"));
+        assertEquals(Optional.empty(), store.get("tenant/acme/indices"));
+        assertEquals(List.of("tenant/acme/indices/one"), List.copyOf(store.scanPrefix("").keySet()));
+    }
+
+    /**
+     * The revision is the modification zxid rather than the znode version, which is what makes this safe:
+     * a delete-and-recreate has to produce a revision the old one cannot be confused with, or a stale
+     * compare-and-set would succeed against a different value.
+     */
+    @Test
+    void aRecreatedKeyDoesNotReuseItsOldRevision() {
+        KeyValueStore store = newStore();
+        long first = store.put("a", bytes("one"));
+        store.delete("a");
+        long second = store.put("a", bytes("two"));
+
+        assertTrue(second > first,
+            "zxids are monotonic across the ensemble; got " + first + " then " + second);
+    }
+
+    /** Two writers, one winner — the property the whole revision scheme exists to provide. */
+    @Test
+    void concurrentCompareAndSetHasExactlyOneWinner() throws Exception {
+        KeyValueStore store = newStore();
+        long revision = store.put("contended", bytes("start"));
+
+        int writers = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(writers);
+        try {
+            List<Callable<Boolean>> attempts = new ArrayList<>();
+            for (int i = 0; i < writers; i++) {
+                String value = "writer-" + i;
+                attempts.add(() -> {
+                    try {
+                        store.put("contended", bytes(value), revision);
+                        return true;
+                    } catch (org.opensearch.controlplane.store.RevisionConflictException lost) {
+                        return false;
+                    }
+                });
+            }
+            List<Future<Boolean>> results = pool.invokeAll(attempts);
+            long winners = 0;
+            for (Future<Boolean> result : results) {
+                if (result.get()) {
+                    winners++;
+                }
+            }
+            assertEquals(1, winners, "exactly one compare-and-set may succeed at a given revision");
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    /**
+     * A conditional delete is a compare-and-set too. Checked by mzxid but deleted without a version, it
+     * would remove a put that landed in between, and both would report success — a lease released by one
+     * holder taking a peer's fresh acquisition with it.
+     */
+    @Test
+    void concurrentConditionalDeleteAndPutHaveExactlyOneWinner() throws Exception {
+        assertConditionalDeleteRacesPutsFairly(newStore(), "contended");
+    }
+
+    /** The same, where the delete has to clear the frame because the key has descendants. */
+    @Test
+    void concurrentConditionalDeleteOfAParentAndPutHaveExactlyOneWinner() throws Exception {
+        KeyValueStore store = newStore();
+        store.put("contended/child", bytes("child"));
+        assertConditionalDeleteRacesPutsFairly(store, "contended");
+    }
+
+    private void assertConditionalDeleteRacesPutsFairly(KeyValueStore store, String key) throws Exception {
+        int writers = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(writers + 1);
+        try {
+            for (int round = 0; round < 20; round++) {
+                long revision = store.put(key, bytes("start-" + round));
+                List<Callable<Boolean>> attempts = new ArrayList<>();
+                attempts.add(() -> {
+                    try {
+                        return store.delete(key, revision);
+                    } catch (org.opensearch.controlplane.store.RevisionConflictException lost) {
+                        return false;
+                    }
+                });
+                for (int i = 0; i < writers; i++) {
+                    String value = "writer-" + i;
+                    attempts.add(() -> {
+                        try {
+                            store.put(key, bytes(value), revision);
+                            return true;
+                        } catch (org.opensearch.controlplane.store.RevisionConflictException lost) {
+                            return false;
+                        }
+                    });
+                }
+                List<Future<Boolean>> results = pool.invokeAll(attempts);
+                boolean deleted = results.get(0).get();
+                long winners = 0;
+                for (Future<Boolean> result : results) {
+                    if (result.get()) {
+                        winners++;
+                    }
+                }
+                assertEquals(1, winners, "round " + round + ": exactly one write may succeed at a given revision");
+                assertEquals(deleted, store.get(key).isEmpty(),
+                    "round " + round + ": the key is absent exactly when the delete won");
+            }
+        } finally {
+            pool.shutdownNow();
+            assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    /** The root path is mandatory, so a control plane cannot scatter keys across an ensemble root. */
+    @Test
+    void aConnectionStringWithoutARootIsRejected() {
+        String host = ZooKeeperTestServer.endpoint();
+
+        Exception e = org.junit.jupiter.api.Assertions.assertThrows(
+            java.io.IOException.class, () -> KeyValueStores.open("zk://" + host));
+        assertTrue(e.getMessage().contains("needs a root znode path"), e.getMessage());
+    }
+
+    // ------------------------------------------------------------------
+    // watches
+    // ------------------------------------------------------------------
+
+    /** A persistent recursive watch fires for a write anywhere beneath the prefix. */
+    @Test
+    void aNativeWatchFiresForAWriteUnderThePrefix() throws Exception {
+        KeyValueStore store = newStore();
+        // The watched path must exist for addWatch to take, which a first write guarantees.
+        store.put("indices/seed", bytes("0"));
+
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+        java.util.Optional<org.opensearch.controlplane.store.Watch> watch =
+            store.watch("indices/", notified::countDown);
+
+        assertTrue(watch.isPresent(), "ZooKeeper 3.6+ supports persistent recursive watches");
+        try (var ignored = watch.get()) {
+            store.put("indices/later", bytes("1"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS), "the watch must fire");
+        }
+    }
+
+    /** Recursive means recursive: a write several segments deep still notifies. */
+    @Test
+    void aNativeWatchFiresForADeeplyNestedWrite() throws Exception {
+        KeyValueStore store = newStore();
+        store.put("tenant/seed", bytes("0"));
+
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+        java.util.Optional<org.opensearch.controlplane.store.Watch> watch =
+            store.watch("tenant/", notified::countDown);
+
+        assertTrue(watch.isPresent());
+        try (var ignored = watch.get()) {
+            store.put("tenant/acme/indices/deep", bytes("1"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS));
+        }
+    }
+
+    /**
+     * A watch on a prefix nothing has written yet is granted, and fires when the first write arrives.
+     *
+     * <p>This originally asserted the opposite — that the store would decline, because a one-shot watch
+     * needs its znode to exist — and failing is how the assumption got corrected. {@code addWatch} accepts
+     * a path that has never been created, so no znode has to be created as a side effect and there is no
+     * window in which a consumer silently gets polling instead.
+     */
+    @Test
+    void aNativeWatchOnAnUnwrittenPrefixIsGrantedAndFiresOnCreation() throws Exception {
+        KeyValueStore store = newStore();
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+
+        java.util.Optional<org.opensearch.controlplane.store.Watch> watch =
+            store.watch("never/written/", notified::countDown);
+        assertTrue(watch.isPresent(), "addWatch does not require the znode to exist");
+
+        try (var ignored = watch.get()) {
+            store.put("never/written/first", bytes("1"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS),
+                "a watch registered before the prefix existed must fire when it comes into being");
+        }
+    }
+
+    /** And watchOrPoll hides the difference, which is the whole point of the fallback. */
+    @Test
+    void watchOrPollWorksWhicheverPathItTakes() throws Exception {
+        KeyValueStore store = newStore();
+        java.util.concurrent.CountDownLatch notified = new java.util.concurrent.CountDownLatch(1);
+
+        try (var ignored = org.opensearch.controlplane.store.Watches.watchOrPoll(
+            store, "absent/", java.time.Duration.ofMillis(50), notified::countDown)) {
+            store.put("absent/a", bytes("1"));
+            assertTrue(notified.await(10, TimeUnit.SECONDS),
+                "a consumer must be notified whether the backend watched natively or was polled");
+        }
+    }
+
+    @Test
+    void theSchemeIsDiscoveredFromTheClasspath() throws Exception {
+        assertTrue(KeyValueStores.discover().containsKey("zk"),
+            "the provider jar is on the test classpath: " + KeyValueStores.discover().keySet());
+        assertEquals("zk", URI.create("zk://h:2181/r").getScheme());
+    }
+}

@@ -1,0 +1,289 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+def pluginName = 'opensearch-data-plane'
+def pluginDescription = 'Makes a node act on desired state read from a shared key/value store, with no cluster manager anywhere'
+
+opensearchplugin {
+    name = pluginName
+    description = pluginDescription
+    classname = 'org.opensearch.clusterless.ClusterlessPlugin'
+    licenseFile rootProject.file('LICENSE.txt')
+    noticeFile rootProject.file('NOTICE.txt')
+}
+
+
+dependencies {
+    // The store SPI, and nothing else. D6.2: nothing in this repository may name a backend outside test
+    // code and the SPI wiring, so store-etcd and store-zookeeper are deliberately absent — an operator
+    // drops the backend jar for their deployment into the installed plugin's directory, and ServiceLoader
+    // finds it. `../gradlew :plugin:schemes` prints what a build resolves, so a missing jar is
+    // distinguishable from a typo in the URI.
+    implementation 'org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT'
+
+    // The shared conformance suite that also drives fake-node, from the repository that owns
+    // NODE_CONTRACT.md. Test scope: it brings Jackson, which must never reach the plugin zip.
+    testImplementation testFixtures('org.opensearch.supervisor:fake-node:0.1.0-SNAPSHOT')
+    testImplementation testFixtures('org.opensearch.controlplane:store-api:0.1.0-SNAPSHOT')
+}
+
+// Third-party audit and the license check have nothing to inspect: the one bundled dependency is store-api,
+// which has no dependencies at all by design.
+thirdPartyAudit.enabled = false
+loggerUsageCheck.enabled = false
+
+// No need to validate pom, as we do not upload to maven/sonatype
+validateNebulaPom.enabled = false
+
+// ---------------------------------------------------------------------------------------------------------
+// ../gradlew run -- a real node with this plugin installed, which is the only way to exercise applying.
+//
+// PluginBuildPlugin registers the `run` task but attaches no cluster to it: only RestIntegTestTask gets one
+// created automatically (RestTestBasePlugin does testClusters.maybeCreate(task.name)), and the root OpenSearch
+// repository wires its own run task by hand in gradle/run.gradle. So a plugin's ./gradlew run starts nothing
+// until the cluster is created and used here.
+//
+// The node needs clusterless.store to start at all -- there is no default, deliberately, because a node
+// pointed at a private store looks exactly like a healthy node no supervisor can see. So the run cluster
+// points at a directory under build/, which is also where a supervisor should be pointed:
+//
+//   ../gradlew run                                   # terminal 1: a node, applying what it is assigned
+//   cd ../supervisor && ../gradlew :supervisor-app:installDist && //     ./supervisor-app/build/install/supervisor-app/bin/supervisor-app //       --store=file://<repo>/plugin/build/clusterless-store --write --interval=1s
+//
+// Read-only is the default everywhere else; for `run` it defaults to applying, because watching it apply is
+// what somebody typing `../gradlew run` came for. Override with -Pclusterless.apply=false.
+def clusterlessStore = layout.buildDirectory.dir('clusterless-store').get().asFile
+def clusterlessApply = providers.gradleProperty('clusterless.apply').getOrElse('true')
+def clusterlessNodes = providers.gradleProperty('clusterless.nodes').getOrElse('1') as Integer
+def startNode = providers.gradleProperty('startNode').getOrElse('0') as Integer
+
+// A remote store for the run cluster, shared by every node in it.
+//
+// This is what makes a search replica possible: the server picks its segment replication source from the *node's*
+// attributes (SegmentReplicationSourceFactory -> isAssignedOnRemoteNode), and the alternative branch resolves the
+// primary through the local routing table, which a clusterless node's fabricated state does not contain. So a
+// replica that is not remote-backed has nowhere to read from. See RemoteStore.
+//
+// One directory for all nodes, deliberately: copies of a shard share a remote path, so every node holding one has
+// to be configured with the same repository. `fs` is a repository type and this is the run configuration, which is
+// the dev-wiring exception D6.2 allows -- no source file in the plugin names it.
+//
+// Defaults to on, because remote-store segment replication is the model this data plane is built for. If a node
+// fails to start with these attributes, -Pclusterless.remote_store=false restores a purely local node.
+def clusterlessRemoteStoreDir = layout.buildDirectory.dir('clusterless-remote-store').get().asFile
+def clusterlessRemoteStore = providers.gradleProperty('clusterless.remote_store').getOrElse('true') == 'true'
+// Segments in the repository, translog on local disk -- node.attr.remote_store.mode=segments_only, an upstream
+// attribute added for this architecture. Reasonable when the ingestion source holds every operation, and it costs
+// the ability to recover a primary from the remote store, so the data plane declines such a primary rather than
+// starting it empty over its own data. See RemoteRecovery.
+def clusterlessSegmentsOnly = providers.gradleProperty('clusterless.segments_only').getOrElse('false') == 'true'
+
+// Whether the run cluster's nodes also coordinate.
+//
+// The way to exercise milestone 8 on one machine today. A dedicated coordinator needs a second cluster, and two
+// RunTask invocations both claim 9200 and 9300 -- beforeStart() hardcodes them and overwrites whatever the build
+// file set -- so until RunTask can be told to offset its ports, `../gradlew runCoordinator` alongside `../gradlew
+// run` collides. See WORKING_NOTES.md.
+//
+// Colocating is not merely a workaround: OpenSearch's own default is that every node can coordinate, the tenant
+// roles are a set precisely so a node can be told it does both, and it exercises the union path CoordinatorState's
+// decorator exists for -- a routing table holding this node's own copies and every other node's. Off by default,
+// because turning it on means a search against a data node can now depend on reaching a peer, which is a real
+// change to how the existing run behaves.
+def clusterlessCoordinating = providers.gradleProperty('clusterless.coordinating').getOrElse('false') == 'true'
+
+// The file ingestion source, for exercising pull-based ingestion without Kafka.
+//
+// Kafka is the production source; `ingestion-fs` reads an ndjson file per shard and uses the line number as the
+// offset, which is everything a test needs and nothing more. It is an OpenSearch plugin rather than part of the
+// server, so the node has to have it installed -- without it a shard fails with "No factory found for ingestion
+// source type [FILE]", which is at least a clear failure.
+//
+// OpenSearch publishes it only as a jar -- org.opensearch.plugin:ingestion-fs, with no plugin zip beside it -- so
+// the zip is assembled here: that jar plus the plugin-descriptor.properties OpenSearch's own build generates for it.
+// The plugin has no dependencies and no security policy, so nothing else belongs in the zip. It is taken at the
+// OpenSearch version this plugin builds against, since a node refuses a plugin built for any other, and from the
+// same repositories as the server: a local OpenSearch change reaches it through publishToMavenLocal.
+//
+//   ../gradlew run -Pclusterless.ingestion=true
+def clusterlessIngestion = providers.gradleProperty('clusterless.ingestion').getOrElse('false') == 'true'
+
+configurations {
+    ingestionFs {
+        canBeConsumed = false
+        transitive = false
+    }
+}
+dependencies {
+    ingestionFs "org.opensearch.plugin:ingestion-fs:${opensearch_version}"
+}
+
+// The values OpenSearch's build writes for this plugin, from plugins/ingestion-fs/build.gradle.
+def ingestionFsDescriptor = tasks.register('ingestionFsDescriptor', WriteProperties) {
+    destinationFile = layout.buildDirectory.file('ingestion-fs/plugin-descriptor.properties')
+    property 'description', 'Pull-based ingestion plugin to read from local files for testing'
+    property 'version', opensearch_version
+    property 'name', 'ingestion-fs'
+    property 'classname', 'org.opensearch.plugin.ingestion.fs.FilePlugin'
+    property 'java.version', '21'
+    property 'opensearch.version', opensearch_version.tokenize('-')[0]
+    property 'custom.foldername', ''
+    property 'extended.plugins', ''
+    property 'has.native.controller', 'false'
+}
+def ingestionFsBundle = tasks.register('ingestionFsBundle', Zip) {
+    description = 'Assembles the ingestion-fs plugin zip that run -Pclusterless.ingestion=true installs'
+    archiveFileName = "ingestion-fs-${opensearch_version}.zip"
+    destinationDirectory = layout.buildDirectory.dir('ingestion-fs')
+    from configurations.ingestionFs
+    from ingestionFsDescriptor
+}
+def clusterlessIngestionDir = layout.buildDirectory.dir('clusterless-ingestion').get().asFile
+
+def runCluster = testClusters.maybeCreate('runTask')
+if (clusterlessNodes != 1) {
+  runCluster.numberOfNodes = clusterlessNodes
+}
+
+testClusters.all {
+    // This installs our plugin into the testClusters
+    plugin(project.tasks.bundlePlugin.archiveFile)
+
+    firstNodeIndex = startNode
+
+    setting 'clusterless.store', "file://${clusterlessStore}"
+    setting 'clusterless.node.pool', 'shared-a'
+    if (clusterlessCoordinating) {
+        setting 'clusterless.node.roles', 'data,coordinator'
+    }
+    setting 'clusterless.apply', clusterlessApply
+    // Shorter than the 5s default so that a person watching the log does not have to wait for it.
+    setting 'clusterless.heartbeat.interval', '2s'
+    setting 'clusterless.poll.interval', '1s'
+
+    if (clusterlessIngestion) {
+        // Only the plugin. The directory the source reads from is named per index, in
+        // index.ingestion_source.param.base_directory, so there is nothing node-wide to configure -- and nothing
+        // that would collide with the remote store's path.repo.
+        plugin(ingestionFsBundle.flatMap { it.archiveFile })
+    }
+
+    if (clusterlessRemoteStore) {
+        // An `fs` repository has to live under path.repo or FsRepository refuses the location.
+        setting 'path.repo', "${clusterlessRemoteStoreDir}"
+        // In the default mode RemoteStoreNodeAttribute demands all three repositories: naming a segment repository
+        // without a translog and a cluster-state one throws. All three point at one place, and the cluster-state
+        // one is never written to, because remote cluster state stays off -- there is no cluster state to publish.
+        setting 'node.attr.remote_store.segment.repository', 'segments'
+        if (clusterlessSegmentsOnly) {
+            // This mode requires the segment repository alone, and rejects a routing-table one.
+            setting 'node.attr.remote_store.mode', 'segments_only'
+        } else {
+            setting 'node.attr.remote_store.translog.repository', 'segments'
+            setting 'node.attr.remote_store.state.repository', 'segments'
+        }
+        setting 'node.attr.remote_store.repository.segments.type', 'fs'
+        setting 'node.attr.remote_store.repository.segments.settings.location', "${clusterlessRemoteStoreDir}"
+
+        // One WARN per second per search replica, from BlobContainer's default listBlobsByPrefixInSortedOrder:
+        // "loading all blobs with prefix into memory for sorting". FsBlobContainer does not override it, so the
+        // nudge to implement something better fires on every listing -- and a search replica lists once per refresh
+        // interval, which is exactly what we want it doing. A real blob store is the answer in production and this
+        // is not production.
+        //
+        // Quieted here rather than lived with, because a line per second is how real signals get missed -- the
+        // mistake this repository has made five times with its own logging. If you are ever wondering whether a
+        // search replica is really polling, remove this line and watch: the noise is the evidence.
+        setting 'logger.org.opensearch.common.blobstore.fs.FsBlobContainer', 'ERROR'
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// ../gradlew runCoordinator -- a node that holds no shards and routes to the ones that do.
+//
+// A separate cluster rather than an extra node in the run cluster, for two reasons. testClusters gives every node
+// in a cluster identical settings, and a coordinator needs a different `clusterless.node.roles`; and separate
+// processes are what the deployment will look like anyway, since coordinators belong on their own capacity --
+// their traffic and hardware are not a data node's.
+//
+// Nothing is lost by splitting them, because clusterless nodes do not form a cluster: they never discover each
+// other, the cluster name is not compared during a transport handshake ("We don't validate cluster names to allow
+// for CCS connections"), and everything they share they share through the store. So this cluster's nodes are peers
+// of the run cluster's in the only sense that matters.
+//
+//   ../gradlew run -Pclusterless.nodes=2      # terminal 1: the data nodes
+//   ../gradlew runCoordinator                 # terminal 2: something to query
+//
+// It needs the supervisor to assign the coordinator role, which nothing in that repository does yet --
+// FINDINGS_FROM_THE_DATA_PLANE.md item 4. Until then this node registers as a coordinator, is seen, and is given
+// nothing to serve.
+def coordinatorCluster = testClusters.maybeCreate('runCoordinator')
+if (clusterlessCoordinating == false) {
+    coordinatorCluster.setting 'clusterless.node.roles', 'coordinator'
+}
+
+tasks.register('runCoordinator', org.opensearch.gradle.testclusters.RunTask) {
+    useCluster coordinatorCluster
+    description = 'Runs a clusterless coordinator against the same store as ../gradlew run'
+    doFirst {
+        clusterlessStore.mkdirs()
+        logger.lifecycle("clusterless: coordinator, store at ${clusterlessStore}")
+    }
+}
+
+tasks.named('run') {
+    useCluster runCluster
+    doFirst {
+        clusterlessStore.mkdirs()
+        logger.lifecycle("clusterless: store at ${clusterlessStore}")
+        logger.lifecycle("clusterless: apply=${clusterlessApply}, nodes=${clusterlessNodes}"
+            + (clusterlessCoordinating ? ", every node also coordinates" : ""))
+        if (clusterlessIngestion) {
+            clusterlessIngestionDir.mkdirs()
+            logger.lifecycle("clusterless: file ingestion source installed, reading from ${clusterlessIngestionDir}")
+        }
+        if (clusterlessRemoteStore) {
+            clusterlessRemoteStoreDir.mkdirs()
+            logger.lifecycle("clusterless: remote store at ${clusterlessRemoteStoreDir} (shared by every node)"
+                + (clusterlessSegmentsOnly ? ", segments only -- no remote translog" : ""))
+        } else {
+            logger.lifecycle("clusterless: no remote store, so search replicas will be declined")
+        }
+    }
+}
+
+// Which store schemes a build actually resolves. D6.2 asks for a --help-equivalent diagnostic so that a
+// missing backend jar is distinguishable from a typo in the URI; this is the build-time half, and
+// StoreConnection produces the same list at runtime when a URI cannot be opened.
+tasks.register('schemes', JavaExec) {
+    group = 'verification'
+    description = 'Lists the key/value store schemes on this build\'s runtime classpath'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.opensearch.clusterless.store.StoreSchemes'
+}
+
+// The mains that tools/supervisor-sees-me.sh and tools/supervisor-assigns-me.sh run: the plugin's publisher and
+// poller, driven from a command line against a store, with no node. A source set of their own, so nothing they
+// need reaches the plugin's classpath or its zip. The server is compileOnly for a plugin -- a node provides it --
+// so here it comes from the compile classpath at runtime as well.
+sourceSets {
+    tools {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.compileClasspath + sourceSets.main.runtimeClasspath
+    }
+}
+
+// The scripts run the tools with a plain java rather than through Gradle, so each pass is a JVM start rather than a
+// build; this is the classpath they use.
+tasks.register('toolsClasspath') {
+    description = 'Compiles the command-line tools and writes their runtime classpath to build/tools/classpath.txt'
+    def classpath = sourceSets.tools.runtimeClasspath
+    def output = layout.buildDirectory.file('tools/classpath.txt')
+    inputs.files(classpath)
+    outputs.file(output)
+    doLast {
+        output.get().asFile.text = classpath.asPath
+    }
+}

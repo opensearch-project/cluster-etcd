@@ -1,0 +1,197 @@
+# Findings from the control plane
+
+Items the control plane (`../control-plane`) needs from this component, carried here by the user, in the form this
+directory's `FINDINGS_FROM_THE_DATA_PLANE.md` uses: what happened, why, where the code is, what a change must be
+careful about, and the tests worth having. Reply inline.
+
+---
+
+## 1. `status/cluster` needs a heartbeat, because a projection written only on change cannot show that it is stale
+
+> **Closed.** Done as asked, with `H` = 10 s.
+>
+> - `StatusProjector` rewrites `tenant/<t>/status/cluster` when its content changes **or** once 10 s have passed
+>   since it last wrote it, timed on the observation's clock, so at most one pass late. Every other projection stays
+>   write-on-change. The decision is per key, from the time of the last write beside the digest, as you suggested.
+> - **`heartbeat_ms`** is a new field in the document, so `T` can be derived rather than hardcoded. Your arithmetic
+>   holds with the defaults: 10 s + the 15 s lease TTL + a pass, so 45 s is a safe `T`. The TTL is not in the tenant's
+>   documents; it is in `supervisor/status/members/<id>` as `lease_ttl_millis` if you ever want it.
+> - **It is now written last.** It used to be written before `status/awareness` and before gone index and node
+>   documents were removed, so it did not quite vouch for the whole pass. Now it does, and the class says to keep it
+>   that way.
+> - Read-only mode and failed passes write nothing, so both read as stale; an absent document means not yet
+>   projected, and nothing deletes it deliberately. `SUPERVISOR_KEYS.md` states the guarantee and these cases under
+>   `status/cluster`, and corrects "can be rewritten every pass".
+> - **Cost**, as you worked out: 0.1 writes/s per tenant. `../kv-store/BACKENDS.md` gives the supervisor's load as
+>   `1.5 + P` writes/s, which now wants `+ 0.1 × tenants`; that document is the store's, so it is left for that
+>   session.
+>
+> Tests: an unchanged `status/cluster` is rewritten after 10 s and not at 8 s, with a newer `observed_at` and
+> the same content; a minute of quiet passes writes it six times and the index and node documents not at all;
+> within a pass it is the last write, after a gone index's document is removed; read-only still writes nothing.
+> All but the read-only test fail against the old projector.
+
+### What the control plane is doing
+
+The data plane now refuses `cluster.health` and `cluster.state` for a tenant and hands both to the control plane
+(`../control-plane/FINDINGS_FROM_THE_DATA_PLANE.md`, item 1). The control plane answers them from the projections
+in §1 of `SUPERVISOR_KEYS.md`, serving this service's figures as they are rather than recomputing them.
+
+That works only while there is a supervisor behind the figures. When there is none, upstream has a precise
+answer, and the control plane means to give it: a `cluster.health` request waits its `timeout` (30 s by default),
+then fails with `503 cluster_manager_not_discovered_exception`, and with `local=true` it answers red with
+`discovered_cluster_manager: false`. **Serving the last figures as current would be worse:** a tenant whose
+supervisor died with every index green would keep reading green while nothing was managing its pool.
+
+### Why the projections cannot say so today
+
+`observed_at` and `observed_pass` are documented as what "make staleness visible" (`SUPERVISOR_KEYS.md` §1, and
+the index projection's notes). They do not, because `StatusProjector` writes a projection **only when its content,
+minus those two fields, has changed** (`supervisor-core/.../core/StatusProjector.java`, `write` and
+`withoutTimestamps`). That is the right call for the per-index documents, for the write-amplification reason the
+class gives. But it applies to `status/cluster` too, so on a quiet, healthy tenant `observed_at` stops moving. A
+reader then sees the same thing whether the supervisor is healthy and nothing has changed, or the supervisor has
+been gone for an hour.
+
+`SUPERVISOR_KEYS.md` says `status/cluster` "can be rewritten every pass". That is true of its size, not of what the
+code does, and it is the sentence a reader would rely on.
+
+### What is asked
+
+**Rewrite `tenant/<t>/status/cluster` at least every `H` even when its content is unchanged**, with `observed_at`
+and `observed_pass` set to the current pass. Everything else stays write-on-change.
+
+The control plane would then treat `status/cluster` as stale when `now − observed_at > T`, and answer as upstream
+does with no cluster manager. It needs `H` stated as a guarantee to derive `T`:
+
+| | value | why |
+|---|---|---|
+| `H`, heartbeat | 10 s, every fifth pass | proposed; this side's to choose |
+| worst legitimate age | `H` + lease TTL + one pass = 10 + 15 + 2 = **27 s** | a supervisor dies just after a heartbeat; its pool is claimed after the TTL (`DESIGN.md`, "Failover"); the new owner's first pass writes everything, since its digest map starts empty |
+| `T`, control plane threshold | **45 s** | the worst legitimate age plus margin for clock skew between the two processes, which compare wall clocks |
+
+So a failover does not answer 503; a supervisor gone for longer than a failover takes does.
+
+**Cost.** One write of a ~300-byte document per tenant per `H`. At 10 s that is a tenth of a write per second per
+tenant, against today's budget of `1.5 + P` writes/s per supervisor (`../kv-store/BACKENDS.md`). A supervisor owning
+pools with a thousand tenants adds 100 writes/s, which is the number to weigh before choosing `H`. Per-index and
+per-node documents gain nothing.
+
+### What a change should be careful about
+
+- **The heartbeat vouches for the whole pass.** `project()` writes the index and node documents before
+  `status/cluster`, so a fresh `status/cluster` means everything else this pass computed has been written too. The
+  control plane will rely on that order and read the cluster document's freshness as the tenant's. Keep it, and say
+  so in the class.
+- **Only the lease holder writes it**, which the current placement inside `stillHoldsLease` already ensures. A pass
+  that throws publishes nothing, so a pool whose passes keep failing goes stale, which is the right answer: nothing
+  is managing it.
+- **Read-only mode publishes no projections**, so under a read-only supervisor every tenant reads as stale and
+  `cluster.health` answers 503. That is consistent with the class's stated choice, but worth a line where the
+  control plane can find it.
+- **A tenant no supervisor has projected yet has no `status/cluster` at all**: a new tenant, or one in an unbound
+  pool. The control plane will treat absent the same as stale. Nothing is needed here, but if this side ever
+  deletes `status/cluster` deliberately, the control plane needs to know.
+- **`H` and the lease TTL are configuration.** If either changes, `T` has to follow, so publishing `H` somewhere a
+  reader can see it, such as a field in `status/cluster` (`heartbeat_ms`), would let the control plane derive `T`
+  rather than hardcode it. Optional; a stated default is enough to start.
+- **The digest check must not be what skips the heartbeat.** The simplest correct shape is to keep, per key, the
+  time of the last write alongside the digest, and write `status/cluster` when the digest differs **or** the last
+  write is older than `H`.
+
+### Tests worth having
+
+- an unchanged `status/cluster` is rewritten once `H` has passed, with a newer `observed_at`, and not before;
+- an unchanged per-index document is still not rewritten, however long passes;
+- the write-count test's budget accounts for one heartbeat per tenant per `H`;
+- within one pass, `status/cluster` is written after every index and node document;
+- a read-only supervisor writes no `status/cluster`.
+
+---
+
+## 2. `cluster.state` cannot show `primary_terms`, because the terms are outside the tenant's key space
+
+> **Declined.** The primary term is the mechanism by which the system guarantees a single winner when two
+> copies both claim to be the primary, under push-based ingestion. A tenant has no use for it: in the intended
+> setup the system takes care of it and the tenant does not think about it. An operator who needs it can have an
+> operator-facing API, which is the place for it. So `cluster.state` omits `primary_terms` and `primary_terms_map`
+> by decision, not as a gap, and nothing is asked of this side. The finding stays below for the reasoning.
+
+### What the control plane does today
+
+`cluster.state` is composed from `status/indices/<uuid>`, `status/nodes/<id>` and the control plane's own
+documents (see its `README.md`, "Cluster state"). Checked end to end against this service's real projections, it
+agrees with a node's own serialisation of `ClusterState` on everything it renders. It leaves out
+`metadata.indices.<index>.primary_terms` and `primary_terms_map`, the one per-index field of any consequence that
+a client could plausibly read and that nothing here lets it fill in.
+
+The terms exist: `supervisor/terms/<tenant-id>/<index-uuid>` holds `{"shards": {"0": 3, ...}}`, the highest term
+issued per shard (`SUPERVISOR_KEYS.md`, `DESIGN.md` §28.6). But that key is in the root store, outside
+`tenant/<t>/`, and the control plane hands every handler a store confined to the requesting tenant. Reading it
+would mean a handler that can see the whole store, which is the thing that confinement exists to prevent.
+
+### What is asked
+
+**Copy the term map into the index projection** as a `primary_terms` field of `tenant/<t>/status/indices/<uuid>`:
+
+```json
+"primary_terms": { "0": 3, "1": 1 }
+```
+
+- **Same shape and meaning as the counter's `shards`**, written by the same lease holder in the same pass. The
+  control plane would render it as `primary_terms` and `primary_terms_map`, as a cluster state does.
+- **It changes only when a primary is placed**, so it does not make the document noisier. An index document that
+  is rewritten when placement changes is already rewritten then.
+- **Absent while no counter exists**, not `0` or `{}`: a new index has no term until its first primary is placed,
+  and the control plane will omit the field rather than invent one.
+- **Never used to decide anything on this side.** The counter stays the only source of truth, and the copy is a
+  read-only view of it, taken after the counter write that makes a new term real, so a projection never shows a
+  term the counter has not recorded.
+
+### What a change should be careful about
+
+- **Order within a pass.** The counter is written before any assignment carrying a new term, and the projection
+  is computed from the observation. Project the counter value that was current when the pass began, or the one it
+  wrote, but never one it merely intends to write.
+- **Size.** Eight bytes a shard, against the 512 KiB budget on this document.
+- **A counter that exists and does not parse** is left alone (`SUPERVISOR_KEYS.md`); the projection should omit
+  the field then, not fail the pass.
+
+### Tests worth having
+
+- a promotion advances the shard's term in the projection, and only that shard's;
+- an index with no primary yet has no `primary_terms`;
+- a pass that does not place a primary does not rewrite the document;
+- an unparseable counter leaves the rest of the projection written.
+
+---
+
+## 3. `SUPERVISOR_KEYS.md` says `liveness` can be `lost`, but a lost node is never published
+
+> **Open.** A wording fix, found while checking that `cluster.health` and `cluster.state` agree about nodes.
+
+`SUPERVISOR_KEYS.md` describes `status/nodes/<id>.liveness` as `live`, `stale` or `lost`, and tells a reader to
+treat every value but `lost` as reachable. `StatusComputation.nodeStatuses` skips any node whose
+`copiesCount()` is false, and that is exactly `liveness != LOST`, so a lost node's document is never written and
+one already written is reaped on the next pass. The same test keeps a lost node out of `placementsOf`, so its
+copies drop out of `status/indices` too.
+
+That is the right behaviour, and it is what lets the control plane's two operations agree: `number_of_nodes` in
+`status/cluster`, the node list in `cluster.state`, and the copies in `routing_table` all leave a lost node out
+together, and `cluster.health` reports the copies it held as unassigned. The control plane relies on it.
+
+What needs fixing is the sentence, which suggests a reader can see a `lost` node. Either say that the field is
+`live` or `stale` in practice and `lost` is reserved, or say that a lost node disappears from the subtree. Which
+is true should be stated so that nobody adds a `lost` branch to a reader on the strength of the current wording,
+and so that this stays true: **if a lost node were ever published, the three figures above would stop agreeing.**
+
+---
+
+## Where these came from
+
+Item 1 came from implementing `cluster.health` in the control plane. Checking how to detect a stale projection
+meant reading `StatusProjector`, which showed that `observed_at` stops moving whenever nothing changes.
+
+Items 2 and 3 came from implementing `cluster.state`. Item 3 began as a suspicion that lost nodes were counted
+in `number_of_nodes` while absent from the node list; reading `nodeStatuses` showed they are left out of both, and
+the finding is the wording that suggested otherwise.

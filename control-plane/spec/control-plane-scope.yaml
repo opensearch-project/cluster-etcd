@@ -1,0 +1,385 @@
+# Control plane scope definition.
+#
+# This file is the single place where "what is a control plane API?" is decided.
+# Everything is keyed by `x-operation-group` from the OpenSearch OpenAPI spec.
+#
+# The codegen enforces TOTAL coverage:
+#   * every namespace in the spec must appear in `excluded_namespaces` or `reviewed_namespaces`
+#   * within a reviewed namespace, every operation group must appear in
+#     `included_operations` or `excluded_operations`
+# Anything unclassified FAILS THE BUILD. That is deliberate: when you bump the
+# pinned spec and OpenSearch has added an API, you find out at build time rather
+# than silently not implementing it.
+#
+# The classification axis is NOT "control plane vs data plane" -- it is
+# "answerable from cluster state / metadata alone" vs "requires shard data or
+# node-local runtime". That distinction is what actually determines whether a
+# standalone service can serve the request.
+#
+# There is a SECOND axis, and this file does not yet encode it: tenant-owned vs
+# operator-owned. The first axis asks "can this service serve the request?"; the
+# second asks "may this caller make it?". An operation can be pure metadata,
+# finish inside its own request, and still not belong here, because what it
+# configures is a fact about the hardware -- `zone` is a rack in a building, which
+# a tenant neither knows nor paid for. Vanilla needs no marker for this, since it
+# assumes one party runs and uses the cluster: one flat `cluster.*` namespace with
+# two owners, so an unclassified setting lands wherever it was first implemented.
+# Classify anything new on BOTH axes before wiring it. The rule is
+# ../supervisor/DESIGN.md section 25; the sweep of this surface --
+# including the three cluster.*_decommission_awareness groups below, which are
+# included today for a difficulty reason and look operator-owned -- is in
+# docs/tenants-and-operators.md.
+#
+# One thing the second axis does NOT decide, and this file cannot express: for a
+# resource that names a neighbouring service or cloud infrastructure -- a snapshot
+# repository, an ingestion source -- ownership belongs to the individual
+# registration rather than to the operation. An operator's backup bucket and a
+# tenant's own bucket are both registered through snapshot.create_repository. So
+# those operations stay in scope, and the ownership question moves to the resources
+# they write. Same document.
+
+# ---------------------------------------------------------------------------
+# The OpenSearch version this service claims to be.
+#
+# Two things follow from it, and they must not drift apart:
+#   * the route table only includes operations and parameters available at this version, judged by
+#     x-version-added / x-version-removed in the spec
+#   * GET / reports it as version.number
+#
+# Codegen emits it as GeneratedRoutes.TARGET_OPENSEARCH_VERSION and ClusterIdentity reads it from
+# there, so there is one value rather than two that can disagree. Changing it here changes both, and
+# is a real decision: clients gate features on the reported version, and the spec repo's test harness
+# uses it to decide which stories apply.
+# ---------------------------------------------------------------------------
+target_opensearch_version: '3.9.0'
+
+# ---------------------------------------------------------------------------
+# Namespaces excluded wholesale. Value is the reason (shown in the scope report).
+# ---------------------------------------------------------------------------
+excluded_namespaces:
+  list: "paginated cat-style tabular output; shares cat's table rendering, which exists now, but adds pagination; deferred"
+  security: "requires an authn/authz backend and the security config index; deferred"
+
+  nodes: "per-node runtime state; a standalone control plane has no data nodes to report on"
+  remote_store: "shard-level remote store restore; data plane"
+
+  # The control plane DOES own task management: it initiates clone/shrink/split/
+  # rollover, hands the shard work to the data plane, and owns retries and
+  # cleanup. So the _tasks API is squarely in scope conceptually -- it is deferred
+  # only because exposing it compatibly needs a decision first. OpenSearch task
+  # IDs are {node_id}:{task_num} and are enumerated per-node via the transport
+  # layer; a standalone control plane has no node IDs to put there. Bring this in
+  # once the task identity and persistence model is settled.
+  tasks: "deferred pending the task identity model, not because it is out of scope"
+
+  # Dangling indices are excluded on principle rather than on layering: these
+  # operations ARE control-plane-shaped, and we still do not want them.
+  #
+  # A dangling index is one whose data exists on a node but whose metadata is
+  # absent from cluster state -- the two sources of truth having diverged. The API
+  # exists to reconcile that by hand. In this architecture index metadata lives in
+  # the shared store and nodes derive their configuration from it, so there is only
+  # one source of truth and no way for the two to disagree. If a dangling index
+  # ever appears here, the distributed system is incorrect and the answer is to fix
+  # it, not to offer an API for importing the wreckage.
+  #
+  # Implementing these would mean building the divergence they assume, and giving
+  # operators a tool whose existence implies the model is unsound.
+  dangling_indices: "their existence would mean our model is broken; reconciling by hand is not a feature we want"
+
+  # Control-plane-shaped, but plugin-provided. Flip these to reviewed_namespaces
+  # once the core namespaces land -- they are the natural phase 2.
+  ism: "index management plugin; control-plane-shaped, enable after core namespaces land"
+  sm: "snapshot management plugin; control-plane-shaped, enable after core namespaces land"
+  rollups: "index management plugin; control-plane-shaped, enable after core namespaces land"
+  transforms: "index management plugin; control-plane-shaped, enable after core namespaces land"
+  wlm: "workload management query groups; control-plane-shaped, enable after core namespaces land"
+  query: "SQL/PPL datasource config from the sql plugin; enable after core namespaces land"
+
+  # Plugin-provided and not control plane.
+  ml: "ml-commons plugin; model lifecycle is its own control plane, out of scope"
+  ltr: "learning-to-rank plugin; not core control plane"
+  search_relevance: "search relevance plugin; not core control plane"
+  flow_framework: "flow framework plugin; not core control plane"
+  knn: "k-NN plugin; mixes model training with shard-level stats"
+  neural: "neural search plugin; data plane"
+  geospatial: "geospatial plugin; data plane"
+  security_analytics: "security analytics plugin; not core control plane"
+  observability: "observability plugin; stores objects in its own index"
+  notifications: "notifications plugin; not core control plane"
+  sql: "sql plugin; data plane"
+  ppl: "ppl plugin; data plane"
+  ubi: "user behavior insights plugin; data plane"
+  insights: "query insights plugin; runtime query statistics"
+  asynchronous_search: "asynchronous search plugin; data plane"
+  replication: "cross-cluster replication plugin; requires the remote cluster data path"
+
+# ---------------------------------------------------------------------------
+# Namespaces where every operation group is individually classified below.
+# ---------------------------------------------------------------------------
+reviewed_namespaces:
+  - _core
+  - indices
+  - cluster
+  - ingest
+  - ingestion
+  - snapshot
+  - search_pipeline
+  - cat
+
+# ---------------------------------------------------------------------------
+# In scope. These get a generated route and a handler slot.
+# ---------------------------------------------------------------------------
+included_operations:
+  # -- _core: only the bits backed by cluster state, plus the two probes that
+  #    every client library calls before anything else.
+  - info
+  - ping
+  - get_script
+  - put_script
+  - delete_script
+  - get_script_context
+  - get_script_languages
+
+  # -- ingestion: *controlling* pull-based ingestion, not performing it.
+  #    Ingesting documents is the data plane's. Deciding whether a shard should be consuming, and
+  #    from where, is a metadata write that finishes in its own request -- the same shape as
+  #    indices.close. The data plane picks the change up through the supervisor.
+  - ingestion.pause
+  - ingestion.resume
+
+  # -- indices: index and template metadata.
+  - indices.create
+  - indices.delete
+  - indices.exists
+  - indices.get
+  - indices.open
+  - indices.close
+  - indices.add_block
+  - indices.resolve_index
+  # aliases
+  - indices.get_alias
+  - indices.put_alias
+  - indices.delete_alias
+  - indices.exists_alias
+  - indices.update_aliases
+  # mappings and settings
+  - indices.get_mapping
+  - indices.put_mapping
+  - indices.get_field_mapping
+  - indices.get_settings
+  - indices.put_settings
+  # legacy templates
+  - indices.get_template
+  - indices.put_template
+  - indices.delete_template
+  - indices.exists_template
+  # composable index templates
+  - indices.get_index_template
+  - indices.put_index_template
+  - indices.delete_index_template
+  - indices.exists_index_template
+  - indices.simulate_template
+  - indices.simulate_index_template
+  # data streams
+  - indices.create_data_stream
+  - indices.get_data_stream
+  - indices.delete_data_stream
+  # rollover. In scope but DEFERRED, and deliberately not yet designed.
+  #
+  # The control plane's part is the short-lived half: validate, create the target
+  # index metadata, register a task. The copy itself and the task lifecycle --
+  # retries, leases, cleanup -- belong to the management plane, not here. (An
+  # earlier version of this comment claimed the control plane owned that
+  # lifecycle; it does not. See the README's plane table.)
+  #
+  # Deferred because this is one of the operations most likely to look different in
+  # this architecture rather than the same, and reproducing OpenSearch's shape before
+  # deciding what it should be would bake in the old one. Revisit when the
+  # management plane exists to design against.
+  #
+  # Its three former companions -- clone, shrink, split -- have left the tenant
+  # surface on the ownership axis; see excluded_operations. Rollover stays because it
+  # is index lifecycle rather than shard-count surgery: a tenant deciding that
+  # today's data goes in a new backing index is a statement about their own data, and
+  # it needs no hardware anyone has to provision.
+  - indices.rollover
+
+  # -- cat: the four that the data plane refuses for a tenant, because each calls cluster.health or
+  #    cluster.state internally, so they have nowhere else to be answered. The tables are views of
+  #    the same documents those two read. The rest of the namespace is classified below.
+  - cat.health
+  - cat.indices
+  - cat.shards
+  - cat.nodes
+
+  # -- cluster: cluster state, settings, component templates, coordination.
+  - cluster.health
+  - cluster.state
+  - cluster.pending_tasks
+  - cluster.remote_info
+  - cluster.get_settings
+  - cluster.put_settings
+  - cluster.get_component_template
+  - cluster.put_component_template
+  - cluster.delete_component_template
+  - cluster.exists_component_template
+  - cluster.get_decommission_awareness
+  - cluster.put_decommission_awareness
+  - cluster.delete_decommission_awareness
+  - cluster.get_weighted_routing
+  - cluster.put_weighted_routing
+  - cluster.delete_weighted_routing
+
+  # -- ingest: pipeline definitions live in cluster state.
+  - ingest.get_pipeline
+  - ingest.put_pipeline
+  - ingest.delete_pipeline
+  - ingest.processor_grok
+
+  # -- snapshot: repository and snapshot lifecycle.
+  - snapshot.create_repository
+  - snapshot.get_repository
+  - snapshot.delete_repository
+  - snapshot.verify_repository
+  - snapshot.cleanup_repository
+  - snapshot.create
+  - snapshot.get
+  - snapshot.delete
+  - snapshot.clone
+  - snapshot.restore
+  - snapshot.status
+
+  # -- search pipelines: definitions live in cluster state.
+  - search_pipeline.get
+  - search_pipeline.put
+  - search_pipeline.delete
+
+# ---------------------------------------------------------------------------
+# Out of scope, with the reason. Value is shown in the scope report.
+# ---------------------------------------------------------------------------
+excluded_operations:
+  # -- cat: the rest of the namespace. The table machinery exists now, so the first group is a matter of
+  #    adding a handler; they wait for a reason to, not for a design.
+  cat.aliases: "answerable from alias documents; not yet needed, add with the table machinery already in place"
+  cat.templates: "answerable from template documents; not yet needed"
+  cat.repositories: "answerable from repository documents; not yet needed"
+  cat.pending_tasks: "answerable from task records; not yet needed"
+  cat.nodeattrs: "answerable from status/nodes; not yet needed"
+  cat.master: "there is no elected cluster manager to report; the table would always be empty"
+  cat.cluster_manager: "there is no elected cluster manager to report; the table would always be empty"
+  cat.help: "lists the cat endpoints; not yet needed"
+  cat.count: "a document count, which nothing projects yet; see FINDINGS_FROM_THE_CONTROL_PLANE.md in the data plane"
+  cat.allocation: "per-node disk usage, which is operator-facing and not projected into a tenant's key space"
+  cat.recovery: "shard recovery progress, node-local runtime"
+  cat.segments: "shard-level segment statistics"
+  cat.segment_replication: "shard-level replication statistics"
+  cat.fielddata: "node-local heap usage"
+  cat.thread_pool: "node-local runtime"
+  cat.plugins: "per-node installed plugins; operator-facing"
+  cat.tasks: "deferred with the tasks namespace, pending the task identity model"
+  cat.snapshots: "snapshot data, which belongs to another plane"
+  cat.pit_segments: "point-in-time readers are data plane"
+  cat.all_pit_segments: "point-in-time readers are data plane"
+
+  # -- _core: the data plane.
+  search: "data plane"
+  search_shards: "requires shard routing table and allocation state"
+  search_template: "data plane"
+  msearch: "data plane"
+  msearch_template: "data plane"
+  render_search_template: "requires the mustache scripting engine"
+  count: "data plane"
+  explain: "data plane"
+  field_caps: "requires field mappings resolved across shards"
+  rank_eval: "data plane"
+  scroll: "data plane"
+  clear_scroll: "data plane"
+  create_pit: "data plane"
+  get_all_pits: "data plane"
+  delete_pit: "data plane"
+  delete_all_pits: "data plane"
+  index: "data plane"
+  create: "data plane"
+  get: "data plane"
+  exists: "data plane"
+  get_source: "data plane"
+  exists_source: "data plane"
+  update: "data plane"
+  delete: "data plane"
+  bulk: "data plane"
+  bulk_stream: "data plane"
+  mget: "data plane"
+  termvectors: "data plane"
+  mtermvectors: "data plane"
+  reindex: "data plane"
+  reindex_rethrottle: "data plane"
+  delete_by_query: "data plane"
+  delete_by_query_rethrottle: "data plane"
+  update_by_query: "data plane"
+  update_by_query_rethrottle: "data plane"
+  scripts_painless_execute: "requires the painless execution engine"
+
+  # -- indices: needs shards or node-local runtime.
+  indices.analyze: "requires the analysis chain runtime"
+  indices.validate_query: "requires the query parsing and shard runtime"
+  indices.stats: "shard-level runtime statistics"
+  indices.segments: "shard-level Lucene segment state"
+  indices.recovery: "shard recovery runtime"
+  indices.shard_stores: "shard store state on data nodes"
+  indices.data_streams_stats: "shard-level runtime statistics"
+  indices.refresh: "shard-level operation"
+  indices.flush: "shard-level operation"
+  indices.forcemerge: "shard-level Lucene merge"
+  indices.clear_cache: "node-local cache state"
+  indices.upgrade: "shard-level Lucene upgrade; deprecated in OpenSearch"
+  indices.get_upgrade: "shard-level Lucene upgrade; deprecated in OpenSearch"
+
+  # -- indices: resize. Excluded on the OWNERSHIP axis, not because they need shards.
+  #
+  # Decided 2026-09-21: tenants cannot call these directly. They are operator-initiated,
+  # whether a human operator or the autoscaling service. Two reasons, and the second is
+  # the one that generalises:
+  #
+  #   * shrink and split are heavy, and this system intends to run them on hardware
+  #     provisioned for the purpose rather than on nodes serving queries. Whether an
+  #     operator or the autoscaler schedules that is an implementation detail; that it is
+  #     scheduled rather than triggered by whoever asked is not.
+  #   * shard count is supply, not demand -- see docs/tenants-and-operators.md. Once the
+  #     autoscaler can split a live index, shard count is a value the system chooses and
+  #     revises, and an API letting a tenant set it directly competes with that.
+  #
+  # A tenant that wants a split still gets one: they ask, and it runs as an
+  # operator-initiated operation. What is removed is the direct trigger, not the outcome.
+  # Note this means there is no route at all rather than a 501, so the answer is the
+  # generic 400 no-handler; see the README on why a helpful message would need a surface
+  # that does not exist yet.
+  #
+  # Rollover stays IN scope -- index lifecycle rather than shard-count surgery.
+  indices.clone: "operator-initiated: shard-count surgery is supply, not the tenant's demand"
+  indices.shrink: "operator-initiated: heavy, and wants hardware provisioned for it"
+  indices.split: "operator-initiated: heavy, and wants hardware provisioned for it"
+
+  # -- cluster: needs the routing table or node runtime.
+  cluster.reroute: "operates on the shard routing table"
+  cluster.allocation_explain: "requires the allocation deciders and routing table"
+  cluster.stats: "aggregates per-node runtime statistics"
+
+  # Voting config exclusions manage the cluster-manager quorum. This control plane is a stateless
+  # service -- it holds no state outside the data store and scales by running more instances -- so
+  # there is no quorum of its own to manage; whatever consensus exists belongs to etcd or DynamoDB.
+  # Implementing these faithfully is not possible, and pretending would be worse than a clear error.
+  # Listed under "Considered divergences" in the README, since it is observable: a real cluster
+  # answers 200 where this service answers 400 with no handler found.
+  cluster.post_voting_config_exclusions: "no cluster-manager quorum exists in a stateless control plane"
+  cluster.delete_voting_config_exclusions: "no cluster-manager quorum exists in a stateless control plane"
+
+  # -- ingest
+  ingest.simulate: "requires the ingest processor execution engine"
+
+  # -- ingestion: pausing and resuming are metadata writes and are in scope. Reading back the state
+  # is not: every field ShardIngestionState carries is per-shard runtime -- poller_state,
+  # poller_paused, batch_start_pointer, error_policy, is_primary, and the node holding the shard --
+  # and the response pages over shards. None of it exists in metadata. Blocked on the same data plane
+  # projection as cluster.health, and listed under "Still unverified" in the README for the same reason.
+  ingestion.get_state: "reports per-shard poller runtime, which metadata does not contain"

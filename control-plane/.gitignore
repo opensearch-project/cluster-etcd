@@ -1,0 +1,30 @@
+build/
+.gradle/
+out/
+bin/
+
+# Default --data-path for the filesystem store.
+data/
+
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+.DS_Store
+*.log
+*.hprof
+
+# Generated from a specific data plane, so deployment-specific rather than source.
+capabilities.yaml
+capabilities.json
+settings_registry.yaml
+settings_registry.json

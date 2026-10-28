@@ -1,0 +1,7 @@
+build/
+.gradle/
+*.class
+.DS_Store
+
+# Editor swap files
+*.swp
