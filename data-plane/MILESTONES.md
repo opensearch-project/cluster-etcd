@@ -445,6 +445,20 @@ Four things about the shape, each of which was a mistake avoided rather than a p
   the direction that loses data.
 - **`UNKNOWN` is not `EMPTY`.** An unreachable repository and an empty one are the same silence and opposite facts.
 
+**A correction, 2026-11-05: the probe deleted what it found.** It closed the `RemoteSegmentStoreDirectory` it built, and
+`close()` is a purge, not a release. It runs `deleteStaleSegmentsAsync(0)`, deleting every metadata file without a lock,
+the latest included, and then `deleteIfEmpty()`, which deletes the shard's whole remote directory if nothing locked is
+left. The E2d spike found it (its `FINDING_FOR_DATA_PLANE.md`, item 2), with a live writer whose next upload then named
+12 deleted blobs. On a declined copy (`segments_only`, no remote translog) the next pass's probe would find nothing and
+start the shard from an empty store.
+- **Fixed:** the directory is no longer closed; the server closes one only when the index is deleted, and
+  `RemoteDirectory.close()` holds nothing to release.
+- **Verified:** `RepositoryRemoteShardDataTests` runs the probe against a real `fs` repository under an uploading primary
+  and finds every metadata and data file still there. Before the fix it failed with every metadata file gone.
+- **Not known:** how the real-node run above survived it. Its `REMOTE_STORE` recovery started after a probe that had
+  queued the purge, and either won the race or found the files locked. That run should not be read as evidence the
+  probe was harmless.
+
 **Segments without a remote translog is a supported configuration, and it cannot use this path.**
 `REMOTE_STORE` recovery restores through the remote translog — `syncTranslogFilesFromRemoteTranslog` asserts its
 factory is the remote one, and that factory is chosen by `isRemoteTranslogStoreEnabled()`, true exactly when
