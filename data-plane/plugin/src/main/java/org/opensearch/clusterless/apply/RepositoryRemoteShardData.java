@@ -40,7 +40,7 @@ import java.util.function.Supplier;
  * </ul>
  *
  * <p>{@code init()} returns the latest metadata, or null when nothing has ever been uploaded — which is exactly
- * the question. Anything thrown is {@link Answer#UNKNOWN}: unreachable is not empty, and this class never
+ * the question. It reads and writes nothing else. The directory is deliberately not closed; see {@link #probe}. Anything thrown is {@link Answer#UNKNOWN}: unreachable is not empty, and this class never
  * pretends it is.
  */
 public final class RepositoryRemoteShardData implements RemoteShardData {
@@ -75,14 +75,19 @@ public final class RepositoryRemoteShardData implements RemoteShardData {
                 threadPool,
                 segmentsPathFixedPrefix
             );
-            try (
+            try {
+                // Never closed, and that is the point: close() is not a release, it is a purge. It runs
+                // deleteStaleSegmentsAsync(0), which deletes every metadata file without a lock, the latest included,
+                // and then deleteIfEmpty(), which deletes the shard's whole remote directory if nothing locked is left.
+                // Closing this deleted a live primary's uploads, and on a declined copy the next pass's probe then found
+                // nothing and started the shard empty. The server closes a shard's remote directory only when the index
+                // is deleted. Nothing is held open here: the directory is blob-store handles and in-memory maps.
                 RemoteSegmentStoreDirectory directory = (RemoteSegmentStoreDirectory) factory.newDirectory(
                     repository,
                     shardId.getIndex().getUUID(),
                     shardId,
                     new RemoteStorePathStrategy(RemoteStoreEnums.PathType.FIXED)
-                )
-            ) {
+                );
                 boolean hasData = directory.init() != null;
                 logger.debug("clusterless: [{}] {} data for {}", repository, hasData ? "holds" : "holds no", shardId);
                 return hasData ? Answer.HAS_DATA : Answer.EMPTY;
