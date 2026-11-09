@@ -69,34 +69,34 @@ Ownership decisions already made. Don't reopen them without a reason:
   `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE` must stay `/var/run/docker.sock`. The reason is in `WORKING_NOTES.md`;
   the wrong setting looks more correct.
 
-## Where things stand (2026-10-07)
+## Where things stand (2026-11-09)
 
-**Last landed:** control plane finding 1: `status/cluster` is rewritten on a 10 s heartbeat and written last in its
-tenant's pass, so the control plane can tell an unmanaged tenant from a quiet one. Findings from the control plane now
-arrive in `FINDINGS_FROM_THE_CONTROL_PLANE.md`, answered in place like the data plane's. Before that: the
-`status/nodes` reading-side check, and findings 12 and 13, both closed on both sides. Allocation ids and the in-sync set are carried
-from the inventory into `status/indices` for document replication, `Promoter` promotes only a replica the lost
-primary last called in sync (`DESIGN.md` §28.10), `fake-node` publishes both, and the conformance suite gained
-`readIndexStatus`, a reading-side check of `status/indices`. An index that does not state its replication type is
-`DOCUMENT`, as in OpenSearch. Before that: the review fixes for the PR that published v2, and primary terms and
-promotion (§27–28, finding 11).
+**Last landed:** fixes from the review of v2 as it goes upstream. A docrep shard whose only started copy is on a
+lost, unreaped node waits for it rather than getting an empty primary (§28.11). An unreadable or closed index's
+copies are not reaped. A copy already withdrawn does not count as surplus. A write whose answer was lost (the store's
+`OutcomeUnknownException`) is settled by reading back for a lease, and treated as not landed inside a pass. Before
+that: the docrep drain as a primary relocation (§29.9–29.12), with the data plane's half (`0223ac8`); control plane
+finding 1, the `status/cluster` heartbeat; the `status/nodes` reading-side check; data plane findings 12 and 13
+(allocation ids and the in-sync set, §28.10); and primary terms and promotion (§27–28, finding 11).
 
 **Open threads, roughly in priority order:**
 
-1. **Build the docrep drain as a primary relocation** (`DESIGN.md` §29.9). The wire format is in the model and the
-   projection, and both sides pass the conformance suite's four reading-side checks. The data plane reads the fields
-   but does not declare `primary_relocation`, and defers a relocation with a reason if sent one; building the
-   relocating pair is its next piece (`03b97d1`). The deployment reader is built (§29.10),
-   and a deployment now keeps new work off the nodes it covers (§29.11): placement, rebalancing, reaping and promotion.
-   `RelocatePrimary` is built (§29.12) and works end to end against `fake-node`; the data plane is building its half.
-   Next on this side: the `reached` status, a returning drain's replicas counted until `until`, `draining` in
-   `status/nodes`, and segment replication's handoff. `fake-node` reports what it
-   parses but performs no relocation; it will need to, to test `RelocatePrimary` end to end.
+1. **Finish drains** (`DESIGN.md` §29). Built: the deployment reader (§29.10), keeping new work off the nodes a
+   deployment covers (§29.11: placement, rebalancing, reaping and promotion), and `RelocatePrimary` (§29.12), which
+   moves a docrep primary off a draining node. Both ends of a relocation are built: `fake-node` performs them, and the
+   data plane builds the relocating pair and declares `primary_relocation` (`0223ac8`). So the supervisor relocates
+   real nodes' primaries now, though that has not yet been run against real nodes. Next on this side: the `reached`
+   status (and `DEPLOYMENT_OVERDUE`), a returning drain's replicas counted until `until`, `draining` in
+   `status/nodes`, segment replication's handoff, and `supervisor-app` commands that write deployment documents and
+   enforce the transition table.
 2. **The rest of §28:** `retain_remote_history` and `abandon_remote_terms`, and the upstream search-replica pin
    (§27.3). None of it is built. The scoped metadata lock (§27.5) is no longer needed by anything planned, since
    dual-runs are for dedicated pools only (§29.4).
-3. **No way to promote an out-of-sync replica on purpose.** With no in-sync replica left, a docrep shard stays
-   without a primary; OpenSearch has `allocate_stale_primary` for this, and nothing here does.
+3. **No way to promote an out-of-sync replica, or start an empty primary, on purpose.** With no in-sync replica
+   left, a docrep shard stays without a primary; OpenSearch has `allocate_stale_primary` for this, and nothing here
+   does. The same holds while a lost, unreaped node has the shard's only started copy (§28.11); the only override is
+   deleting that node's documents. The complete rule needs a per-shard record that a primary has started, kept under
+   `supervisor/` beside the term counter, and an explicit operator instruction to place an empty primary.
 4. **Two projections still read the configured copy count rather than the authorised one:** `Differ` and
    `StatusComputation` (§15.2). Health is per shard now, but within a shard copies are not counted by role.
 5. **Long-standing:** R5.3 snapshot metadata, cross-pool migration, the dedicated-pool ceiling, rollover, an

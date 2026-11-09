@@ -108,6 +108,64 @@ class PromotionTests {
     }
 
     @Test
+    void aLostPrimaryWithNoReplicaIsWaitedForRatherThanReplacedByAnEmptyOne() {
+        // The review finding. With nothing to promote, the allocator placed an empty primary on C at a new term, and
+        // when A came back its copy was dropped as superseded: every write the shard held was gone. OpenSearch waits
+        // here for the in-sync copy, and so does this, until the node returns or its documents are deleted.
+        Observation observation = observe(index(1, 0, Replication.DOCUMENT), counter(Map.of(0, 2L), 3),
+            Node.of(A).holding(0, ShardRole.PRIMARY).told(0, ShardRole.PRIMARY, 2).lost(),
+            Node.of(C).declaringPrimaryTerms());
+
+        Plan plan = plan(observation);
+
+        assertTrue(plan.instructions().isEmpty(), "no empty primary on C: " + plan.instructions());
+        String refusal = refusalFor(plan, observation);
+        assertTrue(refusal.contains(A.value()) && refusal.contains("lost but not reaped"), refusal);
+    }
+
+    @Test
+    void aLostReplicaHoldingTheLastDataIsWaitedForToo() {
+        // The primary's node reported nothing before it was lost, and the replica's node is lost as well. The replica
+        // cannot be promoted, since its node cannot be shown to apply anything, but its copy is still the data.
+        Observation observation = observe(index(1, 1, Replication.DOCUMENT), counter(Map.of(0, 2L), 3),
+            Node.of(A).told(0, ShardRole.PRIMARY, 2).lost(),
+            Node.of(B).holding(0, ShardRole.REPLICA).told(0, ShardRole.REPLICA, 2).declaringPrimaryTerms().lost(),
+            Node.of(C).declaringPrimaryTerms());
+
+        Plan plan = plan(observation);
+
+        assertTrue(plan.instructions().isEmpty(), "no empty primary on C: " + plan.instructions());
+        assertTrue(refusalFor(plan, observation).contains(B.value()), refusalFor(plan, observation));
+    }
+
+    @Test
+    void aLostPrimaryThatNeverReportedACopyIsStillReplaced() {
+        // The boundary: nothing says a copy ever started, as when a first primary's node dies before reporting it, and
+        // refusing here would leave the index without a primary until the node was reaped.
+        Observation observation = observe(index(1, 0, Replication.DOCUMENT), counter(Map.of(0, 2L), 3),
+            Node.of(A).told(0, ShardRole.PRIMARY, 2).lost(),
+            Node.of(C).declaringPrimaryTerms());
+
+        Plan plan = plan(observation);
+
+        assertEquals(1, plan.instructions().size(), plan.instructions().toString());
+        assertEquals(C, ((Instruction.PlaceCopy) plan.instructions().get(0)).node());
+    }
+
+    @Test
+    void aLostSegmentReplicationPrimaryIsReplacedEvenWhenItHadACopy() {
+        // Its replacement restores from the remote store, so the lost node's copy is not the only one.
+        Observation observation = observe(index(1, 0, Replication.SEGMENT), counter(Map.of(0, 2L), 3),
+            Node.of(A).holding(0, ShardRole.PRIMARY).told(0, ShardRole.PRIMARY, 2).lost(),
+            Node.of(C));
+
+        Plan plan = plan(observation);
+
+        assertEquals(1, plan.instructions().size(), plan.instructions().toString());
+        assertEquals(C, ((Instruction.PlaceCopy) plan.instructions().get(0)).node());
+    }
+
+    @Test
     void anUnreadableCounterStopsAnyPrimaryBeingPlacedForItsIndex() {
         Observation observation = observe(index(1, 0, Replication.SEGMENT), unreadableCounter(),
             Node.of(A).told(0, ShardRole.PRIMARY, 3).lost(),

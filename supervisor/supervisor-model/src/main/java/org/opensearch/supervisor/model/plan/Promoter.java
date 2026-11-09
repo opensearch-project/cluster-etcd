@@ -49,6 +49,13 @@ import java.util.Set;
  * published a set and no started replica is in it, nothing is promoted and nothing is placed: the shard is reported,
  * because an empty primary would make every replica recover from it. When it never published one, any started replica
  * may be promoted, as before.
+ *
+ * <p><b>No replica to promote is not permission to start from nothing</b> (DESIGN.md §28.11). When a started copy of the
+ * shard survives on a node that is lost but not yet reaped, it is still the shard's data, and nothing is placed: a
+ * fresh primary would take a new term, and the copy would be dropped as superseded when its node came back. OpenSearch
+ * waits in the same place, placing an existing shard's primary only on an in-sync copy, and an empty one only when an
+ * operator asks. The reaper never removes a node holding the only started copy, so the evidence lasts until the node
+ * returns or an operator deletes its documents, which is how the copy is given up today.
  */
 final class Promoter {
 
@@ -138,6 +145,20 @@ final class Promoter {
                 + " missing acknowledged writes, so promoting one could lose them silently, and placing an empty primary"
                 + " instead would make them recover from it and discard their data; this shard stays without a primary"
                 + " until the lost primary returns or an in-sync replica does");
+        }
+
+        List<NodeId> survivors = new ArrayList<>();
+        for (Map.Entry<NodeId, Observation.NodeObservation> entry : observation.nodes().entrySet()) {
+            ShardInventory.ShardCopy copy = copyOf(entry.getValue(), tenant, index, shard);
+            if (entry.getValue().copiesCount() == false && copy != null && copy.state() == ShardState.STARTED) {
+                survivors.add(entry.getKey());
+            }
+        }
+        if (survivors.isEmpty() == false) {
+            return new Outcome(null, "a started copy of this shard survives on " + sorted(survivors) + ", lost but not"
+                + " reaped, and no replica can be promoted; an empty primary placed elsewhere would take a new term and"
+                + " that copy would be dropped as superseded when its node returned, so this shard waits for the node,"
+                + " or for an operator to give the copy up by deleting the node's documents");
         }
         return Outcome.none();
     }
