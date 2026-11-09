@@ -1716,6 +1716,45 @@ class ActingTests {
     }
 
     @Test
+    void aLostDocumentReplicationPrimaryWithNoReplicaKeepsItsDataForWhenItReturns() {
+        // DESIGN.md §28.11. With no replica to promote, an empty primary used to be placed on B at a new term, and A's
+        // copy was dropped as superseded when it came back. Now the shard waits, and A comes back to it as primary.
+        FakeNode a = nodeDeclaringTerms(NODE);
+        FakeNode b = nodeDeclaringTerms(NODE_B);
+        a.start();
+        createDocrepIndex(1, 0);
+        Supervisor supervisor = acting("s1");
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            a.tick();
+            advance();
+        }
+        assertEquals(ShardRole.PRIMARY, roleHeldBy(a, 0));
+        long before = counterFor(0);
+
+        b.start();
+        for (int pass = 0; pass < 70; pass++) {
+            supervisor.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(0, b.inventory().copyCount(), "no empty primary on B");
+        assertEquals(before, counterFor(0), "and no new term");
+        var unassigned = supervisor.lastDiffOf(POOL).of(FindingKind.UNASSIGNED_PRIMARY);
+        assertEquals(1, unassigned.size(), supervisor.lastDiffOf(POOL).findings().toString());
+        assertTrue(store.get(Keys.nodeRegistration(NODE)).isPresent(), "and A is not reaped");
+
+        for (int pass = 0; pass < 8; pass++) {
+            supervisor.tick();
+            a.tick();
+            b.tick();
+            advance();
+        }
+        assertEquals(ShardRole.PRIMARY, roleHeldBy(a, 0), "A came back to its own data");
+        assertTrue(supervisor.lastDiffOf(POOL).of(FindingKind.UNASSIGNED_PRIMARY).isEmpty());
+    }
+
+    @Test
     void aRestartedSupervisorDoesNotReissueATerm() {
         FakeNode a = nodeDeclaringTerms(NODE);
         FakeNode b = nodeDeclaringTerms(NODE_B);

@@ -2438,6 +2438,27 @@ node not in that table at the next lease sync (`ReplicationTracker.getRetentionL
 3.10.0-SNAPSHOT), 30 s by default, and docrep copies merge independently, so a file-based recovery copies nearly
 everything. That is the price of a failover today. A planned move need not pay it (§29.9).
 
+### 28.11 No empty primary while a lost node still has the data
+
+A docrep shard with no replica to promote, because it has none or because none is started, used to fall through to
+the allocator once its primary's node was lost. The allocator placed a fresh, empty primary elsewhere at a new term,
+and when the lost node came back, `Applier.dropSupersededPrimaries` dropped its copy as superseded: every write the
+shard had held was gone. OpenSearch never does this unasked. Its `PrimaryShardAllocator` places an existing shard's
+primary only on a node holding an in-sync copy, and an empty primary needs `allocate_empty_primary`.
+
+**So `Promoter` refuses while a started copy of the shard survives on a lost node that has not been reaped**, with a
+reason in the diff. The evidence is the node's last inventory, which stays in the store until reaping. Reaping waits
+for a node whose started copy is the only one (`NodeReaper`), so the refusal holds until the node returns. An operator
+who knows the node is gone for good gives the copy up by deleting its documents, the only override for now.
+
+**What this does not cover, and what would.** The evidence goes with the node's documents. A copy that never started,
+a lost node whose inventory cannot be read, and a node already deleted all leave the shard looking new. The complete
+rule is OpenSearch's: remember, per shard, that a primary has started, as its index metadata keeps the in-sync set, and
+place an empty primary for such a shard only on an explicit operator instruction. The term counter cannot stand in for
+that record. It is created at 1 and advanced by every placement, including a first primary that failed before it
+started, so a rule based on it would leave such an index without a primary for ever. The record belongs under
+`supervisor/`, beside the counter; it and the operator instruction are open thread 3 (`allocate_stale_primary`).
+
 ---
 
 ## 29. Intended change: drains and dual-runs
