@@ -4,6 +4,7 @@
  */
 package org.opensearch.controlplane.handler.core;
 
+import org.opensearch.controlplane.store.CreateIfAbsent;
 import org.opensearch.controlplane.store.KeyValueStore;
 
 import java.nio.charset.StandardCharsets;
@@ -35,17 +36,13 @@ public final class ClusterUuid {
     }
 
     private static String generateAndStore(KeyValueStore store) {
-        String uuid = generate();
-        try {
-            // Create-if-absent: two concurrent first requests must not end up with different UUIDs.
-            store.put(KEY, uuid.getBytes(StandardCharsets.UTF_8), KeyValueStore.ABSENT);
-            return uuid;
-        } catch (org.opensearch.controlplane.store.RevisionConflictException raced) {
-            // Another request won. Its value is the one of record.
-            return store.get(KEY)
-                .map(versioned -> new String(versioned.value(), StandardCharsets.UTF_8))
-                .orElseThrow(() -> raced);
-        }
+        // Create-if-absent: two concurrent first requests must not end up with different UUIDs. Whichever value
+        // ends up stored is the one of record, ours or another request's, so the stored value is adopted either way;
+        // a lost answer is settled by the same read.
+        CreateIfAbsent.create(store, KEY, generate().getBytes(StandardCharsets.UTF_8), stored -> true);
+        return store.get(KEY)
+            .map(versioned -> new String(versioned.value(), StandardCharsets.UTF_8))
+            .orElseThrow(() -> new IllegalStateException("cluster uuid was stored and is now gone"));
     }
 
     /**

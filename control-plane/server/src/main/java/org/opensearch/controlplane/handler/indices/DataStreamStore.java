@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.rest.Json;
+import org.opensearch.controlplane.store.CreateIfAbsent;
 import org.opensearch.controlplane.store.KeyValueStore;
 
 import java.io.IOException;
@@ -94,7 +95,11 @@ final class DataStreamStore {
     /**
      * Writes a new stream, failing if one already has the name.
      *
+     * <p>Settled when the store loses its answer by the first backing index's uuid, which this request generated:
+     * see {@link CreateIfAbsent}.
+     *
      * @return false if another writer got there first
+     * @throws org.opensearch.controlplane.store.OutcomeUnknownException if the store never said
      */
     boolean createIfAbsent(String name, String timestampField, long generation, List<BackingIndex> indices) {
         ObjectNode document = Json.object();
@@ -107,12 +112,11 @@ final class DataStreamStore {
             entry.put(INDEX_NAME, index.name());
             entry.put(INDEX_UUID, index.uuid());
         });
-        try {
-            store.put(key(name), Json.toBytes(document), KeyValueStore.ABSENT);
-            return true;
-        } catch (org.opensearch.controlplane.store.RevisionConflictException lostTheRace) {
-            return false;
-        }
+        String firstUuid = indices.isEmpty() ? null : indices.getFirst().uuid();
+        return CreateIfAbsent.create(store, key(name), Json.toBytes(document), stored -> {
+            List<BackingIndex> storedIndices = backingIndicesOf(parse(stored));
+            return storedIndices.isEmpty() == false && storedIndices.getFirst().uuid().equals(firstUuid);
+        });
     }
 
     boolean delete(String name) {

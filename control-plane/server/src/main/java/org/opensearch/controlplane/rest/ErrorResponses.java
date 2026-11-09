@@ -7,6 +7,7 @@ package org.opensearch.controlplane.rest;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.LimitExceededException;
+import org.opensearch.controlplane.store.OutcomeUnknownException;
 
 import java.util.List;
 import java.util.Map;
@@ -109,6 +110,21 @@ public final class ErrorResponses {
             "source and source_content_type parameters are required",
             pretty
         );
+    }
+
+    /**
+     * {@code 500 failed_to_commit_cluster_state_exception}, for a change the store may or may not have applied.
+     *
+     * <p>Upstream's exception for the same uncertainty: a cluster-state publication that fails after it was
+     * sent, which a later cluster manager may still commit. Here the store lost its answer to a write and the
+     * handler could not settle it by reading back, so the reason says that, and that reading the resource back
+     * is how to find out. A 500 like upstream's, so a client that already handles it keeps working.
+     */
+    public static RestResponse outcomeUnknown(OutcomeUnknownException cause, boolean pretty) {
+        return structured(RestStatus.INTERNAL_SERVER_ERROR, "failed_to_commit_cluster_state_exception",
+            "the store lost its answer, so this change may or may not have been applied; read it back to find out ("
+                + cause.getMessage() + ")",
+            pretty);
     }
 
     /**

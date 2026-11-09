@@ -365,6 +365,27 @@ conditional expression on a version attribute, S3 has conditional writes via
 Payloads are small — index and pipeline configuration, not documents — which is worth
 weighing when considering an object store for this role.
 
+### A write whose answer is lost
+
+A backend that loses its answer to a write, because a connection dropped or a timeout expired after the request
+went out, throws `OutcomeUnknownException`: the write may or may not have applied. Where the value is unique to
+the writer, the control plane settles it by reading the key back (`CreateIfAbsent`):
+
+- `indices.create` and `create_data_stream` compare the uuid the request generated. Theirs is there: the create
+  applied, and the request carries on to aliases and its task. Another is there: another create won, and the
+  answer is `resource_already_exists_exception` as before. Nothing is there: it is tried again with the same
+  value, up to three times. A conflict is read back the same way, since a retry can meet its own first attempt
+  arriving late.
+- The cluster uuid adopts whatever is stored, as it already did after a lost race.
+- Tenant registration already retries on the tenant's next write.
+
+Anything still unknown, and any other write whose answer is lost (an upsert, a compare-and-set loop), reaches the
+client as upstream answers the same uncertainty: `500 failed_to_commit_cluster_state_exception`, with a reason
+saying the change may or may not have been applied and that reading it back says which. A create whose index
+write settled but whose alias write is then lost answers that too, with the index stored and possibly no task;
+the supervisor builds an index from its document whether or not a task names it (its `REQUIREMENTS.md`, R2.1),
+so the missing task costs only its line in `pending_tasks`.
+
 ### Limits, and checking them before writing
 
 `KeyValueStore` guarantees keys up to `MAX_KEY_BYTES` (512 UTF-8 bytes) and values up to `MAX_VALUE_BYTES`

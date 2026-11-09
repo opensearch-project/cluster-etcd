@@ -13,6 +13,7 @@ import org.opensearch.controlplane.rest.GlobalParameters;
 import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
 import org.opensearch.controlplane.store.LimitExceededException;
+import org.opensearch.controlplane.store.OutcomeUnknownException;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -114,6 +115,10 @@ public final class Router {
                 return new RestResponse(response.status(), response.contentType(), new byte[0], response.headers());
             }
             return response;
+        } catch (OutcomeUnknownException e) {
+            // The store lost its answer and the handler could not settle it by reading back: the change may or
+            // may not have been applied. Before the generic 500, so the client is told that rather than "failed".
+            return ErrorResponses.outcomeUnknown(e, pretty);
         } catch (LimitExceededException e) {
             // The store refused a key or value over its limit. The handlers check first where it matters
             // to the message or to a multi-write operation; this is the backstop, so a write nobody
