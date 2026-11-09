@@ -77,6 +77,9 @@ public final class NodeReaper {
     /** One copy, as either of the two records of it names it. */
     record Copy(TenantId tenant, String indexUuid, int shard) {}
 
+    /** A copy only this node can supply, and why. */
+    record Owed(Copy copy, String because) {}
+
     private final KeyValueStore store;
     private final LivenessTracker liveness;
 
@@ -143,11 +146,9 @@ public final class NodeReaper {
             // tidy. A reaped node that comes back has no assignment, and an assignment's absence means "hold
             // nothing" -- so reaping a node whose copy the pool never managed to replace would turn the operator
             // action of bringing a machine back into the deletion of the last copy of a shard.
-            Copy owed = copyOnlyThisNodeHas(node, observation);
+            Owed owed = copyOnlyThisNodeHas(node, observation);
             if (owed != null) {
-                kept.add(new Kept(nodeId, "still the only node with a started copy of index uuid "
-                    + owed.indexUuid() + " shard " + owed.shard() + " for tenant [" + owed.tenant().value()
-                    + "]; reaping it would drop that copy if the node ever came back"));
+                kept.add(new Kept(nodeId, owed.because()));
                 continue;
             }
 
@@ -200,14 +201,14 @@ public final class NodeReaper {
     }
 
     /**
-     * A copy this node has and nobody else has started, or null if the pool can spare it entirely.
+     * A copy this node has and nobody else can supply, or null if the pool can spare it entirely.
      *
      * <p>Reads both records of what a node has — what it last reported holding, and what it was last told to
      * hold — because either on its own is a way to be wrong here. A node that was assigned a copy and died before
      * reporting it has no inventory entry for it; a node holding a copy the supervisor has already withdrawn has
      * no assignment entry for it.
      */
-    static Copy copyOnlyThisNodeHas(Observation.NodeObservation node, Observation observation) {
+    static Owed copyOnlyThisNodeHas(Observation.NodeObservation node, Observation observation) {
         for (Copy copy : copiesOf(node)) {
             Observation.DesiredState desired = observation.tenants().get(copy.tenant());
             if (desired == null) {
@@ -215,18 +216,49 @@ public final class NodeReaper {
                 // will have placed what it needs.
                 continue;
             }
+            String shard = "index uuid " + copy.indexUuid() + " shard " + copy.shard() + " for tenant ["
+                + copy.tenant().value() + "]";
             IndexConfig index = desired.indicesByUuid().get(copy.indexUuid());
-            if (index == null || index.open() == false) {
+            if (index == null) {
+                List<String> unreadable = observation.unreadableIndicesOf(copy.tenant());
+                if (unreadable.isEmpty() == false && startedElsewhere(copy, node.nodeId(), observation) == false) {
+                    // Absent, but perhaps only unparseable: the document is keyed by name, so nothing says which
+                    // index an unreadable one is.
+                    return new Owed(copy, "holds " + shard + ", absent from desired state while " + unreadable
+                        + " cannot be read, and no other node has a started copy; it may be one of them");
+                }
                 // Nobody wants this copy, so losing it costs nothing. A deleted index leaves exactly this, and
                 // holding a node's documents for ever on account of a copy of something that does not exist
                 // would make the graveyard permanent.
                 continue;
             }
+            if (index.open() == false) {
+                // Dormant, not unwanted: a closed index's data must survive its reopening. A node reports no copies
+                // of a closed index, so its assignment entries are the only record of where that data is, and only
+                // another node's entry can stand in for this one's.
+                if (assignedElsewhere(copy, node.nodeId(), observation) == false) {
+                    return new Owed(copy, "the only node assigned " + shard + ", whose index is closed; reaping it"
+                        + " would lose that copy's data when the index is reopened");
+                }
+                continue;
+            }
             if (startedElsewhere(copy, node.nodeId(), observation) == false) {
-                return copy;
+                return new Owed(copy, "still the only node with a started copy of " + shard + "; reaping it would"
+                    + " drop that copy if the node ever came back");
             }
         }
         return null;
+    }
+
+    /** Whether another node whose copies count is still assigned this shard. */
+    private static boolean assignedElsewhere(Copy copy, NodeId exclude, Observation observation) {
+        for (Observation.NodeObservation other : observation.nodes().values()) {
+            if (other.nodeId().equals(exclude) == false && other.copiesCount()
+                && other.isAssigned(copy.tenant(), copy.indexUuid(), copy.shard())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Set<Copy> copiesOf(Observation.NodeObservation node) {

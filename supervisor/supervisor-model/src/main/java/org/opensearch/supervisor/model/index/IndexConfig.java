@@ -304,8 +304,8 @@ public record IndexConfig(
         try {
             return Integer.parseInt(raw.trim());
         } catch (NumberFormatException e) {
-            // Deliberately not fatal. A tenant that has somehow written a nonsense shard count should get a
-            // finding about that index, not a supervisor that cannot observe any of its indices.
+            // Fatal to this document only. The observer records it as unreadable and observes the rest, and an
+            // unreadable index document is never taken for a deleted index (OrphanReaper, NodeReaper).
             throw new IllegalArgumentException(
                 "index [" + index + "] setting [" + key + "] is not a number: [" + raw + "]", e
             );
