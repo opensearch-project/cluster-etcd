@@ -327,6 +327,27 @@ class ActingTests {
     }
 
     @Test
+    void aWriteWhoseAnswerWasLostIsCountedWithTheRejectionsRatherThanThrown() {
+        // Thrown, it failed the pass, and a pass that throws gives up its pool's lease for a TTL.
+        FakeNode data = node(NODE);
+        data.start();
+        data.tick();
+        createIndex(1, 0);
+
+        Planned planned = planTwice();
+        assertFalse(planned.plan().isEmpty());
+
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        lossy.loseNext(Keys.nodeAssignment(NODE), LostAnswerStore.Loss.NOT_APPLIED);
+        Applier.Outcome outcome = new Applier(lossy, clock)
+            .apply(planned.plan(), planned.observation(), () -> true);
+
+        assertFalse(outcome.abandoned());
+        assertEquals(0, outcome.applied());
+        assertEquals(1, outcome.rejected());
+    }
+
+    @Test
     void anAssignmentIsMergedRatherThanReplaced() {
         // An assignment is a complete desired set, so a write that dropped its existing contents would not
         // merely fail to add a shard -- it would tell the node to discard everything else it holds.
@@ -1727,6 +1748,28 @@ class ActingTests {
 
         assertEquals(promoted, counterFor(0), "a settled shard's term does not move across a restart");
         assertEquals(promoted, toldTerm(NODE_B, 0));
+    }
+
+    @Test
+    void aTermCounterWriteWhoseAnswerWasLostAbandonsThePlanAndThePoolCarriesOn() {
+        // Applied with its answer lost: the counter has moved and nothing was told the term. Thrown, it failed the
+        // pass and gave up the pool's lease for a TTL; abandoned, the next pass reads the counter as it is.
+        FakeNode a = nodeDeclaringTerms(NODE);
+        a.start();
+        createDocrepIndex(1, 0);
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        lossy.loseNext(Keys.primaryTerms(ACME, UUID), LostAnswerStore.Loss.APPLIED);
+        Supervisor supervisor = new Supervisor(lossy, clock, "s1", Set.of(), 1.0, TTL, Balancer.Config.defaults(),
+            new Planner.Policy(200, 5, 2), false);
+
+        for (int pass = 0; pass < 12; pass++) {
+            supervisor.tick();
+            a.tick();
+            advance();
+        }
+
+        assertEquals(ShardRole.PRIMARY, roleHeldBy(a, 0));
+        assertEquals(counterFor(0), toldTerm(NODE, 0), "told the term the counter holds");
     }
 
     @Test

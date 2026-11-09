@@ -1,6 +1,7 @@
 package org.opensearch.supervisor.core;
 
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.OutcomeUnknownException;
 import org.opensearch.controlplane.store.RevisionConflictException;
 import org.opensearch.supervisor.model.Keys;
 import org.opensearch.supervisor.model.NodeId;
@@ -126,6 +127,12 @@ public final class Applier {
                 // derived from a counter this pass no longer knows the value of.
                 return Outcome.abandoned("primary-term counter for " + write.tenant() + "/" + write.indexUuid()
                     + " changed since it was observed; recomputing rather than risk issuing a term twice");
+            } catch (OutcomeUnknownException e) {
+                // Abandoned like a conflict, and not thrown: a pass that throws gives up its pool's lease for a TTL.
+                // Applied or not, nothing has been told the term, and the next pass reads the counter as it is --
+                // the worst case is the skipped term the ordering above already allows for.
+                return Outcome.abandoned("the write of the primary-term counter for " + write.tenant() + "/"
+                    + write.indexUuid() + " lost its answer; recomputing from whatever it left");
             }
         }
 
@@ -174,6 +181,10 @@ public final class Applier {
             } catch (RevisionConflictException e) {
                 // Somebody wrote this node's assignment since it was observed. Dropping the write is the
                 // mechanism working, not a failure: whatever they wrote was based on a newer view than this.
+                rejected += Math.max(entry.getValue().size(), 1);
+            } catch (OutcomeUnknownException e) {
+                // Applied or not, the next pass observes whichever it was and plans from there. Counted with the
+                // rejections rather than thrown, since a pass that throws gives up its pool's lease for a TTL.
                 rejected += Math.max(entry.getValue().size(), 1);
             }
         }
