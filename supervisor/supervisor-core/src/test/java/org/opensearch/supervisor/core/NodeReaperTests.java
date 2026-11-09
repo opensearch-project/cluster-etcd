@@ -296,6 +296,24 @@ class NodeReaperTests {
     }
 
     @Test
+    void aHeartbeatDeleteWhoseAnswerWasLostDeletesNothingElse() {
+        // The gate is not known to have opened. Thrown, it failed the pass, and a pass that throws gives up its
+        // pool's lease for a TTL.
+        writeDocumentsOf(DEAD, null, null);
+        observedAt(DEAD);
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        lossy.loseNext(Keys.nodeHeartbeat(DEAD), LostAnswerStore.Loss.APPLIED);
+
+        NodeReaper.Report report = new NodeReaper(lossy, liveness)
+            .reap(lostFor(NodeReaper.REAP_AFTER_LOST_PASSES), observe(Map.of(), Map.of(DEAD, dead(null, null))));
+
+        assertEquals(List.of(), report.reaped());
+        assertEquals(1, report.kept().size());
+        assertTrue(report.kept().get(0).because().contains("lost its answer"), report.kept().get(0).because());
+        assertTrue(stored(Keys.nodeRegistration(DEAD)), "nothing behind the gate is touched");
+    }
+
+    @Test
     void aNodeWithTheOnlyStartedCopyOfAShardIsKept() {
         // The destructive case, and the reason this is not just tidying. An absent assignment means "hold
         // nothing", so reaping a node whose copy the pool never replaced would turn the operator action of

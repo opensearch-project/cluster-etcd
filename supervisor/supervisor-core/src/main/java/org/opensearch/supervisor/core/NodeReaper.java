@@ -1,6 +1,7 @@
 package org.opensearch.supervisor.core;
 
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.OutcomeUnknownException;
 import org.opensearch.controlplane.store.RevisionConflictException;
 import org.opensearch.supervisor.model.Keys;
 import org.opensearch.supervisor.model.NodeId;
@@ -167,6 +168,12 @@ public final class NodeReaper {
                 } catch (RevisionConflictException e) {
                     kept.add(new Kept(nodeId, "its heartbeat changed since it was observed, so it is not gone"
                         + " after all and nothing was deleted"));
+                    continue;
+                } catch (OutcomeUnknownException e) {
+                    // The gate is not known to have opened, so nothing behind it is deleted. If the heartbeat did
+                    // go, the node reads as registered and silent, and is judged again from there.
+                    kept.add(new Kept(nodeId, "the delete of its heartbeat lost its answer, so nothing else was"
+                        + " deleted; it is decided again from what the next pass observes"));
                     continue;
                 }
                 deleted.add(Keys.nodeHeartbeat(nodeId));

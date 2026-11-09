@@ -182,6 +182,130 @@ class LeaseAndHousekeepingTests {
         assertEquals(Set.of(A), next.claimable(Set.of(A)));
     }
 
+    // ---------------------------------------------------------------- a write whose answer was lost
+
+    private LeaseManager manager(String id, LostAnswerStore lossy) {
+        return new LeaseManager(lossy, clock, id, TTL);
+    }
+
+    @Test
+    void aRenewalThatAppliedWithItsAnswerLostKeepsTheLease() {
+        // Treated as lost, the renewal left the key at a revision the next one did not expect, so the holder's
+        // next renewal conflicted with its own write and it gave up a pool it held.
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        LeaseManager holder = manager("s1", lossy);
+        holder.refresh();
+        assertTrue(holder.tryAcquire(A));
+
+        lossy.loseNext(Keys.poolLease(A), LostAnswerStore.Loss.APPLIED);
+        clock.advance(Duration.ofSeconds(2));
+        holder.refresh();
+        assertTrue(holder.renew(A));
+
+        holder.refresh();
+        assertTrue(holder.holds(A));
+        assertTrue(holder.renew(A), "the next renewal is at the revision the lost one left");
+    }
+
+    @Test
+    void aRenewalThatNeverAppliedStillHoldsTheLeaseUnrenewed() {
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        LeaseManager holder = manager("s1", lossy);
+        holder.refresh();
+        assertTrue(holder.tryAcquire(A));
+
+        lossy.loseNext(Keys.poolLease(A), LostAnswerStore.Loss.NOT_APPLIED);
+        clock.advance(Duration.ofSeconds(2));
+        holder.refresh();
+        assertTrue(holder.renew(A), "still the holder's, one pass unrenewed, which the TTL allows for");
+
+        holder.refresh();
+        assertTrue(holder.renew(A));
+    }
+
+    @Test
+    void anAcquisitionThatAppliedWithItsAnswerLostIsHeld() {
+        // Treated as lost, the pool had a fresh lease nobody renewed, and went unmanaged for a TTL.
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        LeaseManager taker = manager("s1", lossy);
+        taker.refresh();
+
+        lossy.loseNext(Keys.poolLease(A), LostAnswerStore.Loss.APPLIED);
+        assertTrue(taker.tryAcquire(A));
+
+        taker.refresh();
+        assertTrue(taker.holds(A));
+        assertTrue(taker.renew(A));
+    }
+
+    @Test
+    void anAcquisitionThatNeverAppliedIsNotHeld() {
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        LeaseManager taker = manager("s1", lossy);
+        taker.refresh();
+
+        lossy.loseNext(Keys.poolLease(A), LostAnswerStore.Loss.NOT_APPLIED);
+        assertFalse(taker.tryAcquire(A));
+
+        taker.refresh();
+        assertFalse(taker.holds(A));
+        assertEquals(Set.of(A), taker.claimable(Set.of(A)));
+    }
+
+    @Test
+    void aRenewalThatAppliesAfterItsReadBackIsAdoptedOnTheNextRefresh() {
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        LeaseManager holder = manager("s1", lossy);
+        holder.refresh();
+        assertTrue(holder.tryAcquire(A));
+
+        lossy.loseNext(Keys.poolLease(A), LostAnswerStore.Loss.LATE);
+        clock.advance(Duration.ofSeconds(2));
+        holder.refresh();
+        assertTrue(holder.renew(A), "the read-back finds the key untouched");
+
+        lossy.land();
+        holder.refresh();
+        assertTrue(holder.holds(A));
+        assertTrue(holder.renew(A));
+    }
+
+    @Test
+    void aRenewalWhoseReadBackFailsTooIsSettledByTheNextRefresh() {
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        LeaseManager holder = manager("s1", lossy);
+        holder.refresh();
+        assertTrue(holder.tryAcquire(A));
+
+        lossy.loseNext(Keys.poolLease(A), LostAnswerStore.Loss.APPLIED);
+        clock.advance(Duration.ofSeconds(2));
+        holder.refresh();
+        lossy.readsFail(true);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> holder.renew(A),
+            "a store that cannot be read fails the tick, as it always has");
+
+        lossy.readsFail(false);
+        holder.refresh();
+        assertTrue(holder.holds(A));
+        assertTrue(holder.renew(A));
+    }
+
+    @Test
+    void aReleaseWhoseAnswerWasLostIsGivenUpEitherWay() {
+        // It threw, out of the balancer's decision and so out of the tick, which skipped every pool's pass.
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        for (LostAnswerStore.Loss loss : List.of(LostAnswerStore.Loss.APPLIED, LostAnswerStore.Loss.NOT_APPLIED)) {
+            LeaseManager holder = manager("s1-" + loss, lossy);
+            holder.refresh();
+            assertTrue(holder.tryAcquire(A), loss.toString());
+
+            lossy.loseNext(Keys.poolLease(A), loss);
+            assertTrue(holder.release(A), loss.toString());
+            assertFalse(holder.holds(A), loss.toString());
+            store.delete(Keys.poolLease(A));
+        }
+    }
+
     @Test
     void anUnreadableLeaseDoesNotMakeAPoolPermanentlyUnclaimable() {
         store.put(Keys.poolLease(A), "{ not json".getBytes(StandardCharsets.UTF_8));

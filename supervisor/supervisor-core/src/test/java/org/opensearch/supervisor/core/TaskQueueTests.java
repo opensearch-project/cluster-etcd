@@ -141,6 +141,24 @@ class TaskQueueTests {
     }
 
     @Test
+    void aClaimWhoseAnswerWasLostDoesNotFailThePass() {
+        // Thrown, it failed the pass, and a pass that throws gives up its pool's lease for a TTL. Taken as lost, the
+        // next pass finds the record as the write left it.
+        FakeNode node = dataNode();
+        node.start();
+        createIndex(1);
+        submitTask("task-1", TaskType.CREATE_INDEX);
+        LostAnswerStore lossy = new LostAnswerStore(store);
+        lossy.loseNext(Keys.tasksPrefix(ACME) + "task-1", LostAnswerStore.Loss.APPLIED);
+        Supervisor supervisor = new Supervisor(lossy, clock, "s1", Set.of(), 1.0, TTL, Balancer.Config.defaults(),
+            new Planner.Policy(200, 5, 2), false);
+
+        run(supervisor, node, 8);
+
+        assertEquals(TaskState.COMPLETED, taskOf("task-1").orElseThrow().state());
+    }
+
+    @Test
     void pendingTasksStopBeingPendingAsSoonAsTheyAreClaimed() {
         // cluster.pending_tasks reports only state=pending, so the pile the control plane has been growing
         // starts draining the moment claiming works -- before completion is even involved.

@@ -1,6 +1,7 @@
 package org.opensearch.supervisor.core;
 
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.OutcomeUnknownException;
 import org.opensearch.controlplane.store.RevisionConflictException;
 import org.opensearch.supervisor.model.Keys;
 import org.opensearch.supervisor.model.TenantId;
@@ -227,13 +228,17 @@ public final class TaskQueue {
             return true;
         } catch (RevisionConflictException e) {
             return false;
+        } catch (OutcomeUnknownException e) {
+            // Taken as lost. If it applied, the next pass finds the record as written; every step here is safe to
+            // do twice.
+            return false;
         }
     }
 
     private boolean delete(Entry entry) {
         try {
             return store.delete(entry.key(), entry.revision());
-        } catch (RevisionConflictException e) {
+        } catch (RevisionConflictException | OutcomeUnknownException e) {
             return false;
         }
     }

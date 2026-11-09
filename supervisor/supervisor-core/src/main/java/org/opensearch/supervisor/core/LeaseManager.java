@@ -1,6 +1,7 @@
 package org.opensearch.supervisor.core;
 
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.OutcomeUnknownException;
 import org.opensearch.controlplane.store.RevisionConflictException;
 import org.opensearch.supervisor.model.Keys;
 import org.opensearch.supervisor.model.PoolId;
@@ -8,6 +9,7 @@ import org.opensearch.supervisor.model.supervisor.Lease;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -28,6 +30,13 @@ import java.util.Set;
  * claimable only after it has itself watched that revision sit still for longer than the TTL. Reading the
  * holder's own timestamp instead would let clock skew steal a healthy lease. It also gives the startup grace
  * period for free: a supervisor that has just started has observed nothing sit still, so it steals nothing.
+ *
+ * <p><b>A write whose answer was lost is settled by reading the key back</b>, never treated as lost. Treating it as
+ * lost gives up a lease this process may well hold: an applied renewal leaves the key at a revision the next
+ * renewal does not expect, so that one conflicts with this process's own write, and an applied acquisition leaves a
+ * pool with a fresh lease that nobody renews. Comparing bytes is sound here, as it would not be for most keys,
+ * because a lease names its holder and the millisecond it was written: no other process's write leaves the same
+ * bytes. This process's previous write can, within the same millisecond, and finding that means the same thing.
  */
 public final class LeaseManager {
 
@@ -48,6 +57,13 @@ public final class LeaseManager {
     private final Map<String, Long> myRevisions = new HashMap<>();
 
     private Map<String, Observed> observed = Map.of();
+
+    /**
+     * Bytes of each write whose answer was lost, kept until the next {@link #refresh} reads the key. A write can
+     * apply after the read-back that followed it, or the read-back can fail too; either way the next refresh, which
+     * reads every lease anyway, sees whether these bytes are there.
+     */
+    private final Map<String, byte[]> unsettled = new HashMap<>();
 
     private record Observed(Lease lease, long revision, Duration silentFor) {}
 
@@ -81,8 +97,13 @@ public final class LeaseManager {
             }
             Duration silent = silence.observe(entry.getKey(), entry.getValue().revision(), clock.instant());
             current.put(entry.getKey(), new Observed(lease, entry.getValue().revision(), silent));
+            byte[] pending = unsettled.get(entry.getKey());
+            if (pending != null && Arrays.equals(pending, entry.getValue().value())) {
+                myRevisions.put(entry.getKey(), entry.getValue().revision());
+            }
         }
         silence.retain(scanned.keySet());
+        unsettled.clear();
         observed = current;
     }
 
@@ -155,17 +176,18 @@ public final class LeaseManager {
         long now = clock.millis();
         long epoch = current == null || current.lease() == null ? 1 : current.lease().epoch() + 1;
         Lease lease = new Lease(supervisorId, epoch, now, now + ttl.toMillis());
+        byte[] bytes = lease.toBytes();
 
         try {
             long revision = current == null
-                ? store.put(key, lease.toBytes(), KeyValueStore.ABSENT)
-                : store.put(key, lease.toBytes(), current.revision());
-            myRevisions.put(key, revision);
-            observed = withObserved(key, new Observed(lease, revision, Duration.ZERO));
-            return true;
+                ? store.put(key, bytes, KeyValueStore.ABSENT)
+                : store.put(key, bytes, current.revision());
+            return wrote(key, lease, revision);
         } catch (RevisionConflictException e) {
             myRevisions.remove(key);
             return false;
+        } catch (OutcomeUnknownException e) {
+            return settle(key, lease, bytes);
         }
     }
 
@@ -188,16 +210,44 @@ public final class LeaseManager {
         Lease renewed = (current == null || current.lease() == null
             ? new Lease(supervisorId, 1, clock.millis(), 0)
             : current.lease()).renewedAt(clock.millis(), ttl.toMillis());
+        byte[] bytes = renewed.toBytes();
 
         try {
-            long revision = store.put(key, renewed.toBytes(), mine);
-            myRevisions.put(key, revision);
-            observed = withObserved(key, new Observed(renewed, revision, Duration.ZERO));
-            return true;
+            return wrote(key, renewed, store.put(key, bytes, mine));
         } catch (RevisionConflictException e) {
             myRevisions.remove(key);
             return false;
+        } catch (OutcomeUnknownException e) {
+            return settle(key, renewed, bytes);
         }
+    }
+
+    private boolean wrote(String key, Lease lease, long revision) {
+        myRevisions.put(key, revision);
+        observed = withObserved(key, new Observed(lease, revision, Duration.ZERO));
+        return true;
+    }
+
+    /**
+     * Whether a write whose answer was lost left this process holding the lease, read off the key.
+     *
+     * <p>These bytes there: the write applied, and its revision is the one to renew against. The key still at the
+     * revision this process last wrote: the write did not apply, and the lease is still held, unrenewed for a pass,
+     * which the TTL allows for. Anything else is somebody else's write. If the read fails too, the failure propagates
+     * like any other store failure, and the next {@link #refresh} settles the question.
+     */
+    private boolean settle(String key, Lease lease, byte[] written) {
+        unsettled.put(key, written);
+        Optional<KeyValueStore.Versioned> now = store.get(key);
+        if (now.isPresent() && Arrays.equals(now.get().value(), written)) {
+            return wrote(key, lease, now.get().revision());
+        }
+        Long mine = myRevisions.get(key);
+        if (now.isPresent() && mine != null && now.get().revision() == mine) {
+            return true;
+        }
+        myRevisions.remove(key);
+        return false;
     }
 
     /**
@@ -223,6 +273,9 @@ public final class LeaseManager {
         } catch (RevisionConflictException e) {
             // Already someone else's. Nothing to give up.
             return false;
+        } catch (OutcomeUnknownException e) {
+            // Given up either way: deleted, or left to expire, since nothing here renews it any more.
+            return true;
         }
     }
 
