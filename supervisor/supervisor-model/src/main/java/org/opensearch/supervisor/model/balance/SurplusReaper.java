@@ -54,7 +54,9 @@ public final class SurplusReaper {
 
     public static List<Removal> reap(Observation observation, LoadModel loads) {
         // Every started copy of every shard, and where it is. Assigned-but-not-started copies are deliberately
-        // absent: they are what this rule must not mistake for redundancy.
+        // absent: they are what this rule must not mistake for redundancy. So are started copies their node's
+        // assignment no longer names, withdrawn by an earlier pass and not yet dropped: counted, the shard still
+        // looked surplus on the next pass, and a second copy went the same way.
         Map<ShardRef, List<LoadModel.Held>> started = new LinkedHashMap<>();
         Map<ShardRef, List<LoadModel.Held>> useless = new LinkedHashMap<>();
         loads.byNode().values().forEach(held -> held.forEach(copy -> {
@@ -62,6 +64,11 @@ public final class SurplusReaper {
                 return;
             }
             if (copy.state() == ShardState.STARTED) {
+                Observation.NodeObservation node = observation.nodes().get(copy.node());
+                if (node == null || node.isAssigned(copy.shard().tenant(), copy.shard().indexUuid(),
+                    copy.shard().shard()) == false) {
+                    return;
+                }
                 started.computeIfAbsent(copy.shard(), ignored -> new ArrayList<>()).add(copy);
             } else if (copy.state() == ShardState.FAILED) {
                 useless.computeIfAbsent(copy.shard(), ignored -> new ArrayList<>()).add(copy);

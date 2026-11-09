@@ -53,6 +53,21 @@ class SurplusReaperTests {
     }
 
     @Test
+    void aCopyAlreadyWithdrawnIsNotCountedTowardTheSurplus() {
+        // B was withdrawn by the pass before and still reports its copy started. Counted, the shard looked surplus
+        // a second time and the busier of B and C went too -- C, leaving the shard its primary alone.
+        Observation observation = observe(2, 1, Replication.SEGMENT,
+            Node.of(A).holding(0, ShardRole.PRIMARY, 100 * MIB)
+                .holding(1, ShardRole.SEARCH_REPLICA, 900 * MIB),
+            Node.of(B).withdrawn(0, ShardRole.SEARCH_REPLICA, 100 * MIB),
+            Node.of(C).holding(0, ShardRole.SEARCH_REPLICA, 100 * MIB)
+                .holding(1, ShardRole.PRIMARY, 900 * MIB)
+        );
+
+        assertEquals(List.of(), reap(observation));
+    }
+
+    @Test
     void aMoveCompletesInTheDirectionItWasAimed() {
         // The property claimed in SurplusReaper's javadoc, checked rather than asserted in prose. The threshold
         // rule only accepts a move when the source is heavier than the target by more than the copy weighs, so

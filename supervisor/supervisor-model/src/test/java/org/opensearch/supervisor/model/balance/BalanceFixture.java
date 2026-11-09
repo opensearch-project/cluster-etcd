@@ -68,8 +68,17 @@ final class BalanceFixture {
             return id;
         }
 
+        /** Holds a started copy and is still told to, as every copy is until something withdraws it. */
         Node holding(int shard, ShardRole role, long sizeBytes) {
             held.put(shard, new ShardInventory.ShardCopy(role, ShardState.STARTED, sizeBytes, null));
+            assigned.putIfAbsent(shard, role);
+            return this;
+        }
+
+        /** Holds a started copy its assignment no longer names: withdrawn, and not yet dropped. */
+        Node withdrawn(int shard, ShardRole role, long sizeBytes) {
+            held.put(shard, new ShardInventory.ShardCopy(role, ShardState.STARTED, sizeBytes, null));
+            assigned.remove(shard);
             return this;
         }
 

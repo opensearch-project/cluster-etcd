@@ -11,10 +11,12 @@ import org.opensearch.supervisor.model.observe.Observation;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -342,12 +344,14 @@ public final class LoadModel {
         if (assignment == null) {
             return;
         }
+        // A set rather than a scan of the list per entry, which was quadratic in a node's copies every pass.
+        Set<ShardRef> held = new HashSet<>();
+        into.forEach(copy -> held.add(copy.shard()));
         assignment.tenants().forEach((tenant, tenantAssignment) -> {
             tenantAssignment.indices().forEach((uuid, indexAssignment) -> {
                 indexAssignment.shards().forEach((shardNumber, role) -> {
                     ShardRef ref = new ShardRef(tenant, uuid, shardNumber);
-                    boolean alreadyHeld = into.stream().anyMatch(copy -> copy.shard().equals(ref));
-                    if (alreadyHeld) {
+                    if (held.contains(ref)) {
                         return;
                     }
                     into.add(new RawCopy(
