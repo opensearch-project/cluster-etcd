@@ -272,6 +272,63 @@ class NodeReaperTests {
         assertEquals(1, report.reaped().size(), "kept instead: " + report.kept());
     }
 
+    @Test
+    void aCopyOfAnIndexWhoseDocumentCannotBeReadKeepsTheNode() {
+        // Absent from desired state looks deleted, but an unparseable document is absent too, and it is keyed by
+        // name, so nothing says which index it is.
+        writeDocumentsOf(DEAD, holding(DEAD, ShardState.STARTED), assignment(DEAD));
+        observedAt(DEAD);
+        Observation observation = new Observation(100, START, POOL,
+            Map.of(ACME, new Observation.DesiredState(Map.of())),
+            Map.of(DEAD, dead(holding(DEAD, ShardState.STARTED), assignment(DEAD))),
+            List.of(Keys.indicesPrefix(ACME) + "my-index"));
+
+        NodeReaper.Report report = new NodeReaper(store, liveness)
+            .reap(lostFor(NodeReaper.REAP_AFTER_LOST_PASSES), observation);
+
+        assertEquals(List.of(), report.reaped());
+        assertTrue(report.kept().get(0).because().contains("cannot be read"), report.kept().get(0).because());
+        assertTrue(stored(Keys.nodeAssignment(DEAD)));
+    }
+
+    private static IndexConfig closed() {
+        return new IndexConfig("my-index", UUID, false, 1, 0, Replication.SEGMENT, false,
+            AllocationEnable.UNKNOWN, 3041);
+    }
+
+    @Test
+    void theOnlyNodeAssignedACopyOfAClosedIndexIsKept() {
+        // A closed index is dormant, not deleted, and a node reports no copies of it, so its assignment entry is the
+        // only record of where the data is. Reaped, the node came back to an empty assignment and dropped the copy,
+        // and reopening the index placed an empty primary.
+        writeDocumentsOf(DEAD, null, assignment(DEAD));
+        observedAt(DEAD);
+        Observation observation = observe(Map.of(UUID, closed()), Map.of(DEAD, dead(null, assignment(DEAD))));
+
+        NodeReaper.Report report = new NodeReaper(store, liveness)
+            .reap(lostFor(NodeReaper.REAP_AFTER_LOST_PASSES), observation);
+
+        assertEquals(List.of(), report.reaped());
+        assertTrue(report.kept().get(0).because().contains("closed"), report.kept().get(0).because());
+        assertTrue(stored(Keys.nodeAssignment(DEAD)));
+    }
+
+    @Test
+    void aCopyOfAClosedIndexAssignedElsewhereDoesNotKeepTheNode() {
+        writeDocumentsOf(DEAD, null, assignment(DEAD));
+        observedAt(DEAD);
+        Observation.NodeObservation other = new Observation.NodeObservation(
+            LIVE, registration(LIVE), heartbeat(LIVE), null, Liveness.LIVE, POOL, assignment(LIVE), 9
+        );
+        Observation observation = observe(Map.of(UUID, closed()),
+            Map.of(DEAD, dead(null, assignment(DEAD)), LIVE, other));
+
+        NodeReaper.Report report = new NodeReaper(store, liveness)
+            .reap(lostFor(NodeReaper.REAP_AFTER_LOST_PASSES), observation);
+
+        assertEquals(1, report.reaped().size(), "kept instead: " + report.kept());
+    }
+
     // ---------------------------------------------------------------- keeping its hands off
 
     @Test

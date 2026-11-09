@@ -181,6 +181,35 @@ class OrphanReaperTests {
             "the reason must say the evidence was weaker: " + outcome.removals().get(0).because());
     }
 
+    /** The same observation, with one of the tenant's index documents unparseable. */
+    private static Observation withUnreadableIndex(Observation observation) {
+        return new Observation(observation.pass(), observation.observedAt(), observation.pool(),
+            observation.tenants(), observation.nodes(),
+            List.of(org.opensearch.supervisor.model.Keys.indicesPrefix(ACME) + "my-index"));
+    }
+
+    @Test
+    void anAbsenceIsNeverEnoughWhileAnIndexDocumentCannotBeRead() {
+        // A document that fails to parse leaves desired state, and it is keyed by name, so nothing says which uuid
+        // it was. Every copy of that index looked orphaned and was withdrawn after thirty passes; the guard for a
+        // tenant with no readable documents at all did not cover one bad document among several.
+        long passes = 2 * OrphanReaper.PATIENCE_WITHOUT_A_DELETION_TASK;
+        OrphanReaper.Outcome outcome = reapAfter((int) passes, withUnreadableIndex(observe(passes,
+            Map.of(LIVING, index(LIVING, "other-index")), List.of())));
+
+        assertEquals(List.of(), outcome.removals());
+        assertTrue(refusal(outcome).contains("cannot be read"), refusal(outcome));
+    }
+
+    @Test
+    void aDeletionTaskStillSettlesItWhileAnIndexDocumentCannotBeRead() {
+        // The task names the uuid, so it is evidence about this index whatever the unreadable document is.
+        OrphanReaper.Outcome outcome = reapAfter(2, withUnreadableIndex(observe(2,
+            Map.of(LIVING, index(LIVING, "other-index")), List.of(deletionOf(GONE, TaskState.PENDING)))));
+
+        assertEquals(1, outcome.removals().size());
+    }
+
     @Test
     void anAssignmentEntryIsWithdrawnEvenWhereTheNodeHoldsNothing() {
         // The half that is easy to miss, and the expensive one. A node defers an entry naming an index it cannot

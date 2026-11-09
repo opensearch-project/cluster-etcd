@@ -106,6 +106,17 @@ public final class OrphanReaper {
                 continue;
             }
 
+            List<String> unreadable = observation.unreadableIndicesOf(tenant);
+            if (deletion == null && unreadable.isEmpty() == false) {
+                // The same rule one step finer. A document that cannot be parsed takes its index out of desired
+                // state, and nothing says which index it was, so every copy of it would look orphaned and be
+                // withdrawn on absence alone. A deletion task still settles it: it names the uuid.
+                refusals.put(finding.refusalKey(), "tenant [" + tenant.value() + "] has index documents that cannot"
+                    + " be read, " + unreadable + ", and index uuid " + indexUuid + " may be one of them; a deletion"
+                    + " task naming it would settle it, and none does");
+                continue;
+            }
+
             long patience = deletion == null ? PATIENCE_WITHOUT_A_DELETION_TASK : minimumPasses;
             if (finding.passes() < patience) {
                 if (deletion == null) {

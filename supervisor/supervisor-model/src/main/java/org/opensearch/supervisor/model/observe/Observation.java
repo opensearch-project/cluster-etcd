@@ -124,6 +124,16 @@ public record Observation(
     }
 
     /**
+     * This tenant's index documents that exist and could not be parsed. An index document is keyed by name and its
+     * uuid is inside it, so while there are any, an index missing from {@link DesiredState#indicesByUuid()} may be one
+     * of them: its absence is not evidence that it was deleted.
+     */
+    public List<String> unreadableIndicesOf(TenantId tenant) {
+        String prefix = org.opensearch.supervisor.model.Keys.indicesPrefix(tenant);
+        return unreadable.stream().filter(key -> key.startsWith(prefix)).toList();
+    }
+
+    /**
      * What the control plane says should exist for one tenant.
      *
      * @param tasks the tenant's work queue. Part of the observation because the queue lives in the tenant's
