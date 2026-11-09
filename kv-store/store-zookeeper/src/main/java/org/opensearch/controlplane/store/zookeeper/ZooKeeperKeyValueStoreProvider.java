@@ -49,7 +49,7 @@ public final class ZooKeeperKeyValueStoreProvider implements KeyValueStoreProvid
         }
 
         // defaultData is set explicitly because Curator's default is the local hostname's bytes, which
-        // would give every parent container a payload that looks like data. The framing byte means such a
+        // would give every parent znode a payload that looks like data. The framing byte means such a
         // payload would not be read as a key anyway, but relying on that would be relying on an accident.
         RetryPolicy retry = new ExponentialBackoffRetry((int) Duration.ofMillis(200).toMillis(), 5);
         CuratorFramework client = CuratorFrameworkFactory.builder()
@@ -70,7 +70,8 @@ public final class ZooKeeperKeyValueStoreProvider implements KeyValueStoreProvid
                     + DEFAULT_CONNECT_TIMEOUT.toSeconds() + "s");
             }
             if (client.checkExists().forPath(root) == null) {
-                client.create().creatingParentContainersIfNeeded().forPath(root, new byte[0]);
+                // Persistent, like every parent: a container root would be reaped when the last key went.
+                client.create().creatingParentsIfNeeded().forPath(root, new byte[0]);
             }
         } catch (IOException e) {
             client.close();
