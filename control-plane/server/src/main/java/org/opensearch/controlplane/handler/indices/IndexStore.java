@@ -12,6 +12,7 @@ import org.opensearch.controlplane.rest.ErrorResponses;
 import org.opensearch.controlplane.rest.Json;
 import org.opensearch.controlplane.rest.RestRequest;
 import org.opensearch.controlplane.rest.RestResponse;
+import org.opensearch.controlplane.store.CreateIfAbsent;
 import org.opensearch.controlplane.store.KeyValueStore;
 import org.opensearch.controlplane.store.RevisionConflictException;
 import org.opensearch.controlplane.store.WriteLimits;
@@ -165,15 +166,18 @@ public final class IndexStore {
      * not both succeed, and a check followed by an unconditional put has a window between them. This
      * is the reason {@link KeyValueStore} carries revisions at all.
      *
-     * @return the created metadata, or empty if the index already existed
+     * <p>Settled when the store loses its answer, by the uuid this request generated, which no other create can
+     * have stored: see {@link CreateIfAbsent}. Without that, a create that applied would answer an error, and the
+     * client's retry {@code resource_already_exists_exception} for an index it made itself.
+     *
+     * @return the created metadata, or empty if another create got there first
+     * @throws org.opensearch.controlplane.store.OutcomeUnknownException if the store never said
      */
     Optional<ObjectNode> createIfAbsent(ObjectNode metadata, String index) {
-        try {
-            store.put(key(index), Json.toBytes(metadata), KeyValueStore.ABSENT);
-            return Optional.of(metadata);
-        } catch (RevisionConflictException alreadyExists) {
-            return Optional.empty();
-        }
+        String uuid = metadata.path("uuid").asText();
+        boolean ours = CreateIfAbsent.create(store, key(index), Json.toBytes(metadata),
+            stored -> uuid.equals(parse(stored).path("uuid").asText(null)));
+        return ours ? Optional.of(metadata) : Optional.empty();
     }
 
     /** OpenSearch's format: 128 random bits, base64url, unpadded. */
