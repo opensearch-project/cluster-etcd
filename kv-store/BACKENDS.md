@@ -197,6 +197,12 @@ S3 needs one request per value. The levers, in the order to pull them:
 
 - **`actualRevision` becomes best-effort.** Nothing reads it, and S3 cannot report it without another
   request. Document it as possibly `ABSENT` when unknown, rather than costing every lost race a round trip.
+- **A lost answer is `OutcomeUnknownException`, never a conflict.** Every candidate can lose the answer to a
+  conditional write that applied: a JDBC connection drops after `COMMIT`, an SDK retries a DynamoDB or S3
+  write after a timeout, an OpenSearch request times out. A retry then meets the caller's own write and
+  reports it as someone else's. The ZooKeeper store settles this by putting a random write id in every value
+  and reading it back. The same trick fits each candidate: a column, an attribute, a body header or a
+  document field. It also means turning off SDK retries for conditional writes, as for Curator.
 - **Credentials do not go in the `--store` URI.** It lands in process listings and logs. Cloud backends use
   the AWS default credential chain; the others take a credentials file or environment variable named in
   the URI.

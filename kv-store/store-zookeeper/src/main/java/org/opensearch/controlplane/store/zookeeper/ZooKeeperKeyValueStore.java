@@ -4,24 +4,31 @@
  */
 package org.opensearch.controlplane.store.zookeeper;
 
+import org.apache.curator.RetryPolicy;
+import org.apache.curator.RetrySleeper;
+import org.apache.curator.CuratorZookeeperClient;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.zookeeper.AddWatchMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.data.Stat;
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.OutcomeUnknownException;
 import org.opensearch.controlplane.store.RevisionConflictException;
 import org.opensearch.controlplane.store.StoreLimits;
 import org.opensearch.controlplane.store.Watch;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Deque;
 import java.util.List;
 import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.UUID;
 
 /**
  * A {@link KeyValueStore} backed by ZooKeeper, one znode per key segment.
@@ -51,18 +58,47 @@ import java.util.TreeMap;
  * <h2>A znode is not necessarily a key</h2>
  *
  * <p>A hierarchy needs intermediate nodes, and {@code indices/} is a parent rather than a key. Stored
- * values therefore carry a one-byte frame, {@link #FRAME_KEY}, and <b>a znode is a key if and only if
- * its data starts with that byte</b>. Everything else — Curator's parent containers, a node whose frame
- * has been cleared — is structure.
+ * values therefore carry a frame — {@link #FRAME_KEY}, then a 16-byte write id, then the payload — and
+ * <b>a znode is a key if and only if its data starts with that byte</b>. Everything else — Curator's
+ * parent containers, a deleted key's tombstone — is structure.
  *
  * <p>That is what lets an <em>empty</em> value stay distinguishable from an absent key, which the store
- * contract requires because marker keys depend on it. A frame of one byte and no payload is an empty
- * value; no frame at all is not a key.
+ * contract requires because marker keys depend on it. A frame with no payload is an empty value; no frame
+ * at all is not a key.
  *
  * <p>It also handles the case a flat layout never meets: deleting a key that has descendants.
  * {@code delete("a")} where {@code a/b} exists cannot remove the znode — ZooKeeper answers
- * {@code NotEmpty} — so the frame is cleared instead. The key is gone by every observable measure and the
- * subtree survives.
+ * {@code NotEmpty} — so the znode is left as structure instead. The key is gone by every observable
+ * measure and the subtree survives.
+ *
+ * <h2>A lost answer is settled by reading back, never by retrying</h2>
+ *
+ * <p>Curator retries an operation that fails with {@code ConnectionLoss}, and that is wrong for a
+ * conditional write. The first attempt may have been applied with only its answer lost, and the retry then
+ * meets the write it made itself: a create gets {@code NodeExists}, a versioned write {@code BadVersion}.
+ * Reported as conflicts, a created index answers "already exists" and is never built, and a renewed lease
+ * is given up by the process that holds it.
+ *
+ * <p>So the mutating step of a conditional write is attempted once, with Curator's retry turned off for
+ * that call alone ({@link SingleAttempt}), and a lost answer is settled by reading the znode back:
+ *
+ * <ul>
+ *   <li><b>It carries this write's id:</b> the write applied, and its {@code mzxid} is the revision.
+ *       The id is random per write, so no other writer can have left it — unlike comparing bytes, which
+ *       two writers racing to create the same empty marker would both pass.</li>
+ *   <li><b>It is untouched</b> — still at the {@code mzxid} the write was conditioned on: the write never
+ *       applied, so it is attempted again. Only a setData has such a witness; a create does not.</li>
+ *   <li><b>Anything else</b> cannot be told apart from a write that applied and was then overwritten, so
+ *       it is {@link OutcomeUnknownException}.</li>
+ * </ul>
+ *
+ * <p>A conditional delete could not be settled that way, since a deleted znode carries nothing. Its
+ * decisive step is therefore a versioned overwrite with a <b>tombstone</b> — {@link #FRAME_TOMBSTONE} and
+ * the write id, which is structure rather than a key — and removing the znode afterwards is cleanup. The
+ * cleanup is versioned against the tombstone, so it cannot remove a key written since, and a failure of it
+ * leaves a structure znode a later put reuses. It costs a delete one more round trip.
+ *
+ * <p>Reads, and the unconditional writes, keep Curator's retry: repeating them is harmless.
  *
  * <h2>Limitations</h2>
  *
@@ -87,14 +123,35 @@ import java.util.TreeMap;
 public final class ZooKeeperKeyValueStore implements KeyValueStore {
 
     /**
-     * Marks a znode's data as a stored value. Also a format version: a future change to the framing can
-     * pick another byte and stay able to read what this one wrote.
+     * Marks a znode's data as a stored value, followed by {@link #WRITE_ID_BYTES} of write id and the
+     * payload. Also a format version: {@code 0x01} was the frame before write ids, and reads as structure.
      */
-    static final byte FRAME_KEY = 0x01;
+    static final byte FRAME_KEY = 0x02;
+
+    /** Marks a deleted key's tombstone, followed by the deleting write's id. Structure, not a key. */
+    static final byte FRAME_TOMBSTONE = 0x00;
+
+    /** A random id per write, so a lost answer can be settled by reading back. See the class javadoc. */
+    static final int WRITE_ID_BYTES = 16;
+
+    private static final int FRAME_HEADER_BYTES = 1 + WRITE_ID_BYTES;
 
     private final CuratorFramework client;
     private final String root;
     private final boolean ownsClient;
+
+    /** Test seam: a lost answer on demand. Nothing in production. */
+    interface AttemptFaults {
+        AttemptFaults NONE = new AttemptFaults() {};
+
+        /** Before the mutating call: an answer lost before the request reached ZooKeeper. */
+        default void beforeAttempt(String path) throws KeeperException {}
+
+        /** After it succeeded: an answer lost after ZooKeeper applied the request. */
+        default void afterAttempt(String path) throws KeeperException {}
+    }
+
+    volatile AttemptFaults faults = AttemptFaults.NONE;
 
     /**
      * @param client a started Curator client
@@ -105,6 +162,7 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
         this.client = Objects.requireNonNull(client, "client");
         this.root = Objects.requireNonNull(root, "root");
         this.ownsClient = ownsClient;
+        SingleAttempt.install(client.getZookeeperClient());
     }
 
     @Override
@@ -186,7 +244,7 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
     public long put(String key, byte[] value) {
         StoreLimits.checkWrite(key, value);
         String path = pathOf(key);
-        byte[] framed = frame(value);
+        byte[] framed = frame(newWriteId(), value);
         // Two writers can race between the create and the setData, so this retries rather than assuming
         // whichever branch it chose is still the right one.
         for (int attempt = 0; attempt < RACE_ATTEMPTS; attempt++) {
@@ -215,60 +273,114 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
     public long put(String key, byte[] value, long expectedRevision) {
         StoreLimits.checkWrite(key, value);
         String path = pathOf(key);
-        byte[] framed = frame(value);
+        byte[] writeId = newWriteId();
+        byte[] framed = frame(writeId, value);
         try {
-            Stat stat = client.checkExists().forPath(path);
+            // Data and stat from one read, so the frame check and the revision describe the same write.
+            Stat stat = new Stat();
+            byte[] current = dataAt(path, stat);
 
-            if (stat == null) {
-                // Absent as far as ZooKeeper is concerned.
+            if (current == null) {
                 if (expectedRevision != ABSENT) {
                     throw new RevisionConflictException(key, expectedRevision, ABSENT);
                 }
-                Stat created = new Stat();
                 try {
-                    client.create().storingStatIn(created).creatingParentContainersIfNeeded()
-                        .forPath(path, framed);
+                    return settle("put", key, path, writeId, null, () -> {
+                        Stat created = new Stat();
+                        client.create().storingStatIn(created).creatingParentContainersIfNeeded()
+                            .forPath(path, framed);
+                        return created;
+                    }).getMzxid();
                 } catch (KeeperException.NodeExistsException raced) {
                     throw new RevisionConflictException(key, expectedRevision, revisionOf(path));
                 }
-                return created.getMzxid();
             }
 
-            boolean isKey = isKey(dataAt(path));
-            if (isKey == false) {
-                // A znode that is only structure: no key here, so ABSENT is satisfied and the frame goes on.
-                if (expectedRevision != ABSENT) {
-                    throw new RevisionConflictException(key, expectedRevision, ABSENT);
-                }
-                return setDataChecked(key, path, framed, stat.getVersion(), expectedRevision);
+            // A znode that is only structure holds no key, so ABSENT is satisfied there and the frame goes on.
+            long actual = isKey(current) ? stat.getMzxid() : ABSENT;
+            if (actual != expectedRevision) {
+                throw new RevisionConflictException(key, expectedRevision, actual);
             }
-
-            if (stat.getMzxid() != expectedRevision) {
-                throw new RevisionConflictException(key, expectedRevision, stat.getMzxid());
-            }
-            return setDataChecked(key, path, framed, stat.getVersion(), expectedRevision);
-        } catch (RevisionConflictException conflict) {
-            throw conflict;
+            return setDataChecked("put", key, path, writeId, framed, stat, expectedRevision).getMzxid();
+        } catch (RevisionConflictException | OutcomeUnknownException settled) {
+            throw settled;
         } catch (Exception e) {
             throw failure("put", key, e);
         }
     }
 
     /**
-     * The write half of a conditional put.
+     * The write half of a conditional put or delete.
      *
      * <p>{@code withVersion} is what makes the whole operation atomic despite being read-then-write: if
      * anything touched the znode after the {@link Stat} was read, its version has moved and ZooKeeper
      * refuses. A refusal here is a lost race, which is the same outcome as a stale revision, and so is
      * the znode having been deleted meanwhile.
      */
-    private long setDataChecked(String key, String path, byte[] framed, int version, long expectedRevision)
-        throws Exception {
+    private Stat setDataChecked(String operation, String key, String path, byte[] writeId, byte[] data, Stat checked,
+        long expectedRevision) throws Exception {
         try {
-            return client.setData().withVersion(version).forPath(path, framed).getMzxid();
+            return settle(operation, key, path, writeId, checked,
+                () -> client.setData().withVersion(checked.getVersion()).forPath(path, data));
         } catch (KeeperException.BadVersionException | KeeperException.NoNodeException raced) {
             throw new RevisionConflictException(key, expectedRevision, revisionOf(path));
         }
+    }
+
+    /** One mutating call to ZooKeeper, returning the znode's stat after it. */
+    @FunctionalInterface
+    interface Mutation {
+        Stat apply() throws Exception;
+    }
+
+    /**
+     * Runs the mutating step of a conditional write without Curator's retry, and settles a lost answer by
+     * reading the znode back. See the class javadoc for the three outcomes.
+     *
+     * @param checked the stat the write was conditioned on, or null for a create, which has none
+     * @throws KeeperException whatever the attempt itself answered, such as {@code BadVersion}, for the caller
+     *                         to turn into a conflict
+     */
+    private Stat settle(String operation, String key, String path, byte[] writeId, Stat checked, Mutation mutation)
+        throws Exception {
+        KeeperException lost = null;
+        for (int attempt = 0; attempt < RACE_ATTEMPTS; attempt++) {
+            try {
+                return SingleAttempt.run(() -> {
+                    faults.beforeAttempt(path);
+                    Stat applied = mutation.apply();
+                    faults.afterAttempt(path);
+                    return applied;
+                });
+            } catch (KeeperException e) {
+                if (answerLost(e) == false) {
+                    throw e;
+                }
+                lost = e;
+            }
+            // Retried by Curator as usual, which is what waits out the reconnection.
+            Stat now = new Stat();
+            byte[] data = dataAt(path, now);
+            if (carries(data, writeId)) {
+                return now;
+            }
+            boolean untouched = checked != null && data != null && now.getMzxid() == checked.getMzxid();
+            if (untouched == false) {
+                throw new OutcomeUnknownException(
+                    "ZooKeeper " + operation + " of [" + key + "] lost its answer, and [" + path
+                        + "] has changed since, so whether it applied cannot be told", lost);
+            }
+        }
+        throw new OutcomeUnknownException(
+            "ZooKeeper " + operation + " of [" + key + "] lost its answer " + RACE_ATTEMPTS + " times in a row", lost);
+    }
+
+    /** The failures after which a request may or may not have been applied. */
+    private static boolean answerLost(KeeperException e) {
+        return e instanceof KeeperException.ConnectionLossException
+            || e instanceof KeeperException.OperationTimeoutException
+            || e instanceof KeeperException.SessionExpiredException
+            || e instanceof KeeperException.SessionMovedException;
     }
 
     @Override
@@ -292,16 +404,10 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
     public boolean delete(String key, long expectedRevision) {
         String path = pathOf(key);
         try {
-            // Data and stat from one read, so the frame check and the revision describe the same write.
             Stat stat = new Stat();
-            byte[] framed;
-            try {
-                framed = client.getData().storingStatIn(stat).forPath(path);
-            } catch (KeeperException.NoNodeException absent) {
-                framed = null;
-            }
+            byte[] current = dataAt(path, stat);
 
-            if (isKey(framed) == false) {
+            if (isKey(current) == false) {
                 if (expectedRevision != ABSENT) {
                     throw new RevisionConflictException(key, expectedRevision, ABSENT);
                 }
@@ -310,31 +416,30 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
             if (stat.getMzxid() != expectedRevision) {
                 throw new RevisionConflictException(key, expectedRevision, stat.getMzxid());
             }
-            removeOrUnframeChecked(key, path, stat.getVersion(), expectedRevision);
+            byte[] writeId = newWriteId();
+            Stat tombstoned = setDataChecked("delete", key, path, writeId, tombstone(writeId), stat, expectedRevision);
+            removeTombstone(path, tombstoned.getVersion());
             return true;
-        } catch (RevisionConflictException conflict) {
-            throw conflict;
+        } catch (RevisionConflictException | OutcomeUnknownException settled) {
+            throw settled;
         } catch (Exception e) {
             throw failure("delete", key, e);
         }
     }
 
     /**
-     * The write half of a conditional delete: {@link #removeOrUnframe} at the version the revision was
-     * checked against, for the same reason as {@link #setDataChecked}. Unversioned, a write landing
-     * between the check and the delete would be deleted with it. A znode that has gone meanwhile is a
-     * lost race too, since the caller expected a key at a revision it no longer has.
+     * Cleanup after a conditional delete, best effort. The key is already gone — a tombstone is structure — so
+     * nothing here can fail the delete. Versioned against the tombstone, so a key put since is left alone, and a
+     * znode with children stays as their parent.
      */
-    private void removeOrUnframeChecked(String key, String path, int version, long expectedRevision)
-        throws Exception {
+    private void removeTombstone(String path, int tombstoneVersion) {
         try {
-            try {
-                client.delete().withVersion(version).forPath(path);
-            } catch (KeeperException.NotEmptyException hasDescendants) {
-                client.setData().withVersion(version).forPath(path, new byte[0]);
-            }
-        } catch (KeeperException.BadVersionException | KeeperException.NoNodeException raced) {
-            throw new RevisionConflictException(key, expectedRevision, revisionOf(path));
+            client.delete().withVersion(tombstoneVersion).forPath(path);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception leftAsStructure) {
+            // NotEmpty, BadVersion, NoNode, or a lost connection: the znode stays as structure, which a later put
+            // reuses and every read already ignores.
         }
     }
 
@@ -356,8 +461,13 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
     }
 
     private byte[] dataAt(String path) throws Exception {
+        return dataAt(path, new Stat());
+    }
+
+    /** A znode's data, with its stat stored in {@code stat}, or null if it does not exist. */
+    private byte[] dataAt(String path, Stat stat) throws Exception {
         try {
-            return client.getData().forPath(path);
+            return client.getData().storingStatIn(stat).forPath(path);
         } catch (KeeperException.NoNodeException absent) {
             return null;
         }
@@ -384,23 +494,43 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
     }
 
     private static boolean isKey(byte[] framed) {
-        return framed != null && framed.length >= 1 && framed[0] == FRAME_KEY;
+        return framed != null && framed.length >= FRAME_HEADER_BYTES && framed[0] == FRAME_KEY;
     }
 
-    private static byte[] frame(byte[] value) {
-        byte[] framed = new byte[value.length + 1];
+    private static byte[] newWriteId() {
+        UUID id = UUID.randomUUID();
+        return ByteBuffer.allocate(WRITE_ID_BYTES)
+            .putLong(id.getMostSignificantBits())
+            .putLong(id.getLeastSignificantBits())
+            .array();
+    }
+
+    private static byte[] frame(byte[] writeId, byte[] value) {
+        byte[] framed = new byte[FRAME_HEADER_BYTES + value.length];
         framed[0] = FRAME_KEY;
-        System.arraycopy(value, 0, framed, 1, value.length);
+        System.arraycopy(writeId, 0, framed, 1, WRITE_ID_BYTES);
+        System.arraycopy(value, 0, framed, FRAME_HEADER_BYTES, value.length);
         return framed;
+    }
+
+    private static byte[] tombstone(byte[] writeId) {
+        byte[] data = new byte[FRAME_HEADER_BYTES];
+        data[0] = FRAME_TOMBSTONE;
+        System.arraycopy(writeId, 0, data, 1, WRITE_ID_BYTES);
+        return data;
+    }
+
+    /** Whether a znode's data, key or tombstone, was left by the write with this id. */
+    private static boolean carries(byte[] data, byte[] writeId) {
+        return data != null && data.length >= FRAME_HEADER_BYTES
+            && Arrays.equals(data, 1, FRAME_HEADER_BYTES, writeId, 0, WRITE_ID_BYTES);
     }
 
     private static Optional<byte[]> unframe(byte[] framed) {
         if (isKey(framed) == false) {
             return Optional.empty();
         }
-        byte[] value = new byte[framed.length - 1];
-        System.arraycopy(framed, 1, value, 0, value.length);
-        return Optional.of(value);
+        return Optional.of(Arrays.copyOfRange(framed, FRAME_HEADER_BYTES, framed.length));
     }
 
     private static RuntimeException failure(String operation, String key, Exception cause) {
@@ -482,4 +612,48 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
 
     /** Enough to ride out contention, few enough that a genuine livelock still surfaces. */
     private static final int RACE_ATTEMPTS = 16;
+
+    /**
+     * The client's retry policy, except during {@link #run}, when the calling thread's operation gets one attempt.
+     *
+     * <p>Curator has no per-operation retry setting, but it asks the policy on the calling thread whether to retry
+     * a foreground operation, so a thread-local flag scopes "no retry" to exactly one call. Installed over whatever
+     * policy the client was built with, which every other operation keeps using.
+     */
+    static final class SingleAttempt implements RetryPolicy {
+
+        private static final ThreadLocal<Boolean> ACTIVE = ThreadLocal.withInitial(() -> false);
+
+        private final RetryPolicy delegate;
+
+        SingleAttempt(RetryPolicy delegate) {
+            this.delegate = delegate;
+        }
+
+        static void install(CuratorZookeeperClient zookeeper) {
+            RetryPolicy current = zookeeper.getRetryPolicy();
+            if (current instanceof SingleAttempt == false) {
+                zookeeper.setRetryPolicy(new SingleAttempt(current));
+            }
+        }
+
+        static Stat run(Mutation mutation) throws Exception {
+            ACTIVE.set(true);
+            try {
+                return mutation.apply();
+            } finally {
+                ACTIVE.set(false);
+            }
+        }
+
+        @Override
+        public boolean allowRetry(int retryCount, long elapsedTimeMs, RetrySleeper sleeper) {
+            return ACTIVE.get() == false && delegate.allowRetry(retryCount, elapsedTimeMs, sleeper);
+        }
+
+        @Override
+        public boolean allowRetry(Throwable exception) {
+            return ACTIVE.get() == false && delegate.allowRetry(exception);
+        }
+    }
 }

@@ -19,6 +19,7 @@ import io.etcd.jetcd.options.GetOption;
 import io.etcd.jetcd.options.PutOption;
 import io.etcd.jetcd.options.WatchOption;
 import org.opensearch.controlplane.store.KeyValueStore;
+import org.opensearch.controlplane.store.OutcomeUnknownException;
 import org.opensearch.controlplane.store.RevisionConflictException;
 import org.opensearch.controlplane.store.StoreLimits;
 import org.opensearch.controlplane.store.Watch;
@@ -178,7 +179,7 @@ public final class EtcdKeyValueStore implements KeyValueStore {
         StoreLimits.checkWrite(key, value);
         // Every put moves the store revision, even one writing an identical value, so the returned
         // revision always differs from the previous one -- which the contract requires.
-        return await("put", key, kv.put(keyOf(key), valueOf(value), PutOption.DEFAULT))
+        return awaitWrite("put", key, kv.put(keyOf(key), valueOf(value), PutOption.DEFAULT))
             .getHeader().getRevision();
     }
 
@@ -190,7 +191,7 @@ public final class EtcdKeyValueStore implements KeyValueStore {
         // both create-if-absent and update-at-revision without a special case.
         Cmp atExpectedRevision = new Cmp(target, Cmp.Op.EQUAL, CmpTarget.modRevision(expectedRevision));
 
-        TxnResponse response = await("put", key, kv.txn()
+        TxnResponse response = awaitWrite("put", key, kv.txn()
             .If(atExpectedRevision)
             .Then(Op.put(target, valueOf(value), PutOption.DEFAULT))
             // Reads the key only when the comparison failed, so the conflict can name the actual
@@ -206,7 +207,7 @@ public final class EtcdKeyValueStore implements KeyValueStore {
 
     @Override
     public boolean delete(String key) {
-        DeleteResponse response = await("delete", key, kv.delete(keyOf(key), DeleteOption.DEFAULT));
+        DeleteResponse response = awaitWrite("delete", key, kv.delete(keyOf(key), DeleteOption.DEFAULT));
         return response.getDeleted() > 0;
     }
 
@@ -215,7 +216,7 @@ public final class EtcdKeyValueStore implements KeyValueStore {
         ByteSequence target = keyOf(key);
         Cmp atExpectedRevision = new Cmp(target, Cmp.Op.EQUAL, CmpTarget.modRevision(expectedRevision));
 
-        TxnResponse response = await("delete", key, kv.txn()
+        TxnResponse response = awaitWrite("delete", key, kv.txn()
             .If(atExpectedRevision)
             .Then(Op.delete(target, DeleteOption.DEFAULT))
             .Else(Op.get(target, GetOption.DEFAULT))
@@ -254,6 +255,46 @@ public final class EtcdKeyValueStore implements KeyValueStore {
      * on an unreachable etcd is worse than a request failing: the caller can retry, and an operator can
      * see what is wrong.
      */
+    /**
+     * {@link #await} for a write, where a lost answer is {@link OutcomeUnknownException} rather than a plain
+     * failure: once the request may have reached etcd, it may have been applied.
+     *
+     * <p>jetcd does not retry a put, delete or transaction itself unless asked to ({@code autoRetry}, off by
+     * default), so this store never meets its own earlier attempt as a conflict the way Curator's retry made the
+     * ZooKeeper store do. What remains is the answer that never arrives: a timeout, an interrupt, or a status that
+     * says the connection failed rather than that etcd refused.
+     */
+    private <T> T awaitWrite(String operation, String key, java.util.concurrent.CompletableFuture<T> future) {
+        try {
+            return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new OutcomeUnknownException(
+                "etcd " + operation + " of [" + key + "] was interrupted, and may still apply", e);
+        } catch (TimeoutException e) {
+            throw new OutcomeUnknownException(
+                "etcd " + operation + " of [" + key + "] timed out after " + timeoutMillis + "ms, and may have applied", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() == null ? e : e.getCause();
+            if (answerLost(io.grpc.Status.fromThrowable(cause).getCode())) {
+                throw new OutcomeUnknownException(
+                    "etcd " + operation + " of [" + key + "] lost its answer, and may have applied: " + cause, cause);
+            }
+            throw new IllegalStateException("etcd " + operation + " of [" + key + "] failed: " + cause, cause);
+        }
+    }
+
+    /**
+     * Whether a failed write's status leaves its outcome open. A refusal — a bad argument, a permission, a request
+     * too large — is answered before anything applies; these are the statuses of an answer that went missing.
+     */
+    static boolean answerLost(io.grpc.Status.Code code) {
+        return switch (code) {
+            case UNAVAILABLE, DEADLINE_EXCEEDED, CANCELLED, UNKNOWN, INTERNAL, ABORTED, DATA_LOSS -> true;
+            default -> false;
+        };
+    }
+
     private <T> T await(String operation, String key, java.util.concurrent.CompletableFuture<T> future) {
         try {
             return future.get(timeoutMillis, TimeUnit.MILLISECONDS);
