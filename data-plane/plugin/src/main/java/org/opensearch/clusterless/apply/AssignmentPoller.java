@@ -98,9 +98,10 @@ public final class AssignmentPoller {
     private IngestionResets.Outcome lastResets = IngestionResets.Outcome.NOTHING;
     private String lastReport;
     private long assignmentsRead;
-    private long statesApplied;
+    // Written by applied(), on the server's applier thread, which must not wait for a pass: see there.
+    private final java.util.concurrent.atomic.AtomicLong statesApplied = new java.util.concurrent.atomic.AtomicLong();
     private String lastFailure;
-    private String lastApplyFailure;
+    private volatile String lastApplyFailure;
 
     /**
      * @param applier where a fabricated state goes when applying is enabled. May be {@code null} in read-only
@@ -400,10 +401,15 @@ public final class AssignmentPoller {
      * <p>Only records. The next pass computes the ack from the live state, so there is nothing to publish from
      * here — and publishing from here would write a heartbeat from an unexpected thread, out of order with the
      * pass that owns that document.
+     *
+     * <p><b>Not synchronized.</b> It runs on the server's one cluster applier thread, and the poller's monitor is held
+     * for a whole pass, which makes store reads each bounded only by the store's timeout. Waiting for it here stalled
+     * every local cluster-state application on the node for the length of a slow pass. The two fields it writes are an
+     * atomic and a volatile, and only this thread writes them.
      */
-    private synchronized void applied(String source, Exception failure) {
+    private void applied(String source, Exception failure) {
         if (failure == null) {
-            statesApplied++;
+            statesApplied.incrementAndGet();
             lastApplyFailure = null;
             logger.info("clusterless: applied {}", source);
         } else {
@@ -446,7 +452,7 @@ public final class AssignmentPoller {
         return new PollStatus(
             applyEnabled,
             assignmentsRead,
-            statesApplied,
+            statesApplied.get(),
             lastResolved.assignmentVersion(),
             lastResolved.indices().size(),
             lastResolved.copyCount(),

@@ -289,7 +289,18 @@ public final class NodePublisher {
         if (writtenInventory != null && writtenInventory.sameCopiesAs(candidate)) {
             // Unchanged: the previously written document stands, generated_at and all. This is the branch
             // that keeps the inventory off the hot path, and taking it on almost every pass is the point.
-            return new InventoryOutcome(writtenInventory.copyCount(), null);
+            //
+            // Provided it still stands, which is checked as the registration's is. The supervisor's reaper deletes
+            // nodes/shards/<id> with a departed node's other documents, and a node that comes back rewrites its
+            // registration but, comparing only with what it last wrote, never its inventory. A supervisor with a
+            // cold cache then sees a live node holding nothing while it serves shards, and places and reaps on that.
+            if (store.get(Keys.nodeShards(nodeId)).isPresent()) {
+                return new InventoryOutcome(writtenInventory.copyCount(), null);
+            }
+            logger.warn(
+                "clusterless: this node's shard inventory was missing from the store and is being rewritten ({} copies)",
+                candidate.copyCount()
+            );
         }
 
         byte[] bytes;

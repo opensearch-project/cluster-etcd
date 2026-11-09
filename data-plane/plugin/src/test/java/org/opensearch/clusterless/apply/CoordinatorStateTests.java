@@ -59,6 +59,73 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         assertTrue(routing.primary());
     }
 
+    public void testACoordinatorRoutesNeitherOfTwoProjectedPrimaries() {
+        // A returning old primary still reports its copy until it applies its withdrawal, beside the one promoted in its
+        // place. Nothing here says which is current; routed both, primaryShard() is whichever came last and writes can go
+        // to the replaced one. So neither is, and the shard keeps a primary entry that is unassigned.
+        CoordinatorView twoPrimaries = copies(
+            Map.of(0, List.of(copy(PEER, ShardRole.PRIMARY, ShardState.STARTED), copy(OTHER_PEER, ShardRole.PRIMARY, ShardState.STARTED)))
+        );
+
+        ClusterState first = coordinate(ClusterState.EMPTY_STATE, twoPrimaries);
+
+        IndexShardRoutingTable shard = shardTable(first);
+        assertEquals("one primary entry: " + shard, 1, shard.shards().stream().filter(ShardRouting::primary).count());
+        assertTrue("and it is not either of the reported ones: " + shard, shard.primaryShard().unassigned());
+        assertTrue(StateEquivalence.sameContent(first, coordinate(first, twoPrimaries)));
+
+        ClusterState resolved = coordinate(first, copies(Map.of(0, List.of(copy(OTHER_PEER, ShardRole.PRIMARY, ShardState.STARTED)))));
+        assertEquals("once the projection names one, it is routed", OTHER_PEER, shardTable(resolved).primaryShard().currentNodeId());
+    }
+
+    public void testADocrepReplicaKeepsItsCopyOpenWhileTwoPrimariesAreProjected() {
+        ClusterState started = replicaHere(ClusterState.EMPTY_STATE, ShardRole.REPLICA, 5L, true);
+        ShardRouting replica = localCopy(started);
+
+        ClusterState inDoubt = twoPrimariesProjected(started);
+
+        inDoubt.getRoutingNodes();
+        IndexShardRoutingTable shard = shardTable(inDoubt);
+        assertEquals(shard.toString(), 1, shard.shards().stream().filter(ShardRouting::primary).count());
+        assertTrue("neither reported primary is routed: " + shard, shard.primaryShard().unassigned());
+        assertEquals("this node's started replica stays open, for an in-place promotion", replica, localCopy(inDoubt));
+        assertTrue(StateEquivalence.sameContent(inDoubt, twoPrimariesProjected(inDoubt)));
+    }
+
+    /** {@link #PEER} promoted, and the old primary on {@link #OTHER_PEER} back and still reporting its copy. */
+    private static ClusterState twoPrimariesProjected(ClusterState previous) {
+        List<IndexStatus.Copy> copies = List.of(
+            copy(OTHER_PEER, ShardRole.PRIMARY, ShardState.STARTED),
+            copy(PEER, ShardRole.PRIMARY, ShardState.STARTED),
+            copy(LOCAL, ShardRole.REPLICA, ShardState.STARTED)
+        );
+        Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
+        peers.put(NodeId.of(PEER), peer(PEER));
+        peers.put(NodeId.of(OTHER_PEER), peer(OTHER_PEER));
+        CoordinatorView view = new CoordinatorView(
+            List.of(new CoordinatorView.RoutedIndex(ACME, docrepConfig(), placement(Map.of(0, copies)), Set.of(0), Map.of(0, ShardRole.REPLICA))),
+            peers,
+            List.of()
+        );
+        DesiredState.IndexKey key = new DesiredState.IndexKey(ACME, UUID);
+        DesiredState desired = PeerRecovery.reduce(
+            new DesiredState(
+                42,
+                Map.of(key, new DesiredState.DesiredIndex(key, docrepConfig(), Map.of(0, ShardRole.REPLICA), Map.of(0, 6L))),
+                List.of(),
+                List.of()
+            ),
+            view,
+            previous
+        );
+        return new CoordinatorState(
+            new DataNodeState(CLUSTER, TestFixtures.localNode(LOCAL), desired, MappingSource.WRAPPED, LocalShardStore.EMPTY),
+            TestFixtures.localNode(LOCAL),
+            view,
+            MappingSource.WRAPPED
+        ).buildClusterState(previous);
+    }
+
     public void testThePeerIsInTheStatesNodesSoItsShardsCanBeAddressed() {
         // RoutingNodes looks up each shard's node and builds a RoutingNode around whatever it finds, so a routing
         // entry naming a node the state does not contain fails an invariant. Also the only way the transport can
@@ -544,6 +611,24 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
                     .build()
             )
             .build();
+    }
+
+    public void testAPeerThatRestartedIsAChangeEvenWhenNothingElseIs() {
+        // A restart gives the peer a new ephemeral id and leaves its copies' entries as they were, so the node list is the
+        // only difference. The transport refuses a node whose ephemeral id is not the one the state names, so a state
+        // still naming the old one fails every request to that peer.
+        CoordinatorView before = copies(Map.of(0, List.of(copy(PEER, ShardRole.PRIMARY, ShardState.STARTED))));
+        ClusterState first = coordinate(ClusterState.EMPTY_STATE, before);
+        assertTrue("the same peer twice is a fixed point", StateEquivalence.sameContent(first, coordinate(first, before)));
+
+        CoordinatorView restarted = new CoordinatorView(before.indices(), Map.of(NodeId.of(PEER), peer(PEER, "eph-after-restart", 9350)), List.of());
+        ClusterState second = coordinate(first, restarted);
+        assertEquals("eph-after-restart", second.nodes().get(PEER).getEphemeralId());
+        assertEquals("the routing did not change", first.routingTable().index(indexName()), second.routingTable().index(indexName()));
+        assertFalse("a new ephemeral id is a change", StateEquivalence.sameContent(first, second));
+
+        CoordinatorView moved = new CoordinatorView(before.indices(), Map.of(NodeId.of(PEER), peer(PEER, "eph-after-restart", 9351)), List.of());
+        assertFalse("so is a new address", StateEquivalence.sameContent(second, coordinate(second, moved)));
     }
 
     private static ClusterState coordinate(ClusterState previous, CoordinatorView view) {
@@ -1083,6 +1168,20 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
 
     private static IndexStatus placement(Map<Integer, List<IndexStatus.Copy>> shards) {
         return new IndexStatus("my-index", UUID, 3041, shards.size(), 0, IndexStatus.Replication.SEGMENT, shards);
+    }
+
+    private static NodeStatus peer(String nodeId, String ephemeralId, int port) {
+        return new NodeStatus(
+            NodeId.of(nodeId),
+            ephemeralId,
+            "data-" + nodeId.substring(0, 4),
+            EnumSet.of(org.opensearch.clusterless.contract.NodeRole.DATA),
+            "127.0.0.1",
+            port,
+            "3.9.0",
+            Map.of(),
+            NodeStatus.Liveness.LIVE
+        );
     }
 
     private static NodeStatus peer(String nodeId) {

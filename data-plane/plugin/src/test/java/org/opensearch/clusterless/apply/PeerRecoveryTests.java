@@ -116,6 +116,32 @@ public class PeerRecoveryTests extends OpenSearchTestCase {
         assertEquals(reduced.deferred().toString(), 1, reduced.deferred().size());
     }
 
+    public void testAReplicaIsDeclinedWhileTwoPrimariesAreProjected() {
+        // CoordinatorState routes neither of them, so a replica built against one would have no primary to recover from.
+        String other = "CCCCCCCCCCCCCCCCCCCCCC";
+        Map<NodeId, NodeStatus> peers = new LinkedHashMap<>();
+        peers.put(NodeId.of(PRIMARY_NODE), peer(PRIMARY_NODE));
+        peers.put(NodeId.of(other), peer(other));
+        CoordinatorView view = new CoordinatorView(
+            List.of(
+                new CoordinatorView.RoutedIndex(
+                    ACME,
+                    documentReplicated(),
+                    placement(List.of(copy(PRIMARY_NODE, ShardRole.PRIMARY, ShardState.STARTED), copy(other, ShardRole.PRIMARY, ShardState.STARTED))),
+                    Set.of(0),
+                    Map.of(0, ShardRole.REPLICA)
+                )
+            ),
+            peers,
+            List.of()
+        );
+
+        DesiredState reduced = PeerRecovery.reduce(holding(Map.of(0, ShardRole.REPLICA), documentReplicated()), view);
+
+        assertEquals(0, reduced.copyCount());
+        assertEquals(reduced.deferred().toString(), 1, reduced.deferred().size());
+    }
+
     public void testAReplicaIsDeclinedWhenThePrimarysNodeCannotBeReached() {
         // The projection has a primary and the peer view resolved no address for its node, so the fabricator would
         // leave it out of the routing table -- which puts this node one applied state away from the assertion.

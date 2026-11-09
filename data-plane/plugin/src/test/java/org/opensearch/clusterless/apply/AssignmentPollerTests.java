@@ -166,6 +166,59 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
 
     // ---------------------------------------------------------------- absent is not empty
 
+    public void testTheApplierCallbackDoesNotWaitForAPass() throws Exception {
+        // The callback runs on the server's one cluster applier thread. A pass holds the poller's monitor for its whole
+        // length, store reads included, so a callback that waited for it stalled every local state application.
+        java.util.concurrent.atomic.AtomicReference<ClusterStateApplier.Outcome> captured = new java.util.concurrent.atomic.AtomicReference<>();
+        ClusterStateApplier capturing = (source, update, onOutcome) -> captured.set(onOutcome);
+        AssignmentPoller poller = new AssignmentPoller(
+            store,
+            NODE,
+            new DesiredStateResolver(indexConfigs),
+            () -> ClusterState.EMPTY_STATE,
+            (desired, stopRetaining, recoverySources, coordinated, rebuild) -> new DataNodeState(
+                CLUSTER,
+                TestFixtures.localNode(NODE.value()),
+                desired,
+                MappingSource.WRAPPED,
+                LocalShardStore.EMPTY,
+                stopRetaining
+            ),
+            publisher,
+            capturing,
+            new RetainedIndexReaper(indexConfigs, 12),
+            true
+        );
+        writeAssignment(assignmentJson(7, "{\"0\": \"PRIMARY\"}"));
+        poller.poll();
+        assertNotNull("a state was handed to the applier", captured.get());
+
+        java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        Thread pass = new Thread(() -> {
+            synchronized (poller) {
+                held.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        pass.start();
+        try {
+            assertTrue(held.await(10, java.util.concurrent.TimeUnit.SECONDS));
+            java.util.concurrent.CompletableFuture<Void> callback = java.util.concurrent.CompletableFuture.runAsync(
+                () -> captured.get().applied("clusterless assignment version 7", null)
+            );
+            callback.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            pass.join();
+        }
+        assertEquals(1, poller.status().statesApplied());
+    }
+
     public void testAnAbsentAssignmentChangesNothingAtAll() {
         // The destructive misreading. An empty assignment means "drop every shard you hold", and a supervisor
         // that has not written one yet, a pool between owners and a lost key all look exactly like this.

@@ -173,12 +173,9 @@ public final class StaleReplicas {
         return null;
     }
 
+    /** The shard's projected primary, or null if there is none or more than one, which says nothing to judge by. */
     private static IndexStatus.Copy primaryOf(List<IndexStatus.Copy> copies) {
-        for (IndexStatus.Copy copy : copies) {
-            if (copy.role() == ShardRole.PRIMARY) {
-                return copy;
-            }
-        }
-        return null;
+        List<IndexStatus.Copy> primaries = copies.stream().filter(copy -> copy.role() == ShardRole.PRIMARY).toList();
+        return primaries.size() == 1 ? primaries.get(0) : null;
     }
 }
