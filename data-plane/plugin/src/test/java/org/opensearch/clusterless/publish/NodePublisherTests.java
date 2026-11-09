@@ -294,6 +294,36 @@ public class NodePublisherTests extends OpenSearchTestCase {
         assertEquals(now.get(), heartbeatTimestamp());
     }
 
+    public void testAnInventoryDeletedUnderneathTheNodeIsWrittenAgain() {
+        // The reaper deletes nodes/shards/<id> with a departed node's registration. A node that comes back rewrites its
+        // registration, and has to rewrite this too: compared only with what it last wrote, an unchanged inventory was
+        // never written again, and a supervisor with a cold cache saw a live node holding nothing.
+        held.set(copies(3));
+        publisher.publish();
+
+        backing.delete(Keys.nodeShards(NODE));
+        backing.delete(Keys.nodeRegistration(NODE));
+        now.addAndGet(60_000);
+        publisher.publish();
+
+        assertTrue("the inventory must be back", backing.get(Keys.nodeShards(NODE)).isPresent());
+        assertEquals(3, storedCopyCount());
+        assertEquals("and the heartbeat names it", NodeDocuments.digest(bytesAt(Keys.nodeShards(NODE))), heartbeatDigest());
+    }
+
+    public void testAQuietPassChecksTheInventoryAndDoesNotRewriteIt() {
+        held.set(copies(3));
+        publisher.publish();
+        long revision = revisionOf(Keys.nodeShards(NODE));
+
+        for (int pass = 0; pass < 5; pass++) {
+            now.addAndGet(5_000);
+            publisher.publish();
+        }
+
+        assertEquals("no pass may rewrite an inventory that is still there", revision, revisionOf(Keys.nodeShards(NODE)));
+    }
+
     // ---------------------------------------------------------------- a node that cannot read itself
 
     public void testAnInventoryThatCannotBeComputedLeavesTheLastOneStanding() {

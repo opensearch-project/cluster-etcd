@@ -6,10 +6,14 @@ package org.opensearch.clusterless.apply;
 
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.node.DiscoveryNode;
 import org.opensearch.cluster.routing.IndexRoutingTable;
 import org.opensearch.core.index.Index;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -34,8 +38,9 @@ import java.util.Set;
  * what this plugin actually fabricates: which indices exist, their metadata, and the routing table for each.
  * {@link IndexMetadata} and {@link IndexRoutingTable} both implement {@code equals}, which is what makes this a
  * comparison rather than a heuristic. Cluster-scoped settings are compared too, for a reason given at the call —
- * they are the one part of the state outside the indices that anything here would ever change. Beyond those, the
- * state is constant: the node list is this node, and the blocks and customs are whatever a fresh builder produces.
+ * they are the one part of the state outside the indices that anything here would ever change. So is the node list,
+ * which names every peer a routing entry points at. Beyond those, the state is constant: the blocks and customs are
+ * whatever a fresh builder produces.
  */
 public final class StateEquivalence {
 
@@ -61,6 +66,16 @@ public final class StateEquivalence {
             return false;
         }
 
+        // The nodes, by id, ephemeral id and address. Peers are rebuilt from their projections every pass, so a peer that
+        // restarted (a new ephemeral id) or moved (a new address) differs here and nowhere else: its copies keep their
+        // entries. Left out, the state still naming the old node was the fixed point, and the transport handshake, which
+        // refuses a node whose ephemeral id is not the one it was given, failed every search and write to that peer
+        // until something unrelated changed the routing. DiscoveryNode.equals compares the ephemeral id alone, which is
+        // why the address is compared on its own.
+        if (nodesOf(applied).equals(nodesOf(intended)) == false) {
+            return false;
+        }
+
         Set<Index> appliedIndices = indicesOf(applied);
         Set<Index> intendedIndices = indicesOf(intended);
         if (appliedIndices.equals(intendedIndices) == false) {
@@ -81,6 +96,14 @@ public final class StateEquivalence {
             }
         }
         return true;
+    }
+
+    private static Map<String, List<Object>> nodesOf(ClusterState state) {
+        Map<String, List<Object>> nodes = new HashMap<>();
+        for (DiscoveryNode node : state.nodes()) {
+            nodes.put(node.getId(), List.of(node.getEphemeralId(), node.getAddress()));
+        }
+        return nodes;
     }
 
     private static Set<Index> indicesOf(ClusterState state) {

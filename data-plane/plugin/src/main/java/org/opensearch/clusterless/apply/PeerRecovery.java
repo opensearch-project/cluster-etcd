@@ -111,8 +111,8 @@ public final class PeerRecovery {
                 buildable.remove(shardNumber);
                 declined.add(
                     index.key() + "/" + shardNumber + ": a document-replication replica recovers from its primary, "
-                        + "and no started or initializing primary for that shard, with a published allocation id, is reachable in this "
-                        + "node's peer view"
+                        + "and no single started or initializing primary for that shard, with a published allocation id, is reachable "
+                        + "in this node's peer view"
                 );
                 logger.debug(
                     "clusterless: not building the replica of {}/{} -- its primary is not visible in the peer view",
@@ -155,21 +155,16 @@ public final class PeerRecovery {
     /**
      * Not counting this node's own copy, which {@link CoordinatorState} never routes from the projection: a node told to
      * hold a replica where it held the primary still sees its old copy projected as the primary until the supervisor
-     * observes the change, and a replica built against it would be left without a primary in the table.
+     * observes the change, and a replica built against it would be left without a primary in the table. And only one,
+     * for the same reason: two projected primaries are both left out of the table.
      */
     private static boolean primaryVisible(CoordinatorView coordinated, String uuid, int shard, String localNodeId) {
         for (CoordinatorView.RoutedIndex routed : coordinated.indices()) {
             if (routed.uuid().equals(uuid) == false) {
                 continue;
             }
-            for (IndexStatus.Copy copy : routed.placement().copiesOf(shard)) {
-                if (copy.node().value().equals(localNodeId)) {
-                    continue;
-                }
-                if (copy.role() == ShardRole.PRIMARY && CoordinatorState.routable(copy, true, coordinated.peers())) {
-                    return true;
-                }
-            }
+            // Exactly one: with two, CoordinatorState routes neither, since nothing says which is the primary.
+            return CoordinatorState.remotePrimaries(routed.placement().copiesOf(shard), localNodeId, true, coordinated.peers()) == 1;
         }
         return false;
     }

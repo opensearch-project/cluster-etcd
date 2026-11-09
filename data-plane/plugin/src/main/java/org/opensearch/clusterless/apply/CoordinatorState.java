@@ -269,6 +269,9 @@ public final class CoordinatorState implements NodeState {
         int searchReplicas = 0;
         int replicas = 0;
         for (Integer shardNumber : routed.shards()) {
+            boolean primaryInDoubt = primariesHere.contains(shardNumber) == false
+                && targetsHere.contains(shardNumber) == false
+                && remotePrimaries(routed.placement().copiesOf(shardNumber), localNode.getId(), documentReplicated(routed), view.peers()) > 1;
             for (IndexStatus.Copy copy : routed.placement().copiesOf(shardNumber)) {
                 if (localNode.getId().equals(copy.node().value())) {
                     // Mine. Already in the table above, from the assignment, which is the authority for this node
@@ -284,6 +287,20 @@ public final class CoordinatorState implements NodeState {
                     // search replica of, or any peer at all of a shard it holds the primary of. Leaving it out is
                     // what keeps a five-copy shard from putting five entries in five nodes' states -- and the count
                     // below follows the table rather than the projection, so the two cannot disagree.
+                    continue;
+                }
+                if (primaryInDoubt && copy.role() == ShardRole.PRIMARY) {
+                    // Two copies reported as primary, and this node holds neither: a returning old primary still reports
+                    // its copy until it applies the supervisor's withdrawal, beside the one promoted in its place. The
+                    // projection carries no term to choose by, and routing both leaves primaryShard() as whichever came
+                    // last, so writes could go to the replaced one. Neither is routed: the shard gets the unassigned
+                    // primary entry below, and writes retry until the projection names one again.
+                    logger.debug(
+                        "clusterless: not routing {}/{} on [{}]: the projection names more than one primary for that shard",
+                        index,
+                        shardNumber,
+                        copy.node()
+                    );
                     continue;
                 }
                 if (primariesHere.contains(shardNumber) && copy.role() == ShardRole.PRIMARY) {
@@ -333,6 +350,12 @@ public final class CoordinatorState implements NodeState {
                 } else if (copy.role() == ShardRole.REPLICA) {
                     replicas++;
                 }
+            }
+            if (primaryInDoubt && shards.contains(shardNumber) == false) {
+                // Nothing routed for the shard at all, which a coordinator holding nothing reaches. It still needs an
+                // entry; withAPrimaryForEveryShard adds this one itself to a shard with other copies, and drops their
+                // initializing ones with it, which it has to.
+                indexRouting.addShard(unassignedPrimary(new ShardId(index, shardNumber)));
             }
         }
 
@@ -419,6 +442,18 @@ public final class CoordinatorState implements NodeState {
             }
         }
         return ids;
+    }
+
+    /**
+     * How many of a shard's projected primaries on other nodes this node would route. More than one means the projection
+     * cannot say which is the primary, and {@link PeerRecovery} and {@link StaleReplicas} apply the same test.
+     */
+    public static long remotePrimaries(List<IndexStatus.Copy> copies, String localNodeId, boolean documentReplicated, Map<NodeId, ?> peers) {
+        return copies.stream()
+            .filter(copy -> copy.role() == ShardRole.PRIMARY)
+            .filter(copy -> copy.node().value().equals(localNodeId) == false)
+            .filter(copy -> routable(copy, documentReplicated, peers))
+            .count();
     }
 
     static boolean documentReplicated(CoordinatorView.RoutedIndex routed) {

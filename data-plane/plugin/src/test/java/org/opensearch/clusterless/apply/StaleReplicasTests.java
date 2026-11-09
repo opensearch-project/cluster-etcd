@@ -102,6 +102,18 @@ public class StaleReplicasTests extends OpenSearchTestCase {
         assertEquals(Set.of(me), pass(started, primaryAt(PRIMARY, List.of(PRIMARY))));
     }
 
+    public void testTwoProjectedPrimariesRebuildNothing() {
+        // A returning old primary beside the promoted one. Neither set is known to be the current one, and the copy this
+        // node holds may be in the right one.
+        ShardRouting started = startedAfterRecoveringFrom(PRIMARY);
+        IndexStatus.Copy returning = primaryAt(PRIMARY, List.of(PRIMARY));
+        IndexStatus.Copy promoted = new IndexStatus.Copy(NodeId.of(OTHER_NODE), ShardRole.PRIMARY, ShardState.STARTED, true, PROMOTED, List.of(PROMOTED));
+
+        for (int i = 0; i < 3 * StaleReplicas.PASSES_TO_JOIN; i++) {
+            assertEquals("pass " + i, Set.of(), stale.toRebuild(desired(config("DOCUMENT")), live(started), view(config("DOCUMENT"), started, returning, promoted)));
+        }
+    }
+
     public void testAPrimaryThatPublishesNoSetRebuildsNothing() {
         // An older primary, or one whose tracker cannot say. Absent is not empty.
         ShardRouting started = startedAfterRecoveringFrom(PRIMARY);
@@ -175,9 +187,8 @@ public class StaleReplicasTests extends OpenSearchTestCase {
         return new DesiredState(42, Map.of(key, new DesiredState.DesiredIndex(key, config, Map.of(0, ShardRole.REPLICA))), List.of(), List.of());
     }
 
-    private static CoordinatorView view(IndexConfig config, ShardRouting mine, IndexStatus.Copy primary) {
-        List<IndexStatus.Copy> copies = new ArrayList<>();
-        copies.add(primary);
+    private static CoordinatorView view(IndexConfig config, ShardRouting mine, IndexStatus.Copy... primaries) {
+        List<IndexStatus.Copy> copies = new ArrayList<>(List.of(primaries));
         copies.add(
             new IndexStatus.Copy(
                 NodeId.of(LOCAL),
