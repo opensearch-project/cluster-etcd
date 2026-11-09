@@ -24,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -243,6 +244,116 @@ class ZooKeeperKeyValueStoreTests extends KeyValueStoreContractTests {
             pool.shutdownNow();
             assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
         }
+    }
+
+    // ------------------------------------------------------------------
+    // lost answers
+    // ------------------------------------------------------------------
+
+    /** The store under test, with a lost answer injected around the next conditional write's attempt. */
+    private ZooKeeperKeyValueStore withLostAnswer(boolean afterApplying) {
+        ZooKeeperKeyValueStore store = (ZooKeeperKeyValueStore) newStore();
+        java.util.concurrent.atomic.AtomicBoolean once = new java.util.concurrent.atomic.AtomicBoolean();
+        store.faults = new ZooKeeperKeyValueStore.AttemptFaults() {
+            @Override
+            public void beforeAttempt(String path) throws org.apache.zookeeper.KeeperException {
+                if (afterApplying == false && once.compareAndSet(false, true)) {
+                    throw new org.apache.zookeeper.KeeperException.ConnectionLossException();
+                }
+            }
+
+            @Override
+            public void afterAttempt(String path) throws org.apache.zookeeper.KeeperException {
+                if (afterApplying && once.compareAndSet(false, true)) {
+                    throw new org.apache.zookeeper.KeeperException.ConnectionLossException();
+                }
+            }
+        };
+        return store;
+    }
+
+    /**
+     * The review's case: a create-if-absent that applied but whose answer was lost. Retried, it met its own
+     * znode and reported "already exists", so the index was stored and never built.
+     */
+    @Test
+    void aCreateWhoseAnswerIsLostAfterApplyingSucceeds() {
+        ZooKeeperKeyValueStore store = withLostAnswer(true);
+
+        long revision = store.put("indices/a", bytes("mine"), KeyValueStore.ABSENT);
+
+        assertEquals(revision, store.get("indices/a").orElseThrow().revision());
+        assertEquals(Optional.of("mine"), asString(store, "indices/a"));
+    }
+
+    /** A lease renewal, say: applied, answer lost. It must not be reported as losing the lease. */
+    @Test
+    void aCompareAndSetWhoseAnswerIsLostAfterApplyingSucceeds() {
+        ZooKeeperKeyValueStore store = withLostAnswer(true);
+        long held = store.put("lease", bytes("one"), KeyValueStore.ABSENT);
+        store.faults = withLostAnswer(true).faults;
+
+        long renewed = store.put("lease", bytes("two"), held);
+
+        assertNotEquals(held, renewed);
+        assertEquals(renewed, store.get("lease").orElseThrow().revision());
+    }
+
+    @Test
+    void aConditionalDeleteWhoseAnswerIsLostAfterApplyingSucceeds() {
+        ZooKeeperKeyValueStore store = withLostAnswer(true);
+        store.faults = ZooKeeperKeyValueStore.AttemptFaults.NONE;
+        long revision = store.put("lease", bytes("one"), KeyValueStore.ABSENT);
+        store.faults = withLostAnswer(true).faults;
+
+        assertTrue(store.delete("lease", revision));
+        assertEquals(Optional.empty(), store.get("lease"));
+        assertTrue(store.scanPrefix("").isEmpty(), "a tombstone is structure, not a key");
+    }
+
+    /** Lost before it reached ZooKeeper: the znode is still at the checked revision, so trying again is safe. */
+    @Test
+    void aCompareAndSetLostBeforeApplyingIsAttemptedAgain() {
+        ZooKeeperKeyValueStore store = (ZooKeeperKeyValueStore) newStore();
+        long revision = store.put("a", bytes("one"));
+        store.faults = withLostAnswer(false).faults;
+
+        long written = store.put("a", bytes("two"), revision);
+
+        assertEquals(written, store.get("a").orElseThrow().revision());
+        assertEquals(Optional.of("two"), asString(store, "a"));
+    }
+
+    /**
+     * A create has nothing to compare against: an absent znode is what a create that never applied leaves, and
+     * also what one that applied and was deleted leaves. So it is reported as unknown, not guessed.
+     */
+    @Test
+    void aCreateLostBeforeApplyingIsReportedAsUnknown() {
+        ZooKeeperKeyValueStore store = withLostAnswer(false);
+
+        org.junit.jupiter.api.Assertions.assertThrows(org.opensearch.controlplane.store.OutcomeUnknownException.class,
+            () -> store.put("indices/a", bytes("mine"), KeyValueStore.ABSENT));
+        assertEquals(Optional.empty(), store.get("indices/a"));
+    }
+
+    /** Applied, answer lost, and overwritten before the read-back: indistinguishable from never applied. */
+    @Test
+    void aWriteOverwrittenBeforeItsAnswerIsSettledIsReportedAsUnknown() {
+        ZooKeeperKeyValueStore store = (ZooKeeperKeyValueStore) newStore();
+        long revision = store.put("a", bytes("one"));
+        store.faults = new ZooKeeperKeyValueStore.AttemptFaults() {
+            @Override
+            public void afterAttempt(String path) throws org.apache.zookeeper.KeeperException {
+                store.faults = ZooKeeperKeyValueStore.AttemptFaults.NONE;
+                store.put("a", bytes("someone else"));
+                throw new org.apache.zookeeper.KeeperException.ConnectionLossException();
+            }
+        };
+
+        org.junit.jupiter.api.Assertions.assertThrows(org.opensearch.controlplane.store.OutcomeUnknownException.class,
+            () -> store.put("a", bytes("two"), revision));
+        assertEquals(Optional.of("someone else"), asString(store, "a"));
     }
 
     /** The root path is mandatory, so a control plane cannot scatter keys across an ensemble root. */

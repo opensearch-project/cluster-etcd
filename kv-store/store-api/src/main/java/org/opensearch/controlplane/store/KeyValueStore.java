@@ -66,6 +66,11 @@ import java.util.Optional;
  *       acknowledged writes — an asynchronously replicated database, say — can also reissue revisions,
  *       which breaks rule 1.</li>
  *   <li><b>No multi-key atomicity.</b> Consumers order their writes instead.</li>
+ *   <li><b>A write whose answer is lost throws {@link OutcomeUnknownException}</b>, never a conflict and
+ *       never a silent second attempt that could report the caller's own write as someone else's. The
+ *       write may or may not have applied; reading the key says which. A backend that can settle the
+ *       question itself — by reading back a marker only its own write could have left — should, and throw
+ *       only when it cannot.</li>
  * </ul>
  *
  * <h2>Limits</h2>
