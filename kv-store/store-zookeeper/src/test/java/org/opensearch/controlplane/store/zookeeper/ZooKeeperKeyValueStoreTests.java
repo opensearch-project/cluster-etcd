@@ -106,6 +106,29 @@ class ZooKeeperKeyValueStoreTests extends KeyValueStoreContractTests {
             "a scan must not resurrect the deleted parent");
     }
 
+    /**
+     * Parent znodes are persistent, not containers. ZooKeeper reaps a container once its last child goes,
+     * whatever data it holds, and setData does not change a znode's mode. So an id containing {@code /}
+     * made {@code a} a parent, a key was then stored at {@code a}, and deleting {@code a/b} left {@code a}
+     * childless: reaped, and the key with it.
+     *
+     * <p>Checked by watching for the reap, because a container cannot be recognised from a client: the
+     * server reports its {@code ephemeralOwner} as zero, like a persistent znode's. The test server reaps
+     * every 100 ms, so a second is plenty; against an external ensemble at the default minute this passes
+     * without proving anything.
+     */
+    @Test
+    void aKeyStoredOnAFormerParentSurvivesItsLastChildsDelete() throws Exception {
+        KeyValueStore store = newStore();
+        store.put("pipeline/a/b", bytes("child"));
+        store.put("pipeline/a", bytes("pipeline a"));
+
+        assertTrue(store.delete("pipeline/a/b"));
+        Thread.sleep(1_000);
+
+        assertEquals(Optional.of("pipeline a"), asString(store, "pipeline/a"));
+    }
+
     /** And the name is then free again, at a new revision. */
     @Test
     void aDeletedParentKeyCanBeRecreated() {

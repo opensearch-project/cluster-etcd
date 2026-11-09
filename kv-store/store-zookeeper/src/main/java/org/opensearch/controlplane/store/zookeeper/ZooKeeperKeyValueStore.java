@@ -60,7 +60,7 @@ import java.util.UUID;
  * <p>A hierarchy needs intermediate nodes, and {@code indices/} is a parent rather than a key. Stored
  * values therefore carry a frame — {@link #FRAME_KEY}, then a 16-byte write id, then the payload — and
  * <b>a znode is a key if and only if its data starts with that byte</b>. Everything else — Curator's
- * parent containers, a deleted key's tombstone — is structure.
+ * parent znodes, a deleted key's tombstone — is structure.
  *
  * <p>That is what lets an <em>empty</em> value stay distinguishable from an absent key, which the store
  * contract requires because marker keys depend on it. A frame with no payload is an empty value; no frame
@@ -70,6 +70,13 @@ import java.util.UUID;
  * {@code delete("a")} where {@code a/b} exists cannot remove the znode — ZooKeeper answers
  * {@code NotEmpty} — so the znode is left as structure instead. The key is gone by every observable
  * measure and the subtree survives.
+ *
+ * <p>Parents are created <b>persistent, not as containers</b>, though containers would tidy themselves
+ * away. ZooKeeper reaps a container once its last child is gone, whatever data it holds, and setData does
+ * not change a znode's mode. A key can be written at a path that is already a parent — ids are user input,
+ * and {@code a/b} makes {@code a} a parent — and a container there would take that key with it when
+ * {@code a/b} was deleted. The cost is that structure is never reaped: empty parents stay, bounded by the
+ * distinct parent paths ever written, and every read already ignores them.
  *
  * <h2>A lost answer is settled by reading back, never by retrying</h2>
  *
@@ -252,7 +259,7 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
                 Stat stat = client.checkExists().forPath(path);
                 if (stat == null) {
                     Stat created = new Stat();
-                    client.create().storingStatIn(created).creatingParentContainersIfNeeded()
+                    client.create().storingStatIn(created).creatingParentsIfNeeded()
                         .forPath(path, framed);
                     return created.getMzxid();
                 }
@@ -287,7 +294,7 @@ public final class ZooKeeperKeyValueStore implements KeyValueStore {
                 try {
                     return settle("put", key, path, writeId, null, () -> {
                         Stat created = new Stat();
-                        client.create().storingStatIn(created).creatingParentContainersIfNeeded()
+                        client.create().storingStatIn(created).creatingParentsIfNeeded()
                             .forPath(path, framed);
                         return created;
                     }).getMzxid();

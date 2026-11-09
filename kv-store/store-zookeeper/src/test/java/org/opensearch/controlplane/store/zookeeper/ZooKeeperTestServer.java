@@ -72,6 +72,9 @@ final class ZooKeeperTestServer {
         if (container == null) {
             container = new GenericContainer<>(DockerImageName.parse(IMAGE))
                 .withExposedPorts(CLIENT_PORT)
+                // ZooKeeper reaps an empty container znode once a minute by default. Every 100 ms instead, so a
+                // test can see a reap happen rather than wait a minute for one.
+                .withEnv("JVMFLAGS", "-Dznode.container.checkIntervalMs=100")
                 // The image logs this once the client port is accepting connections. Waiting on the port
                 // alone is not enough: ZooKeeper binds before it is ready to serve.
                 .waitingFor(Wait.forLogMessage(".*binding to port.*\\n", 1));
