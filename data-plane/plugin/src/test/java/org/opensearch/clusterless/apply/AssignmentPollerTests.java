@@ -205,16 +205,20 @@ public class AssignmentPollerTests extends OpenSearchTestCase {
                 }
             }
         });
+        // The applier, on a thread of the test's own rather than the common ForkJoinPool: a pool worker outlives the
+        // task by its keep-alive, and the suite's thread-leak check then fails on it.
+        Thread applier = new Thread(() -> captured.get().applied("clusterless assignment version 7", null));
         pass.start();
         try {
             assertTrue(held.await(10, java.util.concurrent.TimeUnit.SECONDS));
-            java.util.concurrent.CompletableFuture<Void> callback = java.util.concurrent.CompletableFuture.runAsync(
-                () -> captured.get().applied("clusterless assignment version 7", null)
-            );
-            callback.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            applier.start();
+            applier.join(10_000);
+            assertFalse("the callback waited for the pass", applier.isAlive());
         } finally {
             release.countDown();
             pass.join();
+            // Joined either way, so that a callback which did wait does not outlive the test.
+            applier.join();
         }
         assertEquals(1, poller.status().statesApplied());
     }
