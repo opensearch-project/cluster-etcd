@@ -40,8 +40,9 @@ repository this matters more, not less: scope every `git add` to this component'
 
 Commits are signed, and signing blocks on an interactive authorisation the sandbox cannot
 answer — running `git commit` hangs the turn and produces nothing. So: make the change, `git add` the paths, write
-the full message to `/tmp/dp-<topic>.txt`, and give the user the exact `git commit -F /tmp/dp-<topic>.txt`. This is
-not about autonomy; changes may be made and staged without asking.
+the full message to `/tmp/dp-<topic>.txt`, and give the user the exact `git commit -s -F /tmp/dp-<topic>.txt`. The
+`-s` is required: the repository is under the OpenSearch project, and a commit without a `Signed-off-by` line fails the
+DCO check. This is not about autonomy; changes may be made and staged without asking.
 
 Write the message as though committing yourself, in the established style: a subject saying what changed, then prose
 on *why*, what was learned, how it was verified, and **what is not proven**. Correct earlier commits' claims in a
