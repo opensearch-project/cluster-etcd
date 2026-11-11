@@ -60,6 +60,12 @@ processors:
     - truncate_hits
   search_phase_results: []
 
+# The oldest version among the data nodes queried. A new index is created at this version, as
+# OpenSearch fixes index.version.created to the smallest node version, so it must cover every data
+# node that could hold one: an index created newer than a node cannot be held there. Re-run after
+# an upgrade completes. Lower than the truth is safe; higher is not.
+minimum_node_version: "3.10.0"
+
 # From GET /_script_language. With this present the control plane serves
 # get_script_languages and validates the lang of a stored script; without it, both degrade.
 script_languages:

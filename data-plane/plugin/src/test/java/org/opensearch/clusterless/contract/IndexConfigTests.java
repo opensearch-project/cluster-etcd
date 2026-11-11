@@ -54,6 +54,14 @@ public class IndexConfigTests extends OpenSearchTestCase {
         assertEquals("keyword", ((java.util.Map<?, ?>) ((java.util.Map<?, ?>) config.mappings().get("properties")).get("host")).get("type"));
     }
 
+    public void testTheCreatedVersionIsReadFromTheTopLevel() {
+        IndexConfig stamped = read("{\"index\": \"i\", \"uuid\": \"u\", \"version_created\": \"3.10.0\", \"settings\": {}}", 1);
+        IndexConfig unstamped = read("{\"index\": \"i\", \"uuid\": \"u\", \"settings\": {}}", 1);
+
+        assertEquals("3.10.0", stamped.versionCreated());
+        assertNull("a document the control plane did not stamp states none", unstamped.versionCreated());
+    }
+
     public void testSettingsAreStringsAndAreReadAsSuch() {
         // The silent-zero bug: "3" read with something expecting a number gives zero, and an index with zero
         // shards is an index that cannot exist. Every value here is a string, always.

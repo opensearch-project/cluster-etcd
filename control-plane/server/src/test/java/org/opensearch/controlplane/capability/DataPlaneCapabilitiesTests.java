@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -126,5 +127,33 @@ class DataPlaneCapabilitiesTests {
             assertEquals(kind, ProcessorKind.fromConfigKey(kind.configKey()));
         }
         assertThrows(IllegalArgumentException.class, () -> ProcessorKind.fromConfigKey("nope"));
+    }
+
+    // ------------------------------------------------------------------
+    // the minimum node version
+    // ------------------------------------------------------------------
+
+    @Test
+    void loadsTheMinimumNodeVersion() throws IOException {
+        Path file = write("""
+            processors: {}
+            minimum_node_version: "3.10.0"
+            """);
+
+        assertEquals(Optional.of(NodeVersion.parse("3.10.0")), DeclaredCapabilities.load(file).minimumNodeVersion());
+    }
+
+    /** A file generated before the field existed still loads, and declares no minimum, so nothing is stamped. */
+    @Test
+    void anOlderFileDeclaresNoMinimum() throws IOException {
+        assertEquals(Optional.empty(), DeclaredCapabilities.load(write("processors: {}\n")).minimumNodeVersion());
+        assertEquals(Optional.empty(), new PermissiveCapabilities().minimumNodeVersion());
+    }
+
+    @Test
+    void anUnreadableMinimumIsAnError() throws IOException {
+        IOException e = assertThrows(IOException.class,
+            () -> DeclaredCapabilities.load(write("processors: {}\nminimum_node_version: three\n")));
+        assertTrue(e.getMessage().contains("minimum_node_version must be an OpenSearch version"), e.getMessage());
     }
 }

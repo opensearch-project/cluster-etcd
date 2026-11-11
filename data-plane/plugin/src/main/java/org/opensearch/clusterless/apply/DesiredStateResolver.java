@@ -38,8 +38,12 @@ public final class DesiredStateResolver {
      */
     static final int MAX_REASONS = 20;
 
+    private static final org.apache.logging.log4j.Logger logger = org.apache.logging.log4j.LogManager.getLogger(DesiredStateResolver.class);
+
     private final IndexConfigSource indexConfigs;
     private final RemoteStore remoteStore;
+    /** Indices already warned about for stating no created version, so that the warning is not repeated every pass. */
+    private final java.util.Set<String> warnedNoCreatedVersion = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public DesiredStateResolver(IndexConfigSource indexConfigs) {
         this(indexConfigs, RemoteStore.NONE);
@@ -140,11 +144,43 @@ public final class DesiredStateResolver {
         }
 
         int numberOfShards;
+        org.opensearch.Version created;
         try {
             numberOfShards = config.numberOfShards();
             config.numberOfReplicas();
+            created = CreatedVersion.declared(config);
         } catch (MalformedDocumentException e) {
             defer(deferred, key + ": " + e.getMessage());
+            return;
+        }
+        if (created == null) {
+            if (warnedNoCreatedVersion.add(config.uuid())) {
+                logger.warn(
+                    "clusterless: index [{}] ({}) states no [{}], so it is built at this node's version [{}]; "
+                        + "another node may choose differently",
+                    config.name(),
+                    key,
+                    IndexConfig.FIELD_VERSION_CREATED,
+                    org.opensearch.Version.CURRENT
+                );
+            }
+        } else if (created.after(org.opensearch.Version.CURRENT)) {
+            // What vanilla keeps out of a cluster at join (JoinTaskExecutor): this node's Lucene may not read what a
+            // newer version writes, and the control plane stamps the oldest data node's version, so this node is older
+            // than every node that version was taken from.
+            defer(
+                deferred,
+                key + " [" + config.name() + "]: created at version [" + created + "], newer than this node's ["
+                    + org.opensearch.Version.CURRENT + "]; a node cannot hold an index created by a newer version"
+            );
+            return;
+        } else if (created.before(org.opensearch.Version.CURRENT.minimumIndexCompatibilityVersion())) {
+            // What vanilla refuses to open (MetadataIndexUpgradeService.checkSupportedVersion).
+            defer(
+                deferred,
+                key + " [" + config.name() + "]: created at version [" + created + "], older than the oldest this node "
+                    + "can read [" + org.opensearch.Version.CURRENT.minimumIndexCompatibilityVersion() + "]; it has to be reindexed"
+            );
             return;
         }
 

@@ -83,4 +83,15 @@ public interface DataPlaneCapabilities {
      * the node that runs it. It exists so {@code ingest.processor_grok} can answer at all.
      */
     Optional<GrokPatterns> grokPatterns();
+
+    /**
+     * The oldest OpenSearch version among the data nodes, if it was declared.
+     *
+     * <p>What an index's {@code index.version.created} is fixed to when it is created, as upstream fixes it to the
+     * smallest node version in the cluster. Lucene's on-disk choices and analysis defaults key on that value, so it
+     * must be the same on every copy and never move. A minimum that is stale is safe, being lower than the truth,
+     * since a newer node reads an older index; one that is too high is not, since an index stamped newer than a node
+     * cannot be held there. So with nothing declared nothing is stamped, rather than a guess.
+     */
+    Optional<NodeVersion> minimumNodeVersion();
 }

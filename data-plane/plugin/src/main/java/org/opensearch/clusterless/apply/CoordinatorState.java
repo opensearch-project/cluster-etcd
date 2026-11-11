@@ -665,7 +665,8 @@ public final class CoordinatorState implements NodeState {
             settings.put(IndexConfig.REPLICATION_TYPE, IndexConfig.DEFAULT_REPLICATION);
         }
         settings.put(IndexMetadata.SETTING_INDEX_UUID, routed.uuid());
-        settings.put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT);
+        // As DataNodeState chooses it. See CreatedVersion.
+        settings.put(IndexMetadata.SETTING_VERSION_CREATED, CreatedVersion.of(routed.config(), previous));
         settings.put(IndexMetadata.SETTING_CREATION_DATE, DataNodeState.creationDate(routed.config()));
         settings.put(ClusterlessIndexSettings.TENANT.getKey(), routed.tenant().value());
         settings.put(ClusterlessIndexSettings.TENANT_INDEX_NAME.getKey(), routed.config().name());

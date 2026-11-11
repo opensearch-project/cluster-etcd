@@ -6,7 +6,6 @@ package org.opensearch.clusterless.apply;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.opensearch.Version;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
@@ -347,7 +346,7 @@ public final class DataNodeState implements NodeState {
         IndexMetadata previousMetadata = previous.metadata().index(index);
         IndexRoutingTable previousRouting = previous.routingTable().index(index);
 
-        IndexMetadata.Builder builder = IndexMetadata.builder(indexName).settings(settingsFor(desiredIndex));
+        IndexMetadata.Builder builder = IndexMetadata.builder(indexName).settings(settingsFor(desiredIndex, previousMetadata));
 
         MappingMetadata mapping = mappingFor(index, config, previousMetadata);
         if (mapping != null) {
@@ -636,7 +635,7 @@ public final class DataNodeState implements NodeState {
         );
     }
 
-    private Settings settingsFor(DesiredState.DesiredIndex desiredIndex) {
+    private Settings settingsFor(DesiredState.DesiredIndex desiredIndex, IndexMetadata applied) {
         boolean holdsAnySearchReplica = desiredIndex.shards().containsValue(ShardRole.SEARCH_REPLICA);
         boolean holdsOnlySearchReplicas = holdsOnlySearchReplicas(desiredIndex.shards());
         IndexConfig config = desiredIndex.config();
@@ -654,7 +653,8 @@ public final class DataNodeState implements NodeState {
         }
 
         settings.put(IndexMetadata.SETTING_INDEX_UUID, desiredIndex.uuid());
-        settings.put(IndexMetadata.SETTING_VERSION_CREATED, Version.CURRENT);
+        // One value per index, the same on every node, and never changed on a live one. See CreatedVersion.
+        settings.put(IndexMetadata.SETTING_VERSION_CREATED, CreatedVersion.of(config, applied));
         settings.put(IndexMetadata.SETTING_CREATION_DATE, creationDate(config));
 
         // The contract's identity, which the name deliberately does not carry. See ClusterlessIndexSettings.

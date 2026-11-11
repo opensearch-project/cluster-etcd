@@ -5,8 +5,12 @@
 #
 # Emits a control plane capabilities file describing what a given OpenSearch cluster supports.
 #
-#   tools/dump-capabilities.sh http://localhost:9200 > capabilities.yaml
+#   tools/dump-capabilities.sh http://localhost:9200 [http://localhost:9201 ...] > capabilities.yaml
 #   ../gradlew :server:run --args="--capabilities capabilities.yaml"
+#
+# Give it every data node, or at least one of each version running. A clusterless node reports only itself
+# under GET /_nodes, so the minimum node version and the processor intersection are only as good as the set of
+# nodes named here. The script-only sections come from the first URL.
 #
 # Generated rather than hand-written on purpose. The processor types a cluster has depend on which
 # plugins are installed, nothing in the OpenSearch API specification records that, and a list
@@ -14,7 +18,7 @@
 # actually have worked.
 #
 # Four sources, because a cluster reports these capabilities in four places:
-#   GET /_nodes                   processor types, per node, intersected below
+#   GET /_nodes                   processor types, intersected below, and each data node version
 #   GET /_script_language         scripting languages and their contexts
 #   GET /_script_context          scripting contexts and their method signatures
 #   GET /_ingest/processor/grok   the built-in grok pattern library
@@ -39,16 +43,25 @@
 
 set -euo pipefail
 
-URL="${1:-http://localhost:9200}"
+if [ "$#" -eq 0 ]; then
+  set -- http://localhost:9200
+fi
+URL="$1"
 
 if command -v python3 >/dev/null 2>&1; then :; else
   echo "error: python3 is required" >&2; exit 1
 fi
 
-nodes_json="$(curl -fsS -m 30 "$URL/_nodes?filter_path=nodes.*.ingest.processors.type,nodes.*.search_pipelines.*.type")" || {
-  echo "error: could not query $URL/_nodes" >&2
-  exit 1
-}
+# One _nodes response per URL, merged below by node id, so naming a node twice, or two URLs that report the
+# same node, counts it once.
+node_responses=""
+for url in "$@"; do
+  response="$(curl -fsS -m 30 "$url/_nodes?filter_path=nodes.*.ingest.processors.type,nodes.*.search_pipelines.*.type,nodes.*.version,nodes.*.roles")" || {
+    echo "error: could not query $url/_nodes" >&2
+    exit 1
+  }
+  node_responses="$node_responses$response"$'\n'
+done
 
 # None of these three is fatal: an older cluster, or one behind a proxy that blocks it, simply yields
 # no section rather than a broken file.
@@ -59,11 +72,14 @@ grok_json="$(curl -fsS -m 30 "$URL/_ingest/processor/grok" 2>/dev/null || true)"
 # One response per line. OpenSearch escapes newlines inside JSON strings, so a response never spans
 # lines and this stays unambiguous -- which matters for grok patterns, whose values are dense with
 # backslashes.
-printf '%s\n%s\n%s\n%s\n' \
-  "$nodes_json" "${languages_json:-}" "${contexts_json:-}" "${grok_json:-}" | python3 -c '
+{ printf '%s\n' "$#"; printf '%s' "$node_responses"; printf '%s\n%s\n%s\n' \
+  "${languages_json:-}" "${contexts_json:-}" "${grok_json:-}"; } | python3 -c '
 import json, sys
 
 lines = sys.stdin.read().split("\n")
+node_urls = int(lines[0])
+node_lines = lines[1:1 + node_urls]
+lines = lines[1 + node_urls:]
 
 def optional(index):
     """A response that is allowed to be missing or unparseable; absent means "no section"."""
@@ -74,18 +90,26 @@ def optional(index):
     except json.JSONDecodeError:
         return None
 
-try:
-    doc = json.loads(lines[0])
-except (json.JSONDecodeError, IndexError) as e:
-    sys.exit(f"error: could not parse the _nodes response ({e})")
-
-languages = optional(1)
-contexts = optional(2)
-grok = optional(3)
-
-nodes = doc.get("nodes") or {}
+nodes = {}
+for line in node_lines:
+    try:
+        nodes.update(json.loads(line).get("nodes") or {})
+    except json.JSONDecodeError as e:
+        sys.exit(f"error: could not parse a _nodes response ({e})")
 if not nodes:
-    sys.exit("error: the _nodes response contained no nodes")
+    sys.exit("error: the _nodes responses contained no nodes")
+
+languages = optional(0)
+contexts = optional(1)
+grok = optional(2)
+
+
+def version_key(text):
+    # 3.10.0-SNAPSHOT orders as 3.10.0: compared by number, never as text, where 3.9.0 would sort after 3.10.0.
+    return tuple(int(part) for part in text.split("-")[0].split("."))
+
+data_versions = [n["version"] for n in nodes.values() if "data" in (n.get("roles") or []) and n.get("version")]
+minimum_version = min(data_versions, key=version_key).split("-")[0] if data_versions else None
 
 # Intersect across nodes rather than union: a processor only usable on some nodes is not something
 # the control plane should accept. A homogeneous cluster makes this a no-op.
@@ -133,6 +157,14 @@ for key in kinds:
         print(f"  {key}:")
         for t in types:
             print(f"    - {t}")
+
+if minimum_version:
+    print()
+    print("# The oldest version among the data nodes queried. A new index is created at this version, as")
+    print("# OpenSearch fixes index.version.created to the smallest node version, so it must cover every data")
+    print("# node that could hold one: an index created newer than a node cannot be held there. Re-run after")
+    print("# an upgrade completes. Lower than the truth is safe; higher is not.")
+    print(f"minimum_node_version: {scalar(minimum_version)}")
 
 if languages:
     print()

@@ -5,6 +5,7 @@
 package org.opensearch.controlplane.handler.indices;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.capability.DataPlaneCapabilities;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
 import org.opensearch.controlplane.handler.template.TemplateComposition;
@@ -78,12 +79,18 @@ public final class DataStreamHandlers {
 
     private DataStreamHandlers() {}
 
-    public static List<OperationHandler> handlers() {
-        return List.of(new Create(), new Delete());
+    public static List<OperationHandler> handlers(DataPlaneCapabilities capabilities) {
+        return List.of(new Create(capabilities), new Delete());
     }
 
     /** {@code PUT /_data_stream/{name}}. */
     static final class Create implements OperationHandler {
+
+        private final DataPlaneCapabilities capabilities;
+
+        Create(DataPlaneCapabilities capabilities) {
+            this.capabilities = capabilities;
+        }
 
         @Override
         public String operationGroup() {
@@ -150,7 +157,8 @@ public final class DataStreamHandlers {
                 return aliasRejection.get();
             }
             ObjectNode metadata =
-                CreateIndexHandler.buildMetadata(backingIndex, uuid, composed, context.nowEpochMillis());
+                CreateIndexHandler.buildMetadata(
+                    backingIndex, uuid, composed, context.nowEpochMillis(), capabilities.minimumNodeVersion());
             Optional<RestResponse> tooLarge = IndexStore.rejectIfTooLarge(request, backingIndex, metadata);
             if (tooLarge.isPresent()) {
                 return tooLarge.get();
