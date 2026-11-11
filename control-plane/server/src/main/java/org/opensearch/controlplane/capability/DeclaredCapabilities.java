@@ -48,6 +48,7 @@ public final class DeclaredCapabilities implements DataPlaneCapabilities {
     private final ScriptLanguages scriptLanguages;
     private final ScriptContexts scriptContexts;
     private final GrokPatterns grokPatterns;
+    private final NodeVersion minimumNodeVersion;
 
     public DeclaredCapabilities(Map<ProcessorKind, Set<String>> processors) {
         this(processors, null);
@@ -63,6 +64,16 @@ public final class DeclaredCapabilities implements DataPlaneCapabilities {
         ScriptContexts scriptContexts,
         GrokPatterns grokPatterns
     ) {
+        this(processors, scriptLanguages, scriptContexts, grokPatterns, null);
+    }
+
+    public DeclaredCapabilities(
+        Map<ProcessorKind, Set<String>> processors,
+        ScriptLanguages scriptLanguages,
+        ScriptContexts scriptContexts,
+        GrokPatterns grokPatterns,
+        NodeVersion minimumNodeVersion
+    ) {
         EnumMap<ProcessorKind, Set<String>> copy = new EnumMap<>(ProcessorKind.class);
         for (ProcessorKind kind : ProcessorKind.values()) {
             copy.put(kind, Set.copyOf(processors.getOrDefault(kind, Set.of())));
@@ -71,6 +82,7 @@ public final class DeclaredCapabilities implements DataPlaneCapabilities {
         this.scriptLanguages = scriptLanguages;
         this.scriptContexts = scriptContexts;
         this.grokPatterns = grokPatterns;
+        this.minimumNodeVersion = minimumNodeVersion;
     }
 
     public static DeclaredCapabilities load(Path file) throws IOException {
@@ -99,7 +111,26 @@ public final class DeclaredCapabilities implements DataPlaneCapabilities {
             declared.put(kind, types);
         }
         return new DeclaredCapabilities(
-            declared, readScriptLanguages(root), readScriptContexts(root), readGrokPatterns(root));
+            declared, readScriptLanguages(root), readScriptContexts(root), readGrokPatterns(root),
+            readMinimumNodeVersion(root));
+    }
+
+    /**
+     * The optional {@code minimum_node_version}, the oldest version among the data nodes the file was generated
+     * from: {@code minimum_node_version: "3.10.0"}. Absent in a file generated before it existed, and then no
+     * index is stamped with a created version. See {@link DataPlaneCapabilities#minimumNodeVersion}.
+     */
+    private static NodeVersion readMinimumNodeVersion(JsonNode root) throws IOException {
+        JsonNode value = root.path("minimum_node_version");
+        if (value.isMissingNode() || value.isNull()) {
+            return null;
+        }
+        try {
+            return NodeVersion.parse(value.asText());
+        } catch (IllegalArgumentException e) {
+            throw new IOException("minimum_node_version must be an OpenSearch version such as 3.10.0, was ["
+                + value.asText() + "]", e);
+        }
     }
 
     /**
@@ -226,6 +257,11 @@ public final class DeclaredCapabilities implements DataPlaneCapabilities {
     }
 
     @Override
+    public Optional<NodeVersion> minimumNodeVersion() {
+        return Optional.ofNullable(minimumNodeVersion);
+    }
+
+    @Override
     public boolean supportsProcessor(ProcessorKind kind, String type) {
         return processors.get(kind).contains(type);
     }
@@ -248,6 +284,7 @@ public final class DeclaredCapabilities implements DataPlaneCapabilities {
                 .collect(Collectors.joining(", "))
             + " processor types declared"
             + scriptLanguages().map(languages -> ", script languages " + languages.languages()).orElse("")
+            + minimumNodeVersion().map(version -> ", data nodes from " + version).orElse("")
             + scriptContexts().map(contexts -> ", " + contexts.size() + " script contexts").orElse("")
             + grokPatterns().map(patterns -> ", " + patterns.size() + " grok patterns").orElse("")
             + ")";

@@ -57,6 +57,56 @@ public class DesiredStateResolverTests extends OpenSearchTestCase {
         assertEquals(3041L, index.config().revision());
     }
 
+    public void testAnIndexCreatedByANewerVersionIsNotBuilt() {
+        // What vanilla keeps out of a cluster at join: this node's Lucene may not read what a newer one writes.
+        documents.put("acme/my-index", createdAt("99.0.0"));
+
+        DesiredState desired = resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY)));
+
+        assertEquals(0, desired.copyCount());
+        assertTrue(desired.deferred().toString(), desired.deferred().get(0).contains("newer than this node's"));
+    }
+
+    public void testAnIndexOlderThanThisNodeCanReadIsNotBuilt() {
+        documents.put("acme/my-index", createdAt("1.3.0"));
+
+        DesiredState desired = resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY)));
+
+        assertEquals(0, desired.copyCount());
+        assertTrue(desired.deferred().toString(), desired.deferred().get(0).contains("reindexed"));
+    }
+
+    public void testACreatedVersionThatIsNotAVersionIsNotBuilt() {
+        documents.put("acme/my-index", createdAt("three point ten"));
+
+        DesiredState desired = resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY)));
+
+        assertEquals(0, desired.copyCount());
+        assertTrue(desired.deferred().toString(), desired.deferred().get(0).contains("version_created"));
+    }
+
+    public void testAnIndexCreatedAtThisNodesVersionOrEarlierIsBuilt() {
+        documents.put("acme/my-index", createdAt(org.opensearch.Version.CURRENT.toString()));
+        assertEquals(1, resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY))).copyCount());
+
+        documents.put("acme/my-index", createdAt("3.3.0"));
+        assertEquals(1, resolver.resolve(assignment(Map.of(0, ShardRole.PRIMARY))).copyCount());
+    }
+
+    private static IndexConfig createdAt(String versionCreated) {
+        return new IndexConfig(
+            "my-index",
+            UUID,
+            1788969977933L,
+            true,
+            false,
+            Map.of("index.number_of_shards", "2", "index.number_of_replicas", "0"),
+            Map.of(),
+            3041,
+            versionCreated
+        );
+    }
+
     public void testAnIndexDocumentThatHasNotLandedYetDefersRatherThanFails() {
         // Ordinary and temporary. The supervisor may assign a shard before the control plane's index document
         // appears; the two write different keys with no transaction between them.

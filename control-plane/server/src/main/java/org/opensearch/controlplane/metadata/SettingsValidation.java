@@ -76,6 +76,14 @@ public final class SettingsValidation {
         }
     }
 
+    /**
+     * Index settings this service supplies and a client may not: held as top-level fields of the index document
+     * and rendered into its settings ({@code IndexStore.reportedSettings}). Each is {@code PrivateIndex} upstream,
+     * so with a registry loaded it is refused anyway; listed here so that it is refused without one.
+     */
+    public static final Set<String> MANAGED_INDEX_SETTINGS =
+        Set.of("index.uuid", "index.creation_date", "index.provided_name", "index.version.created");
+
     private SettingsValidation() {}
 
     /**
@@ -129,9 +137,18 @@ public final class SettingsValidation {
         List<String> notDynamic = new ArrayList<>();
         List<String> notEverUpdateable = new ArrayList<>();
         if (registry.isEnforcing() == false) {
+            // The settings this service writes itself are refused with no registry too: a client's value would
+            // otherwise sit in the index's settings beside the one this service holds, and disagree with it.
+            if (scope == Scope.INDEX) {
+                settings.keys().stream().filter(MANAGED_INDEX_SETTINGS::contains).forEach(notUserSettable::add);
+            }
             return new Problems(unknown, notUserSettable, notDynamic, notEverUpdateable);
         }
         for (String key : settings.keys()) {
+            if (scope == Scope.INDEX && MANAGED_INDEX_SETTINGS.contains(key)) {
+                notUserSettable.add(key);
+                continue;
+            }
             if (registry.isKnown(scope, key) == false) {
                 unknown.add(key);
                 continue;

@@ -1369,6 +1369,34 @@ Tested in `ClusterManagerActionFilterTests`: a tenant's health and state are ref
 without the header, or with a blank one, health is answered locally and state proceeds as a local read. Reverting the
 refusal fails both refusal tests.
 
+## An index's created version, fixed by the control plane (2026-11-11)
+
+From PR review, and the control plane's `FINDINGS_FROM_THE_DATA_PLANE.md`, item 2. This side used to stamp
+`index.version.created = Version.CURRENT` on every pass, so each node used its own version, and an upgrade changed it.
+Read in OpenSearch and Lucene, that would break an index after an upgrade across a format gate:
+- **3.2.0:** an index-sorted index gets a parent field, which Lucene refuses to add to an existing index;
+- **3.3.0:** date fields get a doc-values skip index, which Lucene refuses to change on an existing field.
+
+The control plane now stamps `version_created`, the oldest data node's version, once, at creation.
+
+- **`CreatedVersion`** picks, in order:
+  - the version the index's applied metadata already carries, because the server refuses a change on a live index;
+  - then the document's;
+  - then, for a document the control plane did not stamp, `Version.CURRENT`, as before, with a warning once per index.
+
+  `DataNodeState` and `CoordinatorState` both use it.
+- **`DesiredStateResolver`** declines an index created after this node's version, as vanilla keeps such a node out at
+  join. It also declines one created before this node's minimum compatible index version, and a `version_created`
+  that is not a version, each with a reason.
+- **Verified with `../gradlew build`:**
+  - the document's version is used, a second pass changes nothing, and a coordinator's metadata carries it;
+  - each decline has a test;
+  - reverting each piece fails its test;
+  - with the applied-first rule reverted, the server's own `IndexSettings.updateIndexMetadata` throws "version
+    mismatch on settings update expected: 3.10.0 but was: 3.3.0".
+- **Not proven:** no real node has run it. A node that built an index before this change keeps `Version.CURRENT` for it
+  until the index is next opened fresh, which for a running node means a restart.
+
 ## M11. Watch
 
 Last, deliberately. The poll loop must already be correct (D2.1), so this is purely latency.

@@ -126,6 +126,23 @@ public class CoordinatorStateTests extends OpenSearchTestCase {
         ).buildClusterState(previous);
     }
 
+    public void testACoordinatorsMetadataCarriesTheDocumentsCreatedVersion() {
+        IndexConfig base = config();
+        IndexConfig stamped = new IndexConfig(
+            base.name(), base.uuid(), base.creationDate(), true, false, base.settings(), base.mappings(), base.revision(), "3.3.0"
+        );
+        CoordinatorView view = new CoordinatorView(
+            List.of(CoordinatorView.RoutedIndex.wholeIndex(ACME, stamped, placement(Map.of(0, List.of(copy(PEER, ShardRole.PRIMARY, ShardState.STARTED)))))),
+            Map.of(NodeId.of(PEER), peer(PEER)),
+            List.of()
+        );
+
+        ClusterState first = coordinate(ClusterState.EMPTY_STATE, view);
+
+        assertEquals(org.opensearch.Version.V_3_3_0, first.metadata().index(indexName()).getCreationVersion());
+        assertTrue(StateEquivalence.sameContent(first, coordinate(first, view)));
+    }
+
     public void testThePeerIsInTheStatesNodesSoItsShardsCanBeAddressed() {
         // RoutingNodes looks up each shard's node and builds a RoutingNode around whatever it finds, so a routing
         // entry naming a node the state does not contain fails an invariant. Also the only way the transport can

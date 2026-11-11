@@ -36,7 +36,7 @@ response. Only the first also validates something (a stored script's `lang`); th
 report-only.
 
 So the implemented count depends on configuration. Generate the file rather than writing it:
-`tools/dump-capabilities.sh http://localhost:9200 > capabilities.yaml`.
+`tools/dump-capabilities.sh http://node-1:9200 http://node-2:9200 ... > capabilities.yaml`, naming every data node.
 
 **The remaining groups return `501 Not Implemented`** with a structured
 error naming the operation group, so the routing surface is complete from day one and
@@ -524,9 +524,13 @@ Accepting such a definition and letting it fail at execution time is a poor expe
 plane can be told what its data plane supports and refuse up front.
 
 ```bash
-tools/dump-capabilities.sh http://localhost:9200 > capabilities.yaml
+tools/dump-capabilities.sh http://node-1:9200 http://node-2:9200 http://node-3:9200 > capabilities.yaml
 ../gradlew :server:run --args="--port 9400 --capabilities capabilities.yaml"
 ```
+
+**Name every data node**, or at least one of each version running: a clusterless node reports only itself under
+`GET /_nodes`, so the processor intersection and the minimum version below are only as good as the nodes named.
+An unreachable node fails the run rather than being left out.
 
 **Generated, not hand-written.** A cluster already reports exactly this under `GET /_nodes` —
 `ingest.processors` plus the three `search_pipelines.*` lists — so the file is produced from the
@@ -541,6 +545,29 @@ Without `--capabilities`, processor types are not validated and startup says so.
 because there is no accurate list to ship: `DataPlaneCapabilities` is an interface precisely so that
 the durable answer — the shard manager publishing capabilities into the data store — is a change of
 implementation rather than of design.
+
+### The minimum node version
+
+`minimum_node_version` is the oldest version among the data nodes the file was generated from, and it is what a
+new index's `index.version.created` is fixed to: upstream's rule, `MetadataCreateIndexService` taking the smallest
+node version at creation. Lucene's on-disk choices and the analysis and mapper defaults key on that value, so it
+has to be the same on every copy and must not move when a node is upgraded; the data plane used to stamp its own
+version on every pass, which did both wrong (its finding 2 in
+[`FINDINGS_FROM_THE_DATA_PLANE.md`](FINDINGS_FROM_THE_DATA_PLANE.md)).
+
+- **Held once**, as `version_created: "3.10.0"` in the index document beside `uuid` and `creation_date`, written
+  at create (a data stream's backing index included) and never again. `indices.get_settings`, `indices.get` and
+  `cluster.state` render it as `index.version.created` in upstream's encoding, `Version.id`: `137317827` for 3.10.0.
+- **Never from a client.** `index.version.created` in a create or a template answers upstream's private-setting
+  refusal, and in `put_settings` its update refusal, with or without a settings registry. The same now holds for
+  the other three settings held top-level: `index.uuid`, `index.creation_date` and `index.provided_name`.
+- **A stale minimum is safe; one too high is not.** A newer node reads an older index, but an index created newer
+  than some node cannot be held there, and the data plane declines it. So re-run the generator once an upgrade has
+  completed, not partway through, and with no `minimum_node_version` declared nothing is stamped and the data plane
+  falls back to its own version, rather than this service guessing.
+- **A downgrade strands an index**, as in vanilla: once stamped, a data node rolled back below that version cannot
+  hold it. That is an operator's matter, worth knowing before rolling back.
+- Resize and restore, which would copy the source's value, are not implemented here.
 
 The two kinds report an unknown type differently, and both wordings are reproduced:
 
@@ -1070,7 +1097,6 @@ without it, a deliberate choice reads as a bug and someone "fixes" it.
 | `cluster_uuid` | one per cluster | one per tenant | each tenant sees a coherent virtual cluster of its own |
 | two write indices for an alias, or `indices.create` naming an alias after the index itself | 500 `illegal_state_exception` | 400 `illegal_argument_exception`, same reason | a request the client got wrong is a client error; reporting it as a server fault tells the caller to retry something that can never succeed. The type follows the status rather than being left inconsistent with it |
 | nested settings key order | `HashMap` order — neither sorted nor as supplied | sorted | reproducing it would mean reproducing Java's hash iteration order. JSON object order is not semantic, and the harness compares parsed structures. The *flat* rendering is sorted on a real cluster too, so that one agrees |
-| `index.version.created` | written into a created index's settings | absent | it records the Lucene and OpenSearch version the index was built with, which this service does not know. `index.replication.type` is *not* in this category — it is a real index setting, accepted on create and defaulted to `DOCUMENT` |
 | restating an immutable mapping parameter at its default | accepted — the mapper resolves defaults, so `index: true` on a text field is a no-op | rejected | we store mappings as sent and have no defaults to resolve against, so an immutable parameter the stored mapping never declared cannot be told apart from a real change. Erring towards rejection is deliberate: accepting a change to how data is indexed leaves a mapping the data plane cannot honour, while a false rejection is immediate and is worked around by sending only the fields being added |
 | the `from [x]` clause in a mapping conflict | `Cannot update parameter [index] from [true] to [false]` | `Cannot update parameter [index] to [false]` when the old value was never declared | same cause — there is no honest previous value to name, so the clause is dropped rather than invented. Byte-exact whenever the stored mapping did declare it |
 | `shards_acknowledged` on reopen | `true` after awaiting shards | `true` | the one place this is *more* optimistic than `indices.create`'s deliberate `false`. On close it is honest — there are no shards left to wait for — and a request that changed nothing reports `false` as a real cluster does. Reopen genuinely awaits shards upstream, so `true` there is the same claim create declines to make |
@@ -1517,9 +1543,9 @@ request would normally get. Verified, and reproduced.
   there (which insists on `SEGMENT`), and an incomplete analyzer definition is accepted here and fails
   with `Failed to build analyzers` there. Values stay the data plane's authority — the same boundary
   that keeps `include_defaults` out.
-- **`index.uuid`, `index.creation_date` and `index.provided_name` are not in a created index's
-  settings.** A real cluster writes them there; here they are top-level metadata fields, and
-  `indices.get_settings` renders them back in on the way out. Same information, held once rather than
+- **`index.uuid`, `index.creation_date`, `index.provided_name` and `index.version.created` are not in a
+  created index's settings.** A real cluster writes them there; here they are top-level metadata fields
+  (the last as `version_created`), and `indices.get_settings` renders them back in on the way out. Same information, held once rather than
   twice — but anything else reading stored metadata directly has to know that.
 - `filter_path` behaviour over deeply nested arrays-of-arrays, and interactions between `**` and
   exclusions, are implemented from the documented model rather than exhaustively diffed.

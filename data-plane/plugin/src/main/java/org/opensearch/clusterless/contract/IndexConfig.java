@@ -45,8 +45,17 @@ public record IndexConfig(
     boolean ingestionPaused,
     Map<String, String> settings,
     Map<String, Object> mappings,
-    long revision
+    long revision,
+    String versionCreated
 ) {
+
+    /**
+     * The index document's top-level field for the version the index was created at, a version string such as
+     * {@code 3.10.0}. The control plane stamps it once, at creation, with the oldest data node's version, as vanilla
+     * fixes {@code index.version.created} (its {@code FINDINGS_FROM_THE_DATA_PLANE.md}, item 2). Absent from a document
+     * it did not stamp.
+     */
+    public static final String FIELD_VERSION_CREATED = "version_created";
 
     /** The index document's field for the pause, matching {@code IndexMetadata}'s own key. */
     public static final String FIELD_INGESTION_STATUS = "ingestion_status";
@@ -59,6 +68,21 @@ public record IndexConfig(
         Objects.requireNonNull(uuid, "uuid");
         settings = settings == null ? Map.of() : Map.copyOf(settings);
         mappings = mappings == null ? Map.of() : Map.copyOf(mappings);
+        versionCreated = versionCreated == null || versionCreated.isBlank() ? null : versionCreated.trim();
+    }
+
+    /** With no created version stated, as a document the control plane did not stamp. */
+    public IndexConfig(
+        String name,
+        String uuid,
+        long creationDate,
+        boolean open,
+        boolean ingestionPaused,
+        Map<String, String> settings,
+        Map<String, Object> mappings,
+        long revision
+    ) {
+        this(name, uuid, creationDate, open, ingestionPaused, settings, mappings, revision, null);
     }
 
     /**
@@ -165,7 +189,8 @@ public record IndexConfig(
             ingestionPaused,
             Documents.stringMap(document, "settings"),
             Documents.object(document, "mappings"),
-            revision
+            revision,
+            Documents.string(document, FIELD_VERSION_CREATED, null)
         );
     }
 }

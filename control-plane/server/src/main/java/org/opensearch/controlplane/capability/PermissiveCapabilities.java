@@ -54,6 +54,11 @@ public final class PermissiveCapabilities implements DataPlaneCapabilities {
     }
 
     @Override
+    public Optional<NodeVersion> minimumNodeVersion() {
+        return Optional.empty();
+    }
+
+    @Override
     public String toString() {
         return "permissive (no capabilities declared; unsupported processors are accepted)";
     }

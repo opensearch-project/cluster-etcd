@@ -6,6 +6,8 @@ package org.opensearch.controlplane.handler.indices;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.capability.DataPlaneCapabilities;
+import org.opensearch.controlplane.capability.NodeVersion;
 import org.opensearch.controlplane.capability.SettingsRegistry;
 import org.opensearch.controlplane.handler.OperationContext;
 import org.opensearch.controlplane.handler.OperationHandler;
@@ -73,16 +75,24 @@ import java.util.Optional;
  *
  * <p><b>Server-supplied settings.</b> A real cluster writes {@code index.uuid},
  * {@code index.creation_date}, {@code index.provided_name} and {@code index.version.created} into the
- * index's settings as part of creating it. The first three are held as top-level metadata fields here
- * and rendered back into {@code indices.get_settings}; {@code index.version.created} is the Lucene and
- * OpenSearch version the index was built with, which this service has no honest value for.
+ * index's settings as part of creating it. Here they are top-level metadata fields, held once and rendered back
+ * into {@code indices.get_settings}, and a client may not supply any of them.
+ *
+ * <p><b>The created version</b> is fixed here, once, to the oldest data-node version the capabilities declare,
+ * which is upstream's rule ({@code MetadataCreateIndexService}: the smallest node version). Lucene's on-disk
+ * choices and analysis defaults key on it, so every copy must read the same value and it must not move when a
+ * node is upgraded. Stored as {@code version_created}, a version string; with no minimum declared nothing is
+ * stored, and the data plane falls back to its own version, rather than this service guessing high. See the data
+ * plane's finding 2 in this component's {@code FINDINGS_FROM_THE_DATA_PLANE.md}.
  */
 public final class CreateIndexHandler implements OperationHandler {
 
     private final SettingsRegistry registry;
+    private final DataPlaneCapabilities capabilities;
 
-    public CreateIndexHandler(SettingsRegistry registry) {
+    public CreateIndexHandler(SettingsRegistry registry, DataPlaneCapabilities capabilities) {
         this.registry = registry;
+        this.capabilities = capabilities;
     }
 
     /**
@@ -177,7 +187,8 @@ public final class CreateIndexHandler implements OperationHandler {
         if (aliasRejection.isPresent()) {
             return aliasRejection.get();
         }
-        ObjectNode metadata = buildMetadata(index, uuid, effective, context.nowEpochMillis());
+        ObjectNode metadata =
+            buildMetadata(index, uuid, effective, context.nowEpochMillis(), capabilities.minimumNodeVersion());
         Optional<RestResponse> tooLarge = IndexStore.rejectIfTooLarge(request, index, metadata);
         if (tooLarge.isPresent()) {
             return tooLarge.get();
@@ -325,13 +336,16 @@ public final class CreateIndexHandler implements OperationHandler {
         String index,
         String uuid,
         TemplateComposition.Composed effective,
-        long nowEpochMillis
+        long nowEpochMillis,
+        Optional<NodeVersion> versionCreated
     ) {
         ObjectNode metadata = Json.object();
         metadata.put("index", index);
         metadata.put("uuid", uuid);
         // OpenSearch stores creation_date as epoch millis in a string.
         metadata.put("creation_date", Long.toString(nowEpochMillis));
+        // Fixed now and never rewritten. Absent when no minimum is declared; see the class javadoc.
+        versionCreated.ifPresent(version -> metadata.put(IndexStore.VERSION_CREATED, version.toString()));
         metadata.put("state", "open");
         // Stored flat, which is the canonical form -- see Settings. The shard manager reads these keys
         // directly, and indices.get_settings renders them nested on the way out.

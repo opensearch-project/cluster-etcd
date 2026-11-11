@@ -124,6 +124,41 @@ public class DataNodeStateTests extends OpenSearchTestCase {
         assertTrue(index.mapping().source().string(), index.mapping().source().string().contains("keyword"));
     }
 
+    // ---------------------------------------------------------------- the created version
+
+    public void testTheIndexIsBuiltAtTheVersionTheDocumentStates() {
+        // The control plane stamps the oldest data node's version once, so every node builds the index alike, and an
+        // upgraded node does not take its own: the created version gates what Lucene writes.
+        DesiredState desired = desiredWith(versioned("3.3.0"), Map.of(0, ShardRole.PRIMARY));
+
+        ClusterState first = build(ClusterState.EMPTY_STATE, desired);
+        assertEquals(Version.V_3_3_0, onlyIndex(first).getCreationVersion());
+
+        ClusterState second = build(first, desired);
+        assertTrue("the pass after changes nothing", StateEquivalence.sameContent(first, second));
+    }
+
+    public void testALiveIndexKeepsTheVersionItWasBuiltAt() {
+        // The server refuses a changed created version on a live index ("version mismatch on settings update"), so a
+        // node that built an index before the document stated one keeps what it built it at.
+        ClusterState before = build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY)));
+        assertEquals(Version.CURRENT, onlyIndex(before).getCreationVersion());
+
+        ClusterState after = build(before, desiredWith(versioned("3.3.0"), Map.of(0, ShardRole.PRIMARY)));
+
+        assertEquals(Version.CURRENT, onlyIndex(after).getCreationVersion());
+        // The server's own check, as IndexService.updateMetadata makes it for the live index.
+        org.opensearch.test.IndexSettingsModule.newIndexSettings(onlyIndex(before)).updateIndexMetadata(onlyIndex(after));
+    }
+
+    public void testADocumentThatStatesNoVersionIsBuiltAtThisNodesOwn() {
+        assertEquals(Version.CURRENT, onlyIndex(build(ClusterState.EMPTY_STATE, desired(Map.of(0, ShardRole.PRIMARY)))).getCreationVersion());
+    }
+
+    private static IndexConfig versioned(String versionCreated) {
+        return new IndexConfig("my-index", UUID, 1788969977933L, true, false, settings(), mappings(), 3041, versionCreated);
+    }
+
     // ---------------------------------------------------------------- the second application
 
     public void testACopyThatIsAlreadyServingStaysServing() {

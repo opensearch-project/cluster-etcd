@@ -122,7 +122,7 @@ public final class ControlPlaneHandlers {
             .register(new InfoHandler(identity))
             .register(new PingHandler())
             // indices
-            .register(new CreateIndexHandler(settings))
+            .register(new CreateIndexHandler(settings, capabilities))
             .register(new ExistsIndexHandler())
             .register(new DeleteIndexHandler())
             .register(new UpdateAliasesHandler())
@@ -168,7 +168,7 @@ public final class ControlPlaneHandlers {
 
         // Data streams: create and delete. get_data_stream stays stubbed -- its required status field is
         // backing-index health, which needs the data plane. See DataStreamHandlers.
-        DataStreamHandlers.handlers().forEach(registry::register);
+        DataStreamHandlers.handlers(capabilities).forEach(registry::register);
 
         // Stored scripts: one key each, the same shape as the pipelines.
         StoredScriptHandlers.handlers(capabilities).forEach(registry::register);

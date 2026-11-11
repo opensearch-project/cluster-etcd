@@ -48,13 +48,14 @@ curl 'http://localhost:9200/_cluster/state?pretty'
 While a node is up, capture what the data plane can do, for the control plane to enforce:
 
 ```bash
-control-plane/tools/dump-capabilities.sh http://localhost:9200 > /tmp/capabilities.yaml \
+control-plane/tools/dump-capabilities.sh http://localhost:920{0,1,2,3,4} > /tmp/capabilities.yaml \
     && mv /tmp/capabilities.yaml control-plane/capabilities.yaml
 curl -sf 'http://localhost:9200/_cluster/settings_registry' -o control-plane/settings_registry.json
 ```
 
-`capabilities.yaml` (processor types, script languages and contexts) is committed, so regenerate it only if the
-data plane's plugins changed. `_cluster/settings_registry` depends on a proposed upstream OpenSearch change; if the
+`capabilities.yaml` (processor types, script languages and contexts, and the oldest data-node version, which new
+indices are created at) is committed, so regenerate it only if the data plane's plugins or OpenSearch version
+changed. Name every node: a clusterless node reports only itself under `_nodes`. `_cluster/settings_registry` depends on a proposed upstream OpenSearch change; if the
 OpenSearch in mavenLocal does not include it, the request fails (`no handler found for uri`) and writes nothing, and
 the control plane runs without `--settings-registry` and accepts any setting.
 

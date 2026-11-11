@@ -114,3 +114,127 @@ per-index map.
 - a shard with a missing replica reports yellow, from the projection, not green;
 - `level=indices` names the tenant's indices by their own names, and only that tenant's;
 - `cluster.state`'s `nodes` lists only the nodes in `status/nodes` for that tenant.
+
+---
+
+## 2. An index's created version has to be fixed when it is created, and this component has the honest value
+
+> **Done** as recommended, apart from resize and restore, which are not implemented here.
+>
+> - **The capability.** `minimum_node_version: "3.10.0"` in `capabilities.yaml`, the oldest version among the data
+>   nodes, read as `DataPlaneCapabilities.minimumNodeVersion()`. `tools/dump-capabilities.sh` now takes any number
+>   of node URLs and takes the minimum over every data node they report, because, as you say, one node's
+>   `_nodes` gives only that node; it fails rather than skip a node it cannot reach. With no minimum declared,
+>   nothing is stamped.
+> - **The field.** `"version_created": "3.10.0"`, top-level beside `uuid` and `creation_date`, as you suggested,
+>   written at create and on a data stream's backing index, and never again: `put_settings` and everything else
+>   leave it. Rendered as `index.version.created` in vanilla's encoding (`137317827` for 3.10.0) in
+>   `indices.get_settings`, `indices.get` and `cluster.state`.
+> - **Refused from a client**, with vanilla's create, template and update messages, whether or not a settings
+>   registry is loaded. Without a registry nothing else is checked, so `index.uuid`, `index.creation_date` and
+>   `index.provided_name`, the other settings held top-level, are now refused that way too.
+> - **The README's divergence row is gone**; the README has a section on the minimum version instead, with the
+>   downgrade caveat for operators.
+>
+> Tests: `VersionCreatedTests`, `NodeVersionTests`, and the capability loading in `DataPlaneCapabilitiesTests`,
+> covering each case in the list below. Your half can read `version_created` from the index document now.
+
+### What happens
+
+The data plane has no created version to use, so it stamps `index.version.created = Version.CURRENT` on every pass
+(`DataNodeState.java:657`, and `CoordinatorState.java:668` for a coordinator's metadata). The value is whatever each
+node runs, and it changes when a node is upgraded. Vanilla sets it once, at creation, to
+`min(Version.CURRENT, nodes.getSmallestNonClientNodeVersion())` (`MetadataCreateIndexService.java:1121-1124`), and
+nothing changes it after that.
+
+This component leaves it out on purpose: `CreateIndexHandler` and `IndexStore.reportedSettings` say it "has no honest
+value for" it, and the README lists it under *Considered divergences*. With the minimum data-node version as a
+capability, there is now an honest value. A PR reviewer asked for exactly this consistency, suggesting the supervisor;
+this component is the better owner, below.
+
+### Why it is wrong
+
+Read in OpenSearch at `3aa411be` and Lucene at `5b05d602`; nothing here has been run. About 110 places read the value.
+The ones that matter:
+
+- **Gates on what Lucene writes.** For an index with an index sort, a created version `>= 3.2.0` makes the
+  `IndexWriter` configure a parent field (`NativeLuceneIndexWriterFactory.java:211`, `Store.java:310`). Lucene refuses
+  that on an existing index that has none: "can't add a parent field to an already existing index without a parent
+  field" (`IndexWriter.java:1124-1129`), so the writer does not open. A created version `>= 3.3.0` turns the
+  doc-values skip index on by default for the sort field and `@timestamp` (`DateFieldMapper.java:912`), and Lucene
+  refuses to change a field's skip-index type in an existing index (`FieldInfo.java:312-322`), so writes of that field
+  fail.
+- **When the per-node value hits them:** the version that opens a writer differs from the one that wrote the files.
+  That happens when a node is upgraded past such a gate and restarts with its data; when a segrep replica on a newer
+  node is promoted, or a pull-based primary is placed on one; and when a docrep replica recovers files from a primary
+  on another version. Neither gate bites at 3.10, which is past both. But two were added in two releases, so any
+  upgrade may cross a new one, and existing indices then fail on the upgraded nodes.
+- **Behaviour that differs between copies while versions are mixed.** Analysis (`AnalysisRegistry.java:127, 593`,
+  the `>= 3.0` checks in `CommonAnalysisModulePlugin`), similarity (`SimilarityService.java:147`) and mapper defaults
+  key on the value. Copies on different versions can analyse and score differently, and docrep copies each index the
+  same documents themselves. Small, but it is a difference from vanilla.
+- **Compatibility checks that cannot fire.** Vanilla keeps a node older than an index's created version out of the
+  cluster (`JoinTaskExecutor.java:448`), and rejects an index older than the minimum compatible version
+  (`MetadataIndexUpgradeService.java:136-161`). With `Version.CURRENT` both pass by construction.
+- **Not a concern:** mapping strictness takes the version but ignores it (`checkNoRemainingFields`,
+  `isDeprecatedParameter`); `IndexRequest.process` does not use it; ingestion status is serialised only for indices
+  created `>= 3.3.0` (`IndexMetadata.java:2753`), which a value of at least 3.10 always is.
+
+### Why here, and not in the supervisor
+
+The created version is index configuration: chosen once at creation and never changed, like the uuid and creation
+date this component already writes. Every node reads the index document, so a value there is consistent across all
+shards and copies by construction, which is what the reviewer wants. The supervisor owns placement, not index
+configuration, and putting it there would give one fact two owners.
+
+### What the value should be
+
+**The minimum data-node version, at the moment of creation**, which is vanilla's rule. This component is not tied to
+an OpenSearch version, but it already learns what the data nodes can do from the data nodes. Make the minimum
+data-node version one of those capabilities. Since this component is stateless and restarted often, its capabilities
+can be assumed current.
+
+### What a change must be careful about
+
+- **The minimum, over every data node that could hold the index.** A capability read from one node gives that node's
+  version, which during a rolling upgrade may be the newest. A stale minimum is safe: it is lower than the truth, and
+  a newer node reads an older index. A minimum that is too high is not. An index stamped newer than some data node
+  cannot be held there, and the data plane will decline it, as vanilla keeps such a node out. If the capability
+  cannot say, write nothing and let the data plane fall back, rather than guess high.
+- **Downgrades.** As in vanilla, once an index is stamped, rolling a data node back below that version leaves the node
+  unable to hold it. Worth a line in the operator documentation.
+- **Fixed at creation.** Never rewritten, and refused from a client as vanilla refuses it. On create, and so in a
+  template's settings: "private index setting [index.version.created] can not be set explicitly"
+  (`MetadataCreateIndexService.java:1785-1798`). On `put_settings`: "can not update private setting
+  [index.version.created]; this setting is managed by OpenSearch" (`AbstractScopedSettings.java:643-646`).
+- **Resize and restore keep the source's value.** A shrink, split or clone copies it from the source index
+  (`MetadataCreateIndexService.java:2052`), and a restored index keeps the snapshot's. The setting is
+  `UnmodifiableOnRestore`.
+- **Shape in the index document.** Keep it top-level beside `uuid` and `creation_date`, held once and rendered back
+  into `indices.get_settings`. Suggested: `"version_created": "3.10.0"`, a version string, since this component has no
+  OpenSearch `Version` class. Render it in vanilla's encoding, which is what a client of `get_settings` sees: the id
+  `major * 1000000 + minor * 10000 + revision * 100 + 99`, XOR `0x08000000`, as a string (`Version.java:292, 367`).
+  For 3.10.0 that is `137317827`.
+- **The data plane's half,** which this side will do once the field exists:
+  - build with the document's value instead of `Version.CURRENT`;
+  - decline a copy, with a reason, when the index was created after this node's version, or before its minimum
+    compatible index version;
+  - with no value in the document, keep today's `Version.CURRENT`, with a warning.
+
+  It reads the field with the rest of `IndexConfig`, as it reads `creation_date`. The supervisor's projections
+  need nothing.
+
+### Recommendation
+
+Add the minimum data-node version to the discovered capabilities, stamp it as `version_created` when an index is
+created, copy it on resize and restore, and render it in `indices.get_settings`. Then remove the README's divergence
+row. This side then reads it, and drops `Version.CURRENT` except as the fallback.
+
+### Tests worth having
+
+- creating an index records the capability's minimum version, and `indices.get_settings` shows it in vanilla's
+  encoding (`137317827` for 3.10.0);
+- with no minimum known, nothing is written;
+- `index.version.created` in a create request or a template is refused with vanilla's create message, and in
+  `put_settings` with its update message;
+- a resize copies the source's value, and `put_settings` on another setting leaves it unchanged.

@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -148,12 +149,21 @@ class SettingsValidationOnCreateTests {
         assertTrue(error(response).get("reason").asText().startsWith("unknown setting [index.totally_bogus]"));
     }
 
+    /**
+     * Without a registry nothing is checked, except the settings this service supplies itself: a client's value for
+     * one would sit beside the value held for it and disagree.
+     */
     @Test
-    void createWithoutARegistryValidatesNothing() {
+    void createWithoutARegistryValidatesNothingButTheSettingsThisServiceSupplies() throws Exception {
         Router router = routerWith(new PermissiveSettings());
 
         assertEquals(RestStatus.OK, put(router, "/a", "{\"settings\":{\"totally_bogus\":1}}").status());
-        assertEquals(RestStatus.OK, put(router, "/b", "{\"settings\":{\"index.uuid\":\"abc\"}}").status());
+        for (String managed : List.of("index.uuid", "index.creation_date", "index.provided_name", "index.version.created")) {
+            RestResponse response = put(router, "/b", "{\"settings\":{\"" + managed + "\":\"abc\"}}");
+            assertEquals(RestStatus.BAD_REQUEST, response.status(), managed);
+            assertEquals("Validation Failed: 1: private index setting [" + managed + "] can not be set explicitly;",
+                error(response).get("reason").asText());
+        }
     }
 
     // ------------------------------------------------------------------

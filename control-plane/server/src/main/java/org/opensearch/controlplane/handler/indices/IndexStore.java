@@ -6,6 +6,7 @@ package org.opensearch.controlplane.handler.indices;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.opensearch.controlplane.capability.NodeVersion;
 import org.opensearch.controlplane.metadata.Settings;
 import org.opensearch.controlplane.resolver.IndexAbstractions;
 import org.opensearch.controlplane.rest.ErrorResponses;
@@ -42,6 +43,13 @@ public final class IndexStore {
 
     /** Shared with the resolver, which scans the same prefix. */
     static final String KEY_PREFIX = IndexAbstractions.INDEX_KEY_PREFIX;
+
+    /**
+     * The OpenSearch version an index was created at, {@code "3.10.0"}: fixed at creation to the oldest data-node
+     * version and never rewritten. Top-level beside {@code uuid} and {@code creation_date}, and rendered into
+     * settings as {@code index.version.created}.
+     */
+    public static final String VERSION_CREATED = "version_created";
 
     static final String STATE = "state";
 
@@ -122,9 +130,9 @@ public final class IndexStore {
      * creates it; here they are top-level metadata fields, so they are rendered back in on the way out.
      * Same information, held once rather than twice.
      *
-     * <p>One that a real cluster adds is deliberately absent: {@code index.version.created} records the
-     * Lucene and OpenSearch version the index was built with, which this service has no honest value
-     * for. See the README's considered divergences.
+     * <p>{@code index.version.created} comes from {@link #VERSION_CREATED} the same way, rendered as upstream's
+     * {@code Version.id} ({@link NodeVersion#encodedId}), which is what a client of {@code get_settings} sees. An
+     * index created before a minimum node version was declared has none, and reports none.
      */
     public static Settings reportedSettings(JsonNode metadata) {
         Settings settings = Settings.forIndex(metadata.path("settings"));
@@ -136,6 +144,14 @@ public final class IndexStore {
         }
         if (metadata.hasNonNull("index")) {
             settings = settings.with("index.provided_name", metadata.get("index").asText());
+        }
+        if (metadata.hasNonNull(VERSION_CREATED)) {
+            try {
+                settings = settings.with("index.version.created",
+                    Integer.toString(NodeVersion.parse(metadata.get(VERSION_CREATED).asText()).encodedId()));
+            } catch (IllegalArgumentException unreadable) {
+                // Written by this service, so this would be a corrupt document; report what is there rather than fail.
+            }
         }
         return settings;
     }
