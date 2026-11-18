@@ -1,0 +1,26 @@
+# The whole system in one namespace: kubectl apply -k deploy/k8s/base (bin/up.sh does that and more; deploy/k8s/kafka adds a broker).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: clusterless
+
+resources:
+  - namespace.yaml
+  - etcd.yaml
+  - data-node.yaml
+  - supervisor.yaml
+  - control-plane.yaml
+
+# Generated, so a changed file gets a new name and rolls the pods that mount it.
+configMapGenerator:
+  - name: data-node-config
+    files:
+      - opensearch.yml=data-node.yml
+
+# The images bin/build-images.sh builds and kind loads; never pulled.
+images:
+  - name: clusterless/control-plane
+    newTag: dev
+  - name: clusterless/supervisor
+    newTag: dev
+  - name: clusterless/data-node
+    newTag: dev

@@ -1,0 +1,10 @@
+# The base cluster plus a Kafka broker: kubectl apply -k deploy/k8s/kafka (bin/up.sh --kafka does that). The data
+# nodes already carry the ingestion-kafka plugin; nothing about them changes, because a shard learns its source
+# from the index's settings, not from node configuration.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: clusterless
+
+resources:
+  - ../base
+  - kafka.yaml
