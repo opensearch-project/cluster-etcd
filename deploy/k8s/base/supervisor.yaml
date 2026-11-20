@@ -1,0 +1,63 @@
+# Two supervisors. Only the holder of supervisor/pools/<pool>/lease acts on a pool; the other holds none,
+# which is the healthy state, and takes over when the holder's lease lapses. Each publishes what it holds in
+# supervisor/status/members/<id>.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supervisor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: supervisor
+  template:
+    metadata:
+      labels:
+        app: supervisor
+    spec:
+      containers:
+        - name: supervisor
+          image: clusterless/supervisor
+          env:
+            - name: SUPERVISOR_STORE
+              value: etcd://etcd:2379/opensearch
+            # Read-only without it: observes everything, acts on nothing and publishes no projections.
+            - name: SUPERVISOR_WRITE
+              value: "true"
+            - name: SUPERVISOR_INTERVAL
+              value: 1s
+            # The id defaults to <host>-<pid>, and the host is the pod name, so it is unique per pod.
+            - name: JDK_JAVA_OPTIONS
+              value: -Xms128m -Xmx256m
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+# Defines the pool the data nodes declare (clusterless.node.pool). Nothing else creates one, and until one
+# exists nothing is assigned. A default pool, so the control plane's single tenant needs no binding.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: define-pool
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: define-pool
+          image: clusterless/supervisor
+          # --define-pool exits 1 both when the pool is already defined and when the store cannot be reached,
+          # so success is decided by the log as well: a re-run against a defined pool is done, an unreachable
+          # store is retried.
+          command:
+            - sh
+            - -c
+            - |
+              out="$(java -cp '/opt/supervisor/lib/*' org.opensearch.supervisor.app.Main \
+                  --store=etcd://etcd:2379/opensearch --define-pool=shared-a 2>&1)"; status=$?
+              echo "$out"
+              [ "$status" -eq 0 ] || echo "$out" | grep -q 'pool already defined'

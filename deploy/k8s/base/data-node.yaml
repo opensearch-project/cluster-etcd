@@ -1,0 +1,119 @@
+# Five data nodes. A StatefulSet, so each pod keeps its data directory, and with it its node id, across a
+# restart: the supervisor places shards by node id and keeps a restarted node's copies by that id.
+apiVersion: v1
+kind: Service
+metadata:
+  name: data
+spec:
+  clusterIP: None
+  selector:
+    app: data-node
+  ports:
+    - name: http
+      port: 9200
+    - name: transport
+      port: 9300
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: data
+spec:
+  serviceName: data
+  replicas: 5
+  # Nodes do not wait for each other, so there is nothing to gain from starting them one at a time.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: data-node
+  template:
+    metadata:
+      labels:
+        app: data-node
+    spec:
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+        # Root, because it sets a kernel parameter and hands the shared segment directory to the node's user. The
+        # kind node's kernel is shared, so max_map_count is set for every pod; the bootstrap checks require it.
+        # Through /proc rather than sysctl(8), which the slim base image does not have.
+        - name: prepare
+          image: clusterless/data-node
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - |
+              [ "$(cat /proc/sys/vm/max_map_count)" -ge 262144 ] || echo 262144 > /proc/sys/vm/max_map_count
+              chown 1000:1000 /clusterless-remote-store /clusterless-ingestion
+          volumeMounts:
+            - name: remote-store
+              mountPath: /clusterless-remote-store
+            - name: ingestion
+              mountPath: /clusterless-ingestion
+      containers:
+        - name: opensearch
+          image: clusterless/data-node
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # Explicit, so five nodes do not each size themselves to the whole machine.
+            - name: OPENSEARCH_JAVA_OPTS
+              value: -Xms512m -Xmx512m
+          ports:
+            - name: http
+              containerPort: 9200
+            - name: transport
+              containerPort: 9300
+          readinessProbe:
+            httpGet:
+              path: /_clusterless/status
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              memory: 1536Mi
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/opensearch/data
+            - name: config
+              mountPath: /usr/share/opensearch/config/opensearch.yml
+              subPath: opensearch.yml
+            # The file ingestion source: <base_directory>/<stream>/<shard>.ndjson, read by whichever node holds
+            # the shard, so every node must see the same directory. Writable, because the end-to-end test
+            # appends to the files through a data pod.
+            - name: ingestion
+              mountPath: /clusterless-ingestion
+            # The segment store: copies of a shard share one remote path, so every node mounts the same directory.
+            - name: remote-store
+              mountPath: /clusterless-remote-store
+      volumes:
+        - name: config
+          configMap:
+            name: data-node-config
+        # Like the segment store: in the cluster node's own filesystem, so it needs nothing from the host.
+        - name: ingestion
+          hostPath:
+            path: /clusterless-ingestion
+            type: DirectoryOrCreate
+        # In the kind node's own filesystem: shared by every pod, kept across pod restarts, gone with the cluster.
+        - name: remote-store
+          hostPath:
+            path: /clusterless-remote-store
+            type: DirectoryOrCreate
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi

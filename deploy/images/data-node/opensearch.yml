@@ -1,0 +1,10 @@
+# The image's defaults. A deployment replaces this file (the Kubernetes manifests mount theirs from a
+# ConfigMap) or adds to it with -E arguments. Nothing here names a store or a pool: a node without
+# clusterless.store refuses to start, which is the point.
+
+network.host: 0.0.0.0
+
+# Never read: a clusterless node uses LocalDiscovery and looks for no peers. Present only because binding
+# a non-loopback address enforces the bootstrap checks, and DiscoveryConfiguredCheck fails a node that
+# configures no discovery at all.
+discovery.seed_hosts: []

@@ -1,0 +1,73 @@
+# Two control planes, both stateless: everything they know is in the store.
+#
+# No authentication: the tenant comes from the x-tenant-id header, and SingleTenantResolver, which Main wires,
+# serves every request as tenant `default`. So the Service is ClusterIP only, and the way in from the host is
+# `kubectl port-forward svc/control-plane 9250:9250`, which binds loopback.
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+spec:
+  selector:
+    app: control-plane
+  ports:
+    - name: http
+      port: 9250
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: control-plane
+  template:
+    metadata:
+      labels:
+        app: control-plane
+    spec:
+      containers:
+        - name: control-plane
+          image: clusterless/control-plane
+          # Each value its own argument: Main does not accept --option=value, and exits 2 on one.
+          args:
+            - --host
+            - 0.0.0.0
+            - --port
+            - "9250"
+            - --store
+            - etcd://etcd:2379/opensearch
+            - --capabilities
+            - /etc/control-plane/capabilities.yaml
+            - --settings-registry
+            - /etc/control-plane/settings_registry.json
+          env:
+            - name: JDK_JAVA_OPTIONS
+              value: -Xms128m -Xmx256m
+          ports:
+            - name: http
+              containerPort: 9250
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: capabilities
+              mountPath: /etc/control-plane
+              readOnly: true
+      volumes:
+        # Written by bin/up.sh from the running data nodes (control-plane/tools/dump-capabilities.sh), not
+        # baked in: it carries the minimum node version new indices are created at, and a stale minimum is
+        # safe where a too-high one is not. Until it exists these pods wait in ContainerCreating.
+        - name: capabilities
+          configMap:
+            name: control-plane-capabilities

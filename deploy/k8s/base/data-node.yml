@@ -1,0 +1,37 @@
+# opensearch.yml for every data node. One file for all of them, which is what keeps the repository below the
+# same on every node: copies of a shard share one remote path, and no node can check another's configuration.
+cluster.name: clusterless
+node.name: ${HOSTNAME}
+
+network.host: 0.0.0.0
+# What the node registers, and so what the supervisor projects into status/nodes and peers connect to. The pod
+# IP, from the downward API: a pod name would not resolve until the pod is ready, and 127.0.0.1 (what the
+# Gradle run advertises) reaches nothing.
+network.publish_host: ${POD_IP}
+# Never read: a clusterless node uses LocalDiscovery. Binding a non-loopback address enforces the bootstrap
+# checks, and DiscoveryConfiguredCheck fails a node that configures no discovery at all.
+discovery.seed_hosts: []
+
+clusterless.store: etcd://etcd:2379/opensearch
+clusterless.node.pool: shared-a
+# Defaults to false, which only logs what acting would do: a node left there looks healthy and does nothing.
+clusterless.apply: true
+# Every node also coordinates, so a search through any one of them reaches every shard, over the addresses
+# above. `data` alone is what DEMO.md runs.
+clusterless.node.roles: data,coordinator
+clusterless.heartbeat.interval: 2s
+clusterless.poll.interval: 1s
+
+# The segment store: one `fs` repository, on a directory every pod mounts from the kind node (data-node.yaml).
+# Valid because the whole cluster is one node; across machines it would have to be S3 (repository-s3 is
+# installed in the image). Segments only; the translog stays on the node's disk, because the ingestion source
+# holds every operation.
+path.repo: /clusterless-remote-store
+node.attr.remote_store.mode: segments_only
+node.attr.remote_store.segment.repository: segments
+node.attr.remote_store.repository.segments.type: fs
+node.attr.remote_store.repository.segments.settings.location: /clusterless-remote-store
+
+# One WARN a second per search replica from FsBlobContainer, which sorts a listing in memory. A search replica
+# lists once per refresh, so this is the replica working. If you want to see that it is polling, remove this.
+logger.org.opensearch.common.blobstore.fs.FsBlobContainer: ERROR
